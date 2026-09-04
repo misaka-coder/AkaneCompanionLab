@@ -78,8 +78,8 @@ class _Process:
     def bind_notification_port(self, value: Any) -> None:
         self.bindings["notification"] = value
 
-    def bind_reasoning_port(self, value: Any) -> None:
-        self.bindings["reasoning"] = value
+    def bind_agent_event_port(self, value: Any) -> None:
+        self.bindings["agent_event"] = value
 
     def start(self) -> dict[str, Any]:
         if self.fail:
@@ -145,7 +145,7 @@ class PluginGenerationCandidateBuilderTests(unittest.IsolatedAsyncioTestCase):
             process_factory=factory,
             managed_artifact_sink="artifact",
             notification_port="notification",
-            reasoning_port="reasoning",
+            agent_event_port="agent_event",
         )
         snapshot = await builder.build(
             (
@@ -161,8 +161,16 @@ class PluginGenerationCandidateBuilderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item.bindings for item in created],
             [
-                {"artifact": "artifact", "notification": "notification", "reasoning": "reasoning"},
-                {"artifact": "artifact", "notification": "notification", "reasoning": "reasoning"},
+                {
+                    "artifact": "artifact",
+                    "notification": "notification",
+                    "agent_event": "agent_event",
+                },
+                {
+                    "artifact": "artifact",
+                    "notification": "notification",
+                    "agent_event": "agent_event",
+                },
             ],
         )
         self.assertEqual(

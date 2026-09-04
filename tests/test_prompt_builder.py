@@ -664,7 +664,7 @@ system = "semantic reinforcement system"
         self.assertEqual(_provider_text(second).count(stable_runtime.strip()), 1)
         self.assertIn(first["user_prompt"], _history_text(second))
 
-    def test_plugin_proactive_scope_uses_stable_system_and_appends_memory_timeline_once(self) -> None:
+    def test_plugin_event_scope_uses_stable_system_and_appends_memory_timeline_once(self) -> None:
         builder = PromptBuilder(load_persona_config())
 
         result = builder.build_final_generation_context(
@@ -690,7 +690,7 @@ system = "semantic reinforcement system"
             allow_tool_call=True,
             tool_prompt_context="stable finance capability contract",
             debug_enabled=False,
-            prompt_scope="plugin_proactive",
+            prompt_scope="plugin_event",
             stable_system_context="stable finance research principles",
             current_message_in_raw=True,
         )
@@ -720,7 +720,7 @@ system = "semantic reinforcement system"
         self.assertIn("dynamic plugin instruction", _ephemeral_text(result))
         self.assertTrue(result["stable_system_context_hash"])
 
-    def test_plugin_proactive_scope_falls_back_to_current_message_when_raw_does_not_contain_it(self) -> None:
+    def test_plugin_event_scope_falls_back_to_current_message_when_raw_does_not_contain_it(self) -> None:
         builder = PromptBuilder(load_persona_config())
         result = builder.build_final_generation_context(
             now_ts=1_712_400_000,
@@ -743,14 +743,14 @@ system = "semantic reinforcement system"
             allow_tool_call=True,
             tool_prompt_context="tools",
             debug_enabled=False,
-            prompt_scope="plugin_proactive",
+            prompt_scope="plugin_event",
             current_message_in_raw=False,
         )
 
         self.assertEqual(result["user_prompt"].count("current finance event"), 1)
         self.assertIn("当前时间：", _ephemeral_text(result))
 
-    def test_plugin_proactive_scope_uses_exact_memcore_current_turn_when_no_retrieval_tail(self) -> None:
+    def test_plugin_event_scope_uses_exact_memcore_current_turn_when_no_retrieval_tail(self) -> None:
         builder = PromptBuilder(load_persona_config())
         result = builder.build_final_generation_context(
             now_ts=1_712_400_000,
@@ -775,7 +775,7 @@ system = "semantic reinforcement system"
             allow_tool_call=True,
             tool_prompt_context="stable tools",
             debug_enabled=False,
-            prompt_scope="plugin_proactive",
+            prompt_scope="plugin_event",
             current_message_in_raw=True,
         )
 
@@ -795,7 +795,7 @@ system = "semantic reinforcement system"
         self.assertNotIn("stable proactive runtime", result["user_prompt"])
         self.assertLess(history.index("stable proactive runtime"), history.index("Assistant: earlier analysis"))
 
-    def test_normal_and_proactive_scopes_share_one_append_only_timeline_layout(self) -> None:
+    def test_normal_and_plugin_event_scopes_share_one_append_only_timeline_layout(self) -> None:
         builder = PromptBuilder(load_persona_config())
         common = {
             "now_ts": 1_712_400_000,
@@ -825,14 +825,14 @@ system = "semantic reinforcement system"
             (
                 "[10:02] event.finance\nsource: mock\npublished_at: 2026-04-06T10:02:00+08:00\n"
                 "title: 金融事件 A\nsummary: 摘要 A\nurl: https://example.com/a",
-                "plugin_proactive",
+                "plugin_event",
                 "[10:03] Akane: 金融分析 A",
             ),
             ("[10:04] Master: 普通消息 B", "", "[10:05] Akane: 普通回复 B"),
             (
                 "[10:06] event.finance\nsource: mock\npublished_at: 2026-04-06T10:06:00+08:00\n"
                 "title: 金融事件 B\nsummary: 摘要 B\nurl: https://example.com/b",
-                "plugin_proactive",
+                "plugin_event",
                 "[10:07] Akane: 金融分析 B",
             ),
         ]
@@ -886,14 +886,14 @@ system = "semantic reinforcement system"
             current_message_text="same current turn",
             prompt_scope="",
         )
-        proactive = builder.build_final_generation_context(
+        plugin_event = builder.build_final_generation_context(
             **common,
             raw_text="same current turn",
             current_message_text="same current turn",
-            prompt_scope="plugin_proactive",
+            prompt_scope="plugin_event",
         )
-        self.assertEqual(_provider_turns(normal), _provider_turns(proactive))
-        self.assertEqual(normal["system_prompt"], proactive["system_prompt"])
+        self.assertEqual(_provider_turns(normal), _provider_turns(plugin_event))
+        self.assertEqual(normal["system_prompt"], plugin_event["system_prompt"])
 
     def test_plugin_stable_system_hash_ignores_dynamic_finance_event(self) -> None:
         builder = PromptBuilder(load_persona_config())
@@ -916,7 +916,7 @@ system = "semantic reinforcement system"
             "allow_tool_call": True,
             "tool_prompt_context": "tools",
             "debug_enabled": False,
-            "prompt_scope": "plugin_proactive",
+            "prompt_scope": "plugin_event",
             "stable_system_context": "stable finance research principles",
             "current_message_in_raw": True,
         }
@@ -935,7 +935,7 @@ system = "semantic reinforcement system"
         self.assertEqual(first["stable_system_context_hash"], second["stable_system_context_hash"])
         self.assertNotEqual(first["user_prompt"], second["user_prompt"])
 
-    def test_registered_system_blocks_are_shared_by_normal_and_proactive_turns(self) -> None:
+    def test_registered_system_blocks_are_shared_by_normal_and_plugin_event_turns(self) -> None:
         builder = PromptBuilder(
             load_persona_config(),
             stable_system_blocks_provider=lambda: (
@@ -953,14 +953,14 @@ system = "semantic reinforcement system"
             domain_profile_context="shared domain profile",
             resource_context="shared visual resource",
         )
-        proactive = _build_minimal_final(
+        plugin_event = _build_minimal_final(
             builder,
             current_message_text="event.finance: market news",
             raw_text="event.finance: market news",
             stable_system_context="finance research method",
             domain_profile_context="shared domain profile",
             resource_context="shared visual resource",
-            prompt_scope="plugin_proactive",
+            prompt_scope="plugin_event",
             current_message_in_raw=True,
         )
 
@@ -971,10 +971,10 @@ system = "semantic reinforcement system"
             "可用视觉资源：\nshared visual resource",
         ]
         self.assertEqual(normal["system_extra_blocks"], expected)
-        self.assertEqual(proactive["system_extra_blocks"], expected)
+        self.assertEqual(plugin_event["system_extra_blocks"], expected)
         self.assertEqual(
             normal["stable_system_context_hash"],
-            proactive["stable_system_context_hash"],
+            plugin_event["stable_system_context_hash"],
         )
         audit = {section["name"]: section["text"] for section in normal["prompt_audit_sections"]}
         self.assertIn("system_extra.registered_stable_metadata", audit)

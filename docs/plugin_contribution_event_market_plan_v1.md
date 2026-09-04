@@ -1,5 +1,9 @@
 # Akane 插件贡献、事件与市场执行计划 V1
 
+> 2026-09-04：本文早期切片中复用旧主动推理端口的描述仅是实施历史，该端口现已删除。
+> 需要角色回应的插件事件统一使用宿主 Agent-event 主链；当前权威语义见
+> `docs/plugin_first_class_host_pipeline_v1.md`。
+
 ## 1. 文档目的
 
 本计划在现有 `PluginHost`、CapCore、MemCore 和 channelcore-onebot 基础上补齐事件型

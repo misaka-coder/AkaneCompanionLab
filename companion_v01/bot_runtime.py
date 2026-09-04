@@ -34,7 +34,6 @@ from .extension_management import (
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_conversation_refs import PluginConversationReferenceAuthority
-from .plugin_reasoning import EnginePluginReasoningPort
 from .plugin_generation_candidate import PluginGenerationCandidateBuilder
 from .plugin_generation_runtime import PluginGenerationRuntime
 from .plugin_installation import ManagedPluginArtifactStore
@@ -481,7 +480,6 @@ class BotRuntimeFactory:
                 user_assets_public_prefix=f"{route_prefix}/user-assets",
             )
             engine.plugin_skill_roots_provider = plugin_runtime.skill_roots
-            plugin_runtime.bind_reasoning_port(EnginePluginReasoningPort(engine))
             generated_file_service = engine._get_generated_file_service()
             if generated_file_service is not None:
                 plugin_runtime.bind_managed_artifact_sink(

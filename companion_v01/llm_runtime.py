@@ -718,12 +718,6 @@ class LLMRuntime:
             "final_reported_output_tokens": 0,
             "final_cache_usage_calls": 0,
             "final_cache_hit_calls": 0,
-            "plugin_proactive_cache_read_tokens": 0,
-            "plugin_proactive_cache_creation_tokens": 0,
-            "plugin_proactive_reported_input_tokens": 0,
-            "plugin_proactive_reported_output_tokens": 0,
-            "plugin_proactive_cache_usage_calls": 0,
-            "plugin_proactive_cache_hit_calls": 0,
             "chat_json_fallbacks": 0,
             "native_tool_decision_sent": 0,
             "native_tool_provider_unsupported": 0,
@@ -2389,7 +2383,7 @@ class LLMRuntime:
         if not bool(getattr(config, "LLM_PROMPT_AUDIT_ENABLED", False)):
             return False
         key = str(prompt_cache_key or "").strip()
-        if key == "chat:final" or key.startswith(("chat:final:", "chat:plugin_proactive:")):
+        if key == "chat:final" or key.startswith("chat:final:"):
             return True
         return bool(getattr(config, "LLM_PROMPT_AUDIT_INCLUDE_AUX", False))
 
@@ -2577,18 +2571,6 @@ class LLMRuntime:
                         self._record_metric("final_cache_hit_calls")
                 if reported_output:
                     self._record_metric("final_reported_output_tokens", reported_output)
-            if normalized_cache_key.startswith("chat:plugin_proactive:"):
-                if read:
-                    self._record_metric("plugin_proactive_cache_read_tokens", read)
-                if creation:
-                    self._record_metric("plugin_proactive_cache_creation_tokens", creation)
-                if reported_input:
-                    self._record_metric("plugin_proactive_reported_input_tokens", reported_input)
-                    self._record_metric("plugin_proactive_cache_usage_calls")
-                    if read:
-                        self._record_metric("plugin_proactive_cache_hit_calls")
-                if reported_output:
-                    self._record_metric("plugin_proactive_reported_output_tokens", reported_output)
             if reported_input and self._should_record_prompt_audit(normalized_cache_key):
                 self._append_prompt_usage_audit(
                     prompt_cache_key=normalized_cache_key,

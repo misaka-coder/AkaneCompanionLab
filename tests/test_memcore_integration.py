@@ -3028,7 +3028,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             "fallback": {"speech": "我在认真听你说，要不要多告诉我一点。"},
             "visual_defaults": {"emotion": "normal"},
             "debug_enabled": False,
-            "prompt_scope": "plugin_proactive",
+            "prompt_scope": "plugin_event",
             "memcore_projection_read": {
                 "current_turn_id": "turn-proactive",
                 "current_turn_messages": [
@@ -3054,7 +3054,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             confirmed_snippets=[],
             now_ts=100,
             character_pack_id="char",
-            prompt_scope="plugin_proactive",
+            prompt_scope="plugin_event",
         )
 
         self.assertEqual(len(manager.calls), 1)
@@ -3570,7 +3570,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             "fallback": {"speech": "我在认真听你说，要不要多告诉我一点。"},
             "visual_defaults": {"emotion": "normal"},
             "debug_enabled": False,
-            "prompt_scope": "plugin_proactive",
+            "prompt_scope": "plugin_event",
             "allow_tool_call": False,
             "memcore_projection_read": {
                 "current_turn_id": "turn-proactive-stream",
@@ -3601,7 +3601,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             confirmed_snippets=[],
             now_ts=100,
             character_pack_id="char",
-            prompt_scope="plugin_proactive",
+            prompt_scope="plugin_event",
         )
         events: list[dict[str, object]] = []
         while True:
@@ -8222,7 +8222,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(engine.prompt_builder.calls, [])
         self.assertNotIn("LEGACY", repr(result))
 
-    def test_plugin_proactive_prompt_context_isolates_conversation_history(self) -> None:
+    def test_plugin_event_prompt_context_uses_full_conversation_history(self) -> None:
         previous_event = "[2026-07-20 周一 08:50 | 上午] event.finance\nsource: 东方财富\ntitle: 上一条财经事件"
         memcore_manager = _PromptContextMemcoreManager(
             {
@@ -8282,7 +8282,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 character_pack_id="char",
                 extra_user_context="PLUGIN INSTRUCTION",
                 stable_system_context="STABLE PLUGIN SYSTEM",
-                prompt_scope="plugin_proactive",
+                prompt_scope="plugin_event",
             )
 
         captured = engine.prompt_builder.kwargs
@@ -8295,22 +8295,23 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(
             captured["history_turns"],
             [
+                {"role": "user", "content": "【蓬壶人】发来了一张图片。"},
+                {"role": "assistant", "content": "上一条群聊回复。"},
                 {"role": "user", "content": previous_event},
                 {"role": "assistant", "content": "上一条事件的分析。"},
             ],
         )
-        self.assertEqual(captured["prompt_scope"], "plugin_proactive")
-        self.assertEqual(result["prompt_scope"], "plugin_proactive")
+        self.assertEqual(captured["prompt_scope"], "plugin_event")
+        self.assertEqual(result["prompt_scope"], "plugin_event")
         self.assertEqual(result["memcore_projection_read"]["status"], "active")
-        self.assertEqual(result["memcore_projection_shadow"]["status"], "skipped")
-        self.assertEqual(result["memcore_projection_shadow"]["reason"], "plugin_proactive_event_history_filtered")
-        self.assertEqual(memcore_manager.compare_calls, [])
+        self.assertEqual(result["memcore_projection_shadow"]["status"], "match")
+        self.assertEqual(len(memcore_manager.compare_calls), 1)
         self.assertFalse(hasattr(memcore_manager, "build_prompt_context"))
         self.assertEqual((repr(captured["history_turns"]) + result["user_prompt"]).count("真实插件事件"), 1)
         self.assertNotIn("插件", previous_event)
         self.assertNotIn("LEGACY RAW MUST STAY OUT", repr(captured))
 
-    def test_plugin_proactive_scope_keeps_normal_akane_modules_enabled(self) -> None:
+    def test_plugin_event_scope_keeps_normal_akane_modules_enabled(self) -> None:
         memcore_manager = _PromptContextMemcoreManager(
             {
                 "operation": "build_prompt_context",
@@ -8380,7 +8381,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 recent_semantic_summaries=[],
                 confirmed_snippets=[],
                 now_ts=1712400000,
-                prompt_scope="plugin_proactive",
+                prompt_scope="plugin_event",
                 extra_user_context="TURN CONTEXT",
                 client_context=ClientProtocolContext(
                     requested_mode=ClientMode.QQ_TEXT,
@@ -9071,7 +9072,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         }
         changed_state = dict(base, system_prompt=f"stable rules\n{CURRENT_ASSISTANT_STATE_MARKER}\nstate B")
         changed_tools = dict(base, native_tools=[{"type": "function", "function": {"name": "quote"}}])
-        changed_scope = dict(base, prompt_scope="plugin_proactive")
+        changed_scope = dict(base, prompt_scope="plugin_event")
         changed_dynamic_event = dict(base, user_prompt="a different finance event")
         changed_stable_system = dict(base, stable_system_context_hash="different-stable-system")
         changed_conversation = dict(base, prompt_cache_scope_hash="conversation-b")
@@ -9103,9 +9104,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
             for scope, current_message in (
                 ("", "ordinary message A"),
-                ("plugin_proactive", "event.finance A"),
+                ("plugin_event", "event.finance A"),
                 ("", "ordinary message B"),
-                ("plugin_proactive", "event.finance B"),
+                ("plugin_event", "event.finance B"),
             )
         }
         self.assertEqual(len(interleaved_keys), 1)
@@ -9125,7 +9126,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
             changed_layout_key = AkaneMemoryEngine._final_prompt_cache_key(base)
         self.assertNotEqual(AkaneMemoryEngine._final_prompt_cache_key(base), changed_layout_key)
         self.assertTrue(AkaneMemoryEngine._final_prompt_cache_key(changed_scope).startswith("chat:final:"))
-        self.assertEqual(AkaneMemoryEngine._final_response_max_attempts(changed_scope), 1)
+        self.assertEqual(
+            AkaneMemoryEngine._final_response_max_attempts(changed_scope),
+            max(1, int(getattr(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3) or 3)),
+        )
 
 
     def test_empty_speech_closes_turn_with_exact_provider_envelope_without_fake_semantic_text(self) -> None:

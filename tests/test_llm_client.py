@@ -597,7 +597,7 @@ class LLMClientConfigTests(unittest.TestCase):
             user_prompt="current",
             fallback={"speech": "fallback"},
             temperature=0.0,
-            prompt_cache_key="chat:plugin_proactive:test",
+            prompt_cache_key="chat:final:test",
         )
 
         self.assertEqual(result.parsed["speech"], "主动推送已恢复")
@@ -710,24 +710,6 @@ class LLMClientConfigTests(unittest.TestCase):
         self.assertEqual(runtime._metrics["final_reported_output_tokens"], 11)
         self.assertEqual(runtime._metrics["final_cache_usage_calls"], 1)
         self.assertEqual(runtime._metrics["final_cache_hit_calls"], 1)
-
-    def test_plugin_proactive_cache_usage_is_recorded_separately(self) -> None:
-        runtime = LLMRuntime.__new__(LLMRuntime)
-        runtime._metrics_lock = threading.RLock()
-        runtime._metrics = {}
-        response = SimpleNamespace(
-            usage=SimpleNamespace(
-                input_tokens=120,
-                output_tokens=9,
-                input_tokens_details=SimpleNamespace(cached_tokens=96),
-            )
-        )
-
-        runtime._record_cache_metrics(response, prompt_cache_key="chat:plugin_proactive:stable")
-
-        self.assertEqual(runtime._metrics["plugin_proactive_cache_read_tokens"], 96)
-        self.assertEqual(runtime._metrics["plugin_proactive_reported_input_tokens"], 120)
-        self.assertEqual(runtime._metrics["plugin_proactive_reported_output_tokens"], 9)
 
     def test_chat_bundle_uses_chat_config_instead_of_aux_config(self) -> None:
         calls: list[dict[str, object]] = []

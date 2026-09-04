@@ -90,7 +90,7 @@ class _Builder:
         self.calls: list[tuple[PluginSelection, ...]] = []
         self.managed_artifact_sink = None
         self.notification_port = None
-        self.reasoning_port = None
+        self.agent_event_port = None
 
     async def build(
         self,
@@ -182,18 +182,18 @@ class PluginGenerationRuntimeTests(unittest.IsolatedAsyncioTestCase):
         runtime = PluginGenerationRuntime((), candidate_builder=builder)
         artifact = object()
         notification = object()
-        reasoning = object()
+        agent_event = object()
 
         runtime.bind_managed_artifact_sink(artifact)
         runtime.bind_notification_port(notification)
-        runtime.bind_reasoning_port(reasoning)
+        runtime.bind_agent_event_port(agent_event)
         await runtime.start()
         first = await runtime.stop()
         second = await runtime.stop()
 
         self.assertIs(builder.managed_artifact_sink, artifact)
         self.assertIs(builder.notification_port, notification)
-        self.assertIs(builder.reasoning_port, reasoning)
+        self.assertIs(builder.agent_event_port, agent_event)
         self.assertEqual(first["status"], "stopped")
         self.assertEqual(second["status"], "stopped")
         self.assertEqual(second["configured_plugin_count"], 0)

@@ -4139,7 +4139,7 @@ class AkaneMemoryEngine:
         payload.pop("prompt_scope", None)
         payload["domain_profile"] = turn_domain_profile_id
         turn_kind = str(payload.get("turn_kind") or "").strip().lower()
-        prompt_scope = turn_kind if turn_kind in {"plugin_proactive", "qq_attention", "qq_optional_reply"} else ""
+        prompt_scope = turn_kind if turn_kind in {"qq_attention", "qq_optional_reply"} else ""
         attention_reference_source_ids = [
             str(item or "").strip()
             for item in list(payload.pop("memory_attention_reference_source_ids", []) or [])
@@ -4149,13 +4149,11 @@ class AkaneMemoryEngine:
             attention_reference_source_ids = []
         else:
             attention_reference_source_ids = list(dict.fromkeys(attention_reference_source_ids))
-        plugin_stable_system_context = str(payload.pop("plugin_stable_system_context", "") or "").strip()
+        payload.pop("plugin_stable_system_context", None)
         turn_control_id = str(payload.pop("_turn_control_id", "") or "").strip()
-        if prompt_scope != "plugin_proactive":
-            plugin_stable_system_context = ""
         plugin_external_event = self._pop_plugin_external_event(
             payload,
-            event_allowed=turn_kind in {"plugin_proactive", "plugin_event"},
+            event_allowed=turn_kind == "plugin_event",
         )
         turn_resource_manifest = self._resolve_turn_resource_manifest(payload, client_context)
         chat_model_override = str(payload.get("chat_model_override") or "").strip()
@@ -4393,7 +4391,7 @@ class AkaneMemoryEngine:
             prompt_exclude_source_ids=prompt_exclude_source_ids,
             domain_profile_id=turn_domain_profile_id,
             prompt_scope=prompt_scope,
-            stable_system_context=plugin_stable_system_context,
+            stable_system_context="",
             request_projection_state=request_projection_state,
         )
         recent_raw_for_turn = list(recent_raw)
@@ -4582,7 +4580,7 @@ class AkaneMemoryEngine:
                         prompt_exclude_source_ids=prompt_exclude_source_ids,
                         domain_profile_id=turn_domain_profile_id,
                         prompt_scope=prompt_scope,
-                        stable_system_context=plugin_stable_system_context,
+                        stable_system_context="",
                         request_projection_state=request_projection_state,
                     )
                     continue
@@ -4637,7 +4635,7 @@ class AkaneMemoryEngine:
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
-                    stable_system_context=plugin_stable_system_context,
+                    stable_system_context="",
                     request_projection_state=request_projection_state,
                 )
                 break
@@ -4706,7 +4704,7 @@ class AkaneMemoryEngine:
                     prompt_exclude_source_ids=prompt_exclude_source_ids,
                     domain_profile_id=turn_domain_profile_id,
                     prompt_scope=prompt_scope,
-                    stable_system_context=plugin_stable_system_context,
+                    stable_system_context="",
                     request_projection_state=request_projection_state,
                 )
                 continue
@@ -4863,7 +4861,7 @@ class AkaneMemoryEngine:
                 prompt_exclude_source_ids=prompt_exclude_source_ids,
                 domain_profile_id=turn_domain_profile_id,
                 prompt_scope=prompt_scope,
-                stable_system_context=plugin_stable_system_context,
+                stable_system_context="",
                 request_projection_state=request_projection_state,
             )
 
@@ -5667,8 +5665,7 @@ class AkaneMemoryEngine:
 
     @staticmethod
     def _final_response_max_attempts(generation_context: dict[str, Any]) -> int:
-        if str(generation_context.get("prompt_scope") or "").strip() == "plugin_proactive":
-            return 1
+        del generation_context
         return max(1, int(getattr(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3) or 3))
 
     @staticmethod

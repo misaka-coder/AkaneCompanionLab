@@ -149,7 +149,7 @@ def _build_final_context(
         tool_prompt_context="tools",
         debug_enabled=False,
         prompt_scope=prompt_scope,
-        current_message_in_raw=prompt_scope == "plugin_proactive",
+        current_message_in_raw=prompt_scope == "plugin_event",
     )
 
 
@@ -273,7 +273,7 @@ class PluginPromptContributionHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stopped["prompt_block_count"], 0)
         self.assertEqual(host.stable_system_prompt_blocks(), ())
 
-    async def test_active_host_blocks_reach_normal_and_proactive_generation_contexts(self) -> None:
+    async def test_active_host_blocks_reach_normal_and_plugin_event_generation_contexts(self) -> None:
         plugin = _Plugin(
             plugin_id="akane.test.prompt",
             blocks=(("research", "stable research method"),),
@@ -288,18 +288,18 @@ class PluginPromptContributionHostTests(unittest.IsolatedAsyncioTestCase):
         before_start = _build_final_context(builder, message="User: before start")
         await host.start()
         normal = _build_final_context(builder, message="User: normal conversation")
-        proactive = _build_final_context(
+        plugin_event = _build_final_context(
             builder,
             message="event.finance: market news",
-            prompt_scope="plugin_proactive",
+            prompt_scope="plugin_event",
         )
 
         self.assertEqual(before_start["system_extra_blocks"], [])
         self.assertEqual(normal["system_extra_blocks"], ["stable research method"])
-        self.assertEqual(proactive["system_extra_blocks"], ["stable research method"])
+        self.assertEqual(plugin_event["system_extra_blocks"], ["stable research method"])
         self.assertEqual(
             normal["stable_system_context_hash"],
-            proactive["stable_system_context_hash"],
+            plugin_event["stable_system_context_hash"],
         )
 
         await host.stop()

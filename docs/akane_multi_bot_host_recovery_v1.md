@@ -1,5 +1,9 @@
 # Akane 单 Host 多 Bot 收敛探查与实施报告 v1
 
+> 2026-09-04：本文保留多 Bot 迁移的历史记录；其中旧插件主动推理端口与
+> `plugin_proactive` 专用回合已经移除。当前插件事件契约以
+> `docs/plugin_first_class_host_pipeline_v1.md` 为准。
+
 > 状态：产品与实施边界已冻结；Slice 0、Slice 1、Slice 2A、Slice 2B-core、Slice 2C、Slice 3A、Slice 3B、Slice 4A、Slice 4B、Slice 5A 与 Slice 5B 已部署；finance 当前由部署配置显式停用，真实群聊与媒体表现验收仍待完成
 >
 > 建档日期：2026-07-19

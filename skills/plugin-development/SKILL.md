@@ -31,7 +31,7 @@ artifact lifecycle. This Skill adds no tools or permissions.
   and a contributed Skill when those extra surfaces are actually needed.
 - Use the `akane.plugins.v1` Python entry point. Declare only permissions exercised by the
   implementation. A capability, Skill, prompt block, background service, fixed notification,
-  internal analysis, QQ command, event observer, hook, or managed artifact is optional; do not
+  QQ command, event observer, hook, or managed artifact is optional; do not
   add surfaces the requested behavior does not need.
 - Current registrar names are `add_capability_adapter`, `add_skill`, `add_prompt_block`,
   `get_storage_dir`, `add_background_service`, `get_notification_port`,

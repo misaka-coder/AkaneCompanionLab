@@ -17,8 +17,6 @@ from .plugin_api import (
     PluginAgentEventResult,
     NotificationIntent,
     NotificationResult,
-    PluginReasoningRequest,
-    PluginReasoningResult,
 )
 from .plugin_generation_codec import (
     agent_event_request_from_wire,
@@ -30,10 +28,6 @@ from .plugin_generation_codec import (
     notification_intent_to_wire,
     notification_result_from_wire,
     notification_result_to_wire,
-    reasoning_request_from_wire,
-    reasoning_request_to_wire,
-    reasoning_result_from_wire,
-    reasoning_result_to_wire,
 )
 from .plugin_generation_protocol import PLUGIN_GENERATION_PROTOCOL
 
@@ -53,8 +47,6 @@ class GenerationHostCallbackRouter:
         self._write_response = write_response
         self._notification_port: Any = None
         self._notification_loop: asyncio.AbstractEventLoop | None = None
-        self._reasoning_port: Any = None
-        self._reasoning_loop: asyncio.AbstractEventLoop | None = None
         self._agent_event_port: Any = None
         self._agent_event_loop: asyncio.AbstractEventLoop | None = None
         self._fallback_loop: asyncio.AbstractEventLoop | None = None
@@ -71,15 +63,6 @@ class GenerationHostCallbackRouter:
             self._notification_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._notification_loop = None
-
-    def bind_reasoning_port(self, port: Any) -> None:
-        if not callable(getattr(port, "analyze", None)):
-            raise TypeError("invalid_reasoning_port")
-        self._reasoning_port = port
-        try:
-            self._reasoning_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._reasoning_loop = None
 
     def bind_agent_event_port(self, port: Any) -> None:
         if not callable(getattr(port, "submit", None)):
@@ -103,9 +86,6 @@ class GenerationHostCallbackRouter:
         callback = str(request.get("callback") or "")
         if callback == "notification.send":
             self._dispatch_notification(callback_id, request)
-            return
-        if callback == "model.reasoning":
-            self._dispatch_reasoning(callback_id, request)
             return
         if callback == "agent.event":
             self._dispatch_agent_event(callback_id, request)
@@ -137,33 +117,6 @@ class GenerationHostCallbackRouter:
             self._deliver_notification(callback_id, intent),
             loop=self._notification_loop,
             unavailable_reason="notification_host_unavailable",
-        )
-
-    def _dispatch_reasoning(
-        self,
-        callback_id: str,
-        request: Mapping[str, Any],
-    ) -> None:
-        try:
-            reasoning_request = reasoning_request_from_wire(request.get("request"))
-        except PluginGenerationCodecError:
-            self._send_failure(callback_id, "reasoning_protocol_invalid")
-            return
-        if self._reasoning_port is None:
-            self._send_reasoning_result(
-                callback_id,
-                PluginReasoningResult(
-                    ok=False,
-                    status="not_configured",
-                    reason="no_reasoning_port_bound",
-                ),
-            )
-            return
-        self._schedule(
-            callback_id,
-            self._deliver_reasoning(callback_id, reasoning_request),
-            loop=self._reasoning_loop,
-            unavailable_reason="reasoning_host_unavailable",
         )
 
     def _dispatch_agent_event(
@@ -271,29 +224,6 @@ class GenerationHostCallbackRouter:
             )
         self._send_notification_result(callback_id, result)
 
-    async def _deliver_reasoning(
-        self,
-        callback_id: str,
-        request: PluginReasoningRequest,
-    ) -> None:
-        try:
-            result = await self._reasoning_port.analyze(request)
-            if not isinstance(result, PluginReasoningResult):
-                result = PluginReasoningResult(
-                    ok=False,
-                    status="failed",
-                    reason="invalid_reasoning_result",
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            result = PluginReasoningResult(
-                ok=False,
-                status="failed",
-                reason="reasoning_port_failed",
-            )
-        self._send_reasoning_result(callback_id, result)
-
     async def _deliver_agent_event(
         self,
         callback_id: str,
@@ -322,23 +252,6 @@ class GenerationHostCallbackRouter:
                     ok=False,
                     status="error",
                     reason="invalid_notification_result",
-                )
-            )
-        self._send_wire_result(callback_id, wire_result)
-
-    def _send_reasoning_result(
-        self,
-        callback_id: str,
-        result: PluginReasoningResult,
-    ) -> None:
-        try:
-            wire_result = reasoning_result_to_wire(result)
-        except PluginGenerationCodecError:
-            wire_result = reasoning_result_to_wire(
-                PluginReasoningResult(
-                    ok=False,
-                    status="failed",
-                    reason="invalid_reasoning_result",
                 )
             )
         self._send_wire_result(callback_id, wire_result)
@@ -497,72 +410,6 @@ class GenerationNotificationPort:
             )
 
 
-class GenerationReasoningPort:
-    """Worker-side reasoning port projected through the control lane."""
-
-    def __init__(
-        self,
-        *,
-        generation_id: str,
-        emit: Callable[[Mapping[str, Any]], None],
-        pending: dict[str, asyncio.Future[Mapping[str, Any]]],
-    ) -> None:
-        self._generation_id = generation_id
-        self._emit = emit
-        self._pending = pending
-
-    async def analyze(self, request: PluginReasoningRequest) -> PluginReasoningResult:
-        try:
-            wire_request = reasoning_request_to_wire(request)
-        except PluginGenerationCodecError:
-            return PluginReasoningResult(
-                ok=False,
-                status="invalid_request",
-                reason="invalid_reasoning_request",
-            )
-        callback_id = uuid.uuid4().hex
-        future = asyncio.get_running_loop().create_future()
-        self._pending[callback_id] = future
-        self._emit(
-            {
-                "protocol": PLUGIN_GENERATION_PROTOCOL,
-                "type": "callback_request",
-                "generation_id": self._generation_id,
-                "callback_id": callback_id,
-                "callback": "model.reasoning",
-                "request": wire_request,
-            }
-        )
-        try:
-            response = await future
-        except asyncio.CancelledError:
-            self._emit(
-                {
-                    "protocol": PLUGIN_GENERATION_PROTOCOL,
-                    "type": "callback_cancel",
-                    "generation_id": self._generation_id,
-                    "callback_id": callback_id,
-                }
-            )
-            raise
-        finally:
-            self._pending.pop(callback_id, None)
-        if not response.get("ok"):
-            return PluginReasoningResult(
-                ok=False,
-                status="failed",
-                reason=str(response.get("reason") or "reasoning_callback_failed"),
-            )
-        try:
-            return reasoning_result_from_wire(response.get("result"))
-        except PluginGenerationCodecError:
-            return PluginReasoningResult(
-                ok=False,
-                status="failed",
-                reason="invalid_reasoning_result",
-            )
-
-
 class GenerationAgentEventPort:
     """Worker-side contextual Agent-event port projected through the control lane."""
 
@@ -621,5 +468,4 @@ __all__ = [
     "GenerationHostCallbackRouter",
     "GenerationNotificationPort",
     "GenerationAgentEventPort",
-    "GenerationReasoningPort",
 ]

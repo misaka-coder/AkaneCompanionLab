@@ -98,7 +98,6 @@ class ManagedPluginArtifactStoreTests(unittest.TestCase):
         self.assertEqual(staged["plugin_id"], PLUGIN_ID)
         self.assertEqual(staged["version"], "0.1.0")
         self.assertIn("agent.event.submit", staged["permissions"])
-        self.assertNotIn("model.reasoning", staged["permissions"])
         self.assertNotIn("notification.send", staged["permissions"])
         self.assertIn("background_services", staged["contribution_snapshot"]["types"])
         snapshot = self.store.snapshot()

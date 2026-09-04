@@ -828,7 +828,6 @@ def prepare_context(
     catalog_writer = getattr(getattr(engine, "memcore_manager", None), "reconcile_capability_catalog", None)
     capability_catalog_lifecycle_enabled = bool(
         callable(catalog_writer)
-        and normalized_prompt_scope != "plugin_proactive"
         and capability_catalog_status == "ready"
         and catalog_source_content
     )
@@ -908,22 +907,11 @@ def prepare_context(
     if not care_enabled:
         system_prompt_override = strip_care_prompt_contract(system_prompt_override)
 
-    def _authoritative_history_for_prompt() -> list[dict[str, Any]]:
-        history = [dict(turn) for turn in list(provider_projection.get("history_turns") or [])]
-        if normalized_prompt_scope != "plugin_proactive":
-            return history
-        event_history: list[dict[str, Any]] = []
-        keep_event_turn = False
-        for turn in history:
-            role = str(turn.get("role") or "").strip().lower()
-            if role == "user":
-                content = str(turn.get("content") or "")
-                keep_event_turn = bool(re.search(r"(?:^|\]\s|\n)event\.[a-z0-9]", content, flags=re.IGNORECASE))
-            if keep_event_turn:
-                event_history.append(dict(turn))
-        return event_history
-
-    authoritative_history_turns = _authoritative_history_for_prompt() if projection_authoritative else []
+    authoritative_history_turns = (
+        [dict(turn) for turn in list(provider_projection.get("history_turns") or [])]
+        if projection_authoritative
+        else []
+    )
 
     def _build_generation_context() -> dict[str, Any]:
         current_message_visible_in_raw = bool(provider_projection.get("current_source_visible")) if (
@@ -956,19 +944,6 @@ def prepare_context(
                         "content": f"当前会话中所有未总结的原始消息：\n{raw_text}",
                     }
                 ]
-        if normalized_prompt_scope == "plugin_proactive":
-            event_history: list[dict[str, Any]] = []
-            keep_event_turn = False
-            for turn in history_turns:
-                role = str(turn.get("role") or "").strip().lower()
-                if role == "user":
-                    content = str(turn.get("content") or "")
-                    keep_event_turn = bool(
-                        re.search(r"(?:^|\]\s|\n)event\.[a-z0-9]", content, flags=re.IGNORECASE)
-                    )
-                if keep_event_turn:
-                    event_history.append(dict(turn))
-            history_turns = event_history
         effective_stable_system_context = with_compact_readback_hint(
             stable_system_context,
             policy=str(
@@ -1110,7 +1085,9 @@ def prepare_context(
                     provider_projection,
                     [dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)],
                 )
-                authoritative_history_turns = _authoritative_history_for_prompt()
+                authoritative_history_turns = [
+                    dict(turn) for turn in list(provider_projection.get("history_turns") or [])
+                ]
             generation_context = _build_generation_context()
 
     # Emergency second boundary: compaction normally keeps these layers small,
@@ -1176,23 +1153,15 @@ def prepare_context(
         "auto" if native_tools and effective_allow_tool_call else "none" if native_tools else ""
     )
     generation_context["post_user_turns"] = effective_post_user_turns
-    generation_context["memcore_projection_shadow"] = (
-        {
-            "ok": True,
-            "status": "skipped",
-            "reason": "plugin_proactive_event_history_filtered",
-        }
-        if normalized_prompt_scope == "plugin_proactive"
-        else _compare_memcore_projection_shadow(
-            engine,
-            generation_context=generation_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            character_pack_id=character_pack_id,
-            current_source_id=current_source_id,
-            chat_model_override=chat_model_override,
-            execution_target=execution_target,
-        )
+    generation_context["memcore_projection_shadow"] = _compare_memcore_projection_shadow(
+        engine,
+        generation_context=generation_context,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        character_pack_id=character_pack_id,
+        current_source_id=current_source_id,
+        chat_model_override=chat_model_override,
+        execution_target=execution_target,
     )
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()

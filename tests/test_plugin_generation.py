@@ -32,8 +32,6 @@ from companion_v01.plugin_api import (
     PluginOutboundPlanSnapshot,
     PluginQQCommandRequest,
     PluginQQCommandResult,
-    PluginReasoningRequest,
-    PluginReasoningResult,
     PluginToolCallSnapshot,
     PluginToolResultSnapshot,
 )
@@ -71,10 +69,6 @@ from companion_v01.plugin_generation_codec import (
     plugin_qq_command_result_to_wire,
     qq_command_dispatch_from_wire,
     qq_command_dispatch_to_wire,
-    reasoning_request_from_wire,
-    reasoning_request_to_wire,
-    reasoning_result_from_wire,
-    reasoning_result_to_wire,
 )
 from companion_v01.plugin_events import PluginEventDispatchResult
 from companion_v01.plugin_hooks import PluginHookDispatchResult
@@ -271,27 +265,22 @@ def _write_capability_plugin_site(root: Path) -> Path:
             AKANE_PLUGIN_API_VERSION,
             CAPABILITY_PROMPT_INVOKE_PERMISSION,
             MANAGED_ARTIFACT_WRITE_PERMISSION,
-            MODEL_REASONING_PERMISSION,
             NOTIFICATION_SEND_PERMISSION,
             ManagedArtifactDraft,
             ManagedArtifactPayload,
             NotificationIntent,
-            PluginExternalEvent,
             PluginManifest,
-            PluginReasoningRequest,
         )
 
         CAPABILITY_ID = "test.generation.echo.v1"
         ARTIFACT_CAPABILITY_ID = "test.generation.artifact.v1"
         NOTIFICATION_CAPABILITY_ID = "test.generation.notification.v1"
-        REASONING_CAPABILITY_ID = "test.generation.reasoning.v1"
 
         class Adapter:
             provider_id = "provider.test.generation"
 
-            def __init__(self, notification_port, reasoning_port):
+            def __init__(self, notification_port):
                 self._notification_port = notification_port
-                self._reasoning_port = reasoning_port
 
             async def health(self):
                 return HealthStatus(ok=True, status="ready")
@@ -357,24 +346,6 @@ def _write_capability_plugin_site(root: Path) -> Path:
                         outputs=(),
                         raw={"contract": "generation-notification.v1"},
                     ),
-                    CapabilityDescriptor(
-                        id=REASONING_CAPABILITY_ID,
-                        display_name="Generation reasoning",
-                        short_hint="Run one host-owned reasoning turn.",
-                        visible_in=("diagnostics",),
-                        prompt_exposed=True,
-                        risk="low",
-                        confirm="never",
-                        effects=(),
-                        trigger=None,
-                        inputs=(
-                            CapabilityIOSlot(name="trace_id", kind="string", required=True),
-                            CapabilityIOSlot(name="message", kind="string", required=True),
-                            CapabilityIOSlot(name="delay", kind="string", required=False),
-                        ),
-                        outputs=(),
-                        raw={"contract": "generation-reasoning.v1"},
-                    ),
                 )
 
             async def invoke(self, capability_id, args, context):
@@ -413,36 +384,6 @@ def _write_capability_plugin_site(root: Path) -> Path:
                             "delivery_reason": delivery.reason,
                         },
                     )
-                if capability_id == REASONING_CAPABILITY_ID:
-                    analysis = await self._reasoning_port.analyze(
-                        PluginReasoningRequest(
-                            trace_id=args["trace_id"],
-                            profile_user_id=context.profile_user_id,
-                            session_id=context.session_id,
-                            message=args["message"],
-                            extra_context="generation context",
-                            character_pack_id="akane_v1",
-                            timestamp=1788278400,
-                            stable_system_context="stable plugin context",
-                            memory_idempotency_key=f"reasoning:{args['trace_id']}",
-                            external_event=PluginExternalEvent(
-                                event_type="generation.test",
-                                source="fixture",
-                                fields=(("message", args["message"]),),
-                            ),
-                        )
-                    )
-                    return CapabilityResult(
-                        is_error=False,
-                        status="ok",
-                        content={
-                            "reasoning_ok": analysis.ok,
-                            "reasoning_status": analysis.status,
-                            "reasoning_text": analysis.text,
-                            "reasoning_reason": analysis.reason,
-                            "evidence_events": list(analysis.evidence_events),
-                        },
-                    )
                 await asyncio.sleep(max(0, args.get("delay_ms", 0)) / 1000)
                 return CapabilityResult(
                     is_error=False,
@@ -467,17 +408,13 @@ def _write_capability_plugin_site(root: Path) -> Path:
                 permissions=(
                     CAPABILITY_PROMPT_INVOKE_PERMISSION,
                     MANAGED_ARTIFACT_WRITE_PERMISSION,
-                    MODEL_REASONING_PERMISSION,
                     NOTIFICATION_SEND_PERMISSION,
                 ),
             )
 
             def register(self, registrar):
                 registrar.add_capability_adapter(
-                    Adapter(
-                        registrar.get_notification_port(),
-                        registrar.get_reasoning_port(),
-                    )
+                    Adapter(registrar.get_notification_port())
                 )
 
         def create_plugin():
@@ -932,28 +869,6 @@ class PluginGenerationCodecTests(unittest.TestCase):
             status="delivered",
             reason="",
         )
-        reasoning_request = PluginReasoningRequest(
-            trace_id="event:1",
-            profile_user_id="主人",
-            session_id="session-1",
-            message="核验事件",
-            extra_context="使用只读工具",
-            character_pack_id="akane_v1",
-            timestamp=1_788_278_400,
-            stable_system_context="稳定分析原则",
-            memory_idempotency_key="event:stable-1",
-            external_event=PluginExternalEvent(
-                event_type="finance.quote",
-                source="market-feed",
-                fields=(("symbol", "600519"), ("price", "1412.50")),
-            ),
-        )
-        reasoning_result = PluginReasoningResult(
-            ok=True,
-            status="completed",
-            text="核验完成",
-            evidence_events=({"type": "tool", "status": "ok"},),
-        )
         plugin_event = _generation_event_envelope()
         event_dispatch_result = PluginEventDispatchResult(
             ok=False,
@@ -1080,14 +995,6 @@ class PluginGenerationCodecTests(unittest.TestCase):
                 notification_result_to_wire(notification_result)
             ),
             notification_result,
-        )
-        self.assertEqual(
-            reasoning_request_from_wire(reasoning_request_to_wire(reasoning_request)),
-            reasoning_request,
-        )
-        self.assertEqual(
-            reasoning_result_from_wire(reasoning_result_to_wire(reasoning_result)),
-            reasoning_result,
         )
         self.assertEqual(
             plugin_event_envelope_from_wire(
@@ -1598,14 +1505,13 @@ class PluginGenerationProcessTests(unittest.TestCase):
                 )
                 ready = generation.start()
                 try:
-                    self.assertEqual(len(ready["capabilities"]), 4)
+                    self.assertEqual(len(ready["capabilities"]), 3)
                     self.assertEqual(
                         tuple(generation.capability_descriptors),
                         (
                             "test.generation.artifact.v1",
                             "test.generation.echo.v1",
                             "test.generation.notification.v1",
-                            "test.generation.reasoning.v1",
                         ),
                     )
                     result = await generation.invoke(
@@ -2357,171 +2263,6 @@ class PluginGenerationProcessTests(unittest.TestCase):
                     delivered = await draining
                     stopped = await stop_task
                     self.assertEqual(delivered.content["delivery_status"], "delivered")
-                    self.assertTrue(stopped["ok"])
-                finally:
-                    generation.stop()
-
-        asyncio.run(scenario())
-
-    def test_generation_reasoning_uses_host_port_and_preserves_public_fields(self) -> None:
-        async def scenario() -> None:
-            class RecordingPort:
-                def __init__(self) -> None:
-                    self.requests: list[PluginReasoningRequest] = []
-
-                async def analyze(
-                    self,
-                    request: PluginReasoningRequest,
-                ) -> PluginReasoningResult:
-                    self.requests.append(request)
-                    return PluginReasoningResult(
-                        ok=True,
-                        status="completed",
-                        text=f"verified:{request.message}",
-                        evidence_events=(
-                            {"type": "tool", "status": "ok", "trace": request.trace_id},
-                        ),
-                    )
-
-            with tempfile.TemporaryDirectory() as temp_dir:
-                root = Path(temp_dir)
-                port = RecordingPort()
-                generation = PluginGenerationProcess(
-                    project_root=PROJECT_ROOT,
-                    site_dir=_write_capability_plugin_site(root),
-                    plugin_id="test.generation",
-                    work_dir=root / "work",
-                )
-                generation.bind_reasoning_port(port)
-                generation.start()
-                try:
-                    result = await generation.invoke(
-                        "test.generation.reasoning.v1",
-                        {"trace_id": "reasoning:1", "message": "核验事件"},
-                        context=InvocationContext("owner", "reasoning-session", "qq_text"),
-                    )
-                    self.assertFalse(result.is_error, result.reason)
-                    self.assertTrue(result.content["reasoning_ok"])
-                    self.assertEqual(result.content["reasoning_text"], "verified:核验事件")
-                    self.assertEqual(result.content["evidence_events"][0]["trace"], "reasoning:1")
-                    self.assertEqual(len(port.requests), 1)
-                    request = port.requests[0]
-                    self.assertEqual(request.profile_user_id, "owner")
-                    self.assertEqual(request.session_id, "reasoning-session")
-                    self.assertEqual(request.extra_context, "generation context")
-                    self.assertEqual(request.character_pack_id, "akane_v1")
-                    self.assertEqual(request.timestamp, 1_788_278_400)
-                    self.assertEqual(request.stable_system_context, "stable plugin context")
-                    self.assertEqual(request.memory_idempotency_key, "reasoning:reasoning:1")
-                    self.assertEqual(request.external_event.event_type, "generation.test")
-                    self.assertEqual(request.external_event.source, "fixture")
-                    self.assertEqual(request.external_event.fields, (("message", "核验事件"),))
-                finally:
-                    generation.stop()
-
-        asyncio.run(scenario())
-
-    def test_generation_reasoning_without_host_port_is_structured(self) -> None:
-        async def scenario() -> None:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                root = Path(temp_dir)
-                generation = PluginGenerationProcess(
-                    project_root=PROJECT_ROOT,
-                    site_dir=_write_capability_plugin_site(root),
-                    plugin_id="test.generation",
-                    work_dir=root / "work",
-                )
-                generation.start()
-                try:
-                    result = await generation.invoke(
-                        "test.generation.reasoning.v1",
-                        {"trace_id": "reasoning:missing", "message": "event"},
-                        context=InvocationContext("owner", "reasoning-session", "web"),
-                    )
-                    self.assertFalse(result.is_error)
-                    self.assertFalse(result.content["reasoning_ok"])
-                    self.assertEqual(result.content["reasoning_status"], "not_configured")
-                    self.assertEqual(
-                        result.content["reasoning_reason"],
-                        "no_reasoning_port_bound",
-                    )
-                finally:
-                    generation.stop()
-
-        asyncio.run(scenario())
-
-    def test_reasoning_callbacks_are_correlated_cancelled_and_drained(self) -> None:
-        async def scenario() -> None:
-            class ControlledPort:
-                def __init__(self) -> None:
-                    self.cancel_started = asyncio.Event()
-                    self.cancelled = asyncio.Event()
-                    self.drain_started = asyncio.Event()
-                    self.release = asyncio.Event()
-
-                async def analyze(
-                    self,
-                    request: PluginReasoningRequest,
-                ) -> PluginReasoningResult:
-                    if request.trace_id == "cancel":
-                        self.cancel_started.set()
-                        try:
-                            await asyncio.Future()
-                        except asyncio.CancelledError:
-                            self.cancelled.set()
-                            raise
-                    if request.trace_id == "drain":
-                        self.drain_started.set()
-                        await self.release.wait()
-                    else:
-                        await asyncio.sleep(0.05 if request.trace_id == "slow" else 0.01)
-                    return PluginReasoningResult(
-                        ok=True,
-                        status="completed",
-                        text=request.trace_id,
-                    )
-
-            with tempfile.TemporaryDirectory() as temp_dir:
-                root = Path(temp_dir)
-                port = ControlledPort()
-                generation = PluginGenerationProcess(
-                    project_root=PROJECT_ROOT,
-                    site_dir=_write_capability_plugin_site(root),
-                    plugin_id="test.generation",
-                    work_dir=root / "work",
-                )
-                generation.bind_reasoning_port(port)
-                generation.start()
-                try:
-                    async def invoke(trace_id: str) -> CapabilityResult:
-                        return await generation.invoke(
-                            "test.generation.reasoning.v1",
-                            {"trace_id": trace_id, "message": "event"},
-                            context=InvocationContext("owner", "reasoning-session", "web"),
-                        )
-
-                    slow_task = asyncio.create_task(invoke("slow"))
-                    fast_task = asyncio.create_task(invoke("fast"))
-                    slow, fast = await asyncio.gather(slow_task, fast_task)
-                    self.assertEqual(slow.content["reasoning_text"], "slow")
-                    self.assertEqual(fast.content["reasoning_text"], "fast")
-
-                    cancelled_task = asyncio.create_task(invoke("cancel"))
-                    await port.cancel_started.wait()
-                    cancelled_task.cancel()
-                    with self.assertRaises(asyncio.CancelledError):
-                        await cancelled_task
-                    await asyncio.wait_for(port.cancelled.wait(), timeout=2.0)
-
-                    draining = asyncio.create_task(invoke("drain"))
-                    await port.drain_started.wait()
-                    stop_task = asyncio.create_task(asyncio.to_thread(generation.stop))
-                    await asyncio.sleep(0.05)
-                    self.assertFalse(stop_task.done())
-                    port.release.set()
-                    delivered = await draining
-                    stopped = await stop_task
-                    self.assertEqual(delivered.content["reasoning_text"], "drain")
                     self.assertTrue(stopped["ok"])
                 finally:
                     generation.stop()

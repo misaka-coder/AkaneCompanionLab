@@ -25,7 +25,6 @@ PLUGIN_STORAGE_WRITE_PERMISSION = "storage.write"
 BACKGROUND_JOB_PERMISSION = "job.run"
 NOTIFICATION_SEND_PERMISSION = "notification.send"
 PLUGIN_QQ_COMMAND_PERMISSION = "qq.command.register"
-MODEL_REASONING_PERMISSION = "model.reasoning"
 SYSTEM_PROMPT_CONTRIBUTION_PERMISSION = "prompt.system.contribute"
 SKILL_CONTRIBUTION_PERMISSION = "skill.contribute"
 EVENT_SUBSCRIBE_PERMISSION = "event.subscribe"
@@ -249,8 +248,7 @@ class PluginAgentEventRequest:
     The plugin supplies event facts and the opaque conversation reference
     captured when the work was created. The host verifies the reference and resolves the active channel context,
     runs the ordinary Agent turn, and owns all user-visible rendering. This is
-    intentionally separate from ``NotificationIntent`` (fixed text) and
-    ``PluginReasoningRequest`` (internal analysis).
+    intentionally separate from ``NotificationIntent`` (fixed text).
 
     ``delivery`` is ``timeline`` by default. ``current_turn`` keeps the
     external fact out of the durable user timeline while still allowing the
@@ -473,51 +471,6 @@ class PluginHookHandler(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class PluginReasoningRequest:
-    """Bounded internal-analysis request using the host's model/tool loop.
-
-    This port is not a user-facing delivery path. If an external event should
-    make the active character respond, the event must enter the host's ordinary
-    Agent turn and presentation pipeline instead of being sent through a
-    notification port.
-    """
-
-    trace_id: str
-    profile_user_id: str
-    session_id: str
-    message: str
-    extra_context: str = ""
-    character_pack_id: str = ""
-    timestamp: int = 0
-    stable_system_context: str = ""
-    memory_idempotency_key: str = ""
-    external_event: PluginExternalEvent | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class PluginReasoningResult:
-    """Safe internal-analysis projection returned to a trusted plugin.
-
-    ``text`` is analysis data for the caller, not proof that Akane rendered or
-    delivered a user-facing response.
-    """
-
-    ok: bool
-    status: str
-    text: str = ""
-    reason: str = ""
-    evidence_events: tuple[dict[str, Any], ...] = ()
-
-
-class PluginReasoningPort(Protocol):
-    """Host-owned access to Akane's model and registered read-only tools."""
-
-    async def analyze(self, request: PluginReasoningRequest) -> PluginReasoningResult:
-        """Run one bounded internal analysis; never expose raw Engine state."""
-        ...
-
-
 # ---------------------------------------------------------------------------
 # QQ command contracts
 # ---------------------------------------------------------------------------
@@ -656,17 +609,6 @@ class PluginRegistrar(Protocol):
         """
         ...
 
-    def get_reasoning_port(self) -> "PluginReasoningPort":
-        """Return the host-owned internal-analysis port.
-
-        The plugin must declare ``model.reasoning``.  The port accepts bounded
-        analysis requests and returns analysis text plus sanitized evidence
-        metadata; it never exposes Engine, model credentials, local paths, or a
-        delivery/rendering operation. It must not be paired with the
-        notification port to emulate a character reply.
-        """
-        ...
-
     def add_qq_command(self, command: str, handler: "PluginQQCommandHandler") -> None:
         """Register one exact-match QQ slash command.
 
@@ -719,7 +661,6 @@ __all__ = [
     "AFTER_DELIVERY_HOOK",
     "MANAGED_ARTIFACT_WRITE_PERMISSION",
     "MAX_MANAGED_ARTIFACT_BYTES",
-    "MODEL_REASONING_PERMISSION",
     "NETWORK_READ_PERMISSION",
     "NOTIFICATION_SEND_PERMISSION",
     "AGENT_EVENT_SUBMIT_PERMISSION",
@@ -754,9 +695,6 @@ __all__ = [
     "PluginQQCommandHandler",
     "PluginQQCommandRequest",
     "PluginQQCommandResult",
-    "PluginReasoningPort",
-    "PluginReasoningRequest",
-    "PluginReasoningResult",
     "PluginRegistrar",
     "PluginResultExperience",
     "PluginResultPayload",

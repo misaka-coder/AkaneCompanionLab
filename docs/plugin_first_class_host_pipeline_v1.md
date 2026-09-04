@@ -132,17 +132,16 @@ MemCore 时间线。
 - `PluginEventResult.delivery` 的 `internal/current_turn/timeline` 语义；
 - 隔离 worker、代次、权限和反向 RPC；
 - `NotificationPort`，但仅用于固定通知；
-- 模型内部分析能力，但不得把其结果自动当成角色回复。
 
-清理或迁移：
+已清理：
 
-- “`PluginReasoningPort` 生成用户回复，再由插件调用 `NotificationPort` 发送”的组合；
-- 将 `PluginReasoningResult.text` 当成统一用户回复的做法；
+- 独立的插件推理端口及其权限、worker RPC、缓存指标和测试；
+- “插件先生成纯文本，再调用固定通知端口发送”的组合；
 - 任何在主动回合中跳过角色、MemCore、输出解析或客户端渲染的特殊分支；
 - 文档和 Skill 中把主动推理端口描述成插件角色回复主链的说法。
 
-模型内部分析若仍有需要，应明确标记为 `internal_analysis`，只返回结构化分析结果给插件，
-不负责投递，也不宣称自己完成了角色回应。
+插件需要角色分析或回复时统一提交 Agent event；纯插件内部计算由插件自身完成，不再由宿主
+公开第二个模型入口。
 
 ## 7. 全局不变量
 
@@ -161,7 +160,7 @@ MemCore 时间线。
 2. 将需要角色回应的定时器、订阅和外部事件迁移到普通 Agent 主入口。（QQ、`akane.timer` 与 `gentle-checkin` 样例已接通；事件使用 `turn_kind=plugin_event`）
 3. 保留固定通知端口，删除“推理结果转纯文本再通知”的用户回复用法。（公开样例与私有金融插件均已迁移到 Agent-event）
 4. 统一结构化结果、MemCore 记录和客户端渲染验收。（QQ Agent-event 已复用普通表现层；单消息公告使用同一投递边缘的展示策略）
-5. 最后删除不再有调用者的 `PluginReasoningPort` 用户回复适配代码及其测试。
+5. 删除不再有调用者的旧插件推理适配代码及其测试。（已完成）
 
 本轮不新增第二套事件总线、第二套记忆系统或新的提示词目录。目标是减少分支和权威实现，
 而不是增加一个更复杂的插件框架。
