@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 
+from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.store import MemoryStore
 
@@ -167,6 +169,16 @@ class SessionInboxStoreTests(unittest.TestCase):
             clock.value = 111.0
             self.assertEqual(store.pending_session_keys(), ["profile\0first", "profile\0second"])
 
+    def test_host_startup_can_release_a_previous_process_claim_immediately(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "akane_memory_v01.db")
+            self._enqueue(store)
+            store.claim_next("profile\0session", worker_id="previous-process", lease_seconds=300)
+
+            self.assertEqual(store.pending_session_keys(), [])
+            self.assertEqual(store.recover_abandoned_claims(), 1)
+            self.assertEqual(store.pending_session_keys(), ["profile\0session"])
+
     def test_invalid_payload_is_rejected_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SessionInboxStore(Path(temp_dir) / "akane_memory_v01.db")
@@ -178,6 +190,111 @@ class SessionInboxStoreTests(unittest.TestCase):
                 "reason": "session_inbox_payload_not_json_safe",
             })
             self.assertEqual(store.pending_count("profile\0session"), 0)
+
+
+class DurableSessionWorkQueueTests(unittest.TestCase):
+    @staticmethod
+    def _fields(*, session_key: str, event_id: str) -> dict:
+        return {
+            "session_key": session_key,
+            "profile_user_id": "profile",
+            "session_id": session_key.split("\0")[-1],
+            "kind": "turn",
+            "payload": {"message": event_id},
+            "source": "qq",
+            "source_event_id": event_id,
+        }
+
+    def test_enqueue_persists_before_handler_runs_and_then_commits(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def handler(_key, _items) -> None:
+                started.set()
+                await release.wait()
+
+            queue = DurableSessionWorkQueue(store, handler)
+            queued = await queue.enqueue(**self._fields(session_key="profile\0session", event_id="event-1"))
+            await asyncio.wait_for(started.wait(), timeout=1)
+            self.assertEqual(store.get(queued["item_id"]).status, "claimed")
+            release.set()
+            while queue.has_work("profile\0session"):
+                await asyncio.sleep(0.01)
+            self.assertEqual(store.get(queued["item_id"]).status, "committed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
+    def test_recover_drains_items_created_before_runner_start(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            queued = store.enqueue(**self._fields(session_key="profile\0session", event_id="event-1"))
+            handled = asyncio.Event()
+
+            async def handler(_key, items) -> None:
+                self.assertEqual(items[0].item_id, queued["item_id"])
+                handled.set()
+
+            queue = DurableSessionWorkQueue(SessionInboxStore(database_path), handler)
+            self.assertEqual(await queue.recover(), 1)
+            await asyncio.wait_for(handled.wait(), timeout=1)
+            while queue.has_work("profile\0session"):
+                await asyncio.sleep(0.01)
+            self.assertEqual(store.get(queued["item_id"]).status, "committed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
+    def test_recover_reclaims_an_unexpired_previous_process_lease(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            original = SessionInboxStore(database_path)
+            queued = original.enqueue(**self._fields(session_key="profile\0session", event_id="event-1"))
+            original.claim_next("profile\0session", worker_id="dead-process", lease_seconds=300)
+            handled = asyncio.Event()
+
+            async def handler(_key, _items) -> None:
+                handled.set()
+
+            queue = DurableSessionWorkQueue(SessionInboxStore(database_path), handler)
+            self.assertEqual(await queue.recover(), 1)
+            await asyncio.wait_for(handled.wait(), timeout=1)
+            while queue.has_work("profile\0session"):
+                await asyncio.sleep(0.01)
+            self.assertEqual(original.get(queued["item_id"]).status, "committed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
+    def test_handler_failure_is_recorded_and_does_not_block_next_item(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            errors: list[str] = []
+            handled_second = asyncio.Event()
+
+            async def handler(_key, items) -> None:
+                if items[0].payload["message"] == "event-1":
+                    raise RuntimeError("boom")
+                handled_second.set()
+
+            queue = DurableSessionWorkQueue(
+                store,
+                handler,
+                on_error=lambda _key, _items, exc: errors.append(exc.__class__.__name__),
+            )
+            first = await queue.enqueue(**self._fields(session_key="profile\0session", event_id="event-1"))
+            second = await queue.enqueue(**self._fields(session_key="profile\0session", event_id="event-2"))
+            await asyncio.wait_for(handled_second.wait(), timeout=1)
+            while queue.has_work("profile\0session"):
+                await asyncio.sleep(0.01)
+
+            self.assertEqual(store.get(first["item_id"]).status, "failed")
+            self.assertEqual(store.get(second["item_id"]).status, "committed")
+            self.assertEqual(errors, ["RuntimeError"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
 
 
 if __name__ == "__main__":

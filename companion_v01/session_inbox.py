@@ -285,6 +285,22 @@ class SessionInboxStore:
             ).fetchall()
         return [str(row["session_key"] or "") for row in rows if str(row["session_key"] or "")]
 
+    def recover_abandoned_claims(self) -> int:
+        """Release claims from a previous host process during single-owner startup."""
+
+        now = float(self._clock())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                """
+                UPDATE session_inbox_items
+                SET status = 'queued', lease_until = 0, claim_token = '', claimed_by = '', updated_at = ?
+                WHERE status = 'claimed'
+                """,
+                (now,),
+            ).rowcount
+        return int(changed or 0)
+
     def pending_count(self, session_key: Any) -> int:
         normalized = str(session_key or "").strip()
         if not normalized:
