@@ -336,6 +336,49 @@ class LLMClientConfigTests(unittest.TestCase):
             ],
         )
 
+    def test_responses_input_drops_dangling_tool_calls_from_interrupted_turns(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+
+        request = runtime._responses_input_from_messages(
+            [
+                {"role": "user", "content": "上一轮请求"},
+                {
+                    "role": "assistant",
+                    "content": "我先核验一下。",
+                    "tool_calls": [
+                        {
+                            "id": "call-complete",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"q":"rates"}'},
+                        },
+                        {
+                            "id": "call-interrupted",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"q":"unfinished"}'},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call-complete", "content": "核验结果"},
+                {"role": "user", "content": "新的无关请求"},
+            ]
+        )
+
+        self.assertEqual(
+            request,
+            [
+                {"role": "user", "content": "上一轮请求"},
+                {"role": "assistant", "content": "我先核验一下。"},
+                {
+                    "type": "function_call",
+                    "call_id": "call-complete",
+                    "name": "web_search",
+                    "arguments": '{"q":"rates"}',
+                },
+                {"type": "function_call_output", "call_id": "call-complete", "output": "核验结果"},
+                {"role": "user", "content": "新的无关请求"},
+            ],
+        )
+
     def test_responses_input_preserves_plain_message_boundaries_for_source_attribution(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         messages = [

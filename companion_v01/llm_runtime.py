@@ -3325,6 +3325,12 @@ class LLMRuntime:
     def _responses_input_from_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         function_call_ids: set[str] = set()
+        function_output_ids = {
+            str(message.get("tool_call_id") or "").strip()
+            for message in messages
+            if str(message.get("role") or "").strip().lower() == "tool"
+            and str(message.get("tool_call_id") or "").strip()
+        }
 
         def append_plain_message(role: str, content: Any) -> None:
             items.append({"role": role, "content": content})
@@ -3336,6 +3342,15 @@ class LLMRuntime:
                 if content:
                     items.append({"role": "assistant", "content": content})
                 for call in self._normalize_openai_history_tool_calls(message.get("tool_calls")):
+                    # An interrupted/aborted turn can leave its assistant
+                    # function_call in durable history without a matching
+                    # tool result. Responses rejects the entire request when
+                    # such a dangling call is replayed. Keep ordinary
+                    # assistant text, but project only complete call/output
+                    # pairs; the incomplete operation remains auditable in
+                    # MemCore and must not poison later unrelated turns.
+                    if call["id"] not in function_output_ids:
+                        continue
                     function = call["function"]
                     function_call_ids.add(call["id"])
                     items.append(
