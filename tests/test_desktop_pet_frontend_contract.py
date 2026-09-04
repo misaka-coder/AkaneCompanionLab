@@ -48,6 +48,14 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         # the handler only takes the bubble when nothing has been shown yet.
         self.assertIn("hasShownReply", source)
 
+    def test_next_desktop_pet_persists_message_identity_and_renders_queue_receipt(self) -> None:
+        source = _read("desktop_pet_next/src/main.js")
+
+        self.assertIn("function createDesktopSourceMessageId()", source)
+        self.assertGreaterEqual(source.count("source_message_id: createDesktopSourceMessageId()"), 2)
+        self.assertIn('type === "turn_queued"', source)
+        self.assertIn("这条消息已排队，稍后会继续回复。", source)
+
     def test_control_center_settings_have_explicit_v2_owners(self) -> None:
         sources = _read("desktop_pet_next/src/control-center/data-sources.js")
         bridge = _read("desktop_pet_next/src/control-center-v2/bridge.js")

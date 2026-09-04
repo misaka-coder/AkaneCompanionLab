@@ -46,6 +46,7 @@ from companion_v01.routes.voice import build_voice_router
 from companion_v01.tool_runtime import ToolMetadata
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.store import MemoryStore
+from companion_v01.turn_coordination import TurnCoordinator
 
 
 QQ_BOT_FIXTURE_ID = 10001
@@ -766,6 +767,261 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(close_events, ["closed"])
         self.assertEqual(guard.released, 1)
         self.assertEqual(runtime.observed, [("think_stream", False)])
+
+    def test_desktop_steer_is_claimed_durably_before_coordinator_accepts_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "inbox.db")
+            queue = DurableSessionWorkQueue(store)
+            offered: list[dict[str, Any]] = []
+
+            class Coordinator:
+                @staticmethod
+                def is_busy(*_args, **_kwargs) -> bool:
+                    return True
+
+                @staticmethod
+                def offer_steer(**kwargs):
+                    offered.append(dict(kwargs))
+                    return {"ok": True, "status": "accepted", "source_id": kwargs["source_id"]}
+
+            app = FastAPI()
+            app.include_router(
+                build_think_router(
+                    engine=SimpleNamespace(),
+                    public_guard=FakeGuard(),
+                    runtime_metrics=FakeRuntimeMetrics(),
+                    log_event=lambda *_args, **_kwargs: None,
+                    turn_coordinator=Coordinator(),
+                    session_work_queue=queue,
+                )
+            )
+
+            response = TestClient(app).post(
+                "/think/steer",
+                json={
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "actor_stable_id": "desktop:owner",
+                    "source_message_id": "desktop-message-1",
+                    "message": "把刚才那一步改一下",
+                    "timestamp": 1_784_016_100,
+                },
+            )
+
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.json()["status"], "accepted")
+            self.assertEqual(len(offered), 1)
+            item = store.get(offered[0]["receipt_item_id"])
+            self.assertIsNotNone(item)
+            self.assertEqual(item.status, "claimed")
+            self.assertEqual(offered[0]["receipt_claim_token"], item.claim_token)
+            self.assertEqual(item.source_event_id, "desktop-message-1")
+
+    def test_recovered_desktop_work_uses_normal_turn_and_satellite_frame(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            queue = DurableSessionWorkQueue(store)
+            processed: list[dict[str, Any]] = []
+            delivered: list[dict[str, Any]] = []
+
+            class Engine:
+                @staticmethod
+                def process_turn(payload):
+                    processed.append(dict(payload))
+                    return {"speech": "恢复后的回复", "emotion": "happy", "_debug": {"hidden": True}}
+
+            async def deliver(frame):
+                delivered.append(dict(frame))
+                return {"ok": True, "status": "delivered"}
+
+            build_think_router(
+                engine=Engine(),
+                public_guard=FakeGuard(),
+                runtime_metrics=FakeRuntimeMetrics(),
+                log_event=lambda *_args, **_kwargs: None,
+                turn_coordinator=TurnCoordinator(),
+                session_work_queue=queue,
+                desktop_agent_frame_delivery=deliver,
+                desktop_agent_event_available=lambda: True,
+            )
+            queued = await queue.enqueue(
+                session_key="owner\0desktop-session",
+                profile_user_id="owner",
+                session_id="desktop-session",
+                kind="turn",
+                payload={
+                    "turn_payload": {
+                        "user_id": "desktop-session",
+                        "real_user_id": "owner",
+                        "actor_stable_id": "desktop:owner",
+                        "message": "恢复这条消息",
+                        "timestamp": 1_784_016_101,
+                    }
+                },
+                source="desktop_pet",
+                source_event_id="desktop-recovered-1",
+                schedule=False,
+            )
+
+            await queue.schedule_session("owner\0desktop-session")
+            while queue.has_work("owner\0desktop-session"):
+                await asyncio.sleep(0.01)
+
+            self.assertEqual(store.get(queued["item_id"]).status, "committed")
+            self.assertEqual(processed[0]["client_mode"], "desktop_pet")
+            self.assertEqual(processed[0]["memory_idempotency_key"], f"session-inbox:{queued['item_id']}")
+            self.assertEqual(delivered[0]["speech"], "恢复后的回复")
+            self.assertNotIn("_debug", delivered[0])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "inbox.db"))
+
+    def test_desktop_once_and_stream_commit_durable_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "inbox.db")
+            queue = DurableSessionWorkQueue(store)
+            processed: list[dict[str, Any]] = []
+
+            class Engine:
+                @staticmethod
+                def process_turn(payload):
+                    processed.append(dict(payload))
+                    return {"status": "ok", "speech": "收到", "emotion": "normal", "_debug": {}}
+
+                @classmethod
+                def process_turn_stream(cls, payload):
+                    yield {"type": "final", "payload": cls.process_turn(payload)}
+
+            app = FastAPI()
+            app.include_router(
+                build_think_router(
+                    engine=Engine(),
+                    public_guard=FakeGuard(),
+                    runtime_metrics=FakeRuntimeMetrics(),
+                    log_event=lambda *_args, **_kwargs: None,
+                    session_work_queue=queue,
+                )
+            )
+            client = TestClient(app)
+
+            once = client.post(
+                "/think_once",
+                json={
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-once-1",
+                    "message": "一次性请求",
+                },
+            )
+            streamed = client.post(
+                "/think",
+                json={
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-stream-1",
+                    "message": "流式请求",
+                },
+            )
+
+            self.assertEqual(once.status_code, 200)
+            self.assertEqual(streamed.status_code, 200)
+            once_item = store.get(store.enqueue(
+                session_key="owner\0desktop-session",
+                profile_user_id="owner",
+                session_id="desktop-session",
+                kind="turn",
+                payload={"turn_payload": {
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-once-1",
+                    "message": "一次性请求",
+                }},
+                source="desktop_pet",
+                source_event_id="desktop-once-1",
+            )["item_id"])
+            stream_item = store.get(store.enqueue(
+                session_key="owner\0desktop-session",
+                profile_user_id="owner",
+                session_id="desktop-session",
+                kind="turn",
+                payload={"turn_payload": {
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-stream-1",
+                    "message": "流式请求",
+                }},
+                source="desktop_pet",
+                source_event_id="desktop-stream-1",
+            )["item_id"])
+            self.assertEqual(once_item.status, "committed")
+            self.assertEqual(stream_item.status, "committed")
+            self.assertEqual(len(processed), 2)
+            self.assertTrue(all(str(item.get("memory_idempotency_key") or "").startswith("session-inbox:") for item in processed))
+
+    def test_desktop_stream_disconnect_requeues_claimed_message(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            scheduled: list[Any] = []
+
+            def hold_schedule(coroutine):
+                coroutine.close()
+                marker = SimpleNamespace(done=lambda: False)
+                scheduled.append(marker)
+                return marker
+
+            queue = DurableSessionWorkQueue(store, schedule_task=hold_schedule)
+
+            class Engine:
+                @staticmethod
+                def process_turn_stream(_payload):
+                    yield {"type": "ui", "emotion": "normal"}
+                    yield {"type": "speech_chunk", "text": "还没有完成"}
+
+            router = build_think_router(
+                engine=Engine(),
+                public_guard=FakeGuard(),
+                runtime_metrics=FakeRuntimeMetrics(),
+                log_event=lambda *_args, **_kwargs: None,
+                session_work_queue=queue,
+            )
+            endpoint = next(route.endpoint for route in router.routes if getattr(route, "path", "") == "/think")
+            body = json.dumps({
+                "user_id": "desktop-session",
+                "real_user_id": "owner",
+                "source_message_id": "desktop-disconnect-1",
+                "message": "继续处理",
+            }).encode()
+
+            async def receive() -> dict[str, Any]:
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            response = await endpoint(Request({"type": "http", "method": "POST", "path": "/think", "headers": []}, receive))
+            await response.body_iterator.__anext__()
+            await response.body_iterator.__anext__()
+            await response.body_iterator.aclose()
+
+            duplicate = store.enqueue(
+                session_key="owner\0desktop-session",
+                profile_user_id="owner",
+                session_id="desktop-session",
+                kind="turn",
+                payload={"turn_payload": {
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-disconnect-1",
+                    "message": "继续处理",
+                }},
+                source="desktop_pet",
+                source_event_id="desktop-disconnect-1",
+            )
+            self.assertEqual(duplicate["status"], "duplicate")
+            item = store.get(duplicate["item_id"])
+            self.assertEqual(item.status, "queued")
+            self.assertEqual(item.last_error, "client_disconnected")
+            self.assertEqual(len(scheduled), 1)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "inbox.db"))
 
     def test_think_router_invalid_payload_does_not_call_engine(self) -> None:
         runtime = FakeRuntimeMetrics()

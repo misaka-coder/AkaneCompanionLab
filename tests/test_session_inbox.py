@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from companion_v01.durable_session_queue import DurableSessionWorkQueue
+from companion_v01.durable_session_queue import DurableSessionWorkQueue, RetryableSessionWorkError
 from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.store import MemoryStore
 
@@ -317,6 +317,34 @@ class DurableSessionWorkQueueTests(unittest.TestCase):
                 await asyncio.sleep(0.01)
 
             self.assertEqual(handled, [("qq", "first"), ("desktop_pet", "second")])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
+    def test_retryable_handler_failure_requeues_and_resumes(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            attempts = 0
+            completed = asyncio.Event()
+
+            async def handler(_key, _items) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RetryableSessionWorkError("channel_offline", retry_delay_seconds=0.01)
+                completed.set()
+
+            queue = DurableSessionWorkQueue(store, handler)
+            queued = await queue.enqueue(
+                **self._fields(session_key="profile\0session", event_id="retryable"),
+            )
+
+            await asyncio.wait_for(completed.wait(), timeout=1)
+            while queue.has_work("profile\0session"):
+                await asyncio.sleep(0.01)
+
+            self.assertEqual(attempts, 2)
+            self.assertEqual(store.get(queued["item_id"]).status, "committed")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))

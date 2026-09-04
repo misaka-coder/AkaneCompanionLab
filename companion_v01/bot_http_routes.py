@@ -80,6 +80,7 @@ def build_bot_runtime_routers(
             runtime_metrics=runtime_metrics,
             log_event=log_event,
             turn_coordinator=runtime.turn_coordinator,
+            session_work_queue=runtime.session_work_queue,
             plugin_event_broker_provider=lambda runtime=runtime: runtime.plugin_event_broker,
             plugin_agent_event_handler_registrar=(
                 agent_event_router.register_channel

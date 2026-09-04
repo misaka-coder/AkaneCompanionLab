@@ -9,6 +9,13 @@ from typing import Any, Awaitable, Callable
 from .session_inbox import SessionInboxItem, SessionInboxStore
 
 
+class RetryableSessionWorkError(RuntimeError):
+    def __init__(self, reason: str, *, retry_delay_seconds: float = 5.0) -> None:
+        super().__init__(str(reason or "session_work_retryable"))
+        self.reason = str(reason or "session_work_retryable")
+        self.retry_delay_seconds = max(0.01, float(retry_delay_seconds))
+
+
 class DurableSessionWorkQueue:
     """Drain one durable item at a time per session, in parallel across sessions."""
 
@@ -67,6 +74,13 @@ class DurableSessionWorkQueue:
             claim_token=claim_token,
             error=error,
             retryable=True,
+        )
+
+    async def commit_claim(self, item_id: Any, *, claim_token: Any) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._store.commit,
+            item_id,
+            claim_token=claim_token,
         )
 
     async def enqueue(self, *, schedule: bool = True, **fields: Any) -> dict[str, Any]:
@@ -148,6 +162,20 @@ class DurableSessionWorkQueue:
                         )
                     )
                     raise
+                except RetryableSessionWorkError as exc:
+                    await asyncio.to_thread(
+                        self._store.fail,
+                        item.item_id,
+                        claim_token=claim.get("claim_token"),
+                        error=exc.reason,
+                        retryable=True,
+                        retry_delay_seconds=exc.retry_delay_seconds,
+                    )
+                    error_handler = self._source_error_handlers.get(item.source) or self._on_error
+                    if error_handler is not None:
+                        error_handler(key, [item], exc)
+                    self._schedule_task(self._resume_after(key, exc.retry_delay_seconds))
+                    return
                 except Exception as exc:
                     await asyncio.to_thread(
                         self._store.fail,
@@ -168,5 +196,9 @@ class DurableSessionWorkQueue:
         finally:
             self._workers.pop(key, None)
 
+    async def _resume_after(self, key: str, delay_seconds: float) -> None:
+        await asyncio.sleep(max(0.01, float(delay_seconds)))
+        self._ensure_worker(key)
 
-__all__ = ["DurableSessionWorkQueue"]
+
+__all__ = ["DurableSessionWorkQueue", "RetryableSessionWorkError"]

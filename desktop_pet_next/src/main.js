@@ -7101,14 +7101,26 @@ async function sendMessage(text) {
   }
 }
 
+function createDesktopSourceMessageId() {
+  return typeof globalThis.crypto?.randomUUID === "function"
+    ? `desktop:${globalThis.crypto.randomUUID()}`
+    : `desktop:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+}
+
 function buildTurnControlPayload(message = "") {
   return {
     user_id: state.sessionId,
     real_user_id: getProfileUserId(),
     actor_stable_id: `desktop:${getProfileUserId()}`,
     actor_display_name: "",
+    source_message_id: createDesktopSourceMessageId(),
     message: String(message || "").trim(),
-    timestamp: Math.floor(Date.now() / 1000)
+    timestamp: Math.floor(Date.now() / 1000),
+    client_mode: CLIENT_MODE,
+    client_capabilities: buildClientCapabilities(),
+    character_pack_id: getCurrentCharacterPackId(),
+    current_visual: buildCurrentVisual(),
+    desktop_activity: buildDesktopMusicActivity()
   };
 }
 
@@ -7364,6 +7376,7 @@ async function* sendThinkStream(message, turnToken, options = {}) {
   const requestPayload = attachDesktopCareContext({
     user_id: state.sessionId,
     real_user_id: getProfileUserId(),
+    source_message_id: createDesktopSourceMessageId(),
     message,
     turn_kind: String(options.turnKind || ""),
     transient_user_message: Boolean(options.transientUserMessage),
@@ -7456,6 +7469,13 @@ async function processThinkStream(stream, turnToken) {
       rendered = true;
       showBubbleText("当前任务已停止。", { transient: true, durationMs: 1800, kind: "status" });
       setRuntimeStatus("当前任务已停止", { mode: "stopped" });
+    } else if (type === "turn_queued") {
+      rendered = true;
+      const text = event?.status === "duplicate"
+        ? "这条消息已经收到，正在按顺序处理。"
+        : "这条消息已排队，稍后会继续回复。";
+      showBubbleText(text, { transient: true, durationMs: 2200, kind: "status" });
+      setRuntimeStatus(text, { mode: "working" });
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
       const canonicalSpeech = String(payload?.speech || payload?.text || "").trim();
