@@ -168,6 +168,112 @@ class TurnCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(exercise()), ["first", "second"])
 
+    def test_same_session_never_runs_two_active_turns(self) -> None:
+        async def exercise() -> tuple[int, list[str]]:
+            coordinator = TurnCoordinator()
+            active_count = 0
+            max_active_count = 0
+            order: list[str] = []
+            first_entered = asyncio.Event()
+            release_first = asyncio.Event()
+
+            async def run_turn(name: str) -> None:
+                nonlocal active_count, max_active_count
+                async with coordinator.hold("profile", "session", actor_id=name, channel="qq"):
+                    active_count += 1
+                    max_active_count = max(max_active_count, active_count)
+                    order.append(name)
+                    if name == "first":
+                        first_entered.set()
+                        await release_first.wait()
+                    active_count -= 1
+
+            first = asyncio.create_task(run_turn("first"))
+            await first_entered.wait()
+            second = asyncio.create_task(run_turn("second"))
+            await asyncio.sleep(0)
+            self.assertEqual(order, ["first"])
+            release_first.set()
+            await asyncio.gather(first, second)
+            return max_active_count, order
+
+        self.assertEqual(asyncio.run(exercise()), (1, ["first", "second"]))
+
+    def test_different_sessions_can_run_at_the_same_time(self) -> None:
+        async def exercise() -> int:
+            coordinator = TurnCoordinator()
+            active_count = 0
+            max_active_count = 0
+            both_entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def run_turn(session_id: str) -> None:
+                nonlocal active_count, max_active_count
+                async with coordinator.hold("profile", session_id, actor_id="qq:1", channel="qq"):
+                    active_count += 1
+                    max_active_count = max(max_active_count, active_count)
+                    if active_count == 2:
+                        both_entered.set()
+                    await release.wait()
+                    active_count -= 1
+
+            tasks = [
+                asyncio.create_task(run_turn("session-a")),
+                asyncio.create_task(run_turn("session-b")),
+            ]
+            await asyncio.wait_for(both_entered.wait(), timeout=1)
+            release.set()
+            await asyncio.gather(*tasks)
+            return max_active_count
+
+        self.assertEqual(asyncio.run(exercise()), 2)
+
+    def test_input_rejected_during_finalization_can_start_the_next_turn(self) -> None:
+        async def exercise() -> list[str]:
+            coordinator = TurnCoordinator()
+            order: list[str] = []
+            current_finalizing = asyncio.Event()
+            release_current = asyncio.Event()
+
+            async def current_turn() -> None:
+                async with coordinator.hold(
+                    "profile",
+                    "session",
+                    actor_id="desktop:u",
+                    channel="desktop",
+                ) as token:
+                    order.append("current")
+                    self.assertEqual(coordinator.begin_finalization(token)["status"], "finalizing")
+                    rejected = coordinator.offer_steer(
+                        profile_user_id="profile",
+                        session_id="session",
+                        actor_id="desktop:u",
+                        content="这是下一轮输入",
+                    )
+                    self.assertEqual(rejected["status"], "finalizing")
+                    current_finalizing.set()
+                    await release_current.wait()
+
+            async def next_turn() -> None:
+                await current_finalizing.wait()
+                async with coordinator.hold(
+                    "profile",
+                    "session",
+                    actor_id="desktop:u",
+                    channel="desktop",
+                ):
+                    order.append("next")
+
+            tasks = [asyncio.create_task(current_turn()), asyncio.create_task(next_turn())]
+            await current_finalizing.wait()
+            await asyncio.sleep(0)
+            self.assertEqual(order, ["current"])
+            release_current.set()
+            await asyncio.gather(*tasks)
+            return order
+
+        self.assertEqual(asyncio.run(exercise()), ["current", "next"])
+
     def test_session_work_queue_batches_only_adjacent_passive_items_in_fifo_order(self) -> None:
         async def exercise() -> list[tuple[str, list[str]]]:
             handled: list[tuple[str, list[str]]] = []
@@ -210,6 +316,48 @@ class TurnCoordinatorTests(unittest.TestCase):
                 ("turn", ["turn-3"]),
             ],
         )
+
+    def test_session_work_queue_serializes_each_key_but_runs_keys_concurrently(self) -> None:
+        async def exercise() -> tuple[int, list[str]]:
+            active_count = 0
+            max_active_count = 0
+            order: list[str] = []
+            both_keys_entered = asyncio.Event()
+            release_first_batch = asyncio.Event()
+            all_done = asyncio.Event()
+
+            async def handler(key, items) -> None:
+                nonlocal active_count, max_active_count
+                active_count += 1
+                max_active_count = max(max_active_count, active_count)
+                order.append(str(items[0].payload))
+                if active_count == 2:
+                    both_keys_entered.set()
+                if str(items[0].payload).endswith("-1"):
+                    await release_first_batch.wait()
+                active_count -= 1
+                if len(order) == 4:
+                    all_done.set()
+
+            queue = SessionWorkQueue(handler)
+            queue.enqueue("session-a", kind="turn", payload="a-1")
+            queue.enqueue("session-a", kind="turn", payload="a-2")
+            queue.enqueue("session-b", kind="turn", payload="b-1")
+            queue.enqueue("session-b", kind="turn", payload="b-2")
+
+            await asyncio.wait_for(both_keys_entered.wait(), timeout=1)
+            self.assertNotIn("a-2", order)
+            self.assertNotIn("b-2", order)
+            release_first_batch.set()
+            await asyncio.wait_for(all_done.wait(), timeout=1)
+            await asyncio.sleep(0)
+            self.assertLess(order.index("a-1"), order.index("a-2"))
+            self.assertLess(order.index("b-1"), order.index("b-2"))
+            return max_active_count, order
+
+        max_active_count, order = asyncio.run(exercise())
+        self.assertEqual(max_active_count, 2)
+        self.assertCountEqual(order, ["a-1", "a-2", "b-1", "b-2"])
 
 
 if __name__ == "__main__":
