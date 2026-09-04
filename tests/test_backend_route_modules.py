@@ -22,8 +22,11 @@ from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.attachment_ingest import AttachmentIngestService
 from companion_v01.care_runtime import CareModulePort
+from companion_v01.capability_registry import ExecutorBroker
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
+from companion_v01.host_jobs import HostJobStore
+from companion_v01.host_workflow_jobs import HostWorkflowJobRuntime, WorkflowJobAssetStore
 from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
 from companion_v01.media_bridge_engine import prefetch_remote_media_links_for_message
@@ -107,6 +110,21 @@ class ExplodingWorkflowRunner:
     def execute_workflow(self, request: WorkflowExecutionRequest) -> dict[str, Any]:
         self.requests.append(request)
         raise RuntimeError(r"secret token leaked from C:\Users\ExampleUser\portrait.png")
+
+
+def build_test_workflow_job_runtime(
+    temp_dir: str,
+    *,
+    runner: Any,
+    background: Any,
+) -> HostWorkflowJobRuntime:
+    return HostWorkflowJobRuntime(
+        store=HostJobStore(Path(temp_dir) / "jobs.db"),
+        asset_store=WorkflowJobAssetStore(Path(temp_dir) / "_runtime" / "workflow_jobs"),
+        workflow_runner=runner,
+        background_tasks=background,
+        executor_broker=ExecutorBroker(None),
+    )
 
 
 class FakeGuard:
@@ -5914,6 +5932,11 @@ for line in sys.stdin:
             }
         )
         with tempfile.TemporaryDirectory() as temp_dir:
+            workflow_jobs = build_test_workflow_job_runtime(
+                temp_dir,
+                runner=runner,
+                background=background,
+            )
             app = FastAPI()
             app.include_router(
                 build_capabilities_router(
@@ -5923,6 +5946,7 @@ for line in sys.stdin:
                     resolve_identity_from_query=resolve_query,
                     workflow_runner=runner,
                     background_tasks=background,
+                    workflow_job_runtime=workflow_jobs,
                 )
             )
             client = TestClient(app)
@@ -6011,6 +6035,31 @@ for line in sys.stdin:
             self.assertEqual(output_response.content, b"\x89PNG\r\n\x1a\ncutout")
             self.assertEqual(output_response.headers["content-type"], "image/png")
 
+            restarted_app = FastAPI()
+            restarted_app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    resolve_identity_from_query=resolve_query,
+                    workflow_runner=runner,
+                    background_tasks=background,
+                    workflow_job_runtime=build_test_workflow_job_runtime(
+                        temp_dir,
+                        runner=runner,
+                        background=background,
+                    ),
+                )
+            )
+            restarted_client = TestClient(restarted_app)
+            restarted_status = restarted_client.get(
+                f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertEqual(restarted_status["status"], "completed")
+            restarted_output = restarted_client.get(
+                f"/capabilities/workflow-jobs/{job_id}/outputs/portrait_cutout?user_id=desktop&real_user_id=master"
+            )
+            self.assertEqual(restarted_output.content, b"\x89PNG\r\n\x1a\ncutout")
+
             wrong_profile_output = client.get(
                 f"/capabilities/workflow-jobs/{job_id}/outputs/portrait_cutout?user_id=desktop&real_user_id=other_profile"
             )
@@ -6040,6 +6089,11 @@ for line in sys.stdin:
                     resolve_identity_from_query=resolve_query,
                     workflow_runner=runner,
                     background_tasks=background,
+                    workflow_job_runtime=build_test_workflow_job_runtime(
+                        temp_dir,
+                        runner=runner,
+                        background=background,
+                    ),
                 )
             )
             client = TestClient(app)

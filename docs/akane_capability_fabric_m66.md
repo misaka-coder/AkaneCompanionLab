@@ -47,7 +47,7 @@ The repair pass completed shared foundations but does **not** close these phases
 - Worker tool descriptions come only from canonical ToolSpecs, and worker readiness uses the same instance/profile-scoped offer semantics.
 - The first M66-E short-task Satellite slice now has real Tauri executors for `desktop_context_snapshot`, `system_media_snapshot`, and `system_media_control`, in addition to `open_browser`. They are schema/lease gated, disappear while the PC is offline, and have passed a real personal-cloud model → broker → PC smoke; see `desktop_satellite_local_capabilities_v1.md`.
 
-M66-E still needs the remaining managed-browser, media-processing, vision, voice, and workflow executors plus durable broker long-job cancellation/uncertainty semantics. M66-F still needs plugin/workflow output bytes to converge fully on ArtifactBroker records and deletion of the remaining route-owned workflow job store. Those are real implementation tasks, not model-visible placeholders. M66-G starts only after both close.
+M66-E still needs the remaining managed-browser, media-processing, vision, and voice executors plus durable broker long-job cancellation/uncertainty semantics. Workflow execution now uses the shared durable Host Job authority. M66-F still needs plugin/workflow output bytes to converge fully on ArtifactBroker records; that is a real implementation task, not a model-visible placeholder. M66-G starts only after both close.
 
 ## 1. Decision summary
 
@@ -190,7 +190,7 @@ handler.normalize_call()
 
 This bypasses the full per-turn `ToolReadinessGate`, `ToolInvocation`, validation/envelope, and future broker boundary. It also does not include dynamically rebuilt MCP/plugin handlers.
 
-ComfyUI workflows are another real, separate execution lane. `routes/capabilities.py` preflights and schedules a job, `_run_bound_workflow_job()` creates `WorkflowExecutionRequest`, and `call_workflow_execution_runner()` invokes `ComfyUiWorkflowRunner.execute_workflow()`. The runner is injected by `app.py` and calls the loopback ComfyUI adapter. These workflow routes are real and return byte-backed output handles, but they are control-center/workshop routes rather than model tool handlers. They must eventually use the same offer/broker/artifact contracts instead of remaining a parallel provider/job authority.
+ComfyUI workflows remain a separate execution lane for the control center and character workshop, but no longer maintain a route-local Job authority. `routes/capabilities.py` performs preflight and delegates to `HostWorkflowJobRuntime`; the runtime stores state in the shared `HostJobStore`, invokes the injected `ComfyUiWorkflowRunner` through `ExecutorBroker`, and keeps binary inputs/outputs outside SQLite behind opaque handles. The HTTP routes only project owner-scoped Job state and bytes. Output bytes still need to converge on the common ArtifactBroker contract, but workflow scheduling and recovery are no longer a parallel in-memory system.
 
 ### 4.5 What is hidden before the model, and what fails only after invocation
 

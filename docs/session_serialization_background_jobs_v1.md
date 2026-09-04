@@ -1,6 +1,6 @@
 # 会话串行与后台任务 V1
 
-状态：实施中。QQ 与桌宠已接入同一持久化会话主链；实例级 Job 存储已完成幂等、租约、恢复、重试、取消和完成投递状态。内置媒体、插件 `execution_class=long_task` 与长时 Shell run 均已接入统一 Job 和 Agent-event 主链；真实渠道纵向验收与旧工作流 Job 清理仍待完成。
+状态：实施中。QQ 与桌宠已接入同一持久化会话主链；实例级 Job 存储已完成幂等、租约、恢复、重试、取消和完成投递状态。内置媒体、插件 `execution_class=long_task`、长时 Shell run 与控制中心工作流均已接入统一 Job 权威；旧的 route-owned 内存工作流 Job 已删除。真实 QQ/桌宠纵向验收、子代理和可选的 Provider 原生异步仍待完成。
 
 ## 1. 目标
 
@@ -103,13 +103,15 @@ Job 表只保存状态和引用。图片、音频、文件及大段日志继续�
 
 ```yaml
 execution_class: long_task       # sync | long_task
-completion_mode: agent           # agent | direct | silent
+completion_mode: agent           # agent | silent；direct 待真实渠道契约
 memory_mode: timeline            # current_turn | timeline
 ```
 
 - `execution_class` 决定是否脱离当前回合。
 - `completion_mode` 决定完成时是否再次请求模型。
 - `memory_mode` 决定完成事实只服务当前回合还是进入 MemCore 时间线。
+
+当前只接受已经闭环的 `agent` 与 `silent`。`direct` 只有在宿主具备独立、可验证的渠道投递回执后才会开放；现阶段明确拒绝，不能静默退化为 Agent 回复。
 
 三项彼此独立。单次调用可以在注册允许的范围内覆盖默认完成方式；宿主最终验证会话、角色、权限和真实投递结果。
 
@@ -225,8 +227,8 @@ needs_model_followup: false
 5. 将 Job 完成事件接入普通 Agent 主链。（已完成，真实渠道验收归入下一项）
 6. 以生图完成第一条 QQ + 桌宠纵向验收。
 7. 将现有 Shell run 状态接入 Job 权威和完成通知。（已完成，真实渠道验收归入下一轮 smoke）
-8. 迁移 ComfyUI、媒体处理和插件后台工作。（能力调用链已完成；真实渠道 smoke 后再删除旧工作流 Job）
-9. 删除旧的 route-owned/in-memory Job 权威与重复通知路径。
+8. 迁移 ComfyUI、媒体处理和插件后台工作。（已完成；真实渠道 smoke 仍待执行）
+9. 删除旧的 route-owned/in-memory Job 权威与重复通知路径。（已完成）
 10. 再设计并接入子代理。
 11. 最后实现经过能力门控的 Responses 原生异步。
 
@@ -236,11 +238,12 @@ needs_model_followup: false
 
 当前第 8 项的能力调用链已完成：内置生图和媒体工具沿用稳定 `ToolSpec.execution_class`；插件能力可在 `CapabilityDescriptor.raw` 中声明 `execution_class`、`completion_mode` 与 `memory_mode`，无需新工具或提示词段。所有长任务先复用处理器自身的参数归一化、权限和一次性审批，再持久化已准入调用；后台执行不会二次消费审批，也不会在审批前返回假 `accepted`。目前支持 `agent` 和 `silent` 完成方式；`direct` 尚无独立渠道交付契约，因此会在插件审查阶段明确拒绝，不静默映射为 Agent。后台完成只登记 artifact，完成事件明确标记尚未确认发送，由正常 Agent/渠道发送能力负责交付。
 
+当前第 9 项已完成：控制中心工作流不再由路由内字典保存状态和图片字节，而是使用实例级 `HostJobStore`。工作流输入、输出放在受管资产目录，数据库只保存状态、句柄和公开元数据；重启后可以恢复排队任务并继续读取已完成产物。控制中心通过轮询消费结果，因此该类 Job 使用 `silent` 结算，不为 UI 操作错误唤醒角色 Agent。路由只负责身份校验和 HTTP 投影，不再成为第二套 Job 权威。
+
 ## 14. 删除条件
 
-替代链路通过故障与真实渠道验收后，删除：
+route 内独立维护的工作流 Job 字典已经由第 9 项删除。其余替代链路通过故障与真实渠道验收后，再删除：
 
-- route 内独立维护的工作流 Job 字典；
 - `SessionWorkQueue` 对消息内容的唯一内存所有权；
 - 声明 `long_task` 却同步占住模型回合的路径；
 - 插件自建的角色推理或完成投递路径；

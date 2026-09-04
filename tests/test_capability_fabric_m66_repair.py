@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
@@ -20,8 +19,10 @@ from companion_v01.capability_registry import (
     ServerLocalOfferIndex,
 )
 from companion_v01.client_protocol import ClientMode
+from companion_v01.background_tasks import BackgroundTaskRunner
+from companion_v01.host_jobs import HostJobOwner, HostJobStore
+from companion_v01.host_workflow_jobs import HostWorkflowJobRuntime, WorkflowJobAssetStore
 from companion_v01.routes.desktop_pet import build_desktop_pet_router
-from companion_v01.routes.capabilities import _run_bound_workflow_job
 from companion_v01.tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD, ToolInvocation
 from companion_v01.tool_orchestration_engine import (
     execute_tool_invocation,
@@ -423,28 +424,40 @@ class CapabilityFabricRepairTests(unittest.TestCase):
             calls += 1
             return {"ok": True, "status": "completed", "reason": "done", "outputs": []}
 
-        jobs = {
-            "job_1": {
-                "jobId": "job_1",
-                "workflowId": "wf_1",
-                "capabilityId": "image.generate",
-                "_profileUserId": "alice",
-                "_sessionId": "session",
-                "inputs": {},
-                "_inputAssets": {},
-                "_workflow": {},
-                "status": "queued",
-                "events": [],
-            }
-        }
-        lock = threading.RLock()
-        broker = ExecutorBroker(None)
-
-        _run_bound_workflow_job("job_1", runner, broker, jobs, lock)
-        _run_bound_workflow_job("job_1", runner, broker, jobs, lock)
-
-        self.assertEqual(calls, 1)
-        self.assertEqual(jobs["job_1"]["status"], "completed")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            background = BackgroundTaskRunner({"workflow": 1})
+            runtime = HostWorkflowJobRuntime(
+                store=store,
+                asset_store=WorkflowJobAssetStore(Path(temp_dir) / "assets"),
+                workflow_runner=runner,
+                background_tasks=background,
+                executor_broker=ExecutorBroker(None),
+            )
+            try:
+                started = runtime.start(
+                    preflight={
+                        "workflowId": "wf_1",
+                        "capabilityId": "image.generate",
+                        "acceptedInputs": {},
+                        "checks": {},
+                        "workflow": {},
+                    },
+                    profile_user_id="alice",
+                    session_id="session",
+                    input_assets={},
+                )
+                self.assertTrue(background.wait_idle(lane="workflow", timeout=2.0))
+                self.assertTrue(runtime._schedule(started["jobId"]))
+                self.assertTrue(background.wait_idle(lane="workflow", timeout=2.0))
+                job = runtime.get(
+                    started["jobId"],
+                    owner=HostJobOwner("alice", "session"),
+                )
+                self.assertEqual(calls, 1)
+                self.assertEqual(job.status, "succeeded")
+            finally:
+                background.close(timeout=2.0)
 
     def test_mcp_offer_requires_real_tool_list_probe_and_caches_lease(self) -> None:
         calls: list[dict[str, Any]] = []

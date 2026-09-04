@@ -340,11 +340,14 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         runtime.job_store = SimpleNamespace(
             recover_abandoned_claims=lambda: recovered.append("jobs") or 2,
         )
+        runtime.host_workflow_jobs = SimpleNamespace(
+            recover=lambda: recovered.append("workflows") or 2,
+        )
 
         result = await runtime.start()
 
         self.assertEqual(result["status"], "active")
-        self.assertEqual(recovered, ["jobs"])
+        self.assertEqual(recovered, ["jobs", "workflows"])
 
     async def test_start_binds_and_recovers_host_tool_jobs(self) -> None:
         runtime, _plugin_host, _engine, _followups = _runtime()

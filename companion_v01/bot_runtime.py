@@ -24,6 +24,7 @@ from .session_inbox import SessionInboxStore
 from .host_jobs import HostJob, HostJobStore
 from .host_execution_jobs import HostExecutionJobRuntime
 from .host_tool_jobs import HostToolJobRuntime
+from .host_workflow_jobs import HostWorkflowJobRuntime, WorkflowJobAssetStore
 from .engine import AkaneMemoryEngine
 from .instance_profile import InstanceContext, instance_context_from_bot_config, resolve_instance_context
 from .instance_runtime import InstanceRuntimeLease, bind_instance_runtime
@@ -46,6 +47,7 @@ from .plugin_generation_runtime import PluginGenerationRuntime
 from .plugin_installation import ManagedPluginArtifactStore
 from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .public_guard import PublicThinkGuard
+from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
 from .qq_channel_profiles import QQChannelDeploymentProfile
 from .qq_gateway import NapCatQQGateway
 from .qq_tool_delivery import QQToolDeliveryPort
@@ -113,6 +115,7 @@ class BotRuntime:
     job_store: HostJobStore | None = field(default=None, repr=False)
     host_tool_jobs: HostToolJobRuntime | None = field(default=None, repr=False)
     host_execution_jobs: HostExecutionJobRuntime | None = field(default=None, repr=False)
+    host_workflow_jobs: HostWorkflowJobRuntime | None = field(default=None, repr=False)
     plugin_conversation_refs: PluginConversationReferenceAuthority | None = field(default=None, repr=False)
     plugin_command_broker: Any = field(default=None, init=False, repr=False)
     plugin_event_broker: Any = field(default=None, init=False, repr=False)
@@ -246,6 +249,8 @@ class BotRuntime:
         recover_jobs = getattr(self.job_store, "recover_abandoned_claims", None)
         if callable(recover_jobs):
             await asyncio.to_thread(recover_jobs)
+        if self.host_workflow_jobs is not None:
+            self.host_workflow_jobs.recover()
         if self.host_tool_jobs is not None:
             host_loop = asyncio.get_running_loop()
 
@@ -569,6 +574,16 @@ class BotRuntimeFactory:
                 exec_run_handler.bind_job_runtime(host_execution_jobs)
                 host_execution_jobs.bind_provider(exec_run_handler.execution_provider)
             engine.host_execution_jobs = host_execution_jobs
+            host_workflow_jobs = HostWorkflowJobRuntime(
+                store=job_store,
+                asset_store=WorkflowJobAssetStore(
+                    runtime_layout.users_data_dir / "_runtime" / "workflow_jobs"
+                ),
+                workflow_runner=ComfyUiWorkflowRunner(config_base_dir=runtime_layout.users_data_dir),
+                background_tasks=engine.background_tasks,
+                executor_broker=engine.executor_broker,
+            )
+            engine.host_workflow_jobs = host_workflow_jobs
             runtime = BotRuntime(
                 bot_config=effective_bot_config,
                 instance_context=instance_context,
@@ -618,6 +633,7 @@ class BotRuntimeFactory:
                 job_store=job_store,
                 host_tool_jobs=host_tool_jobs,
                 host_execution_jobs=host_execution_jobs,
+                host_workflow_jobs=host_workflow_jobs,
                 qq_gateway=qq_gateway,
                 qq_followup_tasks=qq_followup_tasks,
                 config_module=runtime_config,
