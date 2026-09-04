@@ -27,6 +27,8 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const outputs = normalizeRecentOutputs(runtime.recentOutputs);
   const warnings = normalizeCharacterWarnings(characterRuntime);
   const abilities = normalizeAbilitiesRuntime(raw.abilitiesRuntime, connected);
+  abilities.plugins = normalizePluginRuntime(raw.pluginRuntime, connected);
+  abilities.available = abilities.available || abilities.plugins.available;
   const model = normalizeModelServiceRuntime(raw.modelRuntime, connected);
   const voice = normalizeVoiceRuntime(raw.voiceRuntime, live, connected);
   const setup = deriveSetupReadiness({
@@ -801,6 +803,68 @@ function normalizeAbilitiesRuntime(value, connected) {
       };
     }).filter((item) => item.module || item.description)
   };
+}
+
+function normalizePluginRuntime(value, connected) {
+  const runtime = asObject(value);
+  const payload = asObject(runtime.data);
+  const status = text(runtime.status) || "not-requested";
+  const entries = (Array.isArray(payload.plugins) ? payload.plugins : [])
+    .map((item) => {
+      const entry = asObject(item);
+      const pluginId = text(entry.plugin_id);
+      if (!pluginId) return null;
+      const runtimeStatus = text(entry.runtime_status) || "unavailable";
+      const enabled = Boolean(entry.enabled);
+      const pendingActivation = Boolean(entry.pending_activation);
+      const presentation = pluginStatusPresentation(runtimeStatus, enabled, pendingActivation);
+      const contributions = asObject(entry.contributions);
+      const normalizedContributions = {};
+      for (const key of ["capabilities", "commands", "event_handlers", "hooks", "background_services", "prompt_blocks", "skills"]) {
+        normalizedContributions[key] = (Array.isArray(contributions[key]) ? contributions[key] : [])
+          .map(text)
+          .filter(Boolean);
+      }
+      return {
+        pluginId,
+        version: text(entry.version),
+        source: text(entry.source) === "managed" ? "managed" : "bundled",
+        enabled,
+        runtimeStatus,
+        statusLabel: presentation.label,
+        statusTone: presentation.tone,
+        reason: text(entry.reason),
+        generation: Number(entry.generation || 0),
+        surfaces: (Array.isArray(entry.surfaces) ? entry.surfaces : [])
+          .map(text)
+          .filter((surface) => ["desktop", "qq"].includes(surface)),
+        contributions: normalizedContributions,
+        contributionCount: Object.values(normalizedContributions)
+          .reduce((total, values) => total + values.length, 0),
+        permissions: (Array.isArray(entry.permissions) ? entry.permissions : []).map(text).filter(Boolean),
+        declaredOnly: Boolean(entry.declared_only),
+        pendingActivation,
+        rollbackAvailable: Boolean(entry.rollback_available)
+      };
+    })
+    .filter(Boolean);
+  return {
+    available: connected && status === "available" && payload.ok === true,
+    status,
+    reason: text(runtime.reason) || text(payload.reason),
+    generation: Number(payload.generation || 0),
+    total: entries.length,
+    active: entries.filter((item) => item.enabled && item.runtimeStatus === "active").length,
+    entries
+  };
+}
+
+function pluginStatusPresentation(status, enabled, pendingActivation) {
+  if (pendingActivation) return { label: "等待激活", tone: "warning" };
+  if (!enabled || status === "disabled") return { label: "已停用", tone: "muted" };
+  if (status === "active") return { label: "运行中", tone: "ready" };
+  if (["loading", "starting"].includes(status)) return { label: "启动中", tone: "warning" };
+  return { label: "不可用", tone: "danger" };
 }
 
 function normalizeAbilitySkills(value) {

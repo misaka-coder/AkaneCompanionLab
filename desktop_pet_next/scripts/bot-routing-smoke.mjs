@@ -35,6 +35,8 @@ const source = createBackendControlCenterSource({
       ? { status: "ok", instance_id: "local-default", root_binding: "valid" }
       : path === "/api/bots"
         ? { ok: true, bots: [{ botId: "finance", displayName: "Finance", available: true }] }
+        : path === "/api/bots/finance/plugins/catalog"
+          ? { ok: true, status: "active", generation: 2, plugins: [] }
         : path === "/api/bots/finance/control-center/settings-catalog"
           ? { categories: [] }
           : {};
@@ -50,9 +52,15 @@ const source = createBackendControlCenterSource({
 
 assert.equal((await source.readBotCatalog()).bots[0].botId, "finance");
 assert.deepEqual(await source.readSettingsCatalog(), { categories: [] });
+assert.deepEqual(await source.readPluginCatalog(), {
+  ok: true,
+  status: "available",
+  data: { ok: true, status: "active", generation: 2, plugins: [] }
+});
 assert(requestedUrls.some((url) => new URL(url).pathname === "/health"));
 assert(requestedUrls.some((url) => new URL(url).pathname === "/api/bots"));
 assert(requestedUrls.some((url) => new URL(url).pathname === "/api/bots/finance/control-center/settings-catalog"));
+assert(requestedUrls.some((url) => new URL(url).pathname === "/api/bots/finance/plugins/catalog"));
 assert(!requestedUrls.some((url) => new URL(url).pathname === "/api/bots/finance/health"));
 
 console.log("bot routing smoke: ok");

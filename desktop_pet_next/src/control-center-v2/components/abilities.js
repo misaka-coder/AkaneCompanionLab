@@ -75,11 +75,13 @@ function renderModule(item) {
 
 function renderCapabilityCenter(state, abilities) {
   const hasSkills = abilities.skills.status !== "unavailable" || abilities.skills.entries.length > 0;
-  const total = abilities.providers.length + abilities.mcpServers.length + abilities.workflows.length + (hasSkills ? 1 : 0);
+  const hasPluginCatalog = abilities.plugins?.status !== "not-requested";
+  const total = abilities.providers.length + abilities.mcpServers.length + abilities.workflows.length + (hasSkills ? 1 : 0) + (hasPluginCatalog ? 1 : 0);
   if (!total) return "";
   return `<section class="abilities-panel capability-center glass-panel">
     <div class="abilities-panel-head"><div><p class="eyebrow">CAPABILITY CONNECTIONS</p><h3>服务与扩展</h3></div><span class="mini-chip">${total} 个配置入口</span></div>
     <p class="capability-center-intro">常用状态一眼确认，地址、命令与工作流绑定按需展开；保存后会重新读取真实运行状态。</p>
+    ${hasPluginCatalog ? renderPluginLibrary(abilities.plugins) : ""}
     ${hasSkills ? renderSkillLibrary(state, abilities.skills) : ""}
     <div class="capability-config-stack">
       ${abilities.providers.map((item) => renderProviderConfig(state, item)).join("")}
@@ -87,6 +89,45 @@ function renderCapabilityCenter(state, abilities) {
       ${abilities.workflows.map((item) => renderWorkflowConfig(state, item)).join("")}
     </div>
   </section>`;
+}
+
+function renderPluginLibrary(plugins) {
+  const statusCopy = plugins.status === "loading"
+    ? "正在同步已安装插件…"
+    : plugins.status === "unavailable"
+      ? `插件目录暂不可用${plugins.reason ? `：${escapeHtml(plugins.reason)}` : ""}`
+      : "当前没有已安装插件";
+  return `<section class="plugin-library-card" data-plugin-catalog-status="${escapeHtml(plugins.status)}">
+    <div class="plugin-library-head">
+      <span class="capability-summary-mark" aria-hidden="true">◇</span>
+      <div><small>INSTALLED PLUGINS</small><strong>插件</strong><p>安装与适用渠道分离；这里只展示宿主确认过的运行状态和贡献。</p></div>
+      <span class="plugin-library-count"><strong>${plugins.active}</strong><small>运行中 / ${plugins.total}</small></span>
+    </div>
+    ${plugins.entries.length
+      ? `<div class="plugin-library-list">${plugins.entries.map(renderPluginCard).join("")}</div>`
+      : `<div class="plugin-library-empty is-${escapeHtml(plugins.status)}">${statusCopy}</div>`}
+  </section>`;
+}
+
+function renderPluginCard(plugin) {
+  const surfaces = plugin.surfaces.length
+    ? plugin.surfaces.map((surface) => `<span class="plugin-surface is-${escapeHtml(surface)}">${surface === "desktop" ? "桌宠" : "QQ"}</span>`).join("")
+    : `<span class="plugin-surface is-internal">后台</span>`;
+  const contributionSummary = plugin.contributionCount
+    ? `${plugin.contributionCount} 项运行贡献`
+    : plugin.declaredOnly ? "声明已安装，运行贡献待激活" : "没有面向模型或渠道的贡献";
+  return `<article class="plugin-card" data-plugin-id="${escapeHtml(plugin.pluginId)}">
+    <div class="plugin-card-main">
+      <span class="plugin-card-icon" aria-hidden="true">⌘</span>
+      <div><strong>${escapeHtml(plugin.pluginId)}</strong><p>${escapeHtml(contributionSummary)}</p></div>
+      <span class="module-state is-${escapeHtml(plugin.statusTone)}">${escapeHtml(plugin.statusLabel)}</span>
+    </div>
+    <div class="plugin-card-meta">
+      <span>${plugin.source === "managed" ? "用户安装" : "随版本内置"}${plugin.version ? ` · v${escapeHtml(plugin.version)}` : ""}</span>
+      <span class="plugin-surfaces">${surfaces}</span>
+    </div>
+    ${plugin.reason ? `<p class="plugin-card-reason">${escapeHtml(plugin.reason)}</p>` : ""}
+  </article>`;
 }
 
 function renderSkillLibrary(state, skills) {

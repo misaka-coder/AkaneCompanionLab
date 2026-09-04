@@ -238,6 +238,10 @@ class EnvironmentTests(unittest.TestCase):
         snapshot = self.store.snapshot()
         self.assertEqual(snapshot["plugin_count"], 1)
         self.assertTrue(snapshot["plugins"][0]["pending_activation"])
+        self.assertEqual(
+            snapshot["plugins"][0]["contribution_snapshot"],
+            staged["contribution_snapshot"],
+        )
         self.assertFalse(tuple((self.root / "artifacts" / "staging").iterdir()))
 
         source = self.store.resolve_generation_source(PLUGIN_ID)

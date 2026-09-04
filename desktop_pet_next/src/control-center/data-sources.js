@@ -144,6 +144,7 @@ export function createControlCenterRuntimeSnapshot(rawSnapshot = {}) {
     perceptionRuntime: raw.perceptionRuntime || {},
     musicRuntime: raw.musicRuntime || {},
     abilitiesRuntime: raw.abilitiesRuntime || {},
+    pluginRuntime: raw.pluginRuntime || {},
     advancedRuntime: raw.advancedRuntime || {}
   };
 }
@@ -418,6 +419,28 @@ export function createBackendControlCenterSource(options = {}) {
         buildBackendUrl(baseUrl, "/api/bots", { t: String(Date.now()) })
       );
       return result.ok && result.data && typeof result.data === "object" ? result.data : null;
+    },
+    async readPluginCatalog() {
+      if (typeof fetchImpl !== "function") {
+        return { ok: false, status: "not-available", data: null };
+      }
+      if (!(await ensureVerifiedBackend())) {
+        return { ok: false, status: "backend-unavailable", data: null };
+      }
+      const result = await fetchJson(
+        fetchImpl,
+        buildBackendUrl(botBaseUrl, "/plugins/catalog", { t: String(Date.now()) })
+      );
+      const payload = result?.data && typeof result.data === "object" ? result.data : null;
+      if (!result.ok || payload?.ok !== true || !Array.isArray(payload.plugins)) {
+        return {
+          ok: false,
+          status: result.status || "invalid-plugin-catalog",
+          data: null,
+          error: result.error || null
+        };
+      }
+      return { ok: true, status: "available", data: payload };
     },
     async updateSetting(key, value) {
       if (typeof fetchImpl !== "function") return { ok: false, status: "not-available" };

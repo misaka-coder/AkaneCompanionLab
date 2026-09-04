@@ -134,6 +134,38 @@ const rawSnapshot = {
       { botId: "bot-work", displayName: "工作桌宠", available: true }
     ]
   },
+  pluginRuntime: {
+    status: "available",
+    data: {
+      ok: true,
+      status: "active",
+      generation: 7,
+      plugin_count: 1,
+      plugins: [{
+        plugin_id: "akane.sample.gentle-checkin",
+        version: "0.2.0",
+        source: "managed",
+        enabled: true,
+        runtime_status: "active",
+        reason: "",
+        generation: 7,
+        surfaces: ["desktop", "qq"],
+        contributions: {
+          capabilities: ["akane.sample.gentle-checkin.schedule"],
+          commands: ["checkin"],
+          event_handlers: [],
+          hooks: [],
+          background_services: ["scheduler"],
+          prompt_blocks: [],
+          skills: []
+        },
+        permissions: ["agent.event.submit"],
+        declared_only: false,
+        pending_activation: false,
+        rollback_available: true
+      }]
+    }
+  },
   overviewRuntime: {
     shell: { status: "在线" },
     emotion: { name: "开心", image: "https://127.0.0.1/assets/happy.png" },
@@ -910,6 +942,11 @@ assert.match(abilitiesHtml, /Host 启动命令/);
 assert.match(abilitiesHtml, /data-action="abilities\.workflow\.validate"/);
 assert.match(abilitiesHtml, /data-approval-request="approval_001"/);
 assert.match(abilitiesHtml, /Skill 操作手册/);
+assert.match(abilitiesHtml, /INSTALLED PLUGINS/);
+assert.match(abilitiesHtml, /akane\.sample\.gentle-checkin/);
+assert.match(abilitiesHtml, /桌宠/);
+assert.match(abilitiesHtml, /QQ/);
+assert.match(abilitiesHtml, /运行中/);
 assert.match(abilitiesHtml, /coding-project/);
 assert.match(abilitiesHtml, /personal-workflow/);
 assert.match(abilitiesHtml, /data-action="abilities\.skills\.openFolder"/);

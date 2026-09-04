@@ -170,6 +170,7 @@ def _descriptor(
     capability_id: str = CAPABILITY_ID,
     *,
     inputs: tuple[CapabilityIOSlot, ...] = (),
+    visible_in: tuple[str, ...] = ("diagnostics",),
     prompt_exposed: bool = False,
     risk: str = "low",
     confirm: str = "never",
@@ -179,7 +180,7 @@ def _descriptor(
         id=capability_id,
         display_name="Diagnostic Ping",
         short_hint="Return a side-effect-free diagnostic result.",
-        visible_in=("diagnostics",),
+        visible_in=visible_in,
         prompt_exposed=prompt_exposed,
         risk=risk,  # type: ignore[arg-type]
         confirm=confirm,  # type: ignore[arg-type]
@@ -714,7 +715,7 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
         self.adapters: list[FakeAdapter] = []
 
         def factory() -> FakePlugin:
-            adapter = FakeAdapter()
+            adapter = FakeAdapter(_descriptor(visible_in=("desktop", "qq")))
             self.adapters.append(adapter)
             return FakePlugin((adapter,))
 
@@ -777,6 +778,25 @@ class PluginDiagnosticsRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unknown.status_code, 404)
         self.assertFalse(unknown.json()["ok"])
         self.assertEqual(unknown.json()["reason"], "unknown_capability")
+
+    async def test_public_catalog_is_path_free_and_reports_real_client_surfaces(self) -> None:
+        async with await self._request(peer="203.0.113.8") as client:
+            response = await client.get("/plugins/catalog")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["plugin_count"], 1)
+        plugin = payload["plugins"][0]
+        self.assertEqual(plugin["plugin_id"], PLUGIN_ID)
+        self.assertEqual(plugin["runtime_status"], "active")
+        self.assertEqual(plugin["source"], "bundled")
+        self.assertEqual(plugin["surfaces"], ["desktop", "qq"])
+        self.assertEqual(plugin["contributions"]["capabilities"], [CAPABILITY_ID])
+        self.assertNotIn("artifacts", payload)
+        self.assertNotIn("digest", response.text)
+        self.assertNotIn("stage", response.text)
+        self.assertNotIn(str(self.temp_dir.name), response.text)
 
     async def test_restart_route_recreates_instances_and_reports_real_generation(self) -> None:
         async with await self._request() as client:

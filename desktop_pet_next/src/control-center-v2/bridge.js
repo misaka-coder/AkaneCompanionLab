@@ -74,6 +74,8 @@ export function createControlCenterBridge(options = {}) {
   let refreshPromise = null;
   let chatHistoryLoadPromise = null;
   let chatRefreshTimer = 0;
+  let pluginCatalogRefreshSequence = 0;
+  let publishedSource = null;
   let lastChatRuntimeSignature = "";
   let liveSnapshotStatus = isTauri ? "connecting" : "not-applicable";
   let liveSnapshotError = "";
@@ -150,13 +152,23 @@ export function createControlCenterBridge(options = {}) {
       if (!source || typeof source.readSnapshot !== "function") {
         throw new Error("control_center_snapshot_source_unavailable");
       }
+      const requestSource = source;
+      const pluginCatalogSequence = ++pluginCatalogRefreshSequence;
+      const pluginCatalogPromise = typeof requestSource.readPluginCatalog === "function"
+        ? requestSource.readPluginCatalog().catch((error) => ({
+            ok: false,
+            status: "request-failed",
+            data: null,
+            error: formatError(error)
+          }))
+        : Promise.resolve({ ok: false, status: "not-supported", data: null });
       const [next, modelRuntime, botCatalog] = await Promise.all([
-        source.readSnapshot(),
-        typeof source.readModelService === "function"
-          ? source.readModelService().catch(() => null)
+        requestSource.readSnapshot(),
+        typeof requestSource.readModelService === "function"
+          ? requestSource.readModelService().catch(() => null)
           : Promise.resolve(null),
-        typeof source.readBotCatalog === "function"
-          ? source.readBotCatalog().catch(() => null)
+        typeof requestSource.readBotCatalog === "function"
+          ? requestSource.readBotCatalog().catch(() => null)
           : Promise.resolve(null)
       ]);
       if (!next) {
@@ -167,10 +179,15 @@ export function createControlCenterBridge(options = {}) {
         ...createControlCenterRuntimeSnapshot(next),
         modelRuntime: modelRuntime || rawSnapshot?.modelRuntime || {},
         botCatalog: botCatalog || rawSnapshot?.botCatalog || {},
+        pluginRuntime: publishedSource === requestSource
+          ? rawSnapshot?.pluginRuntime || { status: "loading", reason: "", data: null }
+          : { status: "loading", reason: "", data: null },
         ...(rawSnapshot?.chatSession ? { chatSession: rawSnapshot.chatSession } : {}),
         ...(rawSnapshot?.chatRuntime ? { chatRuntime: rawSnapshot.chatRuntime } : {})
       };
+      publishedSource = requestSource;
       publish();
+      void publishPluginCatalog(requestSource, pluginCatalogPromise, pluginCatalogSequence);
       await refreshChatSession();
       return createControlCenterViewModel(withBridgeStatus(
         withLiveRuntime(rawSnapshot, runtimeSnapshot),
@@ -241,6 +258,7 @@ export function createControlCenterBridge(options = {}) {
   }
 
   function stop() {
+    pluginCatalogRefreshSequence += 1;
     window.clearTimeout(chatRefreshTimer);
     chatRefreshTimer = 0;
     disposeRuntimeListener?.();
@@ -249,6 +267,22 @@ export function createControlCenterBridge(options = {}) {
   }
 
   return { start, refresh, runAction, subscribe, stop, loadOlderChatMessages };
+
+  async function publishPluginCatalog(requestSource, request, sequence) {
+    const result = await request;
+    if (sequence !== pluginCatalogRefreshSequence || source !== requestSource || !rawSnapshot) return;
+    rawSnapshot = {
+      ...rawSnapshot,
+      pluginRuntime: result?.ok && result.data && typeof result.data === "object"
+        ? { status: "available", reason: "", data: result.data }
+        : {
+            status: "unavailable",
+            reason: String(result?.error || result?.status || "plugin-catalog-unavailable"),
+            data: null
+          }
+    };
+    publish();
+  }
 
   function scheduleChatRefresh() {
     const state = runtimeSnapshot?.state && typeof runtimeSnapshot.state === "object" ? runtimeSnapshot.state : {};

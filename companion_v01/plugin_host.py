@@ -156,6 +156,7 @@ class PluginContributionSnapshot:
     background_service_ids: tuple[str, ...] = ()
     prompt_block_ids: tuple[str, ...] = ()
     skill_names: tuple[str, ...] = ()
+    surfaces: tuple[str, ...] = ()
     prompt_character_count: int = 0
 
     @property
@@ -189,6 +190,7 @@ class PluginContributionSnapshot:
             "background_services": list(self.background_service_ids),
             "prompt_blocks": list(self.prompt_block_ids),
             "skills": list(self.skill_names),
+            "surfaces": list(self.surfaces),
             "prompt_character_count": self.prompt_character_count,
         }
 
@@ -905,6 +907,7 @@ class PluginHost:
             self._generation += 1
             self._contribution_snapshots = _build_contribution_snapshots(
                 working_plugins,
+                working_capabilities,
                 generation=self._generation,
             )
             # Publish one independently supervised task for every registered
@@ -1854,6 +1857,7 @@ def _plugin_skill_mount_name(plugin_id: str, skill_name: str) -> str:
 
 def _build_contribution_snapshots(
     active_plugins: Mapping[str, _ActivePlugin],
+    capabilities: Mapping[str, _CapabilityRegistration],
     *,
     generation: int,
 ) -> tuple[PluginContributionSnapshot, ...]:
@@ -1862,6 +1866,23 @@ def _build_contribution_snapshots(
         prompt_blocks = tuple(
             sorted(active.prompt_block_registrations, key=lambda item: item.block_id)
         )
+        surfaces = {
+            surface
+            for capability_id in active.capability_ids
+            for surface in tuple(
+                getattr(
+                    getattr(capabilities.get(capability_id), "descriptor", None),
+                    "visible_in",
+                    (),
+                )
+                or ()
+            )
+            if surface in {"desktop", "qq"}
+        }
+        if active.qq_command_registrations:
+            surfaces.add("qq")
+        if active.prompt_block_registrations or active.skill_registrations:
+            surfaces.update(("desktop", "qq"))
         snapshots.append(
             PluginContributionSnapshot(
                 plugin_id=_public_plugin_id(plugin_id),
@@ -1884,6 +1905,7 @@ def _build_contribution_snapshots(
                 skill_names=tuple(
                     sorted(item.name for item in active.skill_registrations)
                 ),
+                surfaces=tuple(sorted(surfaces)),
             )
         )
     snapshots.sort(key=lambda item: item.plugin_id)

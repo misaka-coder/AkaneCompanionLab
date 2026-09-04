@@ -62,6 +62,58 @@ class PluginSelectionStoreTests(unittest.TestCase):
         self.assertIsNone(service.sync_timeout_seconds)
 
 
+class ExtensionManagementPublicSnapshotTests(unittest.TestCase):
+    def test_disabled_managed_plugin_keeps_declared_surfaces_without_internal_artifact_fields(self) -> None:
+        plugin_runtime = SimpleNamespace(
+            code_reload_mode="atomic_generation_switch",
+            status_snapshot=Mock(return_value={
+                "status": "active",
+                "reason": "",
+                "generation": 9,
+                "plugins": [{
+                    "plugin_id": PLUGIN_ID,
+                    "enabled": False,
+                    "status": "disabled",
+                }],
+            }),
+        )
+        artifact_store = Mock()
+        artifact_store.snapshot.return_value = {
+            "plugins": [{
+                "plugin_id": PLUGIN_ID,
+                "version": "1.2.3",
+                "digest": "must-not-be-public",
+                "permissions": ["agent.event.submit"],
+                "contribution_snapshot": {
+                    "generation": 4,
+                    "surfaces": ["desktop", "qq", "unknown"],
+                    "capabilities": ["akane.test.extension.schedule"],
+                    "background_services": ["scheduler"],
+                },
+                "last_good_digest": "also-private",
+                "pending_activation": False,
+            }],
+            "stages": [{"stage_id": "private-stage"}],
+        }
+        service = ExtensionManagementService(
+            plugin_runtime=plugin_runtime,
+            selection_store=Mock(load_reason="defaults"),
+            artifact_store=artifact_store,
+        )
+
+        public = service.public_snapshot()
+
+        self.assertEqual(public["plugin_count"], 1)
+        plugin = public["plugins"][0]
+        self.assertEqual(plugin["surfaces"], ["desktop", "qq"])
+        self.assertEqual(plugin["contributions"]["background_services"], ["scheduler"])
+        self.assertTrue(plugin["declared_only"])
+        self.assertTrue(plugin["rollback_available"])
+        serialized = json.dumps(public)
+        self.assertNotIn("must-not-be-public", serialized)
+        self.assertNotIn("private-stage", serialized)
+
+
 class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_diagnostics_invoke_uses_the_same_runtime_facade(self) -> None:
         expected = CapabilityResult(is_error=False, content={"value": "ready"})

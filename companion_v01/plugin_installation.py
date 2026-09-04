@@ -139,6 +139,9 @@ class ManagedPluginArtifactStore:
                         "distribution_name": str(artifact.get("distribution_name") or ""),
                         "digest": current,
                         "permissions": list(artifact.get("permissions") or ()),
+                        "contribution_snapshot": dict(
+                            artifact.get("contribution_snapshot") or {}
+                        ),
                         "last_good_digest": str(pointer.get("last_good") or ""),
                         "pending_activation": bool(pointer.get("pending_activation")),
                     }

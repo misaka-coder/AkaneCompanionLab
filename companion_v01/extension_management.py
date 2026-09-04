@@ -195,6 +195,80 @@ class ExtensionManagementService:
         }
         return payload
 
+    def public_snapshot(self) -> dict[str, Any]:
+        """Return the path-free plugin inventory used by user-facing clients."""
+
+        snapshot = self.snapshot()
+        artifacts = snapshot.get("artifacts")
+        artifact_entries = (
+            artifacts.get("plugins", ())
+            if isinstance(artifacts, Mapping)
+            else ()
+        )
+        artifacts_by_id = {
+            str(item.get("plugin_id") or ""): item
+            for item in artifact_entries
+            if isinstance(item, Mapping) and str(item.get("plugin_id") or "")
+        }
+        plugins: list[dict[str, Any]] = []
+        for raw in snapshot.get("plugins", ()):
+            if not isinstance(raw, Mapping):
+                continue
+            plugin_id = str(raw.get("plugin_id") or "").strip()
+            if not plugin_id:
+                continue
+            artifact = artifacts_by_id.get(plugin_id, {})
+            live_contribution = raw.get("contribution_snapshot")
+            artifact_contribution = artifact.get("contribution_snapshot")
+            contribution = (
+                live_contribution
+                if isinstance(live_contribution, Mapping)
+                else artifact_contribution
+                if isinstance(artifact_contribution, Mapping)
+                else {}
+            )
+            version = str(
+                raw.get("plugin_version")
+                or artifact.get("version")
+                or ""
+            ).strip()
+            status = str(raw.get("status") or "unavailable").strip().lower()
+            plugins.append(
+                {
+                    "plugin_id": plugin_id,
+                    "version": version,
+                    "source": "managed" if artifact else "bundled",
+                    "enabled": bool(raw.get("enabled")),
+                    "runtime_status": status,
+                    "reason": str(raw.get("reason") or "").strip(),
+                    "generation": int(
+                        contribution.get("generation")
+                        or snapshot.get("generation")
+                        or 0
+                    ),
+                    "surfaces": _public_string_list(
+                        contribution.get("surfaces"),
+                        allowed={"desktop", "qq"},
+                    ),
+                    "contributions": _public_contributions(contribution),
+                    "permissions": _public_string_list(
+                        raw.get("permissions") or artifact.get("permissions")
+                    ),
+                    "declared_only": not isinstance(live_contribution, Mapping),
+                    "pending_activation": bool(artifact.get("pending_activation")),
+                    "rollback_available": bool(artifact.get("last_good_digest")),
+                }
+            )
+        plugins.sort(key=lambda item: item["plugin_id"])
+        return {
+            "ok": True,
+            "status": str(snapshot.get("status") or "unavailable"),
+            "reason": str(snapshot.get("reason") or ""),
+            "generation": int(snapshot.get("generation") or 0),
+            "plugins": plugins,
+            "plugin_count": len(plugins),
+        }
+
     async def restart(self, *, requested_plugin_id: str = "") -> dict[str, Any]:
         plugin_id = str(requested_plugin_id or "").strip()
         desired = self.selection_store.load()
@@ -787,6 +861,47 @@ def _upsert_selection(
             for item in current
         )
     return (*current, PluginSelection(plugin_id, enabled))
+
+
+def _public_string_list(
+    value: Any,
+    *,
+    allowed: set[str] | None = None,
+) -> list[str]:
+    """Project a bounded, deterministic list of public identifiers."""
+
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        item = str(raw or "").strip()
+        if not item or len(item) > 160 or item in seen:
+            continue
+        if allowed is not None and item not in allowed:
+            continue
+        seen.add(item)
+        result.append(item)
+        if len(result) >= 64:
+            break
+    return sorted(result)
+
+
+def _public_contributions(value: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Keep only contribution identifiers that the host can execute."""
+
+    return {
+        key: _public_string_list(value.get(key))
+        for key in (
+            "capabilities",
+            "commands",
+            "event_handlers",
+            "hooks",
+            "background_services",
+            "prompt_blocks",
+            "skills",
+        )
+    }
 
 
 def _failure(status: str, reason: str, *, plugin_id: str = "") -> dict[str, Any]:

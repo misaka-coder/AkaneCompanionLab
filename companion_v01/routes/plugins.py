@@ -26,6 +26,12 @@ def build_plugins_router(
     router = APIRouter()
     management_auth = admin_auth or AdminWriteAuth.local_compatibility()
 
+    @router.get("/plugins/catalog")
+    async def read_public_plugin_catalog() -> JSONResponse:
+        """Return the safe, read-only plugin inventory used by clients."""
+
+        return _response(extension_management_service.public_snapshot())
+
     @router.get("/admin/plugins/status")
     async def read_plugin_status(request: Request) -> JSONResponse:
         authorization = management_auth.authorize(request)
