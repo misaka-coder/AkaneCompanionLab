@@ -2274,6 +2274,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertTrue(any("已彻底清理生成结果：1 个" in message for message in sent_messages))
         self.assertTrue(any(event_name == "qq_workspace_command" for event_name, _payload in log_calls))
 
+    @patch("config.MASTER_QQ", str(QQ_USER_FIXTURE_ID))
     def test_qq_router_workspace_natural_question_does_not_trigger_keyword_state_injection(self) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
