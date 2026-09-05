@@ -173,13 +173,15 @@ class HostSubagentJobRuntimeTests(unittest.TestCase):
                 completion_publisher=publish,
             )
 
-            self.assertEqual(restarted.recover(), 1)
+            self.assertEqual(restarted.recover(), 0)
             self.assertTrue(background.wait_idle(lane="subagents", timeout=2.0))
             job = store.get(started["job_id"], owner=self.owner)
             self.assertEqual(calls, [])
             self.assertEqual(job.status, "failed")
-            self.assertEqual(job.last_error, "host_restart_child_unavailable")
-            self.assertEqual(len(completions), 1)
+            self.assertEqual(job.last_error, "host_restart_outcome_unknown")
+            self.assertEqual(completions, [])
+            # Shared host completion dispatch owns recovery for every source.
+            self.assertEqual([item.job_id for item in store.pending_completions()], [job.job_id])
 
     def test_running_child_observes_owner_scoped_cancel_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -489,7 +489,7 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
             )
 
             await runtime.start()
-            self.assertTrue(await asyncio.to_thread(background.wait_idle, lane="host-jobs", timeout=2.0))
+            self.assertTrue(await asyncio.to_thread(background.wait_idle, lane="host-job-completions", timeout=2.0))
 
             completed = store.get(created["job_id"], owner=HostJobOwner("profile-a", "session-a"))
             self.assertEqual(completed.completion_status, "delivered")

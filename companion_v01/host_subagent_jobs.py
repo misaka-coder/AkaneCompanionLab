@@ -163,19 +163,12 @@ class HostSubagentJobRuntime:
             job = claim.get("job") if isinstance(claim.get("job"), HostJob) else None
             if job is None or job.capability_source != HOST_SUBAGENT_JOB_SOURCE:
                 raise RuntimeError("subagent_job_record_invalid")
-            if job.attempts > 1 and job.last_error in {"lease_expired", "worker_recovered"}:
-                result = SubagentRunResult(
-                    status="failed",
-                    child_session_id=str(job.payload.get("child_session_id") or ""),
-                    reason="host_restart_child_unavailable",
-                )
-            else:
-                request = _request_from_job(job)
-                result = self.providers.execute(
-                    self.provider_name,
-                    request,
-                    cancelled=lambda: self._cancel_requested(job),
-                )
+            request = _request_from_job(job)
+            result = self.providers.execute(
+                self.provider_name,
+                request,
+                cancelled=lambda: self._cancel_requested(job),
+            )
             settled = self._settle(job, claim_token=claim_token, result=result)
             if settled:
                 terminal = self.store.get(job.job_id, owner=job.owner)

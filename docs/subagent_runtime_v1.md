@@ -72,7 +72,7 @@ queued -> running -> succeeded
 宿主重启时：
 
 - 未开始的 Job 可重新领取；
-- 已开始但进程内 child 消失的 Job 明确结算为 `host_restart_child_unavailable`；
+- 已开始但进程内 child 消失的 Job 由 `HostJobStore` 统一结算为 `host_restart_outcome_unknown`，不另设 child 专用重跑拦截；
 - 不从头悄悄重跑可能带外部副作用的 child；
 - 已完成但未投递的结果继续走现有完成事件重试。
 

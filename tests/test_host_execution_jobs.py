@@ -123,11 +123,11 @@ class HostExecutionJobRuntimeTests(unittest.TestCase):
             conversation_ref_issuer=lambda _context: "signed-conversation-ref",
         ).recover()
 
-        self.assertEqual(recovered, 1)
+        self.assertEqual(recovered, 0)
         job = self.store.get(started["job_id"], owner=self.job_owner)
         self.assertEqual(job.status, "failed")
         self.assertEqual(job.completion_status, "pending")
-        self.assertEqual(job.last_error, "host_restart_process_unavailable")
+        self.assertEqual(job.last_error, "host_restart_outcome_unknown")
 
     def test_missing_conversation_context_prevents_process_admission(self) -> None:
         runtime = HostExecutionJobRuntime(

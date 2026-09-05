@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -86,6 +88,166 @@ def _context() -> ToolExecutionContext:
 
 
 class HostToolJobRuntimeTests(unittest.TestCase):
+    def _terminal_job(self, store: HostJobStore):
+        owner = HostJobOwner("profile-a", "session-a")
+        created = store.create(
+            owner=owner, capability_source="tool", capability_id="generate_image",
+            payload={}, idempotency_key="finished", argument_fingerprint="test",
+            completion_mode="agent",
+        )
+        claim = store.claim(created["job_id"], worker_id="test")
+        store.succeed(created["job_id"], claim_token=claim["claim_token"])
+        return store.get(created["job_id"], owner=owner)
+
+    def test_completion_is_delivered_while_execution_lane_is_occupied(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            job = self._terminal_job(store)
+            background = BackgroundTaskRunner({"host-jobs": 1})
+            entered, release, delivered = threading.Event(), threading.Event(), threading.Event()
+
+            def occupy():
+                entered.set()
+                release.wait(timeout=5)
+
+            runtime = HostToolJobRuntime(
+                engine=SimpleNamespace(), store=store, background_tasks=background,
+                terminal_callback=lambda _job: delivered.set() or True,
+            )
+            try:
+                background.submit(lane="host-jobs", name="occupied", fn=occupy)
+                self.assertTrue(entered.wait(timeout=1))
+                self.assertTrue(runtime.publish_completion(job)["ok"])
+                self.assertTrue(delivered.wait(timeout=1))
+                self.assertFalse(release.is_set())
+                self.assertTrue(background.wait_idle(lane="host-job-completions", timeout=2))
+                self.assertEqual(store.get(job.job_id, owner=job.owner).completion_status, "delivered")
+            finally:
+                release.set()
+                background.close()
+
+    def test_callback_unbound_after_scheduling_can_be_rebound_and_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            job = self._terminal_job(store)
+            background = BackgroundTaskRunner({"host-job-completions": 1})
+            release = threading.Event()
+            runtime = HostToolJobRuntime(
+                engine=SimpleNamespace(), store=store, background_tasks=background,
+            )
+            try:
+                self.assertEqual(runtime.publish_completion(job)["reason"], "completion_callback_unavailable")
+                background.submit(lane="host-job-completions", name="hold", fn=release.wait, args=(5,))
+                runtime.bind_terminal_callback(lambda _job: True)
+                runtime.publish_completion(job)
+                runtime.bind_terminal_callback(None)
+                release.set()
+                self.assertTrue(background.wait_idle(lane="host-job-completions", timeout=2))
+                self.assertEqual(store.get(job.job_id, owner=job.owner).completion_status, "pending")
+                runtime.bind_terminal_callback(lambda _job: True)
+                self.assertEqual(runtime.recover(), 1)
+                self.assertTrue(background.wait_idle(lane="host-job-completions", timeout=2))
+                self.assertEqual(store.get(job.job_id, owner=job.owner).completion_status, "delivered")
+            finally:
+                release.set()
+                background.close()
+
+    def test_handler_exception_publishes_failure_without_restart(self) -> None:
+        class FailingHandler(_Handler):
+            def execute(self, **_kwargs):
+                raise RuntimeError("test failure")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            background = BackgroundTaskRunner({"host-jobs": 1})
+            handler = FailingHandler(started=threading.Event(), release=threading.Event())
+            completed = []
+            runtime = HostToolJobRuntime(
+                engine=_Engine(handler), store=store, background_tasks=background,
+                conversation_ref_issuer=lambda _context: "conversation-ref",
+                terminal_callback=lambda job: completed.append(job) or True,
+            )
+            try:
+                with self.assertLogs("akane.host_tool_jobs", level="ERROR"):
+                    result = runtime.submit(capability_id="generate_image", invocation_id="failure",
+                                            call={"type": "generate_image"}, context=_context())
+                    self.assertTrue(background.wait_idle(lane="host-jobs", timeout=2))
+                self.assertTrue(background.wait_idle(lane="host-job-completions", timeout=2))
+                self.assertEqual(len(completed), 1)
+                self.assertEqual(completed[0].status, "failed")
+                self.assertEqual(completed[0].job_id, result.stream_events[0]["job_id"])
+            finally:
+                background.close()
+
+    def test_cancelled_queued_tool_is_not_started_and_still_notifies(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            background = BackgroundTaskRunner({"host-jobs": 1})
+            release = threading.Event()
+            handler = _Handler(started=threading.Event(), release=threading.Event())
+            completed = []
+            runtime = HostToolJobRuntime(
+                engine=_Engine(handler), store=store, background_tasks=background,
+                conversation_ref_issuer=lambda _context: "conversation-ref",
+                terminal_callback=lambda job: completed.append(job) or True,
+            )
+            try:
+                background.submit(lane="host-jobs", name="hold", fn=release.wait, args=(5,))
+                result = runtime.submit(capability_id="generate_image", invocation_id="cancel-queued",
+                                        call={"type": "generate_image"}, context=_context())
+                store.request_cancel(result.stream_events[0]["job_id"], owner=HostJobOwner("profile-a", "session-a"))
+                release.set()
+                self.assertTrue(background.wait_idle(lane="host-jobs", timeout=2))
+                self.assertTrue(background.wait_idle(lane="host-job-completions", timeout=2))
+                self.assertEqual(handler.calls, [])
+                self.assertEqual(len(completed), 1)
+                self.assertEqual(completed[0].status, "cancelled")
+            finally:
+                release.set()
+                background.close()
+
+    def test_crashed_process_after_external_effect_is_not_replayed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "jobs.db"
+            effect = Path(temp_dir) / "effect.txt"
+            store = HostJobStore(path)
+            owner = HostJobOwner("profile-a", "session-a")
+            created = store.create(
+                owner=owner, capability_source="tool", capability_id="generate_image",
+                payload={"call": {"type": "generate_image"}}, idempotency_key="crash",
+                argument_fingerprint="test", completion_mode="agent",
+            )
+            script = (
+                "import os, sys\nfrom pathlib import Path\n"
+                "from companion_v01.host_jobs import HostJobStore\n"
+                "store = HostJobStore(Path(sys.argv[1]))\n"
+                "assert store.claim(sys.argv[2], worker_id='crashing')['ok']\n"
+                "Path(sys.argv[3]).write_text('external effect', encoding='utf-8')\n"
+                "os._exit(17)\n"
+            )
+            process = subprocess.run([sys.executable, "-c", script, str(path), created["job_id"], str(effect)],
+                                     capture_output=True, timeout=30)
+            self.assertEqual(process.returncode, 17, process.stderr.decode(errors="replace"))
+            self.assertEqual(effect.read_text(encoding="utf-8"), "external effect")
+            restarted_store = HostJobStore(path)
+            self.assertEqual(restarted_store.recover_abandoned_claims(), 1)
+            handler = _Handler(started=threading.Event(), release=threading.Event())
+            background = BackgroundTaskRunner({"host-jobs": 1})
+            completed = []
+            runtime = HostToolJobRuntime(
+                engine=_Engine(handler), store=restarted_store, background_tasks=background,
+                terminal_callback=lambda job: completed.append(job) or True,
+            )
+            try:
+                self.assertEqual(runtime.recover(), 1)
+                self.assertTrue(background.wait_idle(lane="host-job-completions", timeout=2))
+                self.assertEqual(handler.calls, [])
+                self.assertEqual(completed[0].last_error, "host_restart_outcome_unknown")
+                self.assertEqual(completed[0].completion_event_id, created["completion_event_id"])
+                self.assertEqual(runtime.recover(), 0)
+            finally:
+                background.close()
+
     def test_plugin_long_task_is_admitted_before_job_creation_and_executes_once(self) -> None:
         class Adapter:
             provider_id = "plugin-test"
@@ -168,6 +330,7 @@ class HostToolJobRuntimeTests(unittest.TestCase):
                 )
                 self.assertEqual(accepted.stream_events[0]["type"], "background_job_accepted")
                 self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=2.0))
                 self.assertEqual(len(adapter.calls), 1)
                 self.assertEqual(adapter.calls[0]["args"], {"value": "  hello  "})
                 self.assertEqual(len(completed), 1)
@@ -200,12 +363,15 @@ class HostToolJobRuntimeTests(unittest.TestCase):
                     handler=handler,
                 )
                 self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=2.0))
                 job = store.get(
                     accepted.stream_events[0]["job_id"],
                     owner=HostJobOwner("profile-a", "session-a"),
                 )
                 self.assertEqual(job.status, "succeeded")
                 self.assertEqual(job.completion_status, "silent")
+                self.assertIn("不自动通知", accepted.followup_context)
+                self.assertNotIn("完成后系统会", accepted.followup_context)
                 self.assertEqual(completed, [])
             finally:
                 runner.close(timeout=2.0)
@@ -288,6 +454,7 @@ class HostToolJobRuntimeTests(unittest.TestCase):
                 )
                 self.assertEqual(accepted.stream_events[0]["status"], "accepted")
                 self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=2.0))
                 self.assertEqual(completed[0].artifacts[0]["handle"], "gen_001")
                 self.assertEqual(completed[0].result_summary, "已生成图片 gen_001。")
             finally:
@@ -331,12 +498,20 @@ class HostToolJobRuntimeTests(unittest.TestCase):
 
                 release.set()
                 self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=2.0))
                 finished = store.get(job_id, owner=HostJobOwner("profile-a", "session-a"))
                 self.assertEqual(finished.status, "succeeded")
                 self.assertEqual(finished.result_summary, "图片生成完成。")
                 self.assertEqual(finished.artifacts[0]["handle"], "generated-file:image-1")
                 self.assertEqual(finished.completion_status, "delivered")
                 self.assertEqual([item.job_id for item in completed], [job_id])
+                duplicate = runtime.submit(
+                    capability_id="generate_image", invocation_id="call-a",
+                    call={"type": "generate_image", "prompt": "moon"}, context=_context(),
+                )
+                self.assertIn("没有重复启动", duplicate.followup_context)
+                self.assertEqual(duplicate.state_updates["capability_execution"]["job_status"], "succeeded")
+                self.assertEqual(len(handler.calls), 1)
             finally:
                 release.set()
                 runner.close(timeout=2.0)
@@ -374,6 +549,7 @@ class HostToolJobRuntimeTests(unittest.TestCase):
             try:
                 self.assertEqual(runtime.recover(), 1)
                 self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=2.0))
                 finished = store.get(
                     created["job_id"],
                     owner=HostJobOwner("profile-a", "session-a"),
@@ -407,6 +583,7 @@ class HostToolJobRuntimeTests(unittest.TestCase):
                 )
                 job_id = result.stream_events[0]["job_id"]
                 self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=2.0))
                 pending = store.get(job_id, owner=HostJobOwner("profile-a", "session-a"))
                 self.assertEqual(pending.completion_status, "pending")
                 self.assertEqual(pending.completion_attempts, 1)
@@ -414,6 +591,7 @@ class HostToolJobRuntimeTests(unittest.TestCase):
                 runtime.bind_terminal_callback(lambda _job: True)
                 self.assertEqual(runtime.recover(), 1)
                 self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=2.0))
                 delivered = store.get(job_id, owner=HostJobOwner("profile-a", "session-a"))
                 self.assertEqual(delivered.completion_status, "delivered")
             finally:
@@ -450,6 +628,7 @@ class HostToolJobRuntimeTests(unittest.TestCase):
             try:
                 self.assertEqual(runtime.recover(), 1)
                 self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=2.0))
+                self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=2.0))
                 self.assertEqual([job.job_id for job in completed], [created["job_id"]])
                 delivered = store.get(
                     created["job_id"],

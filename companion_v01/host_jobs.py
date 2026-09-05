@@ -271,14 +271,17 @@ class HostJobStore:
             connection.execute("BEGIN IMMEDIATE")
             self._release_expired_claims(connection, now=now)
             row = connection.execute(
-                "SELECT status, available_at FROM host_jobs WHERE job_id = ?",
+                "SELECT * FROM host_jobs WHERE job_id = ?",
                 (normalized_id,),
             ).fetchone()
             if row is None:
                 return {"ok": False, "status": "unknown", "reason": "host_job_not_found"}
             status = str(row["status"] or "")
             if status != "queued":
-                return {"ok": False, "status": status, "reason": "host_job_not_claimable"}
+                return {
+                    "ok": False, "status": status, "reason": "host_job_not_claimable",
+                    "job": self._row_to_job(row),
+                }
             if float(row["available_at"] or 0) > now:
                 return {"ok": False, "status": "waiting", "reason": "host_job_not_ready"}
             changed = connection.execute(
@@ -361,8 +364,9 @@ class HostJobStore:
             ).fetchone()
             if row is None:
                 return {"ok": False, "status": "stale", "reason": "host_job_claim_not_owned"}
-            cancelled = bool(row["cancel_requested"])
-            next_status = "cancelled" if cancelled else ("queued" if retryable else "failed")
+            # A cancellation request is not evidence that execution stopped.
+            # Respect it by suppressing retries, not by fabricating cancellation.
+            next_status = "queued" if retryable and not row["cancel_requested"] else "failed"
             finished_at = now if next_status in JOB_TERMINAL_STATUSES else 0.0
             connection.execute(
                 """
@@ -506,30 +510,11 @@ class HostJobStore:
         return self._row_to_job(row) if row is not None else None
 
     def recover_abandoned_claims(self) -> int:
+        """Fence lost workers without replaying unconfirmed external effects."""
         now = float(self._clock())
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            cancelled = connection.execute(
-                """
-                UPDATE host_jobs
-                SET status = 'cancelled', lease_until = 0, claim_token = '', claimed_by = '',
-                    updated_at = ?, finished_at = ?, last_error = 'cancelled',
-                    completion_status = CASE
-                        WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
-                WHERE status = 'running' AND cancel_requested = 1
-                """,
-                (now, now),
-            ).rowcount
-            requeued = connection.execute(
-                """
-                UPDATE host_jobs
-                SET status = 'queued', lease_until = 0, claim_token = '', claimed_by = '',
-                    available_at = ?, updated_at = ?, last_error = 'worker_recovered'
-                WHERE status = 'running'
-                """,
-                (now, now),
-            ).rowcount
-        return int(cancelled or 0) + int(requeued or 0)
+            return self._fail_lost_claims(connection, now=now, expired_only=False)
 
     def pending_completions(self, *, capability_source: Any = "") -> list[HostJob]:
         source = str(capability_source or "").strip()
@@ -659,27 +644,31 @@ class HostJobStore:
 
     @staticmethod
     def _release_expired_claims(connection: sqlite3.Connection, *, now: float) -> int:
-        cancelled = connection.execute(
-            """
+        return HostJobStore._fail_lost_claims(connection, now=now, expired_only=True)
+
+    @staticmethod
+    def _fail_lost_claims(
+        connection: sqlite3.Connection, *, now: float, expired_only: bool,
+    ) -> int:
+        # Neither a dead worker nor an expired lease proves that an external
+        # operation failed or stopped. Only explicit worker-confirmed failures
+        # may use fail(retryable=True); lost claims must never auto-replay.
+        reason = "lease_expired_outcome_unknown" if expired_only else "host_restart_outcome_unknown"
+        condition = " AND lease_until <= ?" if expired_only else ""
+        arguments = (now, now, reason, now) if expired_only else (now, now, reason)
+        count = connection.execute(
+            f"""
             UPDATE host_jobs
-            SET status = 'cancelled', lease_until = 0, claim_token = '', claimed_by = '',
-                updated_at = ?, finished_at = ?, last_error = 'cancelled',
+            SET status = 'failed', lease_until = 0, claim_token = '', claimed_by = '',
+                updated_at = ?, finished_at = ?, last_error = ?,
+                result_summary = 'Execution outcome is unknown; external work may still have taken effect. Not automatically retried.',
                 completion_status = CASE
                     WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
-            WHERE status = 'running' AND lease_until <= ? AND cancel_requested = 1
+            WHERE status = 'running'{condition}
             """,
-            (now, now, now),
+            arguments,
         ).rowcount
-        requeued = connection.execute(
-            """
-            UPDATE host_jobs
-            SET status = 'queued', lease_until = 0, claim_token = '', claimed_by = '',
-                available_at = ?, updated_at = ?, last_error = 'lease_expired'
-            WHERE status = 'running' AND lease_until <= ?
-            """,
-            (now, now, now),
-        ).rowcount
-        return int(cancelled or 0) + int(requeued or 0)
+        return int(count or 0)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

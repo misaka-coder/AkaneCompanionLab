@@ -23,7 +23,8 @@ class HostToolJobRuntime:
 
     The existing ``BackgroundTaskRunner`` remains the executor.  This runtime
     only joins it to the durable Job store and can therefore reconstruct work
-    after a host restart without retaining an in-memory callback closure.
+    that has not started after a host restart. Unconfirmed running work is
+    settled by the shared store, never replayed by this executor.
     """
 
     def __init__(
@@ -160,6 +161,7 @@ class HostToolJobRuntime:
             job_id=job_id,
             duplicate=created.get("status") == "duplicate",
             job_status=existing_status or "queued",
+            completion_mode=existing.completion_mode if isinstance(existing, HostJob) else completion_mode,
         )
 
     def recover(self) -> int:
@@ -214,13 +216,15 @@ class HostToolJobRuntime:
         normalized = str(getattr(job, "job_id", "") or "").strip()
         if not normalized:
             return {"ok": False, "status": "invalid", "reason": "host_job_id_required"}
+        if self.terminal_callback is None:
+            return {"ok": False, "status": "unavailable", "reason": "completion_callback_unavailable"}
         with self._lock:
             if normalized in self._completion_scheduled:
                 return {"ok": True, "status": "duplicate", "reason": "completion_already_scheduled"}
             self._completion_scheduled.add(normalized)
         try:
             handle = self.background_tasks.submit(
-                lane="host-jobs",
+                lane="host-job-completions",
                 name="job-completion",
                 fn=self._publish_terminal,
                 args=(normalized, job.owner),
@@ -245,33 +249,29 @@ class HostToolJobRuntime:
                 worker_id=f"tool-worker:{threading.get_ident()}",
                 lease_seconds=3600,
             )
+            job = claim.get("job") if isinstance(claim.get("job"), HostJob) else None
             if not claim.get("ok"):
                 return
             claim_token = str(claim.get("claim_token") or "")
-            job = claim.get("job") if isinstance(claim.get("job"), HostJob) else None
             if job is None:
                 self.store.fail(job_id, claim_token=claim_token, error="host_job_record_invalid", retryable=False)
                 return
             result = self._execute(job)
             status, reason = self.engine._tool_hook_result_status(result)
             if status == "succeeded":
-                settled = self.store.succeed(
+                self.store.succeed(
                     job_id,
                     claim_token=claim_token,
                     result_summary=str(result.followup_context or ""),
                     artifacts=_artifact_references(result),
                 )
             else:
-                settled = self.store.fail(
+                self.store.fail(
                     job_id,
                     claim_token=claim_token,
                     error=reason or status or "long_tool_failed",
                     retryable=False,
                 )
-            if settled.get("ok"):
-                terminal = self.store.get(job_id, owner=job.owner)
-                if terminal is not None and terminal.completion_status == "pending":
-                    self._schedule_completion(terminal)
         except Exception as exc:
             if claim_token:
                 try:
@@ -287,6 +287,15 @@ class HostToolJobRuntime:
         finally:
             with self._lock:
                 self._scheduled.discard(job_id)
+            # Both ordinary failures and raised exceptions produce the same
+            # durable completion fact. Delivery failure never rewrites execution.
+            if job is not None:
+                try:
+                    terminal = self.store.get(job_id, owner=job.owner)
+                    if terminal is not None and terminal.completion_status == "pending":
+                        self._schedule_completion(terminal)
+                except Exception:
+                    logger.exception("failed to schedule host job completion: %s", job_id)
 
     def _execute(self, job: HostJob) -> ToolExecutionResult:
         payload = job.payload if isinstance(job.payload, dict) else {}
@@ -364,13 +373,13 @@ class HostToolJobRuntime:
         return completion, memory
 
     def _publish_terminal(self, job_id: str, owner: HostJobOwner) -> None:
-        callback = self.terminal_callback
-        if callback is None:
-            return
-        completed = self.store.get(job_id, owner=owner)
-        if completed is None or completed.completion_status != "pending":
-            return
         try:
+            callback = self.terminal_callback
+            if callback is None:
+                return
+            completed = self.store.get(job_id, owner=owner)
+            if completed is None or completed.completion_status != "pending":
+                return
             result = callback(completed)
             delivered = result is True or bool(getattr(result, "ok", False))
             if delivered:
@@ -383,7 +392,7 @@ class HostToolJobRuntime:
                 self.store.record_completion_failure(completed.job_id, error=reason)
         except Exception as exc:
             self.store.record_completion_failure(
-                completed.job_id,
+                job_id,
                 error=f"completion_delivery_{type(exc).__name__}",
             )
             logger.exception("host job terminal callback failed: %s", job_id)
@@ -450,8 +459,15 @@ def _job_accepted_result(
     job_id: str,
     duplicate: bool,
     job_status: str,
+    completion_mode: str,
 ) -> ToolExecutionResult:
     status = str(job_status or "queued").strip().lower()
+    registration = "任务已登记；本次没有重复启动" if duplicate else "后台任务已可靠登记"
+    notification = (
+        "此任务不自动通知。"
+        if completion_mode == "silent"
+        else "完成结果由系统投递到当前会话。"
+    )
     return ToolExecutionResult(
         tool_type=capability_id,
         stream_events=[{
@@ -462,7 +478,7 @@ def _job_accepted_result(
             "duplicate": bool(duplicate),
         }],
         followup_context=(
-            f"后台任务已可靠登记（job_id: {job_id}）。完成后系统会在当前会话继续通知；"
+            f"{registration}（job_id: {job_id}，状态: {status}）。{notification}"
             "无需停在这里轮询，可以先完成不依赖结果的内容。"
         ),
         state_updates={
@@ -471,6 +487,7 @@ def _job_accepted_result(
                 "status": "accepted",
                 "job_id": job_id,
                 "job_status": status,
+                "completion_mode": completion_mode,
             }
         },
     )

@@ -67,7 +67,7 @@ class HostJobStoreTests(unittest.TestCase):
             self.assertEqual(collision["status"], "collision")
             self.assertEqual(collision["job_id"], first["job_id"])
 
-    def test_claim_lease_retry_and_stale_worker_protection(self) -> None:
+    def test_expired_claim_is_not_replayed_and_stale_worker_is_fenced(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             clock = _Clock()
             store = HostJobStore(Path(temp_dir) / "jobs.db", clock=clock)
@@ -77,22 +77,16 @@ class HostJobStoreTests(unittest.TestCase):
             clock.value = 111.0
             second = store.claim_next(worker_id="worker-b", lease_seconds=10)
 
-            self.assertEqual(second["job"].job_id, created["job_id"])
-            self.assertEqual(second["job"].attempts, 2)
-            self.assertEqual(second["job"].last_error, "lease_expired")
+            self.assertEqual(second["status"], "idle")
             self.assertEqual(
                 store.succeed(created["job_id"], claim_token=first["claim_token"])["status"],
                 "stale",
             )
-            self.assertTrue(store.succeed(
-                created["job_id"],
-                claim_token=second["claim_token"],
-                result_summary="完成",
-                artifacts=[{"artifact_id": "image-1"}],
-            )["ok"])
             completed = store.get(created["job_id"], owner=self.owner)
-            self.assertEqual(completed.status, "succeeded")
-            self.assertEqual(completed.artifacts, ({"artifact_id": "image-1"},))
+            self.assertEqual(completed.status, "failed")
+            self.assertEqual(completed.attempts, 1)
+            self.assertEqual(completed.last_error, "lease_expired_outcome_unknown")
+            self.assertIn("outcome is unknown", completed.result_summary)
             self.assertEqual(completed.completion_status, "pending")
 
             pending = store.pending_completions()
@@ -149,7 +143,7 @@ class HostJobStoreTests(unittest.TestCase):
                 "cancelled",
             )
 
-    def test_restart_requeues_running_job_and_preserves_completion_identity(self) -> None:
+    def test_restart_fails_unconfirmed_work_and_preserves_completion_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "jobs.db"
             first = HostJobStore(path)
@@ -161,9 +155,52 @@ class HostJobStoreTests(unittest.TestCase):
             self.assertEqual(restarted.recover_abandoned_claims(), 1)
             recovered = restarted.claim_next(worker_id="new-worker")
 
-            self.assertEqual(recovered["job"].job_id, created["job_id"])
-            self.assertEqual(recovered["job"].completion_event_id, event_id)
-            self.assertEqual(recovered["job"].attempts, 2)
+            self.assertEqual(recovered["status"], "idle")
+            job = restarted.get(created["job_id"], owner=self.owner)
+            self.assertEqual(job.completion_event_id, event_id)
+            self.assertEqual(job.attempts, 1)
+            self.assertEqual(job.last_error, "host_restart_outcome_unknown")
+            self.assertEqual(restarted.recover_abandoned_claims(), 0)
+
+    def test_cancel_request_does_not_turn_failure_or_lost_worker_into_cancelled(self) -> None:
+        for outcome in ("failed", "retryable", "restart", "expiry", "succeeded"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temp_dir:
+                clock = _Clock()
+                store = HostJobStore(Path(temp_dir) / "jobs.db", clock=clock)
+                created = self._create(store)
+                claimed = store.claim_next(worker_id="worker", lease_seconds=10)
+                store.request_cancel(created["job_id"], owner=self.owner)
+                if outcome == "restart":
+                    store.recover_abandoned_claims()
+                elif outcome == "expiry":
+                    clock.value += 11
+                    store.pending_job_ids()
+                elif outcome == "succeeded":
+                    store.succeed(created["job_id"], claim_token=claimed["claim_token"])
+                else:
+                    store.fail(created["job_id"], claim_token=claimed["claim_token"],
+                               error="worker_failed", retryable=outcome == "retryable")
+                job = store.get(created["job_id"], owner=self.owner)
+                self.assertEqual(job.status, "succeeded" if outcome == "succeeded" else "failed")
+                self.assertEqual(job.completion_status, "pending")
+                self.assertEqual(store.pending_job_ids(), [])
+
+    def test_restart_preserves_unstarted_jobs_and_silent_policy_across_sources(self) -> None:
+        for source in ("tool", "workflow", "execution", "subagent"):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temp_dir:
+                store = HostJobStore(Path(temp_dir) / "jobs.db")
+                queued = self._create(store, key="unstarted")
+                running = store.create(
+                    owner=self.owner, capability_source=source, capability_id="test",
+                    payload={}, idempotency_key="running", argument_fingerprint="test",
+                    completion_mode="silent",
+                )
+                store.claim(running["job_id"], worker_id="worker")
+                store.recover_abandoned_claims()
+                self.assertEqual(store.pending_job_ids(), [queued["job_id"]])
+                job = store.get(running["job_id"], owner=self.owner)
+                self.assertEqual(job.status, "failed")
+                self.assertEqual(job.completion_status, "silent")
 
     def test_silent_running_job_can_arm_agent_completion_after_terminal_race(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
