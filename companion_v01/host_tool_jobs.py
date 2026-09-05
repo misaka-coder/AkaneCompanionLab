@@ -52,7 +52,7 @@ class HostToolJobRuntime:
         except Exception:
             spec = None
         return (
-            context.execution_scope is None
+            (context.execution_scope is None or context.execution_scope.pending_work is not None)
             and
             str(getattr(spec, "execution_class", "sync") or "sync").strip().lower() == "long_task"
             and str(getattr(handler, "tool_type", "") or "").strip() != "exec_run"
@@ -72,7 +72,10 @@ class HostToolJobRuntime:
         handler: Any = None,
     ) -> ToolExecutionResult:
         conversation_ref = ""
-        if self.conversation_ref_issuer is not None:
+        task_scope = context.execution_scope
+        if task_scope is not None:
+            conversation_ref = "task:" + task_scope.task_id
+        elif self.conversation_ref_issuer is not None:
             try:
                 conversation_ref = str(self.conversation_ref_issuer(context) or "").strip()
             except Exception:
@@ -114,6 +117,10 @@ class HostToolJobRuntime:
         if policy is None:
             return _job_failure_result(capability_id, "long_tool_policy_invalid")
         completion_mode, memory_mode = policy
+        if task_scope is not None:
+            # The live task consumes the terminal fact. Never wake its parent
+            # character, including when recovery later settles this job.
+            completion_mode = "silent"
         payload = {
             "call": normalized_call,
             "client_mode": str(context.client_mode or ""),
@@ -121,13 +128,15 @@ class HostToolJobRuntime:
             "current_user_source_id": str(context.current_user_source_id or ""),
             "request_context": _safe_request_context(context.request_context),
         }
+        if task_scope is not None:
+            payload["task_scope"] = {"task_id": task_scope.task_id, "working_directory": task_scope.working_directory}
         fingerprint = _fingerprint(normalized_call)
         created = self.store.create(
             owner=HostJobOwner(context.profile_user_id, context.session_id),
             capability_source=HOST_TOOL_JOB_SOURCE,
             capability_id=capability_id,
             payload=payload,
-            idempotency_key=str(invocation_id or "").strip() or f"call_{uuid.uuid4().hex}",
+            idempotency_key=(task_scope.task_id + ":" if task_scope is not None else "") + (str(invocation_id or "").strip() or f"call_{uuid.uuid4().hex}"),
             argument_fingerprint=fingerprint,
             character_pack_id=context.character_pack_id,
             channel=context.client_mode,
@@ -141,6 +150,18 @@ class HostToolJobRuntime:
             return _job_failure_result(capability_id, str(created.get("reason") or "host_job_create_failed"))
 
         job_id = str(created.get("job_id") or "")
+        if task_scope is not None and task_scope.pending_work is not None:
+            owner = HostJobOwner(context.profile_user_id, context.session_id)
+            def inspect():
+                job = self.store.get(job_id, owner=owner)
+                if job is None:
+                    return {"status": "unknown", "reason": "host_job_not_found"}
+                if job.status in {"queued", "running"}:
+                    return None
+                return {"status": job.status, "summary": job.result_summary,
+                        "reason": job.last_error, "artifacts": list(job.artifacts)}
+            task_scope.pending_work.track(job_id, inspect=inspect,
+                                          cancel=lambda: self.store.request_cancel(job_id, owner=owner))
         existing = created.get("job")
         existing_status = str(getattr(existing, "status", "") or "")
         if created.get("status") != "duplicate" or existing_status == "queued":
@@ -158,13 +179,16 @@ class HostToolJobRuntime:
         elif isinstance(existing, HostJob) and existing.completion_status == "pending":
             self._schedule_completion(existing)
 
-        return _job_accepted_result(
+        result = _job_accepted_result(
             capability_id,
             job_id=job_id,
             duplicate=created.get("status") == "duplicate",
             job_status=existing_status or "queued",
             completion_mode=existing.completion_mode if isinstance(existing, HostJob) else completion_mode,
         )
+        if task_scope is not None:
+            result.followup_context = f"Task accepted: job_id={job_id}. Continue independent work; completion will resume this task, not the parent conversation."
+        return result
 
     def recover(self) -> int:
         scheduled = 0
@@ -258,6 +282,9 @@ class HostToolJobRuntime:
             if job is None:
                 self.store.fail(job_id, claim_token=claim_token, error="host_job_record_invalid", retryable=False)
                 return
+            if job.payload.get("task_scope") and not self._task_is_live(job):
+                self.store.fail(job_id, claim_token=claim_token, error="task_owner_not_running", retryable=False)
+                return
             result = self._execute(job)
             status, reason = self.engine._tool_hook_result_status(result)
             if status == "succeeded":
@@ -273,6 +300,8 @@ class HostToolJobRuntime:
                     claim_token=claim_token,
                     error=reason or status or "long_tool_failed",
                     retryable=False,
+                    result_summary=str(result.followup_context or ""),
+                    artifacts=_artifact_references(result),
                 )
         except Exception as exc:
             if claim_token:
@@ -325,6 +354,7 @@ class HostToolJobRuntime:
             current_user_source_id=str(payload.get("current_user_source_id") or ""),
             client_mode=str(payload.get("client_mode") or job.channel),
             request_context=dict(payload.get("request_context") or {}),
+            execution_scope=self._restored_task_scope(payload),
         )
         execute = getattr(handler, "execute_admitted", None)
         if not callable(execute):
@@ -333,12 +363,23 @@ class HostToolJobRuntime:
             tool_id=job.capability_id,
             invocation_id=job.tool_call_id or job.job_id,
             dispatch=lambda: execute(call=call, context=context),
-            ledger_scope=f"{job.owner.profile_user_id}\x1f{job.owner.session_id}",
+            ledger_scope=f"{job.owner.profile_user_id}\x1f{job.owner.session_id}" + (
+                "\x1f" + context.execution_scope.task_id if context.execution_scope is not None else ""),
             request_data={"arguments": call},
         )
         if broker_result.status != "succeeded" or not isinstance(broker_result.result, ToolExecutionResult):
             raise RuntimeError(str(broker_result.reason or "long_tool_execution_failed"))
         return broker_result.result
+
+    @staticmethod
+    def _restored_task_scope(payload):
+        from .tool_handlers.core import TaskExecutionScope
+        scope = payload.get("task_scope")
+        return TaskExecutionScope(scope["working_directory"], scope["task_id"]) if isinstance(scope, dict) else None
+
+    def _task_is_live(self, job):
+        live = getattr(self.engine, "_live_task_work", {})
+        return str(job.payload["task_scope"].get("task_id") or "") in live
 
     def _resolve_handler(
         self,
@@ -429,6 +470,14 @@ def _artifact_references(result: ToolExecutionResult) -> list[dict[str, Any]]:
     references: list[dict[str, Any]] = []
     seen: set[str] = set()
     updates = result.state_updates if isinstance(result.state_updates, dict) else {}
+    execution = updates.get("capability_execution", {})
+    for resource in execution.get("generated_resources", []) if isinstance(execution, Mapping) else []:
+        if isinstance(resource, Mapping) and resource.get("handle"):
+            handle = str(resource["handle"])
+            if handle not in seen:
+                seen.add(handle)
+                references.append({"handle": handle, "source": "generated_resources",
+                                   "sha256": str(resource.get("sha256") or "")})
     for key, value in updates.items():
         if not str(key).endswith("_handles") or not isinstance(value, (list, tuple)):
             continue
@@ -451,7 +500,12 @@ def _artifact_references(result: ToolExecutionResult) -> list[dict[str, Any]]:
         ).strip()
         if handle and handle not in seen:
             seen.add(handle)
-            references.append({"handle": handle, "source": "generated_file_ready"})
+            references.append({"handle": handle, "source": "generated_file_ready",
+                               "sha256": str(generated.get("sha256") or "")})
+        elif handle and generated.get("sha256"):
+            for reference in references:
+                if reference["handle"] == handle:
+                    reference["sha256"] = str(generated["sha256"])
     return references
 
 

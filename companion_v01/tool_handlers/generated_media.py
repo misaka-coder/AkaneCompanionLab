@@ -2028,11 +2028,14 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
 class ManageGeneratedFileToolHandler(BaseToolHandler):
     tool_type = "manage_generated_file"
 
-    def __init__(self, *, generated_file_service) -> None:
+    def __init__(self, *, generated_file_service, project_workspace_service=None) -> None:
         self.generated_file_service = generated_file_service
+        self.project_workspace_service = project_workspace_service
 
     def build_prompt_instruction(self) -> str:
         return (
+            '- manage_generated_file(action="register", path="report.md", cwd="可选项目目录")：'
+            "把已有项目文件原样登记为 gen_* 产物，返回句柄和 SHA-256；不发送、不重写源文件。\n"
             "- manage_generated_file：当用户要清理、隐藏或删除你生成过的文件时使用，只管理 gen_001 这类生成物。"
             '格式为 {"type":"manage_generated_file","action":"archive|delete|purge",'
             '"targets":["gen_001","gen_002"],"reason":"清理原因"}。'
@@ -2050,6 +2053,11 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
         action = self._normalize_action(value.get("action") or value.get("operation"))
         if not action:
             return None
+        if action == "register":
+            path, cwd = value.get("path"), value.get("cwd", "")
+            if not isinstance(path, str) or not path.strip() or not isinstance(cwd, str) or "\x00" in path + cwd:
+                return None
+            return {"type": self.tool_type, "action": action, "path": path.strip(), "cwd": cwd.strip()}
         targets_value = (
             value.get("targets")
             if value.get("targets") is not None
@@ -2068,6 +2076,8 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        if call.get("action") == "register":
+            return self._register(call, context)
         result = self.generated_file_service.manage_generated_files(
             profile_user_id=context.profile_user_id,
             session_id=context.session_id,
@@ -2103,9 +2113,49 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
             followup_context=followup_context,
         )
 
+    def _register(self, call, context):
+        import json
+        from pathlib import Path
+        from ..project_workspace import ProjectWorkspaceError
+        from .project_workspace import _ProjectWorkspaceHandler
+        try:
+            service = self.project_workspace_service
+            if service is None:
+                raise ProjectWorkspaceError("project_workspace_unconfigured")
+            scope = _ProjectWorkspaceHandler(service=service)._scope(context)
+            source = Path(call["path"])
+            cwd = call.get("cwd") or ""
+            if source.is_absolute():
+                if cwd:
+                    raise ProjectWorkspaceError("cwd_and_absolute_path_conflict")
+                cwd, source = str(source.parent), Path(source.name)
+            if not cwd and context.execution_scope:
+                cwd = context.execution_scope.working_directory
+            if not cwd:
+                cwd = str((service.current(scope=scope) or {}).get("working_directory") or service.execution_workspace_root)
+            root = service.output_directory(scope=scope, cwd=cwd)
+            _relative, source = service._inspection_target(root, str(source), allow_root=False)
+            generated = self.generated_file_service.register_workspace_artifact(
+                source=source, root=root, profile_user_id=context.profile_user_id, session_id=context.session_id,
+                created_by_tool=self.tool_type, timestamp=context.now_ts,
+            )
+            handle = generated["generated_handle"]
+            data = {"status": "succeeded", "handle": handle, "name": source.name,
+                    "size_bytes": generated["file_size"], "sha256": generated["sha256"]}
+            return ToolExecutionResult(tool_type=self.tool_type,
+                followup_context=json.dumps(data, ensure_ascii=False),
+                stream_events=[{"type": "generated_file_ready", "generated_file": data}],
+                state_updates={"generated_file_handles": [handle]})
+        except Exception as exc:
+            reason = exc.reason if isinstance(exc, ProjectWorkspaceError) else "artifact_registration_failed"
+            return ToolExecutionResult(tool_type=self.tool_type,
+                followup_context=f"<tool_use_error>File was not registered: {reason}.</tool_use_error>",
+                stream_events=[{"type": "tool_execution_failed", "status": "failed", "reason": reason}])
+
     def _normalize_action(self, value: Any) -> str:
         action = str(value or "").strip().lower()
         aliases = {
+            "register": "register",
             "hide": "archive",
             "archive": "archive",
             "remove": "archive",

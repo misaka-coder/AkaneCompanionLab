@@ -272,7 +272,7 @@ class WorkspaceManagementTests(unittest.TestCase):
         schema = MANAGE_GENERATED_FILE_TOOL_SPEC.input_schema
         self.assertEqual(
             schema["properties"]["action"]["enum"],
-            ["archive", "delete", "purge"],
+            ["register", "archive", "delete", "purge"],
         )
         self.assertIn("targets", schema["properties"])
         self.assertEqual(MANAGE_GENERATED_FILE_TOOL_SPEC.confirm, "never")

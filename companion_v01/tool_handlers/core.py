@@ -66,6 +66,7 @@ class TaskExecutionScope:
 
     working_directory: str
     task_id: str = ""
+    pending_work: Any = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

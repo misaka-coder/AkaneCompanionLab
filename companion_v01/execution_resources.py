@@ -22,7 +22,6 @@ Every model-visible result carries ``gen_*`` handles, never absolute paths.
 
 from __future__ import annotations
 
-import mimetypes
 import re
 import shutil
 import threading
@@ -65,6 +64,7 @@ class RegisteredOutput:
     name: str
     media_type: str
     size_bytes: int
+    sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +97,7 @@ class _RunBinding:
     artifact_reason: str = ""
     created_at: float = 0.0
     finalized: bool = False
+    operation_root: Path | None = None
 
 
 def normalize_resource_as(value: Any) -> str | None:
@@ -280,6 +281,7 @@ class ExecutionResourceBridge:
         resource_scope: ExecutionResourceScope,
         cwd: str,
         output_globs: Sequence[str] | None,
+        authorized_root: Path | None = None,
     ) -> dict[str, Any]:
         """Bind output registration to an existing workspace project.
 
@@ -297,13 +299,18 @@ class ExecutionResourceBridge:
         if not globs or len(globs) != len(list(output_globs or [])):
             return {"ok": False, "reason": "invalid_output_glob"}
         cwd_relpath = normalize_resource_as(cwd)
-        if cwd_relpath is None:
+        if Path(cwd).is_absolute():
+            run_dir = Path(cwd).resolve(strict=False)
+            cwd_relpath = ""
+        elif cwd_relpath is not None:
+            run_dir = (self.workspace_root / cwd_relpath).resolve(strict=False)
+        else:
             return {"ok": False, "reason": "invalid_output_cwd"}
-        run_dir = (self.workspace_root / cwd_relpath).resolve(strict=False)
         try:
             run_dir.relative_to(self.workspace_root)
         except ValueError:
-            return {"ok": False, "reason": "output_cwd_escapes_workspace"}
+            if authorized_root is None or run_dir != Path(authorized_root).resolve(strict=True):
+                return {"ok": False, "reason": "output_cwd_escapes_workspace"}
         if not run_dir.is_dir():
             return {"ok": False, "reason": "output_cwd_not_found"}
 
@@ -330,10 +337,12 @@ class ExecutionResourceBridge:
                 cleanup_workspace=False,
                 baseline_outputs=baseline,
                 created_at=self._now(),
+                operation_root=run_dir,
             )
         return {
             "ok": True,
             "cwd_relpath": cwd_relpath,
+            "effective_cwd": str(run_dir),
             "staged_inputs": [],
             "input_handles": [],
             "output_globs": list(globs),
@@ -404,7 +413,7 @@ class ExecutionResourceBridge:
             self._cleanup_binding_workspace(binding)
             return result
 
-        run_dir = self.workspace_root / binding.cwd_relpath
+        run_dir = binding.operation_root or self.workspace_root / binding.cwd_relpath
         matches, overflow = self._collect_output_matches(binding.output_globs, run_dir)
         if overflow:
             with self._lock:
@@ -439,8 +448,14 @@ class ExecutionResourceBridge:
         failures: list[str] = []
         total_bytes = 0
         for relpath in matches:
-            source = (run_dir / relpath).resolve()
-            size = source.stat().st_size
+            source = run_dir / relpath
+            try:
+                if source.absolute() != source.resolve(strict=True):
+                    raise ValueError("output_path_changed")
+                size = source.stat().st_size
+            except (OSError, ValueError):
+                failures.append(f"{relpath}:output_path_changed")
+                continue
             if size > self.max_output_bytes_per_file:
                 failures.append(f"{relpath}:output_too_large")
                 continue
@@ -515,6 +530,7 @@ class ExecutionResourceBridge:
                 "name": item.name,
                 "media_type": item.media_type,
                 "size_bytes": item.size_bytes,
+                "sha256": item.sha256,
             }
             for item in binding.registered
         ]
@@ -580,7 +596,7 @@ class ExecutionResourceBridge:
                     resolved.relative_to(run_dir.resolve())
                 except (OSError, ValueError):
                     continue
-                if not resolved.is_file() or resolved.is_symlink():
+                if candidate.absolute() != resolved or not resolved.is_file():
                     continue
                 if resolved.stat().st_size <= 0:
                     continue
@@ -602,39 +618,13 @@ class ExecutionResourceBridge:
         if not extension:
             return None
         title = str(source.stem or "akane_output").strip()[:60] or "akane_output"
-        target = service.allocate_output_path(
-            profile_user_id=str(binding.resource_scope.profile_user_id or ""),
-            session_id=str(binding.resource_scope.session_id or ""),
-            title=title,
-            output_format=extension,
-            timestamp=int(self._now()),
-            allow_generic_format=True,
+        generated = service.register_workspace_artifact(
+            source=source, root=binding.operation_root or self.workspace_root / binding.cwd_relpath,
+            profile_user_id=binding.resource_scope.profile_user_id, session_id=binding.resource_scope.session_id,
+            created_by_tool="exec_run", source_ids=list(binding.input_handles) or None,
+            timestamp=int(self._now()), max_bytes=self.max_output_bytes_per_file,
         )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copy2(source, target)
-            mime_type = mimetypes.guess_type(source.name)[0] or service._mime_type_for_format(extension)
-            generated = service.register_generated_artifact(
-                profile_user_id=str(binding.resource_scope.profile_user_id or ""),
-                session_id=str(binding.resource_scope.session_id or ""),
-                output_path=target,
-                output_title=title,
-                output_format=extension,
-                mime_type=mime_type,
-                content_card={},
-                summary=f"exec_run 输出：{title}.{extension}",
-                created_by_tool="exec_run",
-                source_ids=list(binding.input_handles) or None,
-                send_to_user=False,
-                timestamp=int(self._now()),
-                allow_generic_format=True,
-            )
-        except Exception:
-            try:
-                target.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
+        mime_type = str(generated.get("mime_type") or "application/octet-stream")
         handle = str(generated.get("generated_handle") or "").strip()
         if not handle:
             return None
@@ -643,6 +633,7 @@ class ExecutionResourceBridge:
             name=f"{title}.{extension}",
             media_type=mime_type,
             size_bytes=int(generated.get("file_size") or source.stat().st_size),
+            sha256=str(generated.get("sha256") or ""),
         )
 
     @staticmethod

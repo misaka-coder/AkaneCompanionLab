@@ -164,6 +164,7 @@ EXEC_TOOL_NAMES = (
     "exec_run",
     "exec_status",
     "exec_cancel",
+    "manage_generated_file",
     "manage_skill",
     "mcp_manage",
 )
@@ -1003,6 +1004,7 @@ MANAGE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
     display_name="Manage generated file",
     description=(
         "Manage files Akane generated in the current workbench. "
+        "register copies an existing project file unchanged into managed storage and returns a gen_* handle and SHA-256; it does not send the file. "
         "archive only hides results; delete removes managed file bytes and hides results; "
         "purge also clears the stored content card. This tool never manages user attachments. "
         "When the user asks to clear the whole workbench, call this for generated results and "
@@ -1014,8 +1016,8 @@ MANAGE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["archive", "delete", "purge"],
-                "description": "archive hides; delete removes managed bytes; purge also clears stored content.",
+                "enum": ["register", "archive", "delete", "purge"],
+                "description": "register copies an existing project file unchanged and returns its gen_* handle and SHA-256. archive hides; delete removes managed bytes; purge also clears stored content.",
             },
             "target": {
                 "type": "string",
@@ -1029,6 +1031,8 @@ MANAGE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
                 "description": "Multiple generated handles/titles; use ['all'] for the whole generated shelf.",
             },
             "reason": {"type": "string", "maxLength": 200, "description": "Optional user-facing cleanup reason."},
+            "path": {"type": "string", "maxLength": 4096, "description": "Required for register: project-relative file path, or an absolute file path inside your registered project."},
+            "cwd": {"type": "string", "maxLength": 4096, "description": "Optional register directory; defaults to this task's project. Omit with an absolute path."},
         },
         "required": ["action"],
     },
@@ -1036,8 +1040,8 @@ MANAGE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=("file_manage",),
     visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
+    spec_version="1.2.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="effectful",
     max_result_bytes=4096,

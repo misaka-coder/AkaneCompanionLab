@@ -443,8 +443,9 @@ class MemcoreManager:
         session_id: str,
         character_pack_id: str = "",
         timestamp: int = 0,
+        turn_id: str = "",
     ) -> dict[str, Any]:
-        """Append one structured external event through MemCore's event path."""
+        """Append an external event, optionally into an already-open host turn."""
 
         operation = "append_standalone_event"
         normalized_source_id = str(source_id or "").strip()
@@ -491,14 +492,15 @@ class MemcoreManager:
                     "memory_metadata": {},
                     "index_in_vector": True,
                 },
-                turn_role=None,
+                turn_role="intermediate" if turn_id else None,
                 external_event={
                     "event_type": str(event.get("event_type") or "").strip(),
                     "source": str(event.get("source") or "").strip(),
                     "fields": {str(key): str(value) for key, value in fields.items()},
                 },
             )
-            written = system.append_standalone_entry(entry)
+            written = (system.append_entry(entry, turn_id=turn_id)
+                       if turn_id else system.append_standalone_entry(entry))
             return self._status(
                 operation,
                 True,

@@ -371,8 +371,8 @@ class _ExecToolHandlerBase(BaseToolHandler):
     def _resource_rejected(self, reason: str) -> ToolExecutionResult:
         clean_reason = str(reason or "execution_resources_rejected")
         guidance = (
-            "先用 manage_project_workspace(action=open) 注册该目录，再以 cwd=alias:project 重试产物登记。"
-            if clean_reason == "absolute_cwd_output_registration_unsupported"
+            "先用 manage_project_workspace(action=open) 注册该目录，再重试；已有文件可用 manage_generated_file(action=register) 登记。"
+            if clean_reason in {"output_cwd_not_registered", "output_cwd_escapes_workspace"}
             else "请检查资源句柄、目标相对路径与输出声明后调整。"
         )
         return ToolExecutionResult(
@@ -423,7 +423,7 @@ class _ExecToolHandlerBase(BaseToolHandler):
             },
         )
 
-    def _enrich_resources(self, mapped: Any, registration: dict[str, Any]) -> Any:
+    def _enrich_resources(self, mapped: Any, registration: dict[str, Any], *, context=None) -> Any:
         if not isinstance(registration, dict):
             return mapped
         resources = list(registration.get("generated_resources") or [])
@@ -438,17 +438,20 @@ class _ExecToolHandlerBase(BaseToolHandler):
         if resources:
             labels = "、".join(f"{item.get('handle')}({item.get('name')})" for item in resources)
             targets = [item.get("handle") for item in resources]
-            data["next_action"] = {"tool": "send_file", "targets": targets}
+            task_owned = context is not None and context.execution_scope is not None
+            if not task_owned:
+                data["next_action"] = {"tool": "send_file", "targets": targets}
+            delivery = ("文件句柄和哈希随任务结果交给父代理；由父代理处理用户交付。" if task_owned
+                        else "需要交付时调用 send_file(targets=[...])；不要自动替用户发送。")
             if artifact_status == ARTIFACT_STATUS_REGISTRATION_FAILED:
                 reason = artifact_reason or "output_registration_incomplete"
                 feedback = (
                     f"{feedback}\n仅部分输出登记成功：{labels}；其余输出登记失败（{reason}）。"
-                    "需要交付已成功登记的文件时调用 send_file(targets=[...])；不要声称全部产物都已生成或交付。"
+                    f"{delivery}其余文件尚未登记。"
                 )
             else:
                 feedback = (
-                    f"{feedback}\n已登记生成资源：{labels}。需要交付时调用 send_file(targets=[...])，"
-                    "不要自动替用户发送。"
+                    f"{feedback}\n已登记生成资源：{labels}。{delivery}"
                 )
         elif artifact_status == ARTIFACT_STATUS_REGISTRATION_FAILED:
             reason = artifact_reason or "unknown"
@@ -484,7 +487,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             "failed/timed_out 时依据真实输出修正命令或换路，确实无法继续时再说明阻塞。"
             "本机所需程序未运行时，先查找安装位置并启动；Windows 长驻进程用 Start-Process 后验证端口或进程，"
             "不要把前台服务挂到超时。"
-            "input_resources 会把材料句柄复制到 as 相对路径且不能与 cwd 同用；output_globs 登记当前受管目录或 alias:project 中的匹配产物。"
+            "input_resources 会把材料句柄复制到 as 相对路径且不能与 cwd 同用；output_globs 登记执行根或已登记项目目录中本次新增、变更的匹配产物。"
             "按 status、exit_code、stdout、stderr、reason 与 recommended_action 判断结果；改变大量文件前先只读核对目标。"
         )
 
@@ -634,8 +637,6 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             args_preview["input_resources"] = input_resources
         if output_globs:
             args_preview["output_globs"] = output_globs
-        if output_globs and cwd and Path(cwd).is_absolute() and not input_resources:
-            return self._resource_rejected("absolute_cwd_output_registration_unsupported")
         decision = self._permission_decision(context, args_preview)
         if not decision.allowed:
             if decision.requires_user_decision:
@@ -666,12 +667,19 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             if bridge is None:
                 return self._resource_rejected("execution_resources_unconfigured")
             if output_globs and cwd and not input_resources:
+                authorized_root = None
+                if Path(cwd).is_absolute() and self.project_workspace_service is not None:
+                    try:
+                        authorized_root = self.project_workspace_service.output_directory(scope=self._project_scope(context), cwd=cwd)
+                    except ProjectWorkspaceError as exc:
+                        return self._resource_rejected(exc.reason)
                 staged = bridge.bind_workspace_outputs(
                     run_id=run_id,
                     owner=self._owner(context),
                     resource_scope=self._resource_scope(context),
                     cwd=cwd,
                     output_globs=output_globs,
+                    authorized_root=authorized_root,
                 )
             else:
                 staged = bridge.stage_inputs(
@@ -683,7 +691,7 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
                 )
             if not bool(staged.get("ok")):
                 return self._resource_rejected(str(staged.get("reason") or "execution_resources_staging_failed"))
-            cwd = str(staged.get("cwd_relpath") or cwd)
+            cwd = str(staged.get("effective_cwd") or staged.get("cwd_relpath") or cwd)
         if track_job:
             started = job_runtime.begin(
                 run_id=run_id,
@@ -728,20 +736,39 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
             owner = self._owner(context)
             if mapped.event_status == EXEC_STATUS_COMPLETED:
                 registration = bridge.register_outputs(run_id=run_id, owner=owner)
-                mapped = self._enrich_resources(mapped, registration)
+                mapped = self._enrich_resources(mapped, registration, context=context)
             elif mapped.event_status in {EXEC_STATUS_FAILED, EXEC_STATUS_TIMED_OUT, EXEC_STATUS_CANCELLED}:
                 registration = bridge.finalize_without_outputs(
                     run_id=run_id,
                     owner=owner,
                     reason=f"command_{mapped.event_status}",
                 )
-                mapped = self._enrich_resources(mapped, registration)
+                mapped = self._enrich_resources(mapped, registration, context=context)
         mapped = self._with_execution_location(
             mapped,
             provider=provider,
             cwd=cwd,
             workspace_id="" if input_resources else workspace_id,
         )
+        task_scope = context.execution_scope
+        if task_scope is not None and task_scope.pending_work is not None and mapped.event_status == EXEC_STATUS_RUNNING:
+            from ..host_tool_jobs import _artifact_references
+            tracked_id = str(mapped.data.get("run_id") or "")
+            owner = self._owner(context)
+            def inspect():
+                status = execute_exec_status(provider, owner=owner, run_id=tracked_id, wait_seconds=0)
+                if status.event_status == EXEC_STATUS_RUNNING:
+                    return None
+                if bridge is not None and bridge.has_binding(run_id=tracked_id, owner=owner):
+                    registration = (bridge.register_outputs(run_id=tracked_id, owner=owner)
+                                    if status.event_status == EXEC_STATUS_COMPLETED else
+                                    bridge.finalize_without_outputs(run_id=tracked_id, owner=owner, reason=status.event_status))
+                    status = self._enrich_resources(status, registration, context=context)
+                result = self._mapped_result(status)
+                return {"status": status.event_status, "summary": status.model_feedback,
+                        "artifacts": _artifact_references(result)}
+            task_scope.pending_work.track(tracked_id, inspect=inspect,
+                                          cancel=lambda: execute_exec_cancel(provider, owner=owner, run_id=tracked_id))
         return self._mapped_result(mapped)
 
     def _job_tracking_rejected(self, reason: str) -> ToolExecutionResult:
@@ -923,14 +950,14 @@ class ExecStatusToolHandler(_ExecToolHandlerBase):
         if bridge is not None and run_id and bridge.has_binding(run_id=run_id, owner=owner):
             if mapped.event_status == EXEC_STATUS_COMPLETED:
                 registration = bridge.register_outputs(run_id=run_id, owner=owner)
-                mapped = self._enrich_resources(mapped, registration)
+                mapped = self._enrich_resources(mapped, registration, context=context)
             elif mapped.event_status in {EXEC_STATUS_FAILED, EXEC_STATUS_TIMED_OUT, EXEC_STATUS_CANCELLED}:
                 registration = bridge.finalize_without_outputs(
                     run_id=run_id,
                     owner=owner,
                     reason=f"command_{mapped.event_status}",
                 )
-                mapped = self._enrich_resources(mapped, registration)
+                mapped = self._enrich_resources(mapped, registration, context=context)
         return self._mapped_result(mapped)
 
 
@@ -974,10 +1001,10 @@ class ExecCancelToolHandler(_ExecToolHandlerBase):
                     owner=owner,
                     reason="command_cancelled",
                 )
-                mapped = self._enrich_resources(mapped, registration)
+                mapped = self._enrich_resources(mapped, registration, context=context)
             elif mapped.event_status == "already_ended" and mapped.reason == EXEC_STATUS_COMPLETED:
                 registration = bridge.register_outputs(run_id=run_id, owner=owner)
-                mapped = self._enrich_resources(mapped, registration)
+                mapped = self._enrich_resources(mapped, registration, context=context)
             elif mapped.event_status == "already_ended" and mapped.reason in {
                 EXEC_STATUS_FAILED,
                 EXEC_STATUS_TIMED_OUT,
@@ -988,5 +1015,5 @@ class ExecCancelToolHandler(_ExecToolHandlerBase):
                     owner=owner,
                     reason=f"command_{mapped.reason}",
                 )
-                mapped = self._enrich_resources(mapped, registration)
+                mapped = self._enrich_resources(mapped, registration, context=context)
         return self._mapped_result(mapped)

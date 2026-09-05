@@ -9207,6 +9207,27 @@ class AkaneMemoryEngine:
             capability_selection=capability_selection,
         )
 
+    def _build_loadable_capability_catalog(self, *, ready_tool_names, profile_user_id):
+        """One catalog renderer for conversation and isolated task prompts."""
+        parts, errors = [], []
+        if "load_skill" in ready_tool_names:
+            try:
+                parts.append(str(self._get_skill_registry().prompt_catalog(
+                    available_tool_names=set(ready_tool_names)) or "").strip())
+            except Exception as exc:
+                logger.warning("skill catalog projection failed: %s", type(exc).__name__)
+                errors.append("Skill 目录当前读取失败；保留上一版目录。")
+        if "load_mcp" in ready_tool_names:
+            try:
+                service = getattr(self, "mcp_management_service", None)
+                if service is not None:
+                    parts.append(str(service.prompt_catalog(profile_user_id=profile_user_id) or "").strip())
+            except Exception as exc:
+                logger.warning("MCP catalog projection failed: %s", type(exc).__name__)
+                errors.append("MCP 目录当前读取失败；保留上一版目录。")
+        text = "\n\n".join(part for part in parts if part)
+        return ("" if errors else text or "【可按需加载的能力目录】\n- 当前没有可按需加载的 Skill 或 MCP。", errors)
+
     def _resolve_capability_selection(
         self,
         *,
@@ -9296,6 +9317,7 @@ class AkaneMemoryEngine:
         client_mode: str = "",
         actor_stable_id: str = "",
         actor_profile_user_id: str = "",
+        execution_scope: Any = None,
     ) -> str:
         """Render one compact host fact block shared by native and legacy tools."""
 
@@ -9338,7 +9360,9 @@ class AkaneMemoryEngine:
             )
         cwd_state: dict[str, Any] = {}
         describe_cwd = getattr(handler, "working_directory_context", None)
-        if callable(describe_cwd) and profile_user_id and session_id:
+        if execution_scope is not None:
+            cwd_state = {"working_directory": execution_scope.working_directory, "project": "task"}
+        elif callable(describe_cwd) and profile_user_id and session_id:
             try:
                 cwd_state = dict(
                     describe_cwd(
@@ -9422,37 +9446,10 @@ class AkaneMemoryEngine:
             actor_stable_id=actor_stable_id,
             actor_profile_user_id=actor_profile_user_id,
         )
-        skill_catalog = ""
-        catalog_errors: list[str] = []
-        if "load_skill" in ready_tool_names:
-            try:
-                skill_catalog = str(
-                    self._get_skill_registry().prompt_catalog(
-                        available_tool_names=set(ready_tool_names),
-                    )
-                    or ""
-                ).strip()
-            except Exception as exc:
-                logger.warning("skill catalog projection failed: %s", type(exc).__name__)
-                catalog_errors.append("Skill 目录当前读取失败；保留上一版目录。")
-        mcp_catalog = ""
-        if "load_mcp" in ready_tool_names:
-            try:
-                service = getattr(self, "mcp_management_service", None)
-                if service is not None:
-                    mcp_catalog = str(service.prompt_catalog(profile_user_id=profile_user_id) or "").strip()
-            except Exception as exc:
-                logger.warning("MCP catalog projection failed: %s", type(exc).__name__)
-                catalog_errors.append("MCP 目录当前读取失败；保留上一版目录。")
-        catalog_parts = [part for part in (skill_catalog, mcp_catalog) if part]
-        if catalog_errors:
-            catalog_context = ""
-            catalog_status = "failed"
-        else:
-            catalog_context = "\n\n".join(catalog_parts).strip()
-            if not catalog_context:
-                catalog_context = "【可按需加载的能力目录】\n- 当前没有可按需加载的 Skill 或 MCP。"
-            catalog_status = "ready"
+        catalog_context, catalog_errors = self._build_loadable_capability_catalog(
+            ready_tool_names=ready_tool_names, profile_user_id=profile_user_id,
+        )
+        catalog_status = "failed" if catalog_errors else "ready"
         media_routing: list[str] = []
         if "media_workbench" in selection.module_names:
             media_routing = [*MEDIA_PRESET_ROUTING, ""]

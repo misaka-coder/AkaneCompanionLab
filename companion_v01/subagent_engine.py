@@ -17,6 +17,7 @@ from .subagent_runtime import SubagentRunResult, SubagentStartRequest
 from .subagent_policy import task_capability_selection
 from .tool_handlers.core import TaskExecutionScope
 from .tool_batch import execute_tool_batch
+from .task_work import TaskWork
 from .tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, NATIVE_REASONING_CONTENT_FIELD, TOOL_INVOCATION_ID_FIELD
 from . import tool_orchestration_engine as orchestration
 
@@ -29,7 +30,9 @@ TASK_SYSTEM_PROMPT = (
     '{"status":"succeeded","summary":"findings, changes and verification"}. '
     'If unfinished, return {"status":"failed","summary":"what remains","reason":"brief cause"}. '
     "Report only observed results. Keep the final summary under 4000 characters; "
-    "put a longer report in the shared workspace and mention its path."
+    "put a longer report in the shared workspace."
+    " A run_id or job_id confirms admission, not completion. Continue independent work; "
+    "Pending work resumes this task before final handoff."
 )
 
 
@@ -72,14 +75,17 @@ class EngineSubagentDriver:
             llm_thinking_mode=metadata.get("thinking_mode", "default"),
         )
         client = engine._resolve_client_protocol_context({"client_mode": mode})
-        selection = engine._resolve_capability_selection(
-            client_context=client, profile_user_id=request.parent_profile_user_id,
-            session_id=request.parent_session_id, intent_text=request.task,
-            authorization_profile_user_id=metadata.get("authorization_profile_user_id", ""),
-        )
-        selection = restrict_capability_selection(selection, allowed_tool_names=request.allowed_tools)
+        mcp_activations = {}
+        def resolve_selection():
+            selected = engine._resolve_capability_selection(
+                client_context=client, profile_user_id=request.parent_profile_user_id,
+                session_id=request.parent_session_id, intent_text=request.task,
+                authorization_profile_user_id=metadata.get("authorization_profile_user_id", ""),
+                mcp_activations=mcp_activations,
+            )
+            return task_capability_selection(restrict_capability_selection(selected, allowed_tool_names=request.allowed_tools))
         try:
-            selection = task_capability_selection(selection)
+            selection = resolve_selection()
         except Exception:
             return self._result(request, "failed", reason="subagent_capability_policy_unavailable")
         if request.allowed_tools and not selection.tool_names:
@@ -89,6 +95,21 @@ class EngineSubagentDriver:
             if name in selection.resolved_handlers
         })
         selection = replace(selection, native_tool_aliases=native_tool_model_name_map(tools))
+        catalog, catalog_errors = engine._build_loadable_capability_catalog(
+            ready_tool_names=selection.tool_names, profile_user_id=request.parent_profile_user_id,
+        )
+        if catalog_errors:
+            return self._result(request, "failed", reason="subagent_capability_catalog_unavailable")
+        guidance = []
+        if "manage_generated_file" in selection.tool_names:
+            guidance.append("Register final files with manage_generated_file(action=register, path=...). The parent receives the original file handle and SHA-256.")
+        if "exec_status" in selection.tool_names:
+            guidance.append("Use exec_status(run_id=...) to read command output while continuing independent work.")
+        environment = engine._build_execution_host_context(
+            selection.resolved_handlers.get("exec_run"),
+            execution_scope=TaskExecutionScope(request.working_directory, request.child_session_id),
+        ) or f"Working directory: {request.working_directory}"
+        task_prompt = "\n\n".join((catalog, environment, *guidance, "Task:\n" + request.task))
         # The audit domain is separate even when the host uses profile-wide
         # memory. Tool permission/resource ownership remains the parent actor's.
         scope = dict(profile_user_id=request.child_session_id, session_id=request.child_session_id,
@@ -104,7 +125,31 @@ class EngineSubagentDriver:
         request_context = {key: metadata[key] for key in (
             "actor_stable_id", "actor_profile_user_id", "authorization_profile_user_id",
         ) if key in metadata}
-        request_context["_task_execution_scope"] = TaskExecutionScope(request.working_directory, request.child_session_id)
+        pending_work = TaskWork()
+        live_tasks = engine.__dict__.setdefault("_live_task_work", {})
+        live_tasks[request.child_session_id] = pending_work
+        request_context["_task_execution_scope"] = TaskExecutionScope(request.working_directory, request.child_session_id, pending_work)
+        def record_completions(completions):
+            for completion in completions:
+                for artifact in completion.get("artifacts", []):
+                    if isinstance(artifact, dict) and artifact.get("handle"):
+                        artifacts[artifact["handle"]] = artifact
+                recorded = manager.append_standalone_event(
+                    {"event_type": "task.work.completed", "source": "host",
+                     "fields": {"result": engine._sanitize_tool_trace_text(json.dumps(completion, ensure_ascii=False))}},
+                    source_id=request.child_session_id + ":completion:" + completion["id"],
+                    turn_id=turn_id, **scope,
+                )
+                if not recorded.get("ok"):
+                    raise RuntimeError("subagent_completion_trace_failed")
+            if completions:
+                projection = manager.build_open_turn_projection(turn_id=turn_id, provider_profile=target.protocol, **scope)
+                if not projection.get("ok"):
+                    raise RuntimeError("subagent_completion_projection_failed")
+                history[:] = [engine._overlay_native_reasoning_content(dict(item["payload"]),
+                    native_reasoning_by_call_id=reasoning_by_call_id)
+                    for item in projection.get("messages", [])
+                    if source_id not in item.get("source_ids", []) and item.get("payload")]
         try:
             opened = manager.begin_input_turn(record, **scope)
             if not opened.get("ok") or not opened.get("writable", True) or opened.get("status") not in {"open", "opened"}:
@@ -120,12 +165,13 @@ class EngineSubagentDriver:
             hard_limit = engine._max_tool_rounds()
             tool_rounds = 0
             while True:
+                record_completions(pending_work.collect())
                 if cancelled():
                     return self._result(request, "cancelled", reason="subagent_cancelled_between_steps",
                                         artifacts=tuple(artifacts.values()))
                 response = llm.call_chat_json_result(
                     system_prompt=TASK_SYSTEM_PROMPT,
-                    user_prompt=f"Working directory: {request.working_directory}\n\nTask:\n{request.task}",
+                    user_prompt=task_prompt,
                     fallback={}, native_tools=tools, post_user_turns=history,
                     user_images=model_images or None,
                     execution_target=target, prompt_cache_key="akane-subagent-v1",
@@ -150,6 +196,9 @@ class EngineSubagentDriver:
                     summary = str(output.get("summary") or "").strip()
                     if status not in {"succeeded", "failed"} or not summary:
                         return self._result(request, "failed", reason="subagent_no_deliverable_result")
+                    if pending_work.pending:
+                        record_completions(pending_work.wait(cancelled))
+                        continue
                     final_record = {"source_id": request.child_session_id + ":result", "role": "assistant",
                                     "content": summary, "timestamp": int(time.time())}
                     closed = manager.complete_input_turn(
@@ -193,6 +242,18 @@ class EngineSubagentDriver:
                     items.append((call, result, feedback))
                     for artifact in _artifact_references(result):
                         artifacts[artifact["handle"]] = artifact
+                activation_changed = False
+                for result in executed:
+                    activation = (result.state_updates or {}).get("mcp_activation", {})
+                    for server_id, configuration in activation.get("servers", {}).items():
+                        if isinstance(configuration, dict) and mcp_activations.get(server_id) != configuration:
+                            mcp_activations[server_id] = dict(configuration)
+                            activation_changed = True
+                if activation_changed:
+                    selection = resolve_selection()
+                    tools = build_openai_native_tool_specs({name: selection.resolved_handlers[name]
+                        for name in selection.schema_tool_names if name in selection.resolved_handlers})
+                    selection = replace(selection, native_tool_aliases=native_tool_model_name_map(tools))
                 ids, error = engine._record_memcore_tool_batch(
                     items=items, now_ts=int(time.time()), current_user_source_id=source_id,
                     memcore_turn_id=turn_id, recorded_tool_call_ids=seen, **scope,
@@ -217,9 +278,26 @@ class EngineSubagentDriver:
                 )
                 if not projected.get("ok"):
                     return self._result(request, "failed", reason="subagent_tool_projection_failed")
+        except Exception as exc:
+            return self._result(request, "failed", reason="subagent_step_" + type(exc).__name__,
+                                artifacts=tuple(artifacts.values()))
         finally:
+            live_tasks.pop(request.child_session_id, None)
+            unconfirmed = pending_work.close()
+            if unconfirmed:
+                # Persist an audit fact even if this task could not finish its
+                # open turn. Unconfirmed work is never reported as terminated.
+                manager.append_standalone_event(
+                    {"event_type": "task.work.cancellation_unconfirmed", "source": "host",
+                     "fields": {"ids": ",".join(unconfirmed)}},
+                    source_id=request.child_session_id + ":unconfirmed", **scope,
+                )
             if turn_id:
                 manager.abort_input_turn(turn_id=turn_id, reason="subagent_not_completed", **scope)
+            if unconfirmed:
+                return self._result(request, "failed", reason="task_work_cancellation_unconfirmed",
+                                    summary="Task ended; termination remains unconfirmed for: " + ", ".join(unconfirmed),
+                                    artifacts=tuple(artifacts.values()))
 
     @staticmethod
     def _result(request: SubagentStartRequest, status: str, *, summary: str = "", reason: str = "",

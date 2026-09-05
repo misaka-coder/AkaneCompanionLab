@@ -205,7 +205,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                 "description": (
                     "启动目录（可选）：工作区相对路径、挂载别名或真实宿主绝对目录；已注册项目可使用 alias:project。"
                     "使用 input_resources 时必须省略 cwd；output_globs 可与 alias:project 同用。"
-                    "宿主绝对 cwd 不直接支持 output_globs；先将目录注册为项目再登记产物。"
+                    "output_globs 支持执行根或已登记项目内的绝对 cwd；已有文件用 manage_generated_file(action=register) 登记。"
                     "既无资源参数又省略时使用当前项目，没有当前项目时使用执行根；"
                     "省略但仅声明 output_globs 时，当前项目存在则在其中执行并登记，否则使用本次临时目录。"
                 ),
@@ -300,6 +300,7 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
                         "name": {"type": "string"},
                         "media_type": {"type": "string"},
                         "size_bytes": {"type": "integer"},
+                        "sha256": {"type": "string"},
                     },
                     "required": ["handle"],
                     "additionalProperties": False,
@@ -391,6 +392,7 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
                         "name": {"type": "string"},
                         "media_type": {"type": "string"},
                         "size_bytes": {"type": "integer"},
+                        "sha256": {"type": "string"},
                     },
                     "required": ["handle"],
                     "additionalProperties": False,

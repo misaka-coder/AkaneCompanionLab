@@ -210,7 +210,8 @@ class HostSubagentJobRuntime:
                 artifacts=result.artifacts,
             )
         elif result.status == "cancelled":
-            settled = self.store.confirm_cancelled(job.job_id, claim_token=claim_token)
+            settled = self.store.confirm_cancelled(job.job_id, claim_token=claim_token,
+                                                   result_summary=result.summary, artifacts=result.artifacts)
         else:
             settled = self.store.fail(
                 job.job_id,

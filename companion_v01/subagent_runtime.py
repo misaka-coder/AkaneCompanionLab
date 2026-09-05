@@ -219,6 +219,11 @@ def _normalize_artifacts(value: Any) -> tuple[dict[str, str], ...] | None:
             continue
         seen.add(handle)
         normalized.append({"handle": handle, "source": source or "subagent"})
+        digest = str(item.get("sha256") or "")
+        if digest:
+            if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                return None
+            normalized[-1]["sha256"] = digest
     return tuple(normalized)
 
 

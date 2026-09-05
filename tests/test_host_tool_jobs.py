@@ -88,6 +88,64 @@ def _context() -> ToolExecutionContext:
 
 
 class HostToolJobRuntimeTests(unittest.TestCase):
+    def test_queued_child_job_is_not_replayed_after_task_owner_disappears(self):
+        from companion_v01.task_work import TaskWork
+        from companion_v01.tool_handlers.core import TaskExecutionScope
+        with tempfile.TemporaryDirectory() as directory:
+            store = HostJobStore(Path(directory) / "jobs.db")
+            started, release, hold = threading.Event(), threading.Event(), threading.Event()
+            handler = _Handler(started=started, release=release)
+            engine = _Engine(handler)
+            work = TaskWork()
+            engine._live_task_work = {"child-a": work}
+            runner = BackgroundTaskRunner({"host-jobs": 1})
+            runtime = HostToolJobRuntime(engine=engine, store=store, background_tasks=runner)
+            try:
+                runner.submit(lane="host-jobs", name="hold", fn=hold.wait, args=(5,))
+                context = replace(_context(), execution_scope=TaskExecutionScope(directory, "child-a", work))
+                result = runtime.submit(capability_id="generate_image", invocation_id="call_same",
+                    call={"type": "generate_image", "prompt": "test"}, context=context)
+                job_id = result.state_updates["capability_execution"]["job_id"]
+                engine._live_task_work.clear()
+                hold.set()
+                self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=3))
+                job = store.get(job_id, owner=HostJobOwner("profile-a", "session-a"))
+                self.assertEqual(job.status, "failed")
+                self.assertEqual(job.last_error, "task_owner_not_running")
+                self.assertEqual(handler.calls, [])
+                self.assertEqual(store.pending_completions(), [])
+            finally:
+                hold.set()
+                release.set()
+                runner.close()
+
+    def test_sibling_jobs_do_not_share_provider_call_ids_and_queued_cancel_is_confirmed(self):
+        from companion_v01.task_work import TaskWork
+        from companion_v01.tool_handlers.core import TaskExecutionScope
+        with tempfile.TemporaryDirectory() as directory:
+            store = HostJobStore(Path(directory) / "jobs.db")
+            handler = _Handler(started=threading.Event(), release=threading.Event())
+            engine = _Engine(handler)
+            hold = threading.Event()
+            runner = BackgroundTaskRunner({"host-jobs": 1})
+            runtime = HostToolJobRuntime(engine=engine, store=store, background_tasks=runner)
+            jobs = []
+            try:
+                runner.submit(lane="host-jobs", name="hold", fn=hold.wait, args=(5,))
+                for child in ("child-a", "child-b"):
+                    work = TaskWork()
+                    context = replace(_context(), execution_scope=TaskExecutionScope(directory, child, work))
+                    result = runtime.submit(capability_id="generate_image", invocation_id="call_same",
+                        call={"type": "generate_image", "prompt": "test"}, context=context)
+                    jobs.append(result.state_updates["capability_execution"]["job_id"])
+                    self.assertEqual(work.close(), [])
+                    self.assertEqual(work.collect()[0]["status"], "cancelled")
+                self.assertNotEqual(*jobs)
+                self.assertEqual(handler.calls, [])
+            finally:
+                hold.set()
+                runner.close()
+
     def _terminal_job(self, store: HostJobStore):
         owner = HostJobOwner("profile-a", "session-a")
         created = store.create(

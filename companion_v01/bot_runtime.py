@@ -722,6 +722,10 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
     if handle_text:
         fields.append(("artifact_handles", handle_text))
         fields.append(("artifact_delivery_status", "available_not_delivered"))
+        hashes = ", ".join(f"{item['handle']}={item['sha256']}" for item in job.artifacts
+                           if isinstance(item, dict) and item.get("handle") and item.get("sha256"))[:2_000]
+        if hashes:
+            fields.append(("artifact_sha256", hashes))
     if error:
         fields.append(("error", error))
     lines = [

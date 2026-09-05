@@ -308,6 +308,31 @@ class ProjectWorkspaceService:
             return None
         return self._public_record(record, selected=True)
 
+    def output_directory(self, *, scope: ProjectWorkspaceScope, cwd: str | Path) -> Path:
+        """Authorize an output directory without changing the selected project."""
+        raw = Path(cwd)
+        candidate = (raw if raw.is_absolute() else self.execution_workspace_root / raw).absolute()
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ProjectWorkspaceError("invalid_output_cwd") from exc
+        if candidate != resolved or not resolved.is_dir():
+            raise ProjectWorkspaceError("invalid_output_cwd")
+        if self._path_is_within(resolved, self.execution_workspace_root):
+            return resolved
+        self._prepare_scope(scope)
+        for record in self.store.list_project_workspaces(
+            owner_kind=scope.owner_kind, owner_id=scope.owner_id, actor_scope=scope.actor_scope,
+            include_archived=False,
+        ):
+            try:
+                root = self._root_from_record(record, require_exists=True)
+            except ProjectWorkspaceError:
+                continue
+            if self._path_is_within(resolved, root):
+                return resolved
+        raise ProjectWorkspaceError("output_cwd_not_registered")
+
     def inspect_list(
         self,
         *,

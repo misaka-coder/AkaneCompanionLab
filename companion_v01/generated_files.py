@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import hashlib
+import mimetypes
+import os
 import json
 import math
 import re
@@ -800,6 +803,52 @@ class GeneratedFileService:
             output_format=normalized_format,
             timestamp=int(timestamp or time.time()),
         )
+
+    def register_workspace_artifact(
+        self, *, source: Path, root: Path, profile_user_id: str, session_id: str,
+        created_by_tool: str, timestamp: int, source_ids=None, max_bytes: int = 256 * 1024 * 1024,
+    ) -> dict[str, Any]:
+        """Copy authorized workspace bytes into the ordinary artifact store unchanged."""
+        source, root = Path(source).absolute(), Path(root).resolve(strict=True)
+        resolved = source.resolve(strict=True)
+        resolved.relative_to(root)
+        if resolved != source or not resolved.is_file():
+            raise ValueError("artifact_source_not_regular")
+        extension = source.suffix.lstrip(".").lower()
+        target = self.allocate_output_path(profile_user_id=profile_user_id, session_id=session_id,
+            title=source.stem, output_format=extension, timestamp=timestamp, allow_generic_format=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        size = 0
+        created = False
+        try:
+            with source.open("rb") as original, target.open("xb") as copied:
+                created = True
+                before = os.fstat(original.fileno())
+                while chunk := original.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise ValueError("artifact_source_too_large")
+                    copied.write(chunk)
+                    digest.update(chunk)
+                after = os.fstat(original.fileno())
+                current = source.stat()
+                fingerprint = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+                if fingerprint(before) != fingerprint(after) or fingerprint(after) != fingerprint(current):
+                    raise ValueError("artifact_source_changed")
+            generated = self.register_generated_artifact(
+                profile_user_id=profile_user_id, session_id=session_id, output_path=target,
+                output_title=source.stem, output_format=extension,
+                mime_type=mimetypes.guess_type(source.name)[0] or "application/octet-stream",
+                content_card={"sha256": digest.hexdigest()}, summary=f"Workspace artifact: {source.name}",
+                created_by_tool=created_by_tool, source_ids=source_ids, timestamp=timestamp,
+                send_to_user=False, allow_generic_format=True,
+            )
+            return {**generated, "sha256": digest.hexdigest()}
+        except Exception:
+            if created:
+                target.unlink(missing_ok=True)
+            raise
 
     def register_generated_artifact(
         self,

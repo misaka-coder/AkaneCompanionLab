@@ -29,7 +29,7 @@ RESOURCE_SCOPE = ExecutionResourceScope(profile_user_id="alice", session_id="s1"
 
 def _python_command(code: str) -> str:
     if os.name == "nt":
-        return subprocess.list2cmdline([sys.executable, "-c", code])
+        return "& '" + sys.executable.replace("'", "''") + "' -c '" + code.replace("'", "''") + "'"
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
@@ -445,7 +445,7 @@ class ExecRunResourceWiringTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "blocked")
         self.assertEqual(
             result.stream_events[0]["reason"],
-            "absolute_cwd_output_registration_unsupported",
+            "output_cwd_escapes_workspace",
         )
         self.assertIn("manage_project_workspace(action=open)", result.followup_context)
 

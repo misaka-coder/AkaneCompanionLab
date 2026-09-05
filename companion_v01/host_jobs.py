@@ -438,13 +438,16 @@ class HostJobStore:
             )
         return {"ok": True, "status": "cancelling", "reason": "host_job_cancel_requested"}
 
-    def confirm_cancelled(self, job_id: Any, *, claim_token: Any) -> dict[str, Any]:
+    def confirm_cancelled(self, job_id: Any, *, claim_token: Any, result_summary: Any = "", artifacts: Any = ()) -> dict[str, Any]:
+        artifacts_json = _json_artifacts(artifacts)
+        if artifacts_json is None:
+            return {"ok": False, "status": "invalid", "reason": "host_job_artifacts_not_json_safe"}
         return self._finish(
             job_id,
             claim_token=claim_token,
             status="cancelled",
-            result_summary="",
-            artifacts_json="[]",
+            result_summary=str(result_summary or "")[:4_000],
+            artifacts_json=artifacts_json,
             last_error="cancelled",
         )
 

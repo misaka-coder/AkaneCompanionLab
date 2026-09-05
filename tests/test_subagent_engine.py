@@ -114,6 +114,95 @@ class SubagentEngineTests(unittest.TestCase):
         self.assertEqual(result.reason, "subagent_model_route_changed")
         self.assertEqual(self.engine.llm.requests, [])
 
+    def test_fifty_ordinary_rounds_keep_prompt_schema_and_paired_history_stable(self):
+        self.engine._max_tool_rounds = lambda: 60
+        self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD: {
+            "type": "web_search", "query": str(index), TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            TOOL_INVOCATION_ID_FIELD: "search_" + str(index)}}) for index in range(50)]
+        self.engine.llm.responses.append(response({"status": "succeeded", "summary": "All completed."}))
+        result = self.driver(self.request, cancelled=lambda: False)
+        self.assertEqual(result.status, "succeeded", result)
+        first = self.engine.llm.requests[0]
+        for item in self.engine.llm.requests[1:]:
+            for key in ("system_prompt", "user_prompt", "native_tools"):
+                self.assertEqual(first[key], item[key])
+        history = self.engine.llm.requests[-1]["post_user_turns"]
+        self.assertEqual(len(history), 100)
+        self.assertEqual([m["tool_call_id"] for m in history if m["role"] == "tool"],
+                         ["search_" + str(index) for index in range(50)])
+
+    def test_catalog_and_deferred_mcp_expand_only_after_successful_load(self):
+        from companion_v01.tool_handlers.mcp_management import LoadMcpToolHandler
+        from tests.test_capability_adapter_mcp_orchestration import write_profile_config
+        from companion_v01.local_capability_config import get_mcp_server_runtime_config
+        write_profile_config(self.root, "alice", prompt_exposed=False, allowlist=["echo"])
+        runtime = get_mcp_server_runtime_config(base_dir=self.root, profile_user_id="alice", server_id="demo")
+        service = SimpleNamespace(
+            prompt_catalog=lambda **kw: "MCP: demo — echo text",
+            activate=lambda **kw: {"ok": True, "status": "ready", "_activation": {"servers": {"demo": runtime}}},
+        )
+        self.engine.mcp_management_service = service
+        self.engine.tool_handlers["load_mcp"] = LoadMcpToolHandler(service=service)
+        request = replace(self.request, allowed_tools=("load_mcp", "mcp.demo.echo", "web_search"))
+        self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD: {
+            "type": "load_mcp", "server_ids": ["demo"], TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            TOOL_INVOCATION_ID_FIELD: "load"}}), response({NATIVE_TOOL_CALL_FIELD: {
+            "type": "web_search", "query": "independent", TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            TOOL_INVOCATION_ID_FIELD: "read"}}), response({"status": "succeeded", "summary": "Loaded MCP."})]
+        result = self.driver(request, cancelled=lambda: False)
+        self.assertEqual(result.status, "succeeded", result)
+        first, loaded, later = self.engine.llm.requests
+        self.assertIn("MCP: demo", first["user_prompt"])
+        self.assertNotIn("manage_generated_file", first["user_prompt"])
+        self.assertNotIn("mcp_demo_echo", str(first["native_tools"]))
+        self.assertNotEqual(first["native_tools"], loaded["native_tools"])
+        self.assertEqual(loaded["native_tools"], later["native_tools"])
+        self.assertEqual(first["system_prompt"], later["system_prompt"])
+        self.assertEqual(first["user_prompt"], later["user_prompt"])
+
+
+    def test_long_tool_returns_id_and_resumes_child_without_parent_delivery(self):
+        import threading
+        from companion_v01.capability_registry import WEB_SEARCH_TOOL_SPEC
+        from companion_v01.tool_handlers.core import ToolMetadata
+        handler = self.engine.tool_handlers["web_search"]
+        handler.tool_spec = lambda: replace(WEB_SEARCH_TOOL_SPEC, execution_class="long_task")
+        handler.tool_metadata = lambda: ToolMetadata(operation="write")
+        release, started = threading.Event(), threading.Event()
+        background = BackgroundTaskRunner({"host-jobs": 2})
+        self.addCleanup(background.close)
+        self.addCleanup(release.set)
+        store = HostJobStore(self.root / "nested-jobs.db")
+        parent_deliveries = []
+        self.engine.host_tool_jobs = HostToolJobRuntime(engine=self.engine, store=store, background_tasks=background,
+            conversation_ref_issuer=lambda ctx: "parent-ref", terminal_callback=lambda job: parent_deliveries.append(job) or True)
+        def execute(*, call, context):
+            self.assertEqual(context.execution_scope.task_id, self.request.child_session_id)
+            self.assertEqual(context.execution_scope.working_directory, self.request.working_directory)
+            if call["query"] == "slow":
+                started.set()
+                if not release.wait(4):
+                    raise RuntimeError("independent_work_never_started")
+            else:
+                self.assertTrue(started.wait(2))
+                release.set()
+            return ToolExecutionResult(tool_type="web_search", followup_context="finished:" + call["query"])
+        handler.execute = execute
+        self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD: {
+            "type": "web_search", "query": word, TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            TOOL_INVOCATION_ID_FIELD: word}}) for word in ("slow", "independent")]
+        self.engine.llm.responses.extend([response({"status": "succeeded", "summary": "Both verified."}) for _ in range(4)])
+        result = self.driver(self.request, cancelled=lambda: False)
+        self.assertEqual(result.status, "succeeded", result)
+        self.assertTrue(release.is_set())
+        self.assertIn("job_id=", self.engine.llm.requests[1]["post_user_turns"][-1]["content"])
+        self.assertIn("finished:slow", str(self.engine.llm.requests[-1]["post_user_turns"]))
+        self.assertIn("task.work.completed", str(self.engine.llm.requests[-1]["post_user_turns"]))
+        self.assertEqual(parent_deliveries, [])
+        self.assertEqual(store.pending_completions(), [])
+        self.assertEqual(self.engine.llm.requests[0]["system_prompt"], self.engine.llm.requests[-1]["system_prompt"])
+        self.assertEqual(self.engine.llm.requests[0]["native_tools"], self.engine.llm.requests[-1]["native_tools"])
+
     def test_child_parallel_reads_use_shared_scheduler_and_paired_history(self):
         import threading
         from companion_v01.tool_handlers.core import ToolMetadata

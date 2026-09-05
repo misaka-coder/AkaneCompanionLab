@@ -172,6 +172,7 @@ def build_builtin_tool_handlers(
         "onebot_action": OneBotActionToolHandler(),
         "manage_generated_file": ManageGeneratedFileToolHandler(
             generated_file_service=generated_file_service,
+            project_workspace_service=project_workspace_service,
         ),
         "web_search": WebSearchToolHandler(
             config_base_dir=capability_config_base_dir,
