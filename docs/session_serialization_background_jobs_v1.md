@@ -112,7 +112,7 @@ Job 表只保存状态和引用。图片、音频、文件及大段日志继续�
 
 ```yaml
 execution_class: long_task       # sync | long_task
-completion_mode: agent           # agent | silent；direct 待真实渠道契约
+completion_mode: agent           # agent | silent
 memory_mode: timeline            # current_turn | timeline
 ```
 
@@ -171,14 +171,16 @@ memory_mode: timeline
 
 戳一戳、贴表情、撤回等操作仍产生内部工具结果，以保持协议、日志和错误处理完整。
 
-是否继续请求模型由宿主真实回执决定：
+同步动作的续推契约见 `tool_result_continuation_v1.md`。默认继续；注册允许省略续推，且模型在本次调用明确选择结束、宿主确认成功时，才省去下一次请求：
 
 ```yaml
-visible_effect_delivered: true
-needs_model_followup: false
+model_followup: optional   # 插件 descriptor.raw 的注册策略
+finish_turn: true          # 本次模型调用选择；不是插件业务参数
 ```
 
-这些事实由宿主交付层生成，插件和模型不能自行声明成功。成功且无需补充时，不再启动一次模型说“操作成功”；失败则允许 Agent 解释、重试或降级。
+宿主结果中的 `finish_turn` 是执行后事实，不是模型传参的照抄。OneBot 以真实传输成功回执为准；插件以已校验的成功结果为准，不把它解释成消息已投递。同批每项都满足才结束，失败、待交付产物、查询或新的用户插话都不能被截掉。子代理仍需完成自己的最终报告。
+
+后台 `silent + timeline` 仍通过同一个 Job 完成队列写入 MemCore，不请求模型、不发送消息。失败保留 pending，宿主恢复时重试同一个完成事件；不另建通知执行器。`silent + current_turn` 只保留 Job 终态及调用方已有轨迹。Shell 即时完成与子代理内部任务使用后者，避免重复完成事件。
 
 ## 10. 子代理的后续接入
 

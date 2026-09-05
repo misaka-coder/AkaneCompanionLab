@@ -103,7 +103,9 @@ class HostExecutionJobRuntime:
             delivery_target=conversation_ref,
             tool_call_id=run_id,
             completion_mode="silent",
-            memory_mode="timeline",
+            # Synchronous completion is already paired in the calling turn.
+            # arm_agent_completion promotes this only after exec_run yields.
+            memory_mode="current_turn",
         )
         if not created.get("ok") or created.get("status") == "duplicate":
             return {

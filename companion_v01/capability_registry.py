@@ -13,6 +13,7 @@ from memcore import build_native_memory_tool_specs
 from .client_protocol import ClientMode
 from .desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
 from .onebot_model_actions import MODEL_ONEBOT_ACTION_NAMES, MODEL_ONEBOT_MESSAGE_SELECTOR_KINDS
+from .tool_continuation import FINISH_TURN_PARAMETER
 
 
 DOCUMENT_ATTACHMENT_FORMATS = {
@@ -1186,6 +1187,7 @@ ONEBOT_ACTION_TOOL_SPEC = CapabilityToolSpec(
                 "additionalProperties": True,
                 "description": "Exact OneBot request object for the chosen action; use {} for capabilities.",
             },
+            "finish_turn": dict(FINISH_TURN_PARAMETER),
             "message_selector": {
                 "type": "object",
                 "additionalProperties": False,

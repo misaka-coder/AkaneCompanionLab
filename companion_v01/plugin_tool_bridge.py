@@ -12,6 +12,8 @@ from capcore import CapabilityDescriptor, CapabilityResult, InvocationContext, f
 from .client_protocol import ClientMode, ClientProtocolContext
 from .plugin_result_experience import PLUGIN_RESULT_DATA_KEY, PLUGIN_RESULT_EXPERIENCE_KEY
 from .plugin_api import PluginInvocationContext
+from .tool_continuation import optional_followup_schema
+from .tool_handlers.core import ToolExecutionAdmission
 from .tool_runtime import (
     AdapterCapabilityToolHandler,
     ToolExecutionContext,
@@ -105,7 +107,54 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
         execution_class = str(raw.get("execution_class") or "sync").strip().lower()
         if execution_class not in {"sync", "long_task"}:
             execution_class = "sync"
-        return replace(base, execution_class=execution_class)
+        schema = optional_followup_schema(base.input_schema) if self._optional_followup() else base.input_schema
+        return replace(base, execution_class=execution_class, input_schema=schema)
+
+    def _optional_followup(self) -> bool:
+        raw = self.descriptor.raw if isinstance(self.descriptor.raw, Mapping) else {}
+        return (
+            raw.get("model_followup") == "optional"
+            and str(raw.get("execution_class") or "sync").strip().lower() == "sync"
+        )
+
+    def build_prompt_instruction(self) -> str:
+        from .tool_handlers.core import BaseToolHandler
+
+        # Use the same ToolSpec as native projection, including host arguments.
+        return BaseToolHandler.build_prompt_instruction(self)
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not self._optional_followup() or not isinstance(value, dict):
+            return super().normalize_call(value)
+        cleaned = dict(value)
+        args = cleaned.get("arguments")
+        if isinstance(args, Mapping):
+            args = dict(args)
+            finish = args.pop("finish_turn", cleaned.pop("finish_turn", False))
+            cleaned["arguments"] = args
+        else:
+            finish = cleaned.pop("finish_turn", False)
+        if not isinstance(finish, bool):
+            return None
+        normalized = super().normalize_call(cleaned)
+        if normalized is not None:
+            normalized["finish_turn"] = finish
+        return normalized
+
+    def admit_execution(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionAdmission:
+        admission = super().admit_execution(call=call, context=context)
+        if admission.call is not None and self._optional_followup():
+            return ToolExecutionAdmission.allow({**admission.call, "finish_turn": call.get("finish_turn") is True})
+        return admission
+
+    def execute_admitted(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = super().execute_admitted(call=call, context=context)
+        result.finish_turn = (
+            result.finish_turn
+            and call.get("finish_turn") is True
+            and not result.state_updates.get("plugin_managed_artifact_count")
+        )
+        return result
 
     def background_job_policy(self) -> tuple[str, str]:
         raw = self.descriptor.raw if isinstance(self.descriptor.raw, Mapping) else {}
@@ -199,12 +248,7 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
                 lines.append("投递状态：系统将在当前客户端尝试投递；此工具结果尚不代表投递成功。")
             else:
                 lines.append("投递状态：未请求自动投递，不能声称已经发送给用户。")
-        response_requirement = (
-            "响应要求：基于以上证据用 Akane 自己的语气自然回应，不要照抄结构字段；"
-            "保留重要的数据时间、口径和风险。不要把产物已登记说成已发送成功，也不要无理由重复调用同一工具。"
-        )
-        body = "\n".join(lines)
-        return f"{body}\n{response_requirement}"
+        return "\n".join(lines)
 
     def _append_experience_items(
         self,
@@ -232,6 +276,11 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
         content = getattr(capability_result, "content", None)
         if bool(getattr(capability_result, "is_error", False)) or not isinstance(content, Mapping):
             return execution_result
+        execution_result.finish_turn = (
+            self._optional_followup()
+            and str(getattr(capability_result, "status", "")) in {"ok", "success", "succeeded", "completed"}
+            and not content.get("managed_artifacts")
+        )
         if isinstance(content.get(PLUGIN_RESULT_EXPERIENCE_KEY), Mapping):
             execution_result.state_updates["plugin_result_experience"] = "projected"
         artifacts = content.get("managed_artifacts")

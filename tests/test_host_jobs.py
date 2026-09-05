@@ -194,6 +194,7 @@ class HostJobStoreTests(unittest.TestCase):
                     owner=self.owner, capability_source=source, capability_id="test",
                     payload={}, idempotency_key="running", argument_fingerprint="test",
                     completion_mode="silent",
+                    memory_mode="current_turn",
                 )
                 store.claim(running["job_id"], worker_id="worker")
                 store.recover_abandoned_claims()
@@ -213,6 +214,7 @@ class HostJobStoreTests(unittest.TestCase):
                 idempotency_key="execrun_test",
                 argument_fingerprint="sha256:test",
                 completion_mode="silent",
+                memory_mode="current_turn",
             )
             claimed = store.claim(created["job_id"], worker_id="execution")
             store.succeed(
@@ -228,6 +230,7 @@ class HostJobStoreTests(unittest.TestCase):
             self.assertTrue(armed["ok"])
             pending = store.get(created["job_id"], owner=self.owner)
             self.assertEqual(pending.completion_mode, "agent")
+            self.assertEqual(pending.memory_mode, "timeline")
             self.assertEqual(pending.completion_status, "pending")
 
 

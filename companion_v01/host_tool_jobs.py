@@ -121,6 +121,7 @@ class HostToolJobRuntime:
             # The live task consumes the terminal fact. Never wake its parent
             # character, including when recovery later settles this job.
             completion_mode = "silent"
+            memory_mode = "current_turn"
         payload = {
             "call": normalized_call,
             "client_mode": str(context.client_mode or ""),

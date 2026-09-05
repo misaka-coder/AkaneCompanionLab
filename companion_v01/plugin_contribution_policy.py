@@ -93,7 +93,14 @@ def _validate_background_semantics(
     descriptor: CapabilityDescriptor,
 ) -> ContributionPolicyDecision:
     raw = descriptor.raw if isinstance(descriptor.raw, Mapping) else {}
+    model_followup = raw.get("model_followup", "required")
+    if not isinstance(model_followup, str) or model_followup not in {"required", "optional"}:
+        return ContributionPolicyDecision.reject()
     execution_class = str(raw.get("execution_class") or "sync").strip().lower()
+    if model_followup == "optional" and execution_class == "sync":
+        # This host argument must never shadow a plugin's business argument.
+        if any(slot.name == "finish_turn" for slot in descriptor.inputs):
+            return ContributionPolicyDecision.reject()
     completion_mode = str(raw.get("completion_mode") or "agent").strip().lower()
     memory_mode = str(raw.get("memory_mode") or "timeline").strip().lower()
     if execution_class not in {"sync", "long_task"}:

@@ -114,6 +114,23 @@ class SubagentEngineTests(unittest.TestCase):
         self.assertEqual(result.reason, "subagent_model_route_changed")
         self.assertEqual(self.engine.llm.requests, [])
 
+    def test_tool_optional_followup_does_not_replace_child_final_report(self):
+        handler = self.engine.tool_handlers["web_search"]
+        original = handler.execute
+        def execute(**kwargs):
+            result = original(**kwargs)
+            result.finish_turn = True
+            return result
+        with patch.object(handler, "execute", side_effect=execute):
+            self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD: {
+                "type": "web_search", "query": "test", TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "final-action",
+            }}), response({"status": "succeeded", "summary": "Parent still gets the final report."})]
+            result = self.driver(self.request, cancelled=lambda: False)
+        self.assertEqual(result.status, "succeeded", result)
+        self.assertIn("final report", result.summary)
+        self.assertEqual(len(self.engine.llm.requests), 2)
+
     def test_fifty_ordinary_rounds_keep_prompt_schema_and_paired_history_stable(self):
         self.engine._max_tool_rounds = lambda: 60
         self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD: {

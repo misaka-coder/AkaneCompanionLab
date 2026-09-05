@@ -121,6 +121,9 @@ class ToolExecutionResult:
     model_image_inputs: list[dict[str, Any]] = field(default_factory=list)
     # Host diagnostics only: never part of model feedback or capability schema.
     execution_timing: dict[str, float] = field(default_factory=dict)
+    # Host-confirmed successful final action, explicitly requested by the caller.
+    # Does not suppress tool history or replace a subagent's final report.
+    finish_turn: bool = False
 
 
 @dataclass(frozen=True)

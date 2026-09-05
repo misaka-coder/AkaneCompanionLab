@@ -43,6 +43,10 @@ class OneBotActionToolHandler(BaseToolHandler):
         normalized = {"type": self.tool_type, "action": action, "params": dict(params)}
         if isinstance(selector, dict):
             normalized["message_selector"] = dict(selector)
+        if "finish_turn" in value:
+            if not isinstance(value["finish_turn"], bool):
+                return None
+            normalized["finish_turn"] = value["finish_turn"]
         return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -96,7 +100,14 @@ class OneBotActionToolHandler(BaseToolHandler):
                 "reason": "qq_onebot_transport_exception",
                 "action": action,
             }
-        return self._result(outcome)
+        result = self._result(outcome)
+        result.finish_turn = (
+            call.get("finish_turn") is True
+            and outcome.get("ok") is True
+            and outcome.get("status") == "success"
+            and model_onebot_action_is_user_visible(action)
+        )
+        return result
 
     def _result(self, payload: dict[str, Any]) -> ToolExecutionResult:
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

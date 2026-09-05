@@ -46,9 +46,15 @@ artifact lifecycle. This Skill adds no tools or permissions.
   path through its descriptor `raw` mapping:
   `{"execution_class":"long_task","completion_mode":"agent","memory_mode":"timeline"}`.
   The host validates and authorizes the call before acknowledging it, then returns a durable Job
-  id and wakes the same character conversation after completion. Use `completion_mode="silent"`
-  only when the plugin exposes another honest way to read the result. Ordinary quick capabilities
-  should omit these keys and stay synchronous.
+  id and wakes the same character conversation after completion. `completion_mode="silent"`
+  skips that wakeup; `memory_mode="timeline"` still records the final fact in MemCore.
+  With `memory_mode="current_turn"`, the durable Job remains queryable but no standalone
+  timeline event is emitted. Ordinary quick capabilities omit these keys and stay synchronous.
+- A synchronous final action can declare `raw={"model_followup":"optional"}`. The host adds
+  an optional `finish_turn` argument: the model sets it when no later step or reply is needed.
+  The plugin receives only its business arguments. Only confirmed success may end the turn;
+  failures, pending artifacts and mixed batches still continue. Calls/results remain paired
+  in MemCore. Omit this policy for tools whose results normally need interpretation.
 
 - Use `get_agent_event_port().submit(...)` for a background event that should make the
   active character respond. Store `ctx.conversation_ref` when configuring delayed work;

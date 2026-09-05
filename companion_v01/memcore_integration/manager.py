@@ -1729,11 +1729,12 @@ class MemcoreManager:
         provider_profile: str = "",
         provider_projection: dict[str, Any] | None = None,
         annotation_status: str = "accepted_model",
+        append_final: bool = True,
     ) -> dict[str, Any]:
         operation = "complete_input_turn"
         resolved_turn_id = str(turn_id or "").strip()
         source_id = str((assistant_record or {}).get("source_id") or "").strip()
-        if not resolved_turn_id or not source_id:
+        if not resolved_turn_id or (append_final and not source_id):
             return self._status(
                 operation,
                 False,
@@ -1752,7 +1753,7 @@ class MemcoreManager:
         try:
             resolved_provider_profile = (
                 resolve_memcore_provider_profile(provider_profile)
-                if isinstance(provider_projection, dict)
+                if isinstance(provider_projection, dict) or (provider_profile and not append_final)
                 else ""
             )
             result = system.complete_turn(
@@ -1762,7 +1763,8 @@ class MemcoreManager:
                 memory_annotation=memory_metadata if isinstance(memory_metadata, dict) else None,
                 annotation_status=str(annotation_status or "missing"),
                 timestamp=int((assistant_record or {}).get("timestamp") or time.time()),
-                source_id=source_id,
+                source_id=source_id if append_final else "",
+                append_final=append_final,
                 payload={
                     "semantic_tags": list((assistant_record or {}).get("semantic_tags") or []),
                 },
@@ -1780,7 +1782,7 @@ class MemcoreManager:
                     operation,
                     bool(getattr(result, "completed", False)) or result_status == "already_completed",
                     result_status or "failed",
-                    source_id=str(getattr(final_entry, "source_id", "") or source_id),
+                    source_id=str(getattr(final_entry, "source_id", "") or ""),
                     index_status=str(getattr(final_entry, "index_status", "") or ""),
                     reason=str(getattr(result, "reason", "") or ""),
                 ),

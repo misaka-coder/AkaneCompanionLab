@@ -35,6 +35,7 @@ from .capability_registry import (
 )
 from . import desktop_pet_engine
 from .tool_batch import execute_tool_batch
+from .tool_continuation import can_finish_tool_batch
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from .generated_files import GeneratedFileService
 from .cover_song import CoverSongService, RvcWebUiProvider
@@ -1530,6 +1531,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        append_final: bool = True,
     ) -> dict[str, Any]:
         manager = self._memcore_manager_if_enabled()
         if manager is None or not str(turn_id or "").strip():
@@ -1537,12 +1539,12 @@ class AkaneMemoryEngine:
         try:
             provider_profile = ""
             provider_projection: dict[str, Any] | None = None
-            if str(provider_output_raw or ""):
+            if str(provider_output_raw or "") or not append_final:
                 provider_profile = self._chat_provider_protocol_for_memcore(
                     chat_model_override=chat_model_override,
                     execution_target=execution_target,
                 )
-                if provider_profile:
+                if provider_profile and str(provider_output_raw or ""):
                     provider_projection = {
                         "role": "assistant",
                         "content": str(provider_output_raw),
@@ -1561,6 +1563,7 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
+                append_final=append_final,
             )
             self._warn_memcore_write_result("input turn completion", result)
             return result
@@ -1607,6 +1610,7 @@ class AkaneMemoryEngine:
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
+                append_final=not bool(final_output.get("_tool_finished_turn")),
             )
             if not completion or bool(completion.get("ok")):
                 if completion and completion.get("ok"):
@@ -4870,6 +4874,23 @@ class AkaneMemoryEngine:
             batch_memcore_failure = self._tool_batch_memcore_failure(batch_results)
             if batch_memcore_failure is not None:
                 turn_memcore_failure = batch_memcore_failure
+            if batch_memcore_failure is None and can_finish_tool_batch(batch_results):
+                # Calls/results have already been paired in MemCore. Finish via
+                # the existing silent-turn path, not a fabricated model reply.
+                final_output = {
+                    "emotion": final_output.get("emotion", "normal"),
+                    "reply_medium": "text",
+                    "speech": "",
+                    "speech_segments": [],
+                    "tool_call": None,
+                    "_deliberate_silence": True,
+                    "_tool_finished_turn": True,
+                }
+                provider_output_raw = ""
+                tool_round_index += 1
+                # Re-enter the normal finalization boundary so a user steer or
+                # stop arriving during the action is not lost.
+                continue
             turn_execution_target = self._recompute_turn_execution_target(
                 current_target=turn_execution_target,
                 tool_results=batch_results,
@@ -5079,10 +5100,9 @@ class AkaneMemoryEngine:
                         },
                     )
         elif deliberate_silence and memcore_turn_id and not externally_managed_memcore_turn:
-            # Close the authoritative MemCore turn with the exact provider
-            # envelope, but do not create a blank assistant bubble in the
-            # legacy/user-readable timeline. Tool calls and results already
-            # attached to this open turn remain replayable.
+            # Preserve an actual silent provider envelope; a host-completed
+            # action closes without appending any assistant entry. Neither path
+            # creates a blank legacy bubble. Tool pairs remain replayable.
             silent_assistant_record = {
                 "source_id": f"assistant_silent_{uuid.uuid4().hex}",
                 "role": "assistant",

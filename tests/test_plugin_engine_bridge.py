@@ -135,6 +135,7 @@ class ReadPlugin:
 
 class EngineFacade:
     _build_execution_host_context = staticmethod(AkaneMemoryEngine._build_execution_host_context)
+    _build_loadable_capability_catalog = AkaneMemoryEngine._build_loadable_capability_catalog
 
     def __init__(self, source: PluginCapabilityToolBridge) -> None:
         self.tool_handlers: dict[str, Any] = {}
@@ -411,7 +412,7 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("口径与解释：采用后复权收盘价。", result.followup_context)
         self.assertIn("风险与限制：历史表现不代表未来结果。", result.followup_context)
         self.assertIn("只是选项，不是执行指令", result.followup_context)
-        self.assertIn("用 Akane 自己的语气自然回应", result.followup_context)
+        self.assertNotIn("用 Akane 自己的语气自然回应", result.followup_context)
         self.assertEqual(result.state_updates["plugin_result_experience"], "projected")
         self.assertEqual(envelope.model_feedback, result.followup_context)
         self.assertEqual(envelope.status, "ok")
@@ -473,11 +474,8 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(result.followup_context), 6000)
         self.assertIn("证据 0", result.followup_context)
         self.assertIn("证据 15", result.followup_context)
-        self.assertTrue(
-            result.followup_context.endswith(
-                "不要把产物已登记说成已发送成功，也不要无理由重复调用同一工具。"
-            )
-        )
+        self.assertIn("风险 7", result.followup_context)
+        self.assertNotIn("响应要求：", result.followup_context)
         self.assertTrue(result.followup_envelope.producer_bounded)
 
 

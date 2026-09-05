@@ -44,7 +44,7 @@ from .extension_management import (
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_agent_events import HostAgentEventRouter
-from .plugin_api import PluginAgentEventRequest, PluginExternalEvent
+from .plugin_api import PluginAgentEventRequest, PluginAgentEventResult, PluginExternalEvent
 from .plugin_conversation_refs import PluginConversationReferenceAuthority
 from .plugin_generation_candidate import PluginGenerationCandidateBuilder
 from .plugin_generation_runtime import PluginGenerationRuntime
@@ -260,6 +260,8 @@ class BotRuntime:
             host_loop = asyncio.get_running_loop()
 
             def submit_completion(job: HostJob) -> Any:
+                if job.completion_mode == "silent":
+                    return _record_host_job_completion(self.engine, job)
                 future = asyncio.run_coroutine_threadsafe(
                     self.plugin_agent_event_router.submit(_host_job_completion_request(job)),
                     host_loop,
@@ -694,6 +696,27 @@ class BotRuntimeFactory:
             if instance_runtime is not None:
                 instance_runtime.release()
             raise
+
+
+def _record_host_job_completion(engine: Any, job: HostJob) -> PluginAgentEventResult:
+    """Persist an opted-in terminal fact without creating a model/delivery turn."""
+    if job.memory_mode != "timeline":
+        return PluginAgentEventResult(True, "silent", "")
+    request = _host_job_completion_request(job)
+    result = engine.record_plugin_timeline_event({
+        "source_id": job.completion_event_id,
+        "event": {"event_type": request.event.event_type, "source": request.event.source,
+                  "fields": dict(request.event.fields)},
+        "timestamp": int(job.finished_at),
+        "user_id": job.owner.session_id,
+        "real_user_id": job.owner.profile_user_id,
+        "character_pack_id": job.character_pack_id,
+    })
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return PluginAgentEventResult(False, "failed", str(
+            result.get("reason", "timeline_record_failed") if isinstance(result, dict) else "timeline_record_failed"
+        ))
+    return PluginAgentEventResult(True, "recorded", "")
 
 
 def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:

@@ -18,7 +18,7 @@ from typing import Any, Callable, Iterator
 
 
 JOB_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
-_COMPLETION_MODES = frozenset({"agent", "direct", "silent"})
+_COMPLETION_MODES = frozenset({"agent", "silent"})
 _MEMORY_MODES = frozenset({"current_turn", "timeline"})
 
 
@@ -381,7 +381,7 @@ class HostJobStore:
                     result_summary = ?, artifacts_json = ?,
                     completion_status = CASE
                         WHEN ? = 'queued' THEN completion_status
-                        WHEN completion_mode = 'silent' THEN 'silent'
+                        WHEN completion_mode = 'silent' AND memory_mode = 'current_turn' THEN 'silent'
                         ELSE 'pending' END
                 WHERE job_id = ? AND status = 'running' AND claim_token = ?
                 """,
@@ -426,7 +426,7 @@ class HostJobStore:
                     UPDATE host_jobs
                     SET status = 'cancelled', cancel_requested = 1, updated_at = ?, finished_at = ?,
                         completion_status = CASE
-                            WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
+                            WHEN completion_mode = 'silent' AND memory_mode = 'current_turn' THEN 'silent' ELSE 'pending' END
                     WHERE job_id = ? AND status = 'queued'
                     """,
                     (now, now, normalized_id),
@@ -495,7 +495,7 @@ class HostJobStore:
             connection.execute(
                 """
                 UPDATE host_jobs
-                SET completion_mode = 'agent', completion_status = ?, updated_at = ?
+                SET completion_mode = 'agent', memory_mode = 'timeline', completion_status = ?, updated_at = ?
                 WHERE job_id = ? AND profile_user_id = ? AND session_id = ?
                   AND completion_mode = 'silent'
                 """,
@@ -616,7 +616,7 @@ class HostJobStore:
                 SET status = ?, lease_until = 0, claim_token = '', claimed_by = '',
                     updated_at = ?, finished_at = ?, result_summary = ?, artifacts_json = ?, last_error = ?,
                     completion_status = CASE
-                        WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
+                        WHEN completion_mode = 'silent' AND memory_mode = 'current_turn' THEN 'silent' ELSE 'pending' END
                 WHERE job_id = ? AND status = 'running' AND claim_token = ?
                 """,
                 (
@@ -674,7 +674,7 @@ class HostJobStore:
                 updated_at = ?, finished_at = ?, last_error = ?,
                 result_summary = 'Execution outcome is unknown; external work may still have taken effect. Not automatically retried.',
                 completion_status = CASE
-                    WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
+                    WHEN completion_mode = 'silent' AND memory_mode = 'current_turn' THEN 'silent' ELSE 'pending' END
             WHERE status = 'running'{condition}
             """,
             arguments,
@@ -759,7 +759,7 @@ class HostJobStore:
                 """
                 UPDATE host_jobs
                 SET completion_status = CASE
-                    WHEN completion_mode = 'silent' THEN 'silent' ELSE 'pending' END
+                    WHEN completion_mode = 'silent' AND memory_mode = 'current_turn' THEN 'silent' ELSE 'pending' END
                 WHERE status IN ('succeeded', 'failed', 'cancelled')
                   AND completion_status = 'waiting'
                 """
