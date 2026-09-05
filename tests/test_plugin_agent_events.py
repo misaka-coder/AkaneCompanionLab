@@ -12,6 +12,7 @@ from companion_v01.plugin_agent_events import (
     _PluginScopedAgentEventPort,
 )
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
+from companion_v01.qq_gateway import QQMessageContext
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.plugin_api import (
@@ -527,7 +528,9 @@ class ConversationReferenceAuthorityTests(unittest.TestCase):
                 session_id="master",
                 character_pack_id="reimu",
                 client_mode="qq",
-                request_context={"user_id": 1906243651, "group_id": 0},
+                request_context=QQMessageContext(should_respond=True, reason="private",
+                    user_id=1906243651, target_id=1906243651, session_id="master",
+                    profile_user_id="master", character_pack_id="reimu").to_turn_payload(),
             )
             first = PluginConversationReferenceAuthority(key_path, instance_id="personal")
             reference = first.issue(context)
@@ -555,6 +558,26 @@ class ConversationReferenceAuthorityTests(unittest.TestCase):
 
             self.assertEqual(resolved["actor"], "qq:123")
             self.assertEqual(resolved["actor_profile"], "qq_user_123")
+
+    def test_group_tool_context_uses_real_gateway_payload_not_engine_user_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            authority = PluginConversationReferenceAuthority(Path(temp) / "key", instance_id="personal")
+            group = QQMessageContext(should_respond=True, reason="group_mention", is_group=True,
+                group_id=87, target_id=87, user_id=123, session_id="qq_group_shared_87",
+                profile_user_id="qq_group_shared_87", actor_profile_user_id="qq_user_123",
+                character_pack_id="reimu")
+            payload = group.to_turn_payload()
+            self.assertEqual(payload["user_id"], group.session_id)
+            context = types.SimpleNamespace(profile_user_id=group.profile_user_id, session_id=group.session_id,
+                character_pack_id=group.character_pack_id, client_mode="qq_text", request_context=payload)
+            resolved = authority.resolve(authority.issue(context))
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved["recipient"], "group:87")
+            self.assertEqual(resolved["actor"], "qq:123")
+            self.assertEqual(resolved["actor_profile"], "qq_user_123")
+            self.assertEqual(resolved["character"], "reimu")
+            context.request_context = {"user_id": 123, "group_id": 87}
+            self.assertEqual(authority.issue(context), "")
 
     def test_desktop_reference_is_restart_stable_and_channel_bound(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

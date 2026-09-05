@@ -36,16 +36,21 @@ class PluginConversationReferenceAuthority:
             )
         if client_mode not in {"qq", "qq_text"}:
             return ""
-        group_id = _positive_id(request_context.get("group_id"))
-        user_id = _positive_id(request_context.get("user_id"))
+        # QQ turn payload.user_id is the Engine session key, not a QQ account.
+        # All delayed work uses the same channel-owned delivery context.
+        delivery = request_context.get("qq_delivery_context")
+        if not isinstance(delivery, Mapping):
+            return ""
+        group_id = _positive_id(delivery.get("group_id"))
+        user_id = _positive_id(delivery.get("user_id"))
         return self.issue_qq(
             profile_user_id=profile_user_id,
             session_id=session_id,
             character_pack_id=character_pack_id,
             user_id=user_id,
             group_id=group_id,
-            actor_stable_id=str(request_context.get("actor_stable_id") or ""),
-            actor_profile_user_id=str(request_context.get("actor_profile_user_id") or ""),
+            actor_stable_id=str(delivery.get("actor_stable_id") or ""),
+            actor_profile_user_id=str(delivery.get("actor_profile_user_id") or ""),
         )
 
     def issue_qq(

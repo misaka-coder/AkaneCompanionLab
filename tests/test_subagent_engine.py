@@ -20,6 +20,7 @@ from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.bot_runtime import _host_job_completion_request
 from companion_v01.project_workspace import ProjectWorkspaceService
+from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
 from companion_v01.execution_local import TrustedLocalExecutor
 from companion_v01.store import MemoryStore
 from companion_v01.tool_handlers.project_workspace import ProjectInspectToolHandler, WorkspaceWriteToolHandler
@@ -269,8 +270,9 @@ class SubagentEngineTests(unittest.TestCase):
         registry = SubagentProviderRegistry()
         registry.register(InProcessSubagentProvider(self.driver))
         runtime = HostSubagentJobRuntime(store=jobs, providers=registry, provider_name="in_process", background_tasks=background)
+        authority = PluginConversationReferenceAuthority(self.root / "conversation.key", instance_id="test")
         self.engine.tool_handlers["spawn_subagent"] = SpawnSubagentToolHandler(
-            engine=self.engine, runtime=runtime, conversation_ref_issuer=lambda ctx: "ref:" + ctx.session_id)
+            engine=self.engine, runtime=runtime, conversation_ref_issuer=authority.issue)
         client = self.engine._resolve_client_protocol_context({"client_mode": "desktop_pet"})
         selection = self.engine._resolve_capability_selection(client_context=client, profile_user_id="alice", session_id="parent")
         self.assertIn("spawn_subagent", selection.schema_tool_names)
@@ -281,17 +283,19 @@ class SubagentEngineTests(unittest.TestCase):
             user_message="delegate", client_context=client, profile_user_id="alice", session_id="parent")
         self.assertEqual(rejected, [])
         record = {"source_id": "parent-input", "role": "user", "content": "delegate", "timestamp": 1}
-        opened = self.engine.memcore_manager.begin_input_turn(record, profile_user_id="alice", session_id="parent")
+        opened = self.engine.memcore_manager.begin_input_turn(record, profile_user_id="alice", session_id="parent",
+                                                              character_pack_id="reimu")
         self.engine.llm.responses = [response({"status": "succeeded", "summary": "Task scope reviewed."})]
         results, _events = self.engine._execute_and_record_tool_batch(
             tool_calls=calls, final_output=output, tool_results=[], tool_events=[], tool_followups=[], tool_turns=[],
-            recent_raw_for_turn=[], profile_user_id="alice", session_id="parent", character_pack_id="", now_ts=1,
+            recent_raw_for_turn=[], profile_user_id="alice", session_id="parent", character_pack_id="reimu", now_ts=1,
             current_user_source_id="parent-input", client_context=client, memory_exclude_source_ids=[], request_context={},
             tool_history_turns=[], memcore_turn_id=opened["turn_id"], execution_target=self.engine.llm.target)
         accepted = results[0].stream_events[0]
         self.assertEqual(accepted["status"], "accepted", results[0])
         job = jobs.get(accepted["job_id"], owner=HostJobOwner("alice", "parent"))
         self.assertEqual(job.status, "queued")
+        self.assertEqual(authority.resolve(job.delivery_target)["character"], "reimu")
         self.assertEqual(job.payload["working_directory"], project["working_directory"])
         self.assertNotIn("spawn_subagent", job.payload["allowed_tools"])
         self.assertEqual(job.payload["execution_context"]["route_fingerprint"], model_route_fingerprint(self.engine.llm.target))
