@@ -231,7 +231,7 @@ needs_model_followup: false
 7. 将现有 Shell run 状态接入 Job 权威和完成通知。（已完成，真实渠道验收归入下一轮 smoke）
 8. 迁移 ComfyUI、媒体处理和插件后台工作。（已完成；真实渠道 smoke 仍待执行）
 9. 删除旧的 route-owned/in-memory Job 权威与重复通知路径。（已完成）
-10. 再设计并接入子代理。
+10. 再设计并接入子代理。（见 `subagent_runtime_v1.md`：契约、Job 和工具范围校验已完成；真实 child 驱动及模型入口待接入）
 11. 最后实现经过能力门控的 Responses 原生异步。
 
 每一项单独验证和提交，不在同一切片同时重写 UI、MemCore 与 Provider 适配。

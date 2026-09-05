@@ -393,6 +393,61 @@ def _freeze_capability_selection(
     )
 
 
+def restrict_capability_selection(
+    selection: CapabilitySelection,
+    *,
+    allowed_tool_names: tuple[str, ...] | list[str],
+) -> CapabilitySelection:
+    """Intersect one already-resolved selection for a host-owned child turn.
+
+    Filtering the frozen selection keeps schema visibility and execution
+    dispatch on the same handler set.  It never resolves a hidden handler by
+    name and therefore cannot widen the parent's effective capabilities.
+    """
+
+    allowed = {
+        str(name or "").strip()
+        for name in allowed_tool_names
+        if str(name or "").strip()
+    }
+    if selection.execution_allowlist is not None:
+        allowed.intersection_update(selection.execution_allowlist)
+    tool_names = tuple(name for name in selection.tool_names if name in allowed)
+    schema_tool_names = tuple(
+        name for name in (selection.schema_tool_names or selection.tool_names) if name in allowed
+    )
+    handlers = getattr(selection, "resolved_handlers", {}) or {}
+    return replace(
+        selection,
+        tool_names=tool_names,
+        schema_tool_names=schema_tool_names,
+        native_tool_names=tuple(
+            name for name in getattr(selection, "native_tool_names", ()) if name in allowed
+        ),
+        native_tool_aliases={
+            name: alias
+            for name, alias in dict(getattr(selection, "native_tool_aliases", {}) or {}).items()
+            if alias in allowed
+        },
+        light_hints=(),
+        module_names=(),
+        layer_names=(),
+        disclosures=tuple(
+            disclosure
+            for disclosure in selection.disclosures
+            if disclosure.tool_names and all(name in allowed for name in disclosure.tool_names)
+        ),
+        tool_specs=tuple(spec for spec in selection.tool_specs if spec.capability_id in allowed),
+        execution_receipts={
+            name: receipt for name, receipt in selection.execution_receipts.items() if name in allowed
+        },
+        execution_allowlist=frozenset(allowed),
+        resolved_handlers=MappingProxyType(
+            {name: handlers[name] for name in dict.fromkeys((*tool_names, *schema_tool_names)) if name in handlers}
+        ),
+    )
+
+
 def _filter_tool_names_with_policy_extensions(
     tool_names: tuple[str, ...] | list[str],
     profile: DomainProfile | None,
@@ -769,6 +824,11 @@ def resolve_unloaded_mcp_native_aliases(
     if not allowed_capability_ids:
         return {}, capability_selection
 
+    if capability_selection.execution_allowlist is not None:
+        allowed_capability_ids.intersection_update(capability_selection.execution_allowlist)
+        if not allowed_capability_ids:
+            return {}, capability_selection
+
     native_specs = build_openai_native_tool_specs(
         dispatch_handlers,
         allowed_tool_names=allowed_capability_ids,
@@ -820,6 +880,11 @@ def resolve_mcp_router_target(
     clean_tool_name = str(tool_name or "").strip()
     if not clean_server_id or not clean_tool_name or capability_selection is None:
         return "", capability_selection, "mcp_target_required"
+    if (
+        capability_selection.execution_allowlist is not None
+        and "invoke_mcp" not in capability_selection.execution_allowlist
+    ):
+        return "", capability_selection, "mcp_router_not_allowed"
 
     dispatch_handlers = build_mcp_adapter_tool_handlers(
         engine,
@@ -856,6 +921,14 @@ def resolve_mcp_router_target(
             break
     if not target_id:
         return "", capability_selection, "mcp_tool_not_found_or_blocked"
+    if (
+        capability_selection.execution_allowlist is not None
+        and target_id not in capability_selection.execution_allowlist
+    ):
+        # Preserve the exact requested target for the ordinary invocation
+        # validator. It returns tool_not_allowed as the paired tool result;
+        # no handler/schema is added and no misleading load/retry hint is sent.
+        return target_id, capability_selection, "tool_not_allowed"
 
     resolved_handlers = dict(getattr(capability_selection, "resolved_handlers", {}) or {})
     resolved_handlers[target_id] = dispatch_handlers[target_id]

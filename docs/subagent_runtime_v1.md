@@ -1,6 +1,6 @@
 # 子代理运行时 V1
 
-状态：实施中。provider/result 契约与 Host Job 接线已完成；真实 child 回合驱动、工作区/Resolver 接线和模型工具尚未发布。旧 `delegate_task` / `TaskWorkerService` 不恢复。
+状态：实施中。provider/result 契约、Host Job 接线及受限工具选择的 repair pass 已完成；真实 child 回合驱动、工作区继承和模型工具尚未发布。旧 `delegate_task` / `TaskWorkerService` 不恢复。
 
 ## 1. 目标
 
@@ -52,13 +52,10 @@ child 不默认获得：
 运行时依赖一个窄 provider 契约：
 
 ```text
-start(request) -> run handle
-run.result() -> terminal result
-run.cancel()
-run.close()
+execute(request, cancelled) -> terminal result
 ```
 
-第一版只注册 `in_process` provider。模型不选择 provider，也不看到 provider 名；以后接 Codex、Claude Code 或远端 ACP 时只替换 provider，不改变工具和 Job 语义。
+第一版计划由宿主注册 `in_process` provider（真实驱动验收前不启用）。Host Job 在后台 lane 中调用同步 `execute`，通过 `cancelled()` 传递取消状态；父回合只等待持久化准入结果。模型不选择 provider，也不看到 provider 名；以后接其他 provider 时保持同一工具和 Job 语义。
 
 启动前验证 provider 是否支持请求需要的能力。缺能力时明确失败，不能接受后静默忽略。
 
@@ -139,13 +136,19 @@ child 的终态结果包含：
 
 1. 建立 provider/result 契约。（已完成；in-process child 驱动在第 3 项接入）
 2. 接入 Host Job，验证持久化、取消、重启失败语义和恰好一次完成事件。（已完成）
-3. 让 child 使用正常 Resolver/Broker 与父工作区快照，删除任何直调 handler 的路径。
+3. 让 child 使用正常 Resolver/Broker 与父工作区快照。（工具范围 repair pass 已完成；驱动、工作区和纵向验收未完成）
 4. 增加 `spawn_subagent` ToolSpec/handler，并只在真实可用时暴露。
 5. 以一个读代码并产出审计报告的任务完成父 → child → 父纵向验收。
 6. 根据真实体验决定是否增加通用 Job 状态/取消入口。
 7. 只有出现持续协作需求时，再设计 continuable child 和 follow-up。
 
 ## 11. 验收
+
+2026-09-05 repair pass：`CapabilitySelection` 增加宿主内部的 `execution_allowlist`。`None` 沿用普通会话行为，空集合明确不允许执行工具。筛选同步移除无关 schema、handler、原生别名、执行凭据及提示；再次筛选只能缩小范围。历史 MCP 原生别名和 `invoke_mcp` 的延迟解析继续保留这一上限，最终调用由普通 validator/Broker 校验。允许的 MCP 仍可按需调用，不需要常驻全量 schema。该状态不进入模型工具 schema 或稳定提示词。
+
+中断前尝试的 `turn_kind=subagent` 接线已撤下：仅设置独立 session 和短系统提示尚不足以证明关系/Care 隔离、权限主体继承、默认 cwd、取消和产物归属完整。后续需在接入真实驱动时逐项验证；不能把测试用 provider runner 当成已可供模型调用的子代理。
+
+验证入口：`python -m unittest tests.test_restricted_capability_selection tests.test_subagent_runtime tests.test_host_subagent_jobs -q`。新增覆盖空集合、重复缩小、父子选择互不修改、历史别名、路由目标拒绝、允许的延迟 MCP、最终执行校验及真实 Broker 幂等。
 
 - 父 Agent 收到 `job_id` 后可以继续处理新消息。
 - child 的工具调用经过与父 Agent 相同的 ToolSpec、Resolver、审批和 Broker。

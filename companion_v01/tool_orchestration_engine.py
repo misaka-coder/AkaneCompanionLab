@@ -672,6 +672,12 @@ def validate_tool_invocation(
     tool_type = str(invocation.name or "").strip()
     if not tool_type:
         return ValidationResult.fail("missing_tool_type", "工具调用缺少 type 字段。")
+    execution_allowlist = getattr(invocation.capability_selection, "execution_allowlist", None)
+    if execution_allowlist is not None and tool_type not in execution_allowlist:
+        return ValidationResult.fail(
+            "tool_not_allowed",
+            f"工具「{tool_type}」不在本次任务的可执行范围内。这次调用没有执行，请使用本轮提供的工具。",
+        )
     candidate_call = raw_tool_call if isinstance(raw_tool_call, dict) else invocation_to_legacy_tool_call(invocation)
 
     satellite_spec = desktop_satellite_spec(tool_type)

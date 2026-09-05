@@ -1973,6 +1973,9 @@ class CapabilitySelection:
     tool_specs: tuple[CapabilityToolSpec, ...] = ()
     execution_receipts: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     resolved_handlers: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
+    # None means normal host resolution; an empty set deliberately allows no
+    # execution. Lazy MCP dispatch must preserve this host-owned ceiling.
+    execution_allowlist: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)

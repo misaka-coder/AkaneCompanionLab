@@ -7610,7 +7610,7 @@ class AkaneMemoryEngine:
 
                     selected_native_names = set(declared_native_names)
                     alias_handlers = dict(resolved_round_handlers)
-                    if not alias_handlers:
+                    if not alias_handlers and frozen_capability_selection is None:
                         try:
                             alias_handlers = self._resolve_tool_handlers(
                                 client_context=client_context,
