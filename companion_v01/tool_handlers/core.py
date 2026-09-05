@@ -65,6 +65,7 @@ class TaskExecutionScope:
     """Host-owned execution coordinates; not a grant of filesystem permission."""
 
     working_directory: str
+    task_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,8 @@ class ToolExecutionContext:
     client_mode: str = ""
     request_context: dict[str, Any] = field(default_factory=dict)
     execution_scope: TaskExecutionScope | None = None
+    invocation_id: str = ""
+    capability_selection: Any = None
 
 
 @dataclass

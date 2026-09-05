@@ -51,6 +51,7 @@ class HostSubagentJobRuntime:
         allowed_tools: tuple[str, ...] = (),
         model: str = "",
         reasoning_effort: str = "",
+        execution_context: dict[str, str] | None = None,
         conversation_ref: str,
         character_pack_id: str = "",
         channel: str = "",
@@ -70,6 +71,7 @@ class HostSubagentJobRuntime:
             allowed_tools=tuple(allowed_tools or ()),
             model=str(model or ""),
             reasoning_effort=str(reasoning_effort or ""),
+            execution_context=dict(execution_context or {}),
         )
         reason = self.providers.validate(self.provider_name, request)
         if reason:
@@ -212,7 +214,8 @@ class HostSubagentJobRuntime:
 
     def _cancel_requested(self, job: HostJob) -> bool:
         current = self.store.get(job.job_id, owner=job.owner)
-        return current is None or bool(current.cancel_requested)
+        return (current is None or current.status != "running"
+                or current.claim_token != job.claim_token or bool(current.cancel_requested))
 
     def _settle_scheduler_failure(self, job_id: str, *, owner: HostJobOwner) -> None:
         claim = self.store.claim(job_id, worker_id="subagent-admission", lease_seconds=30)
@@ -253,6 +256,7 @@ def _request_payload(request: SubagentStartRequest) -> dict[str, Any]:
         "allowed_tools": list(request.allowed_tools),
         "model": request.model,
         "reasoning_effort": request.reasoning_effort,
+        "execution_context": dict(request.execution_context),
     }
 
 
@@ -268,6 +272,7 @@ def _request_from_job(job: HostJob) -> SubagentStartRequest:
         allowed_tools=tuple(str(item or "") for item in list(payload.get("allowed_tools") or [])),
         model=str(payload.get("model") or ""),
         reasoning_effort=str(payload.get("reasoning_effort") or ""),
+        execution_context=dict(payload.get("execution_context") or {}),
     )
 
 

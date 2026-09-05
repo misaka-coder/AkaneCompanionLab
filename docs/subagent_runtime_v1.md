@@ -1,6 +1,6 @@
 # 子代理运行时 V1
 
-状态：实施中。provider/result 契约、Host Job 接线及受限工具选择的 repair pass 已完成；真实 child 回合驱动、工作区继承和模型工具尚未发布。旧 `delegate_task` / `TaskWorkerService` 不恢复。
+状态：实施中。provider/result、Host Job、工具范围、工作区继承和隔离 child 驱动已实现并通过进程内纵向测试；模型入口和生产绑定尚未发布。旧 `delegate_task` / `TaskWorkerService` 不恢复。
 
 ## 1. 目标
 
@@ -21,7 +21,7 @@
 ## 2. 权威边界
 
 - `HostJobStore`：任务状态、租约、恢复、幂等、取消和完成投递的唯一权威。
-- child 会话：子代理自己的消息与工具轨迹；不写进父对话历史。
+- child 会话：消息与工具轨迹使用 child 专属 MemCore profile/session，即使宿主启用跨会话记忆也不进入父记忆召回域。
 - 正常 ToolSpec / Resolver / Broker：父子共用的能力发现、准入和执行边界。
 - 父会话 Agent：唯一面向用户组织回复和发送产物的主体。
 
@@ -48,6 +48,10 @@ child 不默认获得：
 工具筛选同时作用于 schema 可见性和执行准入。它只能缩小父级已有权限，不能扩大权限。工作目录继承是显式快照；child 的单次 `cwd` 覆盖不会改变父级坐标。
 
 宿主通过 `TaskExecutionScope` 向普通文件和 Shell 处理器传入默认目录；显式 cwd/绝对路径仍优先，附件资源执行仍使用自己的临时目录。该对象不是权限凭证，也不是模型参数；JSON 中同名字段不能伪造宿主作用域。父会话之后切换项目不改变已启动任务的坐标。
+
+执行授权、命令控制和资源归属沿用父会话及原发起者，方便父 Agent 后续检查和接管产物；Broker 幂等账本另外使用 task_id 隔离，避免父子或两个 child 的相同 provider call_id 相撞。独立的是任务上下文和轨迹，不是重新授予一套权限。child 内长工具在 child worker 执行，不再开启另一个面向角色的完成通知；唯一面向父会话的终态来自 child 的 Host Job。
+
+模型客户端复用宿主 LLMRuntime；执行期间使用请求级配置副本，固定模型、思考模式和强度。持久化只保留公开路由指纹，不保存客户端或密钥。排队任务发现当前路由已变化时明确失败，不悄悄换模型。
 
 ## 4. Provider seam
 
@@ -138,7 +142,7 @@ child 的终态结果包含：
 
 1. 建立 provider/result 契约。（已完成；in-process child 驱动在第 3 项接入）
 2. 接入 Host Job，验证持久化、取消、重启失败语义和恰好一次完成事件。（已完成）
-3. 让 child 使用正常 Resolver/Broker 与父工作区快照。（工具范围 repair pass 已完成；驱动、工作区和纵向验收未完成）
+3. 让 child 使用正常 Resolver/Broker 与父工作区快照。（驱动、真实文件读写、原生工具配对、独立 MemCore 及 Job 回传的进程内验收已完成；外部模型 smoke 待执行）
 4. 增加 `spawn_subagent` ToolSpec/handler，并只在真实可用时暴露。
 5. 以一个读代码并产出审计报告的任务完成父 → child → 父纵向验收。
 6. 根据真实体验决定是否增加通用 Job 状态/取消入口。

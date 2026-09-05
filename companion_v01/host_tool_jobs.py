@@ -52,6 +52,8 @@ class HostToolJobRuntime:
         except Exception:
             spec = None
         return (
+            context.execution_scope is None
+            and
             str(getattr(spec, "execution_class", "sync") or "sync").strip().lower() == "long_task"
             and str(getattr(handler, "tool_type", "") or "").strip() != "exec_run"
             and str(context.client_mode or "").strip().lower()

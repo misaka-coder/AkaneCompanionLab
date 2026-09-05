@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 
 SUBAGENT_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
+SUBAGENT_CONTEXT_FIELDS = frozenset({
+    "client_mode", "actor_stable_id", "actor_profile_user_id", "authorization_profile_user_id",
+    "character_pack_id", "model_role", "route_fingerprint", "thinking_mode",
+})
 _CHILD_SESSION_ID_RE = re.compile(r"^subagent_[a-f0-9]{32}$")
 _MAX_TASK_CHARS = 24_000
 _MAX_LABEL_CHARS = 80
@@ -32,6 +36,7 @@ class SubagentStartRequest:
     allowed_tools: tuple[str, ...] = ()
     model: str = ""
     reasoning_effort: str = ""
+    execution_context: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +166,11 @@ def validate_subagent_request(
         return "subagent_tool_filter_invalid"
     if any(not isinstance(item, str) or len(item) > 200 or "\x00" in item for item in (request.model, request.reasoning_effort)):
         return "subagent_model_route_invalid"
+    if not isinstance(request.execution_context, Mapping) or any(
+        key not in SUBAGENT_CONTEXT_FIELDS or not isinstance(value, str) or len(value) > 500 or "\x00" in value
+        for key, value in request.execution_context.items()
+    ):
+        return "subagent_execution_context_invalid"
     return ""
 
 

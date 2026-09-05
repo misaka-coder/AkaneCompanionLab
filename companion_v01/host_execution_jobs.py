@@ -56,7 +56,7 @@ class HostExecutionJobRuntime:
 
     @staticmethod
     def accepts(context: ToolExecutionContext) -> bool:
-        return str(context.client_mode or "").strip().lower() in {
+        return context.execution_scope is None and str(context.client_mode or "").strip().lower() in {
             ClientMode.QQ_TEXT.value,
             ClientMode.DESKTOP_PET.value,
         }

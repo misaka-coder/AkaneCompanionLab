@@ -1118,6 +1118,8 @@ def execute_tool_invocation(
     if client_context is not None:
         client_mode = str(getattr(client_context.effective_mode, "value", client_context.effective_mode) or "")
     execution_context = ToolExecutionContext(
+            invocation_id=invocation.id,
+            capability_selection=invocation.capability_selection,
             profile_user_id=profile_user_id,
             session_id=session_id,
             now_ts=now_ts,
@@ -1160,7 +1162,11 @@ def execute_tool_invocation(
             call=normalized_call,
             context=execution_context,
         ),
-        ledger_scope=f"{profile_user_id}\x1f{session_id}",
+        ledger_scope=(
+            f"{profile_user_id}\x1f{session_id}\x1f{execution_context.execution_scope.task_id}"
+            if execution_context.execution_scope is not None and execution_context.execution_scope.task_id
+            else f"{profile_user_id}\x1f{session_id}"
+        ),
         request_data={"arguments": normalized_call},
     )
     result = broker_result.result
