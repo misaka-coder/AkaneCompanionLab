@@ -137,6 +137,15 @@ class WorkspaceArtifactHandoffTests(unittest.TestCase):
         output = self.h.generated_service.resolve_generated_artifact(profile_user_id="alice", session_id="s1", target=receipt["handle"])
         self.assertEqual(Path(output["absolute_path"]).read_bytes(), b"original")
 
+        # Explicit status receipt consumes ownership without a duplicate wake.
+        from companion_v01.tool_handlers.execution import ExecStatusToolHandler
+        run_id = result.state_updates["capability_execution"]["run_id"]
+        work.track(run_id, inspect=lambda: {"status": "completed"}, cancel=lambda: None)
+        status_handler = ExecStatusToolHandler(execution_provider=provider, resource_bridge=self.h.bridge)
+        status = status_handler.execute(call={"run_id": run_id}, context=context)
+        self.assertEqual(status.state_updates["capability_execution"]["status"], "completed")
+        self.assertEqual(work.collect(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

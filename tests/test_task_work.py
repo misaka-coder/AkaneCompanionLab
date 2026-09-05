@@ -29,6 +29,13 @@ class TaskWorkTests(unittest.TestCase):
         work.track("job_a", inspect=lambda: None, cancel=lambda: None)
         self.assertEqual(work.wait(lambda: True), [])
 
+    def test_observed_terminal_tool_result_is_not_repeated_as_an_event(self):
+        work = TaskWork()
+        work.track("run_a", inspect=lambda: {"status": "completed"}, cancel=lambda: None)
+        work.acknowledge("run_a")
+        self.assertEqual(work.collect(), [])
+        self.assertFalse(work.pending)
+
 
 if __name__ == "__main__":
     unittest.main()

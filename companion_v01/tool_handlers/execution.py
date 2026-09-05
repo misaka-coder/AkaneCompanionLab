@@ -958,6 +958,11 @@ class ExecStatusToolHandler(_ExecToolHandlerBase):
                     reason=f"command_{mapped.event_status}",
                 )
                 mapped = self._enrich_resources(mapped, registration, context=context)
+        scope = context.execution_scope
+        if scope is not None and scope.pending_work is not None and mapped.event_status in {
+            EXEC_STATUS_COMPLETED, EXEC_STATUS_FAILED, EXEC_STATUS_TIMED_OUT, EXEC_STATUS_CANCELLED,
+        }:
+            scope.pending_work.acknowledge(run_id)
         return self._mapped_result(mapped)
 
 
@@ -1016,4 +1021,12 @@ class ExecCancelToolHandler(_ExecToolHandlerBase):
                     reason=f"command_{mapped.reason}",
                 )
                 mapped = self._enrich_resources(mapped, registration, context=context)
+        scope = context.execution_scope
+        if scope is not None and scope.pending_work is not None and (
+            mapped.event_status == EXEC_STATUS_CANCELLED
+            or (mapped.event_status == "already_ended" and mapped.reason in {
+                EXEC_STATUS_COMPLETED, EXEC_STATUS_FAILED, EXEC_STATUS_TIMED_OUT, EXEC_STATUS_CANCELLED,
+            })
+        ):
+            scope.pending_work.acknowledge(run_id)
         return self._mapped_result(mapped)

@@ -47,6 +47,11 @@ class TaskWork:
         with self._lock:
             return bool(self._pending)
 
+    def acknowledge(self, key: str) -> None:
+        """A terminal fact already returned as a tool result needs no event."""
+        with self._lock:
+            self._pending.pop(key, None)
+
     def close(self) -> list[str]:
         """Request cancellation on task exit; never claim unconfirmed termination."""
         with self._lock:
