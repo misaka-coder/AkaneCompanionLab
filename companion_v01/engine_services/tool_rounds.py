@@ -776,6 +776,21 @@ def build_mcp_adapter_tool_handlers(
     return handlers
 
 
+def build_mcp_dispatch_tool_handlers(
+    engine: Any, *, profile_user_id: str,
+    client_context: ClientProtocolContext | None, domain_profile_id: str = "",
+) -> dict[str, Any]:
+    """Configured, domain-eligible deferred targets; no schemas or new grants."""
+    handlers = build_mcp_adapter_tool_handlers(
+        engine, profile_user_id=profile_user_id, client_context=client_context,
+        include_unloaded_for_dispatch=True,
+    )
+    allowed = _filter_tool_names_with_policy_extensions(
+        tuple(handlers), DomainProfileRegistry().get(domain_profile_id), handlers=handlers,
+    )
+    return {name: handlers[name] for name in allowed}
+
+
 def resolve_unloaded_mcp_native_aliases(
     engine: Any,
     *,
@@ -804,25 +819,16 @@ def resolve_unloaded_mcp_native_aliases(
     if not requested or capability_selection is None:
         return {}, capability_selection
 
-    dispatch_handlers = build_mcp_adapter_tool_handlers(
+    dispatch_handlers = build_mcp_dispatch_tool_handlers(
         engine,
         profile_user_id=profile_user_id,
         client_context=client_context,
-        include_unloaded_for_dispatch=True,
+        domain_profile_id=domain_profile_id,
     )
     if not dispatch_handlers:
         return {}, capability_selection
 
-    domain_profile = DomainProfileRegistry().get(domain_profile_id)
-    allowed_capability_ids = set(
-        _filter_tool_names_with_policy_extensions(
-            tuple(dispatch_handlers.keys()),
-            domain_profile,
-            handlers=dispatch_handlers,
-        )
-    )
-    if not allowed_capability_ids:
-        return {}, capability_selection
+    allowed_capability_ids = set(dispatch_handlers)
 
     if capability_selection.execution_allowlist is not None:
         allowed_capability_ids.intersection_update(capability_selection.execution_allowlist)
@@ -886,27 +892,17 @@ def resolve_mcp_router_target(
     ):
         return "", capability_selection, "mcp_router_not_allowed"
 
-    dispatch_handlers = build_mcp_adapter_tool_handlers(
+    dispatch_handlers = build_mcp_dispatch_tool_handlers(
         engine,
         profile_user_id=profile_user_id,
         client_context=client_context,
-        include_unloaded_for_dispatch=True,
+        domain_profile_id=domain_profile_id,
     )
     if not dispatch_handlers:
         return "", capability_selection, "mcp_target_unavailable"
 
-    domain_profile = DomainProfileRegistry().get(domain_profile_id)
-    allowed_capability_ids = set(
-        _filter_tool_names_with_policy_extensions(
-            tuple(dispatch_handlers.keys()),
-            domain_profile,
-            handlers=dispatch_handlers,
-        )
-    )
     target_id = ""
     for capability_id, handler in dispatch_handlers.items():
-        if capability_id not in allowed_capability_ids:
-            continue
         adapter = getattr(handler, "adapter", None)
         if str(getattr(adapter, "server_id", "") or "").strip() != clean_server_id:
             continue

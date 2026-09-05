@@ -14,7 +14,9 @@ from .llm_runtime import ModelExecutionTarget
 from .host_tool_jobs import _artifact_references
 from .native_tool_schema import build_openai_native_tool_specs, native_tool_model_name_map
 from .subagent_runtime import SubagentRunResult, SubagentStartRequest
+from .subagent_policy import task_capability_selection
 from .tool_handlers.core import TaskExecutionScope
+from .tool_batch import execute_tool_batch
 from .tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, NATIVE_REASONING_CONTENT_FIELD, TOOL_INVOCATION_ID_FIELD
 from . import tool_orchestration_engine as orchestration
 
@@ -76,6 +78,10 @@ class EngineSubagentDriver:
             authorization_profile_user_id=metadata.get("authorization_profile_user_id", ""),
         )
         selection = restrict_capability_selection(selection, allowed_tool_names=request.allowed_tools)
+        try:
+            selection = task_capability_selection(selection)
+        except Exception:
+            return self._result(request, "failed", reason="subagent_capability_policy_unavailable")
         if request.allowed_tools and not selection.tool_names:
             return self._result(request, "failed", reason="subagent_parent_tools_unavailable")
         tools = build_openai_native_tool_specs({
@@ -115,7 +121,8 @@ class EngineSubagentDriver:
             tool_rounds = 0
             while True:
                 if cancelled():
-                    return self._result(request, "cancelled", reason="subagent_cancelled_between_steps")
+                    return self._result(request, "cancelled", reason="subagent_cancelled_between_steps",
+                                        artifacts=tuple(artifacts.values()))
                 response = llm.call_chat_json_result(
                     system_prompt=TASK_SYSTEM_PROMPT,
                     user_prompt=f"Working directory: {request.working_directory}\n\nTask:\n{request.task}",
@@ -159,16 +166,27 @@ class EngineSubagentDriver:
                 if hard_limit > 0 and tool_rounds >= hard_limit:
                     return self._result(request, "failed", reason="subagent_tool_round_limit")
                 tool_rounds += 1
-                items = []
-                for call in calls:
-                    if cancelled():
-                        return self._result(request, "cancelled", reason="subagent_cancelled_between_steps")
-                    result = engine._execute_tool_call_with_hooks(
+                def execute(call):
+                    return engine._execute_tool_call_with_hooks(
                         call=call, final_output={}, profile_user_id=request.parent_profile_user_id,
                         session_id=request.parent_session_id, character_pack_id=metadata.get("character_pack_id", ""),
                         now_ts=int(time.time()), current_user_source_id=source_id, client_context=client,
-                        memory_exclude_source_ids=[], request_context=request_context,
+                        memory_exclude_source_ids=[],
+                        request_context={**request_context, "_model_execution_target": target},
                     )
+
+                def handler_for(call):
+                    handlers = engine._resolve_tool_handlers(
+                        client_context=client, profile_user_id=request.parent_profile_user_id,
+                        session_id=request.parent_session_id,
+                        capability_selection=call.get(TOOL_CAPABILITY_SELECTION_FIELD),
+                    )
+                    return handlers.get(str(call.get("type") or ""))
+
+                executed = execute_tool_batch(calls, execute=execute, handler_for=handler_for,
+                                              cancelled=cancelled, scope_id=request.child_session_id)
+                items = []
+                for call, result in zip(calls, executed):
                     feedback = orchestration.shape_tool_followup(
                         result.followup_envelope or result.followup_context, tool_type=result.tool_type,
                     )

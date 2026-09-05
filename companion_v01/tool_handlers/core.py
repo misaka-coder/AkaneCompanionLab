@@ -118,6 +118,8 @@ class ToolExecutionResult:
     # Internal-only provider image blocks. Never copy this field into prompt
     # text, stream events, logs, memcore, or public final output.
     model_image_inputs: list[dict[str, Any]] = field(default_factory=list)
+    # Host diagnostics only: never part of model feedback or capability schema.
+    execution_timing: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from typing import Any
+from dataclasses import replace
 
 from ..capability_registry import CapabilityToolSpec
+from ..engine_services.tool_rounds import build_mcp_dispatch_tool_handlers
 from ..host_jobs import HostJobOwner
 from ..llm_runtime import ModelExecutionTarget
 from ..subagent_engine import model_route_fingerprint
+from ..subagent_policy import task_capability_selection
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolMetadata
 
 
@@ -16,7 +19,7 @@ SPAWN_SUBAGENT_SPEC = CapabilityToolSpec(
     description=(
         "Delegate a self-contained coding or research task in the selected project. "
         "Describe the deliverable and relevant file paths; the child does not see this conversation. "
-        "The child inherits available code, command, search and loaded MCP tools with the same permissions. "
+        "The child inherits available work tools with the same permissions; you handle user delivery. "
         "Returns a durable job_id immediately; the result comes back to this conversation. "
         "Continue independent work meanwhile, then verify and integrate the report. "
         "Use manage_project_workspace to select a project first."
@@ -27,12 +30,6 @@ SPAWN_SUBAGENT_SPEC = CapabilityToolSpec(
     risk="medium", confirm="never", effects=("background_task",), visible_in=("desktop", "qq"),
     spec_version="1.0.0", schema_version=1, execution_class="sync", idempotency="effectful", max_result_bytes=4096,
 )
-
-_CODING_TOOLS = frozenset({
-    "project_inspect", "workspace_write", "workspace_patch", "exec_run", "exec_status", "exec_cancel",
-    "web_search", "load_skill", "load_mcp", "invoke_mcp",
-})
-
 
 class SpawnSubagentToolHandler(BaseToolHandler):
     tool_type = "spawn_subagent"
@@ -90,7 +87,22 @@ class SpawnSubagentToolHandler(BaseToolHandler):
             return self._failed("subagent_project_context_unavailable")
         if project is None:
             return self._failed("workspace_not_selected", "先用 manage_project_workspace 选择项目。")
-        allowed = tuple(name for name in selection.tool_names if name in _CODING_TOOLS or name.startswith("mcp."))
+        try:
+            # Lazy MCP availability is not the same as resident schema. Reuse
+            # the parent's dispatch resolver, snapshot names only, and preserve
+            # any pre-existing ceiling. Actual calls still pass normal approval.
+            candidates = set(selection.tool_names)
+            if "invoke_mcp" in candidates or "load_mcp" in candidates:
+                client = self.engine._resolve_client_protocol_context({"client_mode": context.client_mode})
+                candidates.update(build_mcp_dispatch_tool_handlers(
+                    self.engine, profile_user_id=context.profile_user_id, client_context=client,
+                ))
+            if selection.execution_allowlist is not None:
+                candidates.intersection_update(selection.execution_allowlist)
+            child_selection = task_capability_selection(replace(selection, execution_allowlist=frozenset(candidates)))
+            allowed = tuple(sorted(child_selection.execution_allowlist))
+        except Exception:
+            return self._failed("subagent_capability_policy_unavailable")
         if not allowed:
             return self._failed("subagent_parent_tools_unavailable")
         metadata = {key: str(data.get(key) or "") for key in (

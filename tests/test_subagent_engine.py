@@ -114,6 +114,27 @@ class SubagentEngineTests(unittest.TestCase):
         self.assertEqual(result.reason, "subagent_model_route_changed")
         self.assertEqual(self.engine.llm.requests, [])
 
+    def test_child_parallel_reads_use_shared_scheduler_and_paired_history(self):
+        import threading
+        from companion_v01.tool_handlers.core import ToolMetadata
+        from companion_v01.tool_invocation import NATIVE_TOOL_CALLS_FIELD
+        barrier = threading.Barrier(2)
+        handler = self.engine.tool_handlers["web_search"]
+        handler.tool_metadata = lambda: ToolMetadata(operation="read")
+        def execute(*, call, context):
+            barrier.wait(timeout=3)
+            return ToolExecutionResult(tool_type="web_search", followup_context=call["query"])
+        handler.execute = execute
+        self.engine.llm.responses = [response({NATIVE_TOOL_CALLS_FIELD: [
+            {"type": "web_search", "query": word, TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+             TOOL_INVOCATION_ID_FIELD: "search_" + word} for word in ("one", "two")
+        ]}), response({"status": "succeeded", "summary": "Both searches completed."})]
+        result = self.driver(self.request, cancelled=lambda: False)
+        self.assertEqual(result.status, "succeeded", result)
+        history = self.engine.llm.requests[-1]["post_user_turns"]
+        self.assertEqual([m["tool_call_id"] for m in history if m["role"] == "tool"], ["search_one", "search_two"])
+        self.assertEqual([m["content"] for m in history if m["role"] == "tool"], ["one", "two"])
+
     def test_invalid_tool_request_gets_host_feedback_then_can_be_corrected(self):
         self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD: {
             "type": "not_a_real_tool", TOOL_SOURCE_FIELD: NATIVE_OPENAI,
@@ -253,6 +274,10 @@ class SubagentEngineTests(unittest.TestCase):
 
     def test_parent_native_spawn_uses_frozen_turn_context_and_returns_before_child(self):
         import threading
+        from companion_v01.tool_handlers.mcp_management import InvokeMcpToolHandler
+        from tests.test_capability_adapter_mcp_orchestration import write_profile_config
+        write_profile_config(self.root, "alice", prompt_exposed=False, allowlist=["echo"])
+        self.engine.tool_handlers["invoke_mcp"] = InvokeMcpToolHandler()
         store = MemoryStore(self.root / "parent-store")
         service = ProjectWorkspaceService(store=store, execution_workspace_root=self.root / "execution")
         provider = TrustedLocalExecutor(workspace_root=self.root / "execution", run_log_dir=self.root / "runlogs")
@@ -298,11 +323,38 @@ class SubagentEngineTests(unittest.TestCase):
         self.assertEqual(authority.resolve(job.delivery_target)["character"], "reimu")
         self.assertEqual(job.payload["working_directory"], project["working_directory"])
         self.assertNotIn("spawn_subagent", job.payload["allowed_tools"])
+        self.assertNotIn("manage_project_workspace", job.payload["allowed_tools"])
+        self.assertIn("mcp.demo.echo", job.payload["allowed_tools"])
+        self.assertNotIn("mcp.demo.echo", selection.schema_tool_names)
         self.assertEqual(job.payload["execution_context"]["route_fingerprint"], model_route_fingerprint(self.engine.llm.target))
         self.assertEqual(self.engine.llm.requests, [])
         release.set()
         self.assertTrue(background.wait_idle(lane="subagents", timeout=5))
         self.assertEqual(jobs.get(job.job_id, owner=job.owner).status, "succeeded")
+
+    def test_cancel_mid_batch_records_all_pairs_and_preserves_actual_artifacts(self):
+        import threading
+        from companion_v01.tool_handlers.core import ToolMetadata
+        from companion_v01.tool_invocation import NATIVE_TOOL_CALLS_FIELD
+        cancelled = threading.Event()
+        handler = self.engine.tool_handlers["web_search"]
+        handler.tool_metadata = lambda: ToolMetadata(operation="write")
+        def execute(**kwargs):
+            cancelled.set()
+            return ToolExecutionResult(tool_type="web_search", followup_context="Created report.",
+                                       state_updates={"generated_handles": ["gen_verified"]})
+        handler.execute = execute
+        self.engine.llm.responses = [response({NATIVE_TOOL_CALLS_FIELD: [
+            {"type": "web_search", "query": str(n), TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+             TOOL_INVOCATION_ID_FIELD: "call_" + str(n)} for n in range(2)
+        ]})]
+        with patch.object(self.engine, "_record_memcore_tool_batch", wraps=self.engine._record_memcore_tool_batch) as record:
+            result = self.driver(self.request, cancelled=cancelled.is_set)
+        self.assertEqual(result.status, "cancelled", result)
+        self.assertEqual([item["handle"] for item in result.artifacts], ["gen_verified"])
+        items = record.call_args.kwargs["items"]
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[1][1].stream_events[0]["status"], "cancelled")
 
     def test_cancel_before_request_never_calls_model(self):
         result = self.driver(self.request, cancelled=lambda: True)

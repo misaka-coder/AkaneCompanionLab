@@ -7,7 +7,6 @@ import re
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping
@@ -35,6 +34,7 @@ from .capability_registry import (
     resolve_capability_disclosures,
 )
 from . import desktop_pet_engine
+from .tool_batch import execute_tool_batch
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from .generated_files import GeneratedFileService
 from .cover_song import CoverSongService, RvcWebUiProvider
@@ -7983,45 +7983,22 @@ class AkaneMemoryEngine:
                 domain_profile_id=domain_profile_id,
             )
 
-        executed: list[ToolExecutionResult | None] = [None] * len(calls)
-        try:
-            frozen_selection = calls[0].get(TOOL_CAPABILITY_SELECTION_FIELD) if calls else None
-            handlers = self._resolve_tool_handlers(
-                client_context=client_context,
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                domain_profile_id=domain_profile_id,
-                capability_selection=frozen_selection,
-            )
-        except Exception:
-            handlers = {}
-        parallel_indexes: list[int] = []
-        serial_indexes: list[int] = []
-        for index, call in enumerate(calls):
-            handler = handlers.get(str(call.get("type") or ""))
-            metadata_getter = getattr(handler, "tool_metadata", None)
-            try:
-                metadata = metadata_getter() if callable(metadata_getter) else None
-            except Exception:
-                metadata = None
-            if metadata is None or bool(getattr(metadata, "is_read_only", False)):
-                parallel_indexes.append(index)
-            else:
-                serial_indexes.append(index)
-        if len(parallel_indexes) == 1:
-            index = parallel_indexes[0]
-            executed[index] = execute(calls[index])
-        elif parallel_indexes:
-            with ThreadPoolExecutor(
-                max_workers=min(4, len(parallel_indexes)),
-                thread_name_prefix="akane-tool",
-            ) as executor:
-                futures = {index: executor.submit(execute, calls[index]) for index in parallel_indexes}
-                for index, future in futures.items():
-                    executed[index] = future.result()
-        for index in serial_indexes:
-            executed[index] = execute(calls[index])
-        completed = [result for result in executed if result is not None]
+        handler_sets = {}
+        def handler_for(call):
+            selection = call.get(TOOL_CAPABILITY_SELECTION_FIELD)
+            key = id(selection)
+            if key not in handler_sets:
+                handler_sets[key] = self._resolve_tool_handlers(
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    domain_profile_id=domain_profile_id,
+                    capability_selection=selection,
+                )
+            return handler_sets[key].get(str(call.get("type") or ""))
+
+        executed = execute_tool_batch(calls, execute=execute, handler_for=handler_for, scope_id=session_id)
+        completed = list(executed)
 
         batch_events: list[dict[str, Any]] = []
         followup_start = len(tool_followups)
