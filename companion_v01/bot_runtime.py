@@ -24,6 +24,10 @@ from .session_inbox import SessionInboxStore
 from .host_jobs import HostJob, HostJobStore
 from .host_execution_jobs import HostExecutionJobRuntime
 from .host_tool_jobs import HostToolJobRuntime
+from .host_subagent_jobs import HostSubagentJobRuntime
+from .subagent_runtime import InProcessSubagentProvider, SubagentProviderRegistry
+from .subagent_engine import EngineSubagentDriver
+from .tool_handlers.subagent import SpawnSubagentToolHandler
 from .host_workflow_jobs import HostWorkflowJobRuntime, WorkflowJobAssetStore
 from .engine import AkaneMemoryEngine
 from .instance_profile import InstanceContext, instance_context_from_bot_config, resolve_instance_context
@@ -114,6 +118,7 @@ class BotRuntime:
     session_work_queue: DurableSessionWorkQueue | None = field(default=None, repr=False)
     job_store: HostJobStore | None = field(default=None, repr=False)
     host_tool_jobs: HostToolJobRuntime | None = field(default=None, repr=False)
+    host_subagent_jobs: HostSubagentJobRuntime | None = field(default=None, repr=False)
     host_execution_jobs: HostExecutionJobRuntime | None = field(default=None, repr=False)
     host_workflow_jobs: HostWorkflowJobRuntime | None = field(default=None, repr=False)
     plugin_conversation_refs: PluginConversationReferenceAuthority | None = field(default=None, repr=False)
@@ -268,6 +273,8 @@ class BotRuntime:
             self.host_tool_jobs.bind_terminal_callback(submit_completion)
             if self.host_execution_jobs is not None:
                 await asyncio.to_thread(self.host_execution_jobs.recover)
+            if self.host_subagent_jobs is not None:
+                self.host_subagent_jobs.recover()
             self.host_tool_jobs.recover()
         bind_hook_broker = getattr(self.engine, "bind_plugin_hook_broker", None)
         if callable(bind_hook_broker):
@@ -564,6 +571,16 @@ class BotRuntimeFactory:
                 conversation_ref_issuer=plugin_conversation_refs.issue,
             )
             engine.host_tool_jobs = host_tool_jobs
+            subagent_providers = SubagentProviderRegistry()
+            subagent_providers.register(InProcessSubagentProvider(EngineSubagentDriver(engine)))
+            host_subagent_jobs = HostSubagentJobRuntime(
+                store=job_store, providers=subagent_providers, provider_name="in_process",
+                background_tasks=engine.background_tasks, completion_publisher=host_tool_jobs.publish_completion,
+            )
+            engine.host_subagent_jobs = host_subagent_jobs
+            engine.tool_handlers["spawn_subagent"] = SpawnSubagentToolHandler(
+                engine=engine, runtime=host_subagent_jobs, conversation_ref_issuer=plugin_conversation_refs.issue,
+            )
             host_execution_jobs = HostExecutionJobRuntime(
                 store=job_store,
                 conversation_ref_issuer=plugin_conversation_refs.issue,
@@ -632,6 +649,7 @@ class BotRuntimeFactory:
                 session_work_queue=session_work_queue,
                 job_store=job_store,
                 host_tool_jobs=host_tool_jobs,
+                host_subagent_jobs=host_subagent_jobs,
                 host_execution_jobs=host_execution_jobs,
                 host_workflow_jobs=host_workflow_jobs,
                 qq_gateway=qq_gateway,
@@ -696,6 +714,9 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
         ("capability_id", job.capability_id),
         ("status", status),
     ]
+    task_directory = str(job.payload.get("working_directory") or "").strip()
+    if task_directory:
+        fields.append(("task_working_directory", task_directory))
     if summary:
         fields.append(("result_summary", summary))
     if handle_text:
@@ -710,6 +731,8 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
     ]
     if summary:
         lines.append(f"结果摘要：{summary}")
+    if task_directory:
+        lines.append(f"该任务的执行目录：{task_directory}（不是切换当前会话的工作目录）。")
     if handle_text:
         lines.append(f"可用产物：{handle_text}")
         lines.append("这些产物已登记但尚未由本完成事件确认发送；需要交付时使用当前渠道的正常发送能力。")

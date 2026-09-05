@@ -156,6 +156,7 @@ COMMON_TOOL_NAMES = (
 
 WEB_SEARCH_TOOL_NAMES = ("web_search",)
 EXEC_TOOL_NAMES = (
+    "spawn_subagent",
     "manage_project_workspace",
     "project_inspect",
     "workspace_write",

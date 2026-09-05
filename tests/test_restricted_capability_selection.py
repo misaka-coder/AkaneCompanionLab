@@ -179,6 +179,22 @@ class RestrictedCapabilitySelectionTests(unittest.TestCase):
         self.assertEqual(second.followup_context, "ok")
         dispatch.assert_called_once()
 
+    def test_task_broker_ledgers_are_separate_but_permission_owner_is_parent(self):
+        from companion_v01.tool_handlers.core import TaskExecutionScope
+        child = restrict_capability_selection(self.parent, allowed_tool_names=("web_search",))
+        call = self.prepare(child, "web_search", query="hello")
+        self.engine.executor_broker = ExecutorBroker(None)
+        handler = self.engine.tool_handlers["web_search"]
+        with patch.object(handler, "execute", wraps=handler.execute) as dispatch:
+            for task in ("child-a", "child-b", "child-a"):
+                orchestration.execute_tool_call(
+                    self.engine, tool_call=call, profile_user_id="alice", session_id="parent",
+                    visual_payload={}, now_ts=1, client_context=context(),
+                    request_context={"_task_execution_scope": TaskExecutionScope(str(self.root), task)},
+                )
+        self.assertEqual(dispatch.call_count, 2)
+        self.assertEqual(dispatch.call_args.kwargs["context"].session_id, "parent")
+
     def test_allowlisted_mcp_still_requires_normal_approval(self):
         write_profile_config(self.root, "alice", prompt_exposed=False, risk="high")
         approvals = CapabilityApprovalStore()

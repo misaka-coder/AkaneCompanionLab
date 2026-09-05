@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from .engine_services.tool_rounds import restrict_capability_selection
 from .llm_runtime import ModelExecutionTarget
+from .host_tool_jobs import _artifact_references
 from .native_tool_schema import build_openai_native_tool_specs, native_tool_model_name_map
 from .subagent_runtime import SubagentRunResult, SubagentStartRequest
 from .tool_handlers.core import TaskExecutionScope
@@ -58,6 +59,8 @@ class EngineSubagentDriver:
         )
         if not isinstance(target, ModelExecutionTarget) or model_route_fingerprint(target) != metadata.get("route_fingerprint"):
             return self._result(request, "failed", reason="subagent_model_route_changed")
+        if not engine.llm.chat_supports_native_tools(execution_target=target):
+            return self._result(request, "failed", reason="subagent_native_tools_unavailable")
         # A request-local facade shares clients and metrics, not mutable routing
         # settings. Reloading the parent during a child cannot change its effort.
         llm = copy.copy(engine.llm)
@@ -73,6 +76,8 @@ class EngineSubagentDriver:
             authorization_profile_user_id=metadata.get("authorization_profile_user_id", ""),
         )
         selection = restrict_capability_selection(selection, allowed_tool_names=request.allowed_tools)
+        if request.allowed_tools and not selection.tool_names:
+            return self._result(request, "failed", reason="subagent_parent_tools_unavailable")
         tools = build_openai_native_tool_specs({
             name: selection.resolved_handlers[name] for name in selection.schema_tool_names
             if name in selection.resolved_handlers
@@ -86,6 +91,9 @@ class EngineSubagentDriver:
         record = {"source_id": source_id, "role": "user", "content": request.task, "timestamp": int(time.time())}
         turn_id = ""
         history: list[dict[str, Any]] = []
+        reasoning_by_call_id: dict[str, str] = {}
+        model_images: list[dict[str, Any]] = []
+        artifacts: dict[str, dict[str, str]] = {}
         seen: set[str] = set()
         request_context = {key: metadata[key] for key in (
             "actor_stable_id", "actor_profile_user_id", "authorization_profile_user_id",
@@ -98,6 +106,11 @@ class EngineSubagentDriver:
             turn_id = str(opened.get("turn_id") or "")
             if not turn_id:
                 return self._result(request, "failed", reason="subagent_trace_open_failed")
+            initial_projection = manager.build_open_turn_projection(
+                turn_id=turn_id, provider_profile=target.protocol, **scope,
+            )
+            if not initial_projection.get("ok"):
+                return self._result(request, "failed", reason="subagent_input_projection_failed")
             hard_limit = engine._max_tool_rounds()
             tool_rounds = 0
             while True:
@@ -107,6 +120,7 @@ class EngineSubagentDriver:
                     system_prompt=TASK_SYSTEM_PROMPT,
                     user_prompt=f"Working directory: {request.working_directory}\n\nTask:\n{request.task}",
                     fallback={}, native_tools=tools, post_user_turns=history,
+                    user_images=model_images or None,
                     execution_target=target, prompt_cache_key="akane-subagent-v1",
                 )
                 if response.error or response.fallback_used:
@@ -119,7 +133,11 @@ class EngineSubagentDriver:
                     profile_user_id=request.parent_profile_user_id, session_id=request.parent_session_id,
                 )
                 if rejections:
-                    return self._result(request, "failed", reason="subagent_tool_protocol_rejected")
+                    return self._result(request, "failed", reason="subagent_tool_protocol_rejected",
+                                        summary="\n".join(rejections), artifacts=tuple(artifacts.values()))
+                for call in calls:
+                    if reasoning:
+                        reasoning_by_call_id[str(call.get(TOOL_INVOCATION_ID_FIELD) or "")] = reasoning
                 if not calls:
                     status = str(output.get("status") or "")
                     summary = str(output.get("summary") or "").strip()
@@ -136,6 +154,7 @@ class EngineSubagentDriver:
                         return self._result(request, "failed", reason="subagent_trace_complete_failed")
                     turn_id = ""
                     return self._result(request, status, summary=summary,
+                                        artifacts=tuple(artifacts.values()),
                                         reason=str(output.get("reason") or "task_incomplete") if status == "failed" else "")
                 if hard_limit > 0 and tool_rounds >= hard_limit:
                     return self._result(request, "failed", reason="subagent_tool_round_limit")
@@ -154,17 +173,28 @@ class EngineSubagentDriver:
                         result.followup_envelope or result.followup_context, tool_type=result.tool_type,
                     )
                     items.append((call, result, feedback))
+                    for artifact in _artifact_references(result):
+                        artifacts[artifact["handle"]] = artifact
                 ids, error = engine._record_memcore_tool_batch(
                     items=items, now_ts=int(time.time()), current_user_source_id=source_id,
                     memcore_turn_id=turn_id, recorded_tool_call_ids=seen, **scope,
                 )
                 if error or len(ids) != 2 * len(items):
                     return self._result(request, "failed", reason="subagent_tool_trace_failed")
+                batch_images = engine._merge_tool_model_image_inputs([], [item[1] for item in items])
+                model_images = engine._merge_model_image_inputs(model_images, batch_images)
+                media_ids = engine._record_memcore_tool_media_input(
+                    model_image_inputs=batch_images, related_source_ids=ids,
+                    now_ts=int(time.time()), memcore_turn_id=turn_id, **scope,
+                )
+                if batch_images and not media_ids:
+                    return self._result(request, "failed", reason="subagent_media_trace_failed")
                 projected = engine._append_tool_history_batch(
                     tool_history_turns=history, items=items, trace_source_ids=ids,
+                    media_source_ids=media_ids, model_image_inputs=batch_images,
                     provider_output_raw=response.raw_text, provider_profile=target.protocol,
                     memcore_turn_id=turn_id, current_user_source_id=source_id,
-                    native_reasoning_by_call_id={str(call.get(TOOL_INVOCATION_ID_FIELD) or ""): reasoning for call in calls},
+                    native_reasoning_by_call_id=reasoning_by_call_id,
                     **scope,
                 )
                 if not projected.get("ok"):
@@ -174,6 +204,7 @@ class EngineSubagentDriver:
                 manager.abort_input_turn(turn_id=turn_id, reason="subagent_not_completed", **scope)
 
     @staticmethod
-    def _result(request: SubagentStartRequest, status: str, *, summary: str = "", reason: str = "") -> SubagentRunResult:
+    def _result(request: SubagentStartRequest, status: str, *, summary: str = "", reason: str = "",
+                artifacts: tuple[dict[str, str], ...] = ()) -> SubagentRunResult:
         return SubagentRunResult(status=status, child_session_id=request.child_session_id,
-                                 summary=summary[:4000], reason=reason[:500])
+                                 summary=summary[:4000], reason=reason[:500], artifacts=artifacts)

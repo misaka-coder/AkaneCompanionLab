@@ -1,6 +1,6 @@
 # 会话串行与后台任务 V1
 
-状态：实施中。QQ 与桌宠已接入同一持久化会话主链；实例级 Job 存储已完成幂等、租约、恢复、重试、取消和完成投递状态。内置媒体、插件 `execution_class=long_task`、长时 Shell run 与控制中心工作流均已接入统一 Job 权威；旧的 route-owned 内存工作流 Job 已删除。真实 QQ/桌宠纵向验收、子代理和可选的 Provider 原生异步仍待完成。
+状态：实施中。QQ 与桌宠已接入同一持久化会话主链；实例级 Job 存储已完成幂等、租约、恢复、重试、取消和完成投递状态。内置媒体、插件 `execution_class=long_task`、长时 Shell run、控制中心工作流及一次性子代理均已接入统一 Job 权威；旧的 route-owned 内存工作流 Job 已删除。真实 QQ/桌宠纵向验收和可选的 Provider 原生异步仍待完成。
 
 ## 1. 目标
 
@@ -193,7 +193,7 @@ needs_model_followup: false
 
 子代理内部轨迹不整段灌入父上下文。普通聊天角色不常驻子代理控制说明；只有相关编程 Skill/模式暴露简短指导和必要工具。
 
-当前权威方案见 `docs/subagent_runtime_v1.md`。provider/result 契约与 Host Job 接线已经完成但尚未向模型暴露；只有父工作区、正常 Resolver/Broker 和父会话完成事件全部接通后，才会发布 `spawn_subagent`。
+当前权威方案见 `docs/subagent_runtime_v1.md`。`spawn_subagent` 已接入生产组装，继承父工作区快照、模型设置和工具上限，经过正常 Resolver/Broker，在独立 MemCore 域执行；结果经现有 Host Job 完成事件回父会话。已通过隔离真实模型文件任务，尚未部署验证真实 QQ/桌宠投递。
 
 ## 11. Responses 原生异步
 
@@ -240,7 +240,7 @@ needs_model_followup: false
 7. 将现有 Shell run 状态接入 Job 权威和完成通知。（已完成，真实渠道验收归入下一轮 smoke）
 8. 迁移 ComfyUI、媒体处理和插件后台工作。（已完成；真实渠道 smoke 仍待执行）
 9. 删除旧的 route-owned/in-memory Job 权威与重复通知路径。（已完成）
-10. 再设计并接入子代理。（见 `subagent_runtime_v1.md`：契约、Job 和工具范围校验已完成；真实 child 驱动及模型入口待接入）
+10. 再设计并接入子代理。（见 `subagent_runtime_v1.md`：一次性 child 驱动及模型入口已完成；通用 Job 查询/取消的模型入口和持续协作仍待后续需求验证）
 11. 最后实现经过能力门控的 Responses 原生异步。
 
 每一项单独验证和提交，不在同一切片同时重写 UI、MemCore 与 Provider 适配。

@@ -1,6 +1,6 @@
 # 子代理运行时 V1
 
-状态：实施中。provider/result、Host Job、工具范围、工作区继承和隔离 child 驱动已实现并通过进程内纵向测试；模型入口和生产绑定尚未发布。旧 `delegate_task` / `TaskWorkerService` 不恢复。
+状态：一次性 child 的生产组装、模型入口与结果回传已实现；已通过进程内纵向测试及隔离的真实模型文件任务。尚未部署验证 QQ/桌宠真实客户端表现。旧 `delegate_task` / `TaskWorkerService` 不恢复。
 
 ## 1. 目标
 
@@ -61,7 +61,7 @@ child 不默认获得：
 execute(request, cancelled) -> terminal result
 ```
 
-第一版计划由宿主注册 `in_process` provider（真实驱动验收前不启用）。Host Job 在后台 lane 中调用同步 `execute`，通过 `cancelled()` 传递取消状态；父回合只等待持久化准入结果。模型不选择 provider，也不看到 provider 名；以后接其他 provider 时保持同一工具和 Job 语义。
+第一版由 `BotRuntimeFactory` 注册 `in_process` provider，使用 `EngineSubagentDriver`。Host Job 在后台 lane 中调用同步 `execute`，通过 `cancelled()` 传递取消状态；父回合只等待持久化准入结果。模型不选择 provider，也不看到 provider 名；以后接其他 provider 时保持同一工具和 Job 语义。
 
 启动前验证 provider 是否支持请求需要的能力。缺能力时明确失败，不能接受后静默忽略。
 
@@ -94,7 +94,9 @@ spawn_subagent:
 
 成功结果只确认 `job_id` 已可靠登记。完成结果由现有 Agent-event 回到父会话。等待、取消和状态读取优先复用通用 Job 接口；没有通用接口前不新增三套子代理专用同义工具。
 
-`spawn_subagent` 仅在具备真实 provider、Host Job、工作区和执行权限时暴露。普通陪伴聊天不增加常驻子代理提示；编程 Skill 只在工具可用时加入一句使用建议。
+`spawn_subagent` 通过现有 execution 能力组暴露，需要真实 provider、Host Job、MemCore 和原生工具协议。已选项目是调用前置条件：没有项目时返回 `workspace_not_selected`，提示调用现有工作区工具；不根据聊天关键词或项目切换动态改写 schema。准入及 child 调用继续经过普通权限检查。运行状态不追加常驻人设提示。
+
+第一版 child 工具上限为父级已拥有的文件、Shell、搜索、Skill/MCP 加载和 MCP 调用能力。它不继承记忆召回、向用户投递、角色配置或扩展管理工具，也不递归派发 child。按现有协议得到的工具错误仍配对回传，child 可以据此纠正调用，不因一次工具名错误直接终止。
 
 ## 7. child 输出
 
@@ -107,6 +109,8 @@ child 的终态结果包含：
 - 失败时的结构化 `reason`。
 
 父 Agent 只收到终态摘要和产物引用，不接收整段子代理工具轨迹。需要进一步检查时由宿主提供有界结果读取，不把 child transcript 全量塞回父上下文。
+
+失败报告和已经产生的部分产物同样保留在 Job 中，不只返回错误码。产物句柄取自真实工具回执，忽略模型自行填写的句柄；工具产生的图片继续通过现有媒体记录与投影传给 child。完成事件附上任务启动时的目录，不把它误称为父会话当前目录。
 
 ## 8. 并发、顺序与缓存
 
@@ -142,9 +146,9 @@ child 的终态结果包含：
 
 1. 建立 provider/result 契约。（已完成；in-process child 驱动在第 3 项接入）
 2. 接入 Host Job，验证持久化、取消、重启失败语义和恰好一次完成事件。（已完成）
-3. 让 child 使用正常 Resolver/Broker 与父工作区快照。（驱动、真实文件读写、原生工具配对、独立 MemCore 及 Job 回传的进程内验收已完成；外部模型 smoke 待执行）
-4. 增加 `spawn_subagent` ToolSpec/handler，并只在真实可用时暴露。
-5. 以一个读代码并产出审计报告的任务完成父 → child → 父纵向验收。
+3. 让 child 使用正常 Resolver/Broker 与父工作区快照。（已完成；进程内验收与外部模型 smoke 均已通过）
+4. 增加 `spawn_subagent` ToolSpec/handler，并只在真实可用时暴露。（已完成生产组装与原生父工具调用验收）
+5. 以一个读代码并产出审计报告的任务完成父 → child → 父纵向验收。（真实模型文件任务、Job 终态与完成事件已通过；真实 QQ/桌宠客户端待部署 smoke）
 6. 根据真实体验决定是否增加通用 Job 状态/取消入口。
 7. 只有出现持续协作需求时，再设计 continuable child 和 follow-up。
 
@@ -152,7 +156,13 @@ child 的终态结果包含：
 
 2026-09-05 repair pass：`CapabilitySelection` 增加宿主内部的 `execution_allowlist`。`None` 沿用普通会话行为，空集合明确不允许执行工具。筛选同步移除无关 schema、handler、原生别名、执行凭据及提示；再次筛选只能缩小范围。历史 MCP 原生别名和 `invoke_mcp` 的延迟解析继续保留这一上限，最终调用由普通 validator/Broker 校验。允许的 MCP 仍可按需调用，不需要常驻全量 schema。该状态不进入模型工具 schema 或稳定提示词。
 
-中断前尝试的 `turn_kind=subagent` 接线已撤下：仅设置独立 session 和短系统提示尚不足以证明关系/Care 隔离、权限主体继承、默认 cwd、取消和产物归属完整。后续需在接入真实驱动时逐项验证；不能把测试用 provider runner 当成已可供模型调用的子代理。
+中断前尝试的 `turn_kind=subagent` 接线已撤下。当前驱动不进入伴侣的关系/Care/检索回合，只复用真实 LLM 客户端、普通工具协议/Broker 和独立 MemCore 工具轨迹。权限主体继承、目录快照、Broker 幂等域及产物归属分别有回归测试，不靠换一个 session 名推断隔离已经成立。
+
+真实模型 smoke：`python -m tests.live_subagent_smoke --live`。只向当前配置的模型发送临时样例，使用真实文件工具、Broker、MemCore 投影及 Job；身份/投递采用测试夹具，embedding 是本地 stub，不覆盖记忆检索。2026-09-05 两次完成耗时约 29 秒、83 秒；第二次观测到 `project_inspect(source.py) → workspace_write(audit.md) → project_inspect(audit.md)`，报告文件存在，Job 成功且完成接收端收到一次事件。启动登记分别约 0 秒、0.015 秒。耗时不是性能保证，也不等于 QQ/桌宠实际投递验收。
+
+另以真实 LLM 客户端和模拟 HTTP 响应覆盖多轮原生工具配对及 DeepSeek 思考内容回传；普通工具轮的工具表和系统消息保持一致。该测试不属于外部模型实测。扩大回归：171 项通过（子代理、Job、工作区、工具 schema、BotRuntime 和实例隔离）。
+
+剩余边界：通用 Job 查询/取消的模型入口尚未提供；当前提供后端协作取消，在模型/工具步骤之间生效，不承诺强杀正在进行的任意同步调用。尚不提供继续 child 的 follow-up 或递归派发。部署后仍需用原 QQ 会话、角色和桌宠表现层完成验收。
 
 验证入口：`python -m unittest tests.test_restricted_capability_selection tests.test_subagent_runtime tests.test_host_subagent_jobs -q`。新增覆盖空集合、重复缩小、父子选择互不修改、历史别名、路由目标拒绝、允许的延迟 MCP、最终执行校验及真实 Broker 幂等。
 

@@ -426,6 +426,7 @@ class AkaneMemoryEngine:
                 "attachment": int(getattr(config, "BACKGROUND_ATTACHMENT_WORKERS", 3) or 3),
                 "timeline": int(getattr(config, "BACKGROUND_TIMELINE_WORKERS", 1) or 1),
                 "host-jobs": int(getattr(config, "BACKGROUND_HOST_JOB_WORKERS", 2) or 2),
+                "subagents": int(getattr(config, "BACKGROUND_HOST_JOB_WORKERS", 2) or 2),
             },
             default_workers=int(getattr(config, "BACKGROUND_DEFAULT_WORKERS", 1) or 1),
         )
@@ -744,6 +745,9 @@ class AkaneMemoryEngine:
         """Signal cooperative workers before bounded shutdown joins begin."""
 
         self._embedding_reindex_stop.set()
+        subagents = getattr(self, "host_subagent_jobs", None)
+        if subagents is not None:
+            subagents.request_shutdown()
         execution_provider = getattr(self, "execution_provider", None)
         request_execution_shutdown = getattr(execution_provider, "request_shutdown", None)
         if callable(request_execution_shutdown):
@@ -7970,7 +7974,7 @@ class AkaneMemoryEngine:
                 current_user_source_id=current_user_source_id,
                 client_context=client_context,
                 memory_exclude_source_ids=memory_exclude_source_ids,
-                request_context=request_context,
+                request_context={**request_context, "_model_execution_target": execution_target},
                 domain_profile_id=domain_profile_id,
             )
 

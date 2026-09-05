@@ -40,6 +40,10 @@ class HostSubagentJobRuntime:
         self.completion_publisher = completion_publisher
         self._scheduled: set[str] = set()
         self._lock = threading.RLock()
+        self._shutdown = threading.Event()
+
+    def request_shutdown(self) -> None:
+        self._shutdown.set()
 
     def submit(
         self,
@@ -133,6 +137,8 @@ class HostSubagentJobRuntime:
         return scheduled
 
     def _schedule(self, job_id: str) -> bool:
+        if self._shutdown.is_set():
+            return False
         with self._lock:
             if job_id in self._scheduled:
                 return True
@@ -154,6 +160,8 @@ class HostSubagentJobRuntime:
         claim_token = ""
         job: HostJob | None = None
         try:
+            if self._shutdown.is_set():
+                return
             claim = self.store.claim(
                 job_id,
                 worker_id=f"subagent:{threading.get_ident()}",
@@ -209,12 +217,14 @@ class HostSubagentJobRuntime:
                 claim_token=claim_token,
                 error=result.reason or "subagent_failed",
                 retryable=False,
+                result_summary=result.summary,
+                artifacts=result.artifacts,
             )
         return bool(settled.get("ok"))
 
     def _cancel_requested(self, job: HostJob) -> bool:
         current = self.store.get(job.job_id, owner=job.owner)
-        return (current is None or current.status != "running"
+        return (self._shutdown.is_set() or current is None or current.status != "running"
                 or current.claim_token != job.claim_token or bool(current.cancel_requested))
 
     def _settle_scheduler_failure(self, job_id: str, *, owner: HostJobOwner) -> None:

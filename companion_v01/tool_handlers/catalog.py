@@ -1,6 +1,7 @@
-"""Explicit assembly of every built-in tool handler.
+"""Explicit assembly of static built-in tool handlers.
 
-This is the single construction site for built-in handlers. It does not scan
+Runtime-owned handlers (such as subagents) bind in BotRuntime after their
+services exist. This factory does not scan
 modules, register anything globally, or read mutable global state; the engine
 resolves the required services once and passes them as explicit keyword-only
 arguments.

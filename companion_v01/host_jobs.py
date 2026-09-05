@@ -350,7 +350,12 @@ class HostJobStore:
         error: Any,
         retryable: bool,
         retry_delay_seconds: float = 0.0,
+        result_summary: Any = "",
+        artifacts: Any = (),
     ) -> dict[str, Any]:
+        artifacts_json = _json_artifacts(artifacts)
+        if artifacts_json is None:
+            return {"ok": False, "status": "invalid", "reason": "host_job_artifacts_not_json_safe"}
         normalized_id = str(job_id or "").strip()
         token = str(claim_token or "").strip()
         if not normalized_id or not token:
@@ -373,6 +378,7 @@ class HostJobStore:
                 UPDATE host_jobs
                 SET status = ?, available_at = ?, lease_until = 0, claim_token = '',
                     claimed_by = '', updated_at = ?, finished_at = ?, last_error = ?,
+                    result_summary = ?, artifacts_json = ?,
                     completion_status = CASE
                         WHEN ? = 'queued' THEN completion_status
                         WHEN completion_mode = 'silent' THEN 'silent'
@@ -385,6 +391,8 @@ class HostJobStore:
                     now,
                     finished_at,
                     str(error or "")[:500],
+                    str(result_summary or "")[:4_000],
+                    artifacts_json,
                     next_status,
                     normalized_id,
                     token,

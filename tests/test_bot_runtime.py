@@ -391,10 +391,13 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         runtime.host_execution_jobs = SimpleNamespace(
             recover=lambda: order.append("settle-execution") or 1,
         )
+        runtime.host_subagent_jobs = SimpleNamespace(
+            recover=lambda: order.append("resume-subagents") or 1,
+        )
 
         await runtime.start()
 
-        self.assertEqual(order, ["bind-delivery", "settle-execution", "deliver"])
+        self.assertEqual(order, ["bind-delivery", "settle-execution", "resume-subagents", "deliver"])
 
     async def test_terminal_host_job_becomes_contextual_agent_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
