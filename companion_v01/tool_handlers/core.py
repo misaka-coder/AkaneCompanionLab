@@ -61,6 +61,13 @@ from ..project_workspace_specs import (
 
 
 @dataclass(frozen=True)
+class TaskExecutionScope:
+    """Host-owned execution coordinates; not a grant of filesystem permission."""
+
+    working_directory: str
+
+
+@dataclass(frozen=True)
 class ToolExecutionContext:
     profile_user_id: str
     session_id: str
@@ -70,6 +77,7 @@ class ToolExecutionContext:
     current_user_source_id: str = ""
     client_mode: str = ""
     request_context: dict[str, Any] = field(default_factory=dict)
+    execution_scope: TaskExecutionScope | None = None
 
 
 @dataclass

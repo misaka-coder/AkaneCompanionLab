@@ -108,6 +108,8 @@ class _ProjectWorkspaceHandler(BaseToolHandler):
             return {"workspace_id": clean_workspace_id, "operation_root": None, "path": clean_path}
 
         provider = self.execution_provider
+        if not clean_cwd and context.execution_scope is not None:
+            clean_cwd = context.execution_scope.working_directory
         if not clean_cwd:
             try:
                 scope = self._scope(context)

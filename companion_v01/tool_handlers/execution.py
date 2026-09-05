@@ -575,6 +575,9 @@ class ExecRunToolHandler(_ExecToolHandlerBase):
         cwd = str(call.get("cwd") or "").strip()
         workspace_id = ""
         input_resources = call.get("input_resources") or []
+        if not cwd and not input_resources and context.execution_scope is not None:
+            cwd = context.execution_scope.working_directory
+            call = {**call, "cwd": cwd}
         if not cwd and not input_resources and self.project_workspace_service is not None:
             try:
                 scope = self._project_scope(context)

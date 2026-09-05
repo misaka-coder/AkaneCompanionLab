@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 
 from companion_v01.project_workspace import ProjectWorkspaceError, ProjectWorkspaceService
 from companion_v01.execution_local import TrustedLocalExecutor
@@ -20,9 +21,43 @@ from companion_v01.tool_handlers.project_workspace import (
     WorkspaceWriteToolHandler,
 )
 from companion_v01.tool_runtime import ToolExecutionContext
+from companion_v01.tool_handlers.core import TaskExecutionScope
 
 
 class ProjectWorkspaceServiceTests(unittest.TestCase):
+    def test_task_coordinate_is_frozen_and_shared_by_file_tools_and_real_shell(self) -> None:
+        original = self.service.create(scope=self.private, display_name="Parent")
+        inherited = original["working_directory"]
+        child = replace(self._context(session_id="subagent_" + "a" * 32),
+                        execution_scope=TaskExecutionScope(inherited))
+        latest = self.service.create(scope=self.private, display_name="Parent switched")
+        provider = TrustedLocalExecutor(workspace_root=self.execution_root, run_log_dir=self.root / "task-logs")
+        write = WorkspaceWriteToolHandler(service=self.service, execution_provider=provider)
+        inspect = ProjectInspectToolHandler(service=self.service, execution_provider=provider)
+        patch = WorkspacePatchToolHandler(service=self.service, execution_provider=provider)
+        written = write.execute(call={"type": "workspace_write", "path": "report.txt", "content": "before\n"}, context=child)
+        self.assertEqual(written.stream_events[0]["status"], "succeeded")
+        patched = patch.execute(call={"type": "workspace_patch", "patch":
+            "*** Begin Patch\n*** Update File: report.txt\n@@\n-before\n+after\n*** End Patch\n"}, context=child)
+        self.assertEqual(patched.stream_events[0]["status"], "succeeded")
+        read = inspect.execute(call={"type": "project_inspect", "action": "read", "path": "report.txt"}, context=child)
+        self.assertIn("after", read.followup_context)
+        override = self.root / "override"
+        override.mkdir()
+        write.execute(call={"type": "workspace_write", "cwd": str(override), "path": "other.txt", "content": "one-shot"}, context=child)
+        write.execute(call={"type": "workspace_write", "path": "again.txt", "content": "inherited"}, context=child)
+        self.assertTrue((Path(inherited) / "again.txt").is_file())
+        self.assertFalse((Path(latest["working_directory"]) / "report.txt").exists())
+        shell = ExecRunToolHandler(execution_provider=provider, project_workspace_service=self.service)
+        from types import SimpleNamespace
+        shell._permission_decision = lambda *_args: SimpleNamespace(allowed=True)
+        code = "from pathlib import Path; assert Path('report.txt').read_text().strip() == 'after'"
+        args = [sys.executable, "-c", code]
+        command = subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+        executed = shell.execute(call={"type": "exec_run", "command": command, "initial_wait_seconds": 2}, context=child)
+        self.assertEqual(executed.stream_events[0]["status"], "completed")
+        self.assertEqual(self.service.current(scope=self.private)["workspace_id"], latest["workspace_id"])
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

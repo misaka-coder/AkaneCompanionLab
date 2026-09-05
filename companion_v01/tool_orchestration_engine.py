@@ -25,6 +25,7 @@ from .tool_invocation import invocation_to_legacy_tool_call
 from .tool_invocation import legacy_tool_call_to_invocation
 from .native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
 from .tool_runtime import ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
+from .tool_handlers.core import TaskExecutionScope
 from .capability_registry import ExecutorBroker, OPEN_BROWSER_TOOL_SPEC
 from .desktop_satellite_specs import desktop_satellite_spec
 from .execution_specs import EXEC_TOOL_SPEC_BY_ID
@@ -1125,6 +1126,11 @@ def execute_tool_invocation(
             current_user_source_id=current_user_source_id,
             client_mode=client_mode,
             request_context=dict(request_context or {}),
+            execution_scope=(
+                request_context.get("_task_execution_scope")
+                if isinstance((request_context or {}).get("_task_execution_scope"), TaskExecutionScope)
+                else None
+            ),
         )
     host_tool_jobs = getattr(engine, "host_tool_jobs", None)
     if host_tool_jobs is not None and host_tool_jobs.accepts(
