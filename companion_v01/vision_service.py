@@ -15,6 +15,7 @@ import config
 from services.llm_client import build_llm_client
 
 from .resource_manifest import ResourceManifest
+from .model_image_inputs import model_image_blocks
 from .runtime_settings import BotSettingsView
 from .store import MemoryStore
 
@@ -853,13 +854,24 @@ class VisionObservationService:
         clean_images = [str(value or "").strip() for value in image_urls if str(value or "").strip()]
         if not clean_images:
             raise RuntimeError("没有可用的图像输入。")
+        image_blocks = [
+            block for url in clean_images
+            for block in model_image_blocks({"type": "image_url", "image_url": {"url": url}})
+        ]
+        if not any(block.get("type") == "image_url" for block in image_blocks):
+            raise RuntimeError("image_decode_failed")
 
         protocol = str(self.settings.vision_api_protocol or "").strip().lower()
         client_protocol = str(getattr(self._client, "_akane_protocol", "") or "").strip().lower()
         if protocol == "responses" or client_protocol == "responses":
             user_content: list[dict[str, Any]] = [
                 {"type": "input_text", "text": str(user_text or "")},
-                *[{"type": "input_image", "image_url": image_url} for image_url in clean_images],
+                *[
+                    {"type": "input_image", "image_url": block["image_url"]["url"]}
+                    if block["type"] == "image_url"
+                    else {"type": "input_text", "text": block["text"]}
+                    for block in image_blocks
+                ],
             ]
             response = self._client.responses.create(
                 model=self.settings.vision_model_name,
@@ -878,7 +890,7 @@ class VisionObservationService:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": str(user_text or "")},
-                        *[{"type": "image_url", "image_url": {"url": image_url}} for image_url in clean_images],
+                        *image_blocks,
                     ],
                 },
             ],

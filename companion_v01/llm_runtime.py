@@ -27,6 +27,7 @@ from memcore import StreamingSpeechParser
 from memcore import memory_metadata_has_signal as memcore_metadata_has_signal
 from services.llm_client import build_llm_client
 from .model_service_config import normalize_provider_model_id
+from .model_image_inputs import model_image_blocks
 from .native_tool_schema import native_tool_model_name_map
 from .runtime_settings import BotSettingsView, normalize_reasoning_effort, normalize_thinking_mode
 from .tool_invocation import NATIVE_ANTHROPIC
@@ -2165,7 +2166,7 @@ class LLMRuntime:
 
     def _normalize_message_content_for_payload(self, content: Any) -> str | list[dict[str, Any]]:
         if isinstance(content, list):
-            blocks = [dict(item) for item in content if isinstance(item, dict)]
+            blocks = [part for item in content if isinstance(item, dict) for part in model_image_blocks(item)]
             return blocks if blocks else self._flatten_message_content(content).strip()
         return str(content or "").strip()
 
@@ -2904,7 +2905,7 @@ class LLMRuntime:
             url = str(raw.get("data_url") or raw.get("dataUrl") or raw.get("url") or "").strip()
             if not url.startswith("data:image/"):
                 continue
-            items.append({"type": "image_url", "image_url": {"url": url}})
+            items.extend(model_image_blocks({"type": "image_url", "image_url": {"url": url}}))
         return items
 
     def _should_use_response_json_mode(self, bundle: ModelBundle) -> bool:
