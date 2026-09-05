@@ -49,8 +49,10 @@ class PluginConversationReferenceAuthority:
             character_pack_id=character_pack_id,
             user_id=user_id,
             group_id=group_id,
-            actor_stable_id=str(delivery.get("actor_stable_id") or ""),
-            actor_profile_user_id=str(delivery.get("actor_profile_user_id") or ""),
+            # A system event has no QQ sender, but can retain a signed causal
+            # actor in the host turn metadata for permissions and later work.
+            actor_stable_id=str(request_context.get("actor_stable_id") or ""),
+            actor_profile_user_id=str(request_context.get("actor_profile_user_id") or ""),
         )
 
     def issue_qq(

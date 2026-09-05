@@ -576,6 +576,10 @@ class ConversationReferenceAuthorityTests(unittest.TestCase):
             self.assertEqual(resolved["actor"], "qq:123")
             self.assertEqual(resolved["actor_profile"], "qq_user_123")
             self.assertEqual(resolved["character"], "reimu")
+            payload["qq_delivery_context"]["user_id"] = 0
+            payload["qq_delivery_context"].pop("actor_stable_id", None)
+            payload["qq_delivery_context"].pop("actor_profile_user_id", None)
+            self.assertEqual(authority.resolve(authority.issue(context))["actor"], "qq:123")
             context.request_context = {"user_id": 123, "group_id": 87}
             self.assertEqual(authority.issue(context), "")
 

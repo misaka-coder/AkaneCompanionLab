@@ -4264,6 +4264,7 @@ class AkaneMemoryEngine:
             chat_model_override=chat_model_override,
         )
         transient_user_turn = self._is_transient_user_turn(payload) or externally_managed_memcore_turn
+        current_input_transient = transient_user_turn and not externally_managed_memcore_turn
         persist_assistant_turn = self._should_persist_assistant_turn(payload) and not externally_managed_memcore_turn
         external_event_turn = plugin_external_event is not None
 
@@ -4359,7 +4360,7 @@ class AkaneMemoryEngine:
         turn_memcore_failure: dict[str, Any] | None = None
         if externally_managed_memcore_turn:
             memcore_turn_id = precommitted_turn_id
-        elif prompt_scope == "qq_attention":
+        elif current_input_transient and not speculative_voice_candidate:
             memcore_open = self._begin_memcore_hidden_host_turn(
                 referenced_source_ids=attention_reference_source_ids,
                 profile_user_id=profile_user_id,
@@ -4401,17 +4402,17 @@ class AkaneMemoryEngine:
             # observations are appended to ``recent_raw_for_turn`` later, so
             # rediscovering the stimulus from the mutable history tail can
             # lose its source id and abort an otherwise successful tool turn.
-            # Attention reviews have no provider-visible durable stimulus: the
-            # review event is the request-local user tail, while the hidden
+            # Transient events have no provider-visible durable stimulus: the
+            # event is the request-local user tail, while the hidden
             # host record only owns tools/finalization.  Asking MemCore to
             # project that prompt-invisible record as the current message makes
             # an otherwise valid history read fail with
             # ``current_source_not_projected``.
-            "current_user_source_id": "" if prompt_scope == "qq_attention" else turn_projection_source_id,
-            # QQ attention review text is a request-local tail instruction.
-            # Its durable facts are the passive messages already in MemCore;
-            # never freeze the transient event into provider history.
-            "record_request_projection": prompt_scope != "qq_attention",
+            "current_user_source_id": "" if current_input_transient else turn_projection_source_id,
+            # Keep current-turn event content out of persistent prompt history;
+            # its tools and actual assistant reply still belong to a real turn.
+            "record_request_projection": not current_input_transient,
+            "current_input_transient": current_input_transient,
         }
         if actor_stable_id:
             request_projection_state["actor_stable_id"] = actor_stable_id
@@ -5542,6 +5543,7 @@ class AkaneMemoryEngine:
             current_user_source_id=str(
                 (request_projection_state or {}).get("current_user_source_id") or ""
             ).strip(),
+            current_input_transient=bool((request_projection_state or {}).get("current_input_transient")),
             current_actor_relation=str(
                 (request_projection_state or {}).get("current_actor_relation") or ""
             ).strip(),
@@ -6513,6 +6515,7 @@ class AkaneMemoryEngine:
             current_user_source_id=str(
                 (request_projection_state or {}).get("current_user_source_id") or ""
             ).strip(),
+            current_input_transient=bool((request_projection_state or {}).get("current_input_transient")),
             current_actor_relation=str(
                 (request_projection_state or {}).get("current_actor_relation") or ""
             ).strip(),
@@ -7023,6 +7026,7 @@ class AkaneMemoryEngine:
         domain_profile_id: str = "",
         prompt_scope: str = "",
         current_user_source_id: str = "",
+        current_input_transient: bool = False,
         current_actor_relation: str = "",
         authorization_profile_user_id: str = "",
         actor_stable_id: str = "",
@@ -7057,6 +7061,7 @@ class AkaneMemoryEngine:
             domain_profile_id=domain_profile_id,
             prompt_scope=prompt_scope,
             current_user_source_id=current_user_source_id,
+            current_input_transient=current_input_transient,
             current_actor_relation=current_actor_relation,
             authorization_profile_user_id=authorization_profile_user_id,
             actor_stable_id=actor_stable_id,

@@ -713,6 +713,36 @@ def _tool_context() -> ToolExecutionContext:
 
 
 class MemcoreIntegrationTests(unittest.TestCase):
+    def test_current_turn_event_projects_real_history_without_persisting_stimulus(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemcoreManager(backend="memcore", storage_path=Path(temp_dir) / "memcore.db",
+                visible_scope="conversation", enable_flavor=True, shadow_compare=False,
+                llm=_FakeLLM(), embedding_provider=_FakeEmbeddingProvider())
+            try:
+                scope = {"profile_user_id": "u1", "session_id": "s1", "character_pack_id": "char"}
+                manager.append_standalone_message({"source_id": "previous", "content": "请完成测试", "timestamp": 100},
+                    role="user", observed=True, **scope)
+                opened = manager.begin_hidden_host_turn(**scope)
+                self.assertTrue(opened["ok"], opened)
+                engine = _PromptContextEngine(memcore_manager=manager)
+                with patch.object(config, "MEMORY_BACKEND", "memcore"):
+                    context = response_builder.prepare_context(engine, user_message="job completed: output 437",
+                        recent_raw=[], recent_episodic_summaries=[], recent_semantic_summaries=[],
+                        confirmed_snippets=[], now_ts=200, current_input_transient=True, **scope)
+                self.assertNotIn("memcore_projection_failure", context)
+                self.assertIn("请完成测试", str(context))
+                self.assertIn("job completed", str(context))
+                closed = manager.complete_input_turn(turn_id=opened["turn_id"],
+                    assistant_record={"source_id": "reply", "role": "assistant", "content": "结果是437", "timestamp": 201},
+                    memory_metadata=None, provider_profile="openai", provider_output_raw='{"speech":"结果是437"}',
+                    provider_projection={"role": "assistant", "content": '{"speech":"结果是437"}'}, **scope)
+                self.assertTrue(closed["ok"], closed)
+                projected = manager.build_context_projection(provider_profile="openai", **scope)
+                self.assertNotIn("job completed", str(projected))
+                self.assertIn("结果是437", str(projected))
+            finally:
+                manager.close()
+
     def test_attention_hidden_host_turn_does_not_mutate_passive_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(

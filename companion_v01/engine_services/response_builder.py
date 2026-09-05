@@ -314,6 +314,7 @@ def prepare_context(
     domain_profile_id: str = "",
     prompt_scope: str = "",
     current_user_source_id: str = "",
+    current_input_transient: bool = False,
     current_actor_relation: str = "",
     authorization_profile_user_id: str = "",
     actor_stable_id: str = "",
@@ -388,14 +389,14 @@ def prepare_context(
             recent_semantic_summaries,
             store=engine.store,
         )
-    current_source_id = str(current_user_source_id or current_record.get("source_id") or "").strip()
+    current_source_id = "" if current_input_transient else str(current_user_source_id or current_record.get("source_id") or "").strip()
     provider_projection = _build_memcore_provider_history(
         engine,
         profile_user_id=profile_user_id,
         session_id=session_id,
         character_pack_id=character_pack_id,
         current_source_id=current_source_id,
-        allow_history_only=normalized_prompt_scope == "qq_attention",
+        allow_history_only=current_input_transient or normalized_prompt_scope == "qq_attention",
         chat_model_override=chat_model_override,
         execution_target=execution_target,
         exclude_source_ids=list(excluded_prompt_sources),
@@ -1051,7 +1052,9 @@ def prepare_context(
                 session_id=session_id,
                 character_pack_id=character_pack_id,
                 current_source_id=current_source_id,
+                allow_history_only=current_input_transient or normalized_prompt_scope == "qq_attention",
                 chat_model_override=chat_model_override,
+                execution_target=execution_target,
                 exclude_source_ids=list(excluded_prompt_sources),
             )
             projection_read_active = bool(provider_projection.get("ok"))

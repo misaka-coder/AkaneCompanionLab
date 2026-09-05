@@ -153,7 +153,6 @@ class _Harness:
         engine._extract_desktop_screen_frame_images = lambda payload: []
         engine._resolve_turn_execution_target = lambda **kwargs: None
         engine._memcore_owns_compaction = lambda: memcore_owns_compaction
-        engine.consume_due_reminders = record("consume_due_reminders")
         engine._apply_message_addressing = lambda user_record, message_addressing: ("", "")
         engine._load_turn_visible_memory = lambda **kwargs: ([], [], [])
         engine._run_pre_retrieval_pipeline = lambda **kwargs: SimpleNamespace(
@@ -971,7 +970,6 @@ class TurnMainlineContractTests(unittest.TestCase):
         harness.run_stream(payload)
 
         rec = harness.rec
-        self.assertEqual(len(rec["consume_due_reminders"].calls), 0)
         self.assertEqual(len(rec["apply_persona_state_to_final_output"].calls), 0)
         self.assertEqual(len(rec["apply_care_state_request"].calls), 0)
         self.assertEqual(len(rec["schedule_summary_cycle"].calls), 0)
@@ -1004,6 +1002,21 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertFalse(projection_state["record_request_projection"])
         self.assertEqual(projection_state["current_user_source_id"], "")
 
+    def test_current_turn_event_uses_normal_prompt_and_hidden_tool_owner(self) -> None:
+        harness = _Harness(self._two_round_script())
+        result = harness.run_sync(harness.payload(turn_kind="plugin_event", transient_user_message=True,
+            plugin_external_event={"event_type": "job.completed", "source": "host.jobs", "fields": {"status": "succeeded"}}))
+        self.assertEqual(result["speech"], "查到了，是一份 PDF。")
+        self.assertEqual(len(harness.rec["begin_memcore_hidden_host_turn"].calls), 1)
+        self.assertEqual(len(harness.rec["begin_memcore_input_turn"].calls), 0)
+        state = harness.script.generation_kwargs[0]["request_projection_state"]
+        self.assertTrue(state["current_input_transient"])
+        self.assertFalse(state["record_request_projection"])
+        self.assertEqual(state["current_user_source_id"], "")
+        self.assertEqual(harness.script.generation_kwargs[0]["prompt_scope"], "")
+        self.assertEqual(harness.rec["record_memcore_tool_batch"].calls[0][1]["memcore_turn_id"], "turn-attention-1")
+        self.assertEqual(len(harness.rec["finalize_memcore_input_turn_for_delivery"].calls), 1)
+
     def test_attention_keeps_visible_delivery_when_existing_turn_primitive_is_unavailable(self) -> None:
         harness = _Harness([_speech_output("我也看到了。")])
         harness.rec["begin_memcore_hidden_host_turn"].result = {
@@ -1035,7 +1048,6 @@ class TurnMainlineContractTests(unittest.TestCase):
         harness.run_sync(harness.payload())
 
         rec = harness.rec
-        self.assertGreaterEqual(len(rec["consume_due_reminders"].calls), 1)
         self.assertEqual(len(rec["apply_persona_state_to_final_output"].calls), 1)
         self.assertGreaterEqual(len(rec["apply_care_state_request"].calls), 1)
         self.assertGreaterEqual(len(rec["schedule_summary_cycle"].calls), 1)

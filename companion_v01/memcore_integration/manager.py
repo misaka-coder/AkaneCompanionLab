@@ -979,7 +979,7 @@ class MemcoreManager:
         try:
             memcore = self._memcore_module or self._import_memcore()
             opened_at = int(time.time())
-            source_id = f"host-attention:{hashlib.sha256(f'{session_id}|{time.time_ns()}'.encode()).hexdigest()[:32]}"
+            source_id = f"host-turn:{hashlib.sha256(f'{session_id}|{time.time_ns()}'.encode()).hexdigest()[:32]}"
             resolved_references = list(
                 dict.fromkeys(
                     str(item or "").strip()
@@ -988,7 +988,7 @@ class MemcoreManager:
                 )
             )
             entry = memcore.TimelineEntryInput(
-                kind="event.group_attention_review",
+                kind="event.host_turn",
                 origin=memcore.EntryOrigin.ENVIRONMENT,
                 turn_role=memcore.TurnRole.STIMULUS,
                 semantic_text="",
