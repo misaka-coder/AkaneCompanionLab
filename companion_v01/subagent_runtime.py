@@ -99,8 +99,6 @@ class SubagentProviderRegistry:
             result = provider.execute(request, cancelled=cancelled)
         except Exception as exc:
             return _failure(request, f"subagent_provider_{type(exc).__name__}")
-        if cancelled():
-            return _cancelled(request)
         normalized = normalize_subagent_result(result, expected_child_session_id=request.child_session_id)
         return normalized or _failure(request, "subagent_result_invalid")
 

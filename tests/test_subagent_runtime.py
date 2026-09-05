@@ -77,6 +77,21 @@ class SubagentRuntimeTests(unittest.TestCase):
         self.assertEqual(result.reason, "subagent_cancelled")
         self.assertEqual(calls, [])
 
+    def test_late_cancel_does_not_replace_provider_terminal_result(self) -> None:
+        for status in ("succeeded", "failed", "cancelled"):
+            with self.subTest(status=status):
+                cancellation = [False]
+                def run(request, **_kwargs):
+                    cancellation[0] = True
+                    return SubagentRunResult(
+                        status=status, child_session_id=request.child_session_id,
+                        summary="actual result", reason="worker_confirmed" if status != "succeeded" else "",
+                    )
+                registry = SubagentProviderRegistry()
+                registry.register(InProcessSubagentProvider(run))
+                result = registry.execute("in_process", _request(), cancelled=lambda: cancellation[0])
+                self.assertEqual(result.status, status)
+
     def test_malformed_tool_filter_is_rejected_without_throwing(self) -> None:
         registry = SubagentProviderRegistry()
         registry.register(InProcessSubagentProvider(lambda *_args, **_kwargs: None))
