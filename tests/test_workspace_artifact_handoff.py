@@ -119,7 +119,9 @@ class WorkspaceArtifactHandoffTests(unittest.TestCase):
                    return_value=PermissionDecision(allowed=True, requires_user_decision=False,
                                                    mode="trusted_auto_allow", reason="test")):
             result = handler.execute(call={"type": "exec_run", "initial_wait_seconds": 0,
-                "command": _python_command("import time,pathlib;time.sleep(0.6);pathlib.Path('shell.md').write_bytes(b'original')"),
+                "command": _python_command("import time,pathlib\ndeadline=time.monotonic()+20\n"
+                    "while not pathlib.Path('independent.txt').exists() and time.monotonic()<deadline: time.sleep(0.05)\n"
+                    "pathlib.Path('shell.md').write_bytes(b'original')"),
                 "output_globs": ["shell.md"]}, context=context)
         self.assertEqual(result.state_updates["capability_execution"]["status"], "running", result)
         self.assertTrue(work.pending)
