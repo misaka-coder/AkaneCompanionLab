@@ -333,6 +333,21 @@
 - 用户已明确允许后续使用现有 PinAI 接口最多两次请求、最多三张新建测试图，限一次
   生成与一次参考图编辑；尚未执行这两次付费验收，不上传用户私有图片。
 
+### 生图 A：独立协议库，尚未切换产品入口
+
+- 从 `6fc43ec` 开始短迁移窗口。`plugins/akane_image_generation` 暂无 entry point/市场条目；
+  原 image_generation provider/service 和 Engine 仍是唯一产品入口。B/C 验收后删除这些旧业务
+  与旧 handler/spec/固定提示；通用 load_material 解析和现有模型服务配置保留。
+- 新库包含生成、单/多参考图编辑、蒙版、四张输出预算、PNG/JPEG/WEBP、尺寸/质量/压缩；
+  修复 compression=0 被改成 90、预览 SSE 被误当最终图、无界响应和只验魔数的问题。
+  真正 Pillow 解码验证参考图/输出，PNG alpha 蒙版须匹配首参考图尺寸。
+- HTTP 连接丢失不自动重试、不假称取消；只有明确的无兼容账户拒绝允许有界重试。
+  多参考 multipart 被拒后兼容 file-ID 协议，并回收本次上传的 ID；不删除用户既有文件。
+  达到请求张数的最终事件即可结束读取，不能等 relay 长连接；部分最终结果明确数量不足。
+- 包内 11 项通过（2.687 秒），包括实际 HTTP 与编解码、流/字节边界、两种取消终态、
+  格式/参数、蒙版与上传回退。仅 HTTP fixture，不算真实 PinAI 生图；付费额度尚未使用。
+  迁移窗口验证：`python -m unittest discover -s plugins/akane_image_generation/tests -v`。
+
 ## 最终交付与授权边界
 
 - 全部七项逐项关闭，才可完成整个目标。每项报告提交、真实命令/结果、用户能感受到的变化和仍未实测部分。
