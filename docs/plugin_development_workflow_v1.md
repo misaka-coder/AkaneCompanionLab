@@ -45,6 +45,19 @@ selection、generation 与 reconcile 不暴露给模型或外部开发者。
 所有插件形态，不绑定某个样例或业务。这样普通项目不会偶然依赖宿主 venv，插件测试也不会通过
 `sys.modules` 假替身制造与生产不一致的成功。
 
-## 真实闭环要求
+## 公开子进程辅助模块
+
+`companion_v01.plugin_subprocess.PluginProcessRunner` 是当前 release 的公开 SDK 辅助模块，
+只依赖 Python 标准库。插件可用 `await runner.run(argv, capture=False, timeout=1800)`
+执行自己拥有的直接子进程，返回 `(returncode, stdout_bytes)`；非零退出由业务层转为
+结构化错误，超时抛出 `asyncio.TimeoutError`，取消保留 `CancelledError`。
+启动中的取消也等待子进程创建完成并终止回收，`await runner.aclose()` 关闭后拒绝新启动。
+Windows 子进程无控制台窗口。它不提供任务队列、权限审批、媒体处理或任意后代进程树管理；
+调用程序不得自行派生无人回收的工作进程。后台任务继续使用既有 Host Job。
+
+转换插件已直接使用此模块，分轨包的 `process` 模块仅兼容重导出，不再拥有第二套实现。
+独立 ML 子进程本身不依赖此 SDK；启动它的父进程需要当前 release 提供该公开模块。
+
+## 真实闭环验收
 
 单个组件通过不代表插件可用。回归必须覆盖全新源码项目从 stage 到 install、active 和真实 capability/command/event/background 行为。运行时未尝试某个插件时不能将其报告为 activation_failed，目标插件没有进入候选 generation 时也不能报告安装成功。

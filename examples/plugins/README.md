@@ -32,3 +32,16 @@ Model-driven source projects should keep ordinary `unittest` tests using these
 real imports. Run them with `manage_extension(test_source)` so the current
 release SDK is supplied by the host; do not copy or fake SDK modules inside a
 plugin project. Then use `stage_source` and `install` for runtime validation.
+
+## Owned subprocesses
+
+The current release also provides the standard-library-only public helper
+`companion_v01.plugin_subprocess.PluginProcessRunner`. Create one per adapter,
+call `await runner.run(argv, capture=False, timeout=1800)` for an owned direct
+child, and delegate adapter shutdown to `await runner.aclose()`. The result is
+`(returncode, stdout_bytes)`; map nonzero exits and `asyncio.TimeoutError` to
+domain-specific structured failures, and let `CancelledError` propagate.
+Creation, repeated cancellation, timeout and close drain actual child exit;
+Windows children are hidden. This is not a process-tree manager, permission
+gate or job queue: do not launch unowned descendants, and keep long work on
+the existing Host Job path. Do not copy the runner into each plugin.

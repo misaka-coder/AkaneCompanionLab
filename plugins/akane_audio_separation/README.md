@@ -17,6 +17,9 @@ input as a synthetic successful result.
 - The plugin worker uses host-provided CapCore and the public Akane plugin SDK;
   the standalone ML worker needs neither. No other Python dependencies are
   borrowed from the host for the remote HTTP transport.
+- The parent runtime uses the current release's public
+  `companion_v01.plugin_subprocess` helper for child lifecycle ownership.
+  This also applies to standalone service parents; the ML child stays SDK-free.
 - Existing Demucs model checkpoints, with filenames retaining their checksums.
   `htdemucs` and `htdemucs_ft` use the model-bag definitions shipped with Demucs.
 - `AKANE_SEPARATION_PYTHON`: optional explicit ML interpreter. By default the

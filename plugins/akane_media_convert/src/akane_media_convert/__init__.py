@@ -8,9 +8,10 @@ import logging
 import math
 import os
 import shutil
-import subprocess
 import uuid
 from pathlib import Path
+
+from companion_v01.plugin_subprocess import PluginProcessRunner, stop_process  # noqa: F401
 
 from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, HealthStatus
 from companion_v01.plugin_api import (
@@ -80,59 +81,16 @@ def descriptor() -> CapabilityDescriptor:
     )
 
 
-async def stop_process(process: asyncio.subprocess.Process) -> None:
-    cleanup = asyncio.create_task(_stop_process(process))
-    cancelled = False
-    while not cleanup.done():
-        try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            cancelled = True
-    cleanup.result()
-    if cancelled:
-        raise asyncio.CancelledError
-
-
-async def _stop_process(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is None:
-        try:
-            process.terminate()
-        except ProcessLookupError:
-            pass
-        try:
-            await asyncio.wait_for(process.wait(), 2)
-        except asyncio.TimeoutError:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            await process.wait()
-
-
 class MediaConverter:
     provider_id = "provider.akane.media-convert"
 
     def __init__(self, resources):
         self.resources = resources
-        self._processes: set[asyncio.subprocess.Process] = set()
+        self.runner = PluginProcessRunner()
+        self._processes = self.runner.processes
 
     async def _run(self, argv, *, capture: bool = False):
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        self._processes.add(process)
-        try:
-            stdout, _ = await process.communicate()
-            return process.returncode, stdout or b""
-        except asyncio.CancelledError:
-            await stop_process(process)
-            raise
-        finally:
-            self._processes.discard(process)
+        return await self.runner.run(argv, capture=capture)
 
     async def health(self):
         try:
@@ -240,6 +198,8 @@ class MediaConverter:
             )
         except ConversionError as exc:
             return CapabilityResult(is_error=True, status="error", reason=str(exc))
+        except asyncio.TimeoutError:
+            return CapabilityResult(is_error=True, status="timeout", reason="media_execution_timeout")
         except (OSError, KeyError):
             return CapabilityResult(is_error=True, status="error", reason="media_execution_failed")
         finally:
@@ -251,7 +211,7 @@ class MediaConverter:
                     logging.getLogger(__name__).warning("media_temporary_output_cleanup_failed")
 
     async def aclose(self):
-        await asyncio.gather(*(stop_process(process) for process in tuple(self._processes)))
+        await self.runner.aclose()
 
 
 class MediaConversionPlugin:

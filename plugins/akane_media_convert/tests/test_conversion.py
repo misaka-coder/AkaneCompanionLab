@@ -72,6 +72,36 @@ class OptionTests(unittest.TestCase):
 
 
 class DependencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_during_creation_drains_real_child(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        real_create = asyncio.create_subprocess_exec
+        children = []
+
+        async def delayed(*args, **kwargs):
+            child = await real_create(*args, **kwargs)
+            children.append(child)
+            started.set()
+            await release.wait()
+            return child
+
+        adapter = MediaConverter(None)
+        try:
+            with patch("asyncio.create_subprocess_exec", side_effect=delayed):
+                task = asyncio.create_task(adapter._run([sys.executable, "-c", "import time; time.sleep(60)"]))
+                await asyncio.wait_for(started.wait(), 5)
+                task.cancel()
+                await asyncio.sleep(0)
+                task.cancel()
+                self.assertFalse(task.done())
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 5)
+            self.assertIsNotNone(children[0].returncode)
+            self.assertFalse(adapter._processes)
+        finally:
+            release.set()
+            await adapter.aclose()
+
     async def test_repeated_cancellation_still_drains_process_exit(self):
         terminated = asyncio.Event()
         exited = asyncio.Event()
@@ -243,6 +273,22 @@ class RealConversionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(process.returncode is not None for process in processes))
             self.assertFalse(self.adapter._processes)
             self.assertEqual(list(self.root.glob("converted-*")), [])
+
+    async def test_execution_timeout_is_structured_and_removes_output(self):
+        real_run = self.adapter.runner.run
+
+        async def timeout_conversion(argv, **kwargs):
+            if any(str(arg).startswith("pcm_") for arg in argv):
+                Path(argv[-1]).write_bytes(b"partial")
+                raise asyncio.TimeoutError
+            return await real_run(argv, **kwargs)
+
+        with patch.object(self.adapter.runner, "run", side_effect=timeout_conversion):
+            result = await self.invoke()
+        self.assertTrue(result.is_error)
+        self.assertEqual(result.reason, "media_execution_timeout")
+        self.assertEqual(result.status, "timeout")
+        self.assertEqual(list(self.root.glob("converted-*")), [])
 
 
 if __name__ == "__main__":

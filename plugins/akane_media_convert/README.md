@@ -6,7 +6,7 @@
 
 ## 安装与依赖
 
-- Python 插件使用标准库；`capcore` 与 `companion_v01.plugin_api` 是当前 Akane 提供的公共 SDK，不从网络安装一份私有宿主实现。
+- Python 插件使用标准库；`capcore`、`companion_v01.plugin_api` 与 `companion_v01.plugin_subprocess` 是当前 Akane 提供的公共 SDK，不从网络安装一份私有宿主实现。更新后的 wheel 需要包含此子进程辅助模块的 Akane release。
 - 运行宿主机器必须已有可执行的 FFmpeg 和 FFprobe，并包含所用音频编码器。两者需在宿主进程 PATH 中，或分别设置 `AKANE_MEDIA_FFMPEG`、`AKANE_MEDIA_FFPROBE` 为可执行文件。修改环境后重启宿主，使新进程继承配置。
 - 可在宿主终端运行 `ffmpeg -version`、`ffprobe -version` 验证。插件激活检查真实可执行性；缺失时返回 `ffmpeg_not_found` / `ffprobe_not_found`，不发布假可用工具。编码器不支持或媒体损坏时，转换返回真实失败，不上传 stderr 或宿主路径。
 - wheel 只包含插件 Python 源码，不捆绑 FFmpeg、不隐式 pip install、不做系统安装或复杂依赖求解。现有安装器的 `--no-deps --no-index` 行为保持不变。
