@@ -34,6 +34,7 @@ const pluginBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesPluginRollback,
   CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource,
   CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel,
+  CONTROL_CENTER_ACTIONS.abilitiesPluginStageMarket,
   CONTROL_CENTER_ACTIONS.abilitiesPluginInstall,
   CONTROL_CENTER_ACTIONS.abilitiesPluginDiscardStage,
   CONTROL_CENTER_ACTIONS.abilitiesPluginUninstall
@@ -158,6 +159,7 @@ export function createControlCenterRuntimeSnapshot(rawSnapshot = {}) {
     abilitiesRuntime: raw.abilitiesRuntime || {},
     pluginRuntime: raw.pluginRuntime || {},
     pluginManagementRuntime: raw.pluginManagementRuntime || {},
+    pluginMarketRuntime: raw.pluginMarketRuntime || {},
     advancedRuntime: raw.advancedRuntime || {}
   };
 }
@@ -455,6 +457,18 @@ export function createBackendControlCenterSource(options = {}) {
       }
       return { ok: true, status: "available", data: payload };
     },
+    async readPluginMarket() {
+      if (typeof fetchImpl !== "function" || !(await ensureVerifiedBackend())) {
+        return { ok: false, status: "backend-unavailable", data: null };
+      }
+      const result = await fetchJson(fetchImpl, buildBackendUrl(botBaseUrl, "/plugins/market", { t: String(Date.now()) }));
+      const payload = result?.data;
+      if (!result.ok || payload?.ok !== true || !Array.isArray(payload.plugins)) {
+        return { ok: false, status: result.status || "invalid-plugin-market", data: null,
+          error: payload?.reason || result.error || "plugin_market_unavailable" };
+      }
+      return { ok: true, status: "available", data: payload };
+    },
     async readPluginManagement() {
       if (typeof fetchImpl !== "function") {
         return { ok: false, status: "not-available", data: null };
@@ -609,7 +623,7 @@ function backendActionRunner(actionId) {
 }
 
 async function runPluginBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
-  if ([CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource, CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel].includes(actionId)) {
+  if ([CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource, CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel, CONTROL_CENTER_ACTIONS.abilitiesPluginStageMarket].includes(actionId)) {
     return runPluginStageBackendAction(fetchImpl, baseUrl, actionId, payload, params);
   }
   if (actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginInstall) {
@@ -770,13 +784,20 @@ function pluginInstallFailureDetail(result, httpStatus) {
 }
 
 async function runPluginStageBackendAction(fetchImpl, baseUrl, actionId, payload = {}, params = {}) {
+  const marketStage = actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginStageMarket;
+  const pluginId = String(payload.pluginId || "").trim();
+  const digest = String(payload.digest || "");
+  if (marketStage && (!pluginId || !/^[a-f0-9]{64}$/.test(digest))) {
+    return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "reviewed market entry required" };
+  }
   const sourcePath = String(payload.path || payload.sourcePath || payload.source_path || payload.wheelPath || payload.wheel_path || "").trim();
-  if (!sourcePath) {
+  if (!marketStage && !sourcePath) {
     return { ok: false, status: "invalid-payload", actionId, refresh: false, error: "plugin path is required" };
   }
   const sourceStage = actionId === CONTROL_CENTER_ACTIONS.abilitiesPluginStageSource;
-  const path = sourceStage ? "/admin/plugins/stages/source" : "/admin/plugins/stages";
-  const body = sourceStage ? { source_path: sourcePath } : { wheel_path: sourcePath };
+  const path = marketStage ? `/admin/plugins/market/${encodeURIComponent(pluginId)}/stage`
+    : sourceStage ? "/admin/plugins/stages/source" : "/admin/plugins/stages";
+  const body = marketStage ? { digest } : sourceStage ? { source_path: sourcePath } : { wheel_path: sourcePath };
   try {
     const response = await fetchImpl(buildBackendUrl(baseUrl, path, params), {
       method: "POST",
@@ -808,6 +829,13 @@ async function runPluginStageBackendAction(fetchImpl, baseUrl, actionId, payload
 function pluginStageFailureDetail(result, httpStatus) {
   const reason = String(result?.reason || "").trim();
   const messages = {
+    market_selection_changed: "市场版本已经变化，请刷新并重新审查条目",
+    market_wheel_digest_mismatch: "下载文件校验不一致，未执行插件代码",
+    market_wheel_size_mismatch: "下载文件大小不一致，未执行插件代码",
+    market_manifest_mismatch: "插件实际声明与市场条目不一致，候选已丢弃",
+    market_wheel_unavailable: "市场制品暂时不可获取，请重试或联系目录维护者",
+    ffmpeg_not_found: "未找到 FFmpeg，请按市场条目的依赖说明配置宿主",
+    ffprobe_not_found: "未找到 FFprobe，请按市场条目的依赖说明配置宿主",
     plugin_source_unavailable: "找不到这个宿主目录",
     plugin_source_project_required: "目录中缺少可构建的 pyproject.toml",
     plugin_source_build_failed: "插件源码构建失败，请先修正项目",

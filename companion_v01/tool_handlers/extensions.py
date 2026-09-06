@@ -55,8 +55,8 @@ class ManageExtensionToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- manage_extension：查看和管理本机插件；源码项目先用当前 release 的真实 SDK 跑测试，再暂存并探测，"
-            "再用暂存结果的完整权限清单安装。宿主会在一次操作中发布并激活。它不搜索市场或下载代码。"
+            "- manage_extension：market 浏览已配置市场，stage_market 携条目 plugin_id 和 sha256（digest）获取并校验候选；"
+            "先查看运行依赖，再确认暂存结果的完整权限安装。源码项目先 test_source，再暂存并探测。安装由宿主发布并激活。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -65,6 +65,8 @@ class ManageExtensionToolHandler(BaseToolHandler):
         action = str(value.get("action") or "").strip().lower()
         if action not in {
             "list",
+            "market",
+            "stage_market",
             "test_source",
             "stage_source",
             "stage_wheel",
@@ -77,11 +79,16 @@ class ManageExtensionToolHandler(BaseToolHandler):
         }:
             return None
         plugin_id = str(value.get("plugin_id") or "").strip()
-        if action in {"enable", "disable", "rollback", "uninstall"} and not plugin_id:
+        if action in {"stage_market", "enable", "disable", "rollback", "uninstall"} and not plugin_id:
             return None
         normalized = {"type": self.tool_type, "action": action}
         if plugin_id:
             normalized["plugin_id"] = plugin_id
+        if action == "stage_market":
+            digest = str(value.get("digest") or "")
+            if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                return None
+            normalized["digest"] = digest
         if action in {"test_source", "stage_source", "stage_wheel"}:
             path = str(value.get("path") or "").strip()
             if not path:
@@ -109,7 +116,7 @@ class ManageExtensionToolHandler(BaseToolHandler):
                 }
             )
         action = str(call.get("action") or "")
-        if action != "list":
+        if action not in {"list", "market"}:
             gated = gate_extension_mutation(
                 tool_type=self.tool_type,
                 action=action,
@@ -130,6 +137,7 @@ class ManageExtensionToolHandler(BaseToolHandler):
                     path=str(call.get("path") or ""),
                     stage_id=str(call.get("stage_id") or ""),
                     approved_permissions=tuple(call.get("approved_permissions") or ()),
+                    **({"digest": call["digest"]} if action == "stage_market" else {}),
                 )
             )
         )

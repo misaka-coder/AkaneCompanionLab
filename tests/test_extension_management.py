@@ -573,6 +573,30 @@ class ManageExtensionToolTests(unittest.TestCase):
             )
         )
 
+    def test_market_browse_is_read_only_and_stage_approval_binds_reviewed_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = Mock()
+            service.execute_sync.return_value = {"ok": True, "status": "ready", "plugins": []}
+            approval_store = CapabilityApprovalStore()
+            handler = ManageExtensionToolHandler(service=service, approval_store=approval_store, config_base_dir=Path(temp_dir))
+            context = self._context(client_mode="desktop_pet")
+            browsed = handler.execute(call=handler.normalize_call({"type": "manage_extension", "action": "market"}), context=context)
+            self.assertIn('"ok":true', browsed.followup_context)
+            service.execute_sync.assert_called_once()
+            service.reset_mock()
+            call = handler.normalize_call({"type": "manage_extension", "action": "stage_market", "plugin_id": PLUGIN_ID, "digest": "a" * 64})
+            self.assertEqual(call["digest"], "a" * 64)
+            handler.execute(call=call, context=context)
+            service.execute_sync.assert_not_called()
+            requests = approval_store.list_requests(profile_user_id="master", include_resolved=False)["approvalRequests"]
+            approval_store.decide_request(profile_user_id="master", request_id=requests[0]["requestId"], payload={"decision": "approved"})
+            handler.execute(call=call, context=context)
+            self.assertEqual(service.execute_sync.call_args.kwargs["digest"], "a" * 64)
+            service.reset_mock()
+            handler.execute(call={**call, "digest": "b" * 64}, context=context)
+            service.execute_sync.assert_not_called()
+            self.assertIsNone(handler.normalize_call({"type": "manage_extension", "action": "stage_market", "plugin_id": PLUGIN_ID}))
+
 
 if __name__ == "__main__":
     unittest.main()

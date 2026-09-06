@@ -50,6 +50,7 @@ from .plugin_conversation_refs import PluginConversationReferenceAuthority
 from .plugin_generation_candidate import PluginGenerationCandidateBuilder
 from .plugin_generation_runtime import PluginGenerationRuntime
 from .plugin_installation import ManagedPluginArtifactStore
+from .plugin_market import StaticPluginMarket
 from .plugin_tool_bridge import PluginCapabilityToolBridge
 from .public_guard import PublicThinkGuard
 from .local_workflow_runners.comfyui import ComfyUiWorkflowRunner
@@ -516,6 +517,10 @@ class BotRuntimeFactory:
                 plugin_runtime=plugin_runtime,
                 selection_store=plugin_selection_store,
                 artifact_store=plugin_artifact_store,
+                market=StaticPluginMarket(
+                    str(getattr(runtime_config, "AKANE_PLUGIN_MARKET_INDEX", "") or "").strip()
+                    or Path(__file__).resolve().parents[1] / ".plugin-market" / "index.json"
+                ),
             )
             plugin_capability_source = PluginCapabilityToolBridge(
                 plugin_runtime,

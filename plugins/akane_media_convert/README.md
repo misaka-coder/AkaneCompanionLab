@@ -10,7 +10,7 @@
 - 运行宿主机器必须已有可执行的 FFmpeg 和 FFprobe，并包含所用音频编码器。两者需在宿主进程 PATH 中，或分别设置 `AKANE_MEDIA_FFMPEG`、`AKANE_MEDIA_FFPROBE` 为可执行文件。修改环境后重启宿主，使新进程继承配置。
 - 可在宿主终端运行 `ffmpeg -version`、`ffprobe -version` 验证。插件激活检查真实可执行性；缺失时返回 `ffmpeg_not_found` / `ffprobe_not_found`，不发布假可用工具。编码器不支持或媒体损坏时，转换返回真实失败，不上传 stderr 或宿主路径。
 - wheel 只包含插件 Python 源码，不捆绑 FFmpeg、不隐式 pip install、不做系统安装或复杂依赖求解。现有安装器的 `--no-deps --no-index` 行为保持不变。
-- 开发阶段使用现有 `manage_extension(test_source)` → `stage_source` → `install`，安装时确认暂存返回的完整权限；也可用控制中心的本地插件安装入口暂存 wheel。
+- 市场发行与配置见 [静态市场说明](../../docs/plugin_market_v1.md)。控制中心“服务与扩展 → 可选插件市场 → 获取并检查”，再审查候选贡献/权限并安装；模型使用 `manage_extension(market)` → `stage_market` → `install`。开发阶段仍可 `test_source` → `stage_source` → `install`，这些入口最终使用同一个暂存安装器。
 
 所需权限只有 `capability.prompt.invoke`、`resource.read`、`artifact.write`。插件无网络调用、持久数据库、额外后台服务或直接 QQ 发送权限。
 

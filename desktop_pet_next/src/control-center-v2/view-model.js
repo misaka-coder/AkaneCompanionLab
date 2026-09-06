@@ -28,6 +28,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const warnings = normalizeCharacterWarnings(characterRuntime);
   const abilities = normalizeAbilitiesRuntime(raw.abilitiesRuntime, connected);
   abilities.plugins = normalizePluginRuntime(raw.pluginRuntime, raw.pluginManagementRuntime, connected);
+  abilities.plugins.market = normalizePluginMarket(raw.pluginMarketRuntime, connected);
   abilities.plugins.localPickerAvailable = connected && liveSnapshotStatus !== "not-applicable" && isLoopbackBackendUrl(raw.backendUrl);
   abilities.available = abilities.available || abilities.plugins.available;
   const model = normalizeModelServiceRuntime(raw.modelRuntime, connected);
@@ -151,6 +152,10 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "abilities.plugin.stageWheel": {
         available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("stage_wheel"),
         reason: connected ? "当前宿主不支持暂存 wheel" : "桌宠尚未连接"
+      },
+      "abilities.plugin.stageMarket": {
+        available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("stage_market") && abilities.plugins.market.status === "available",
+        reason: connected ? "市场或插件管理服务暂不可用" : "桌宠尚未连接"
       },
       "abilities.plugin.install": {
         available: connected && abilities.plugins.managementAvailable && abilities.plugins.supports.includes("install") && abilities.plugins.stages.some((item) => item.ok),
@@ -928,6 +933,25 @@ function normalizePluginRuntime(value, managementValue, connected) {
     total: entries.length,
     active: entries.filter((item) => item.enabled && item.runtimeStatus === "active").length,
     entries
+  };
+}
+
+function normalizePluginMarket(value, connected) {
+  const runtime = asObject(value);
+  const payload = asObject(runtime.data);
+  return {
+    status: text(runtime.status) || "not-requested",
+    reason: text(runtime.reason) || text(payload.reason),
+    sourceKind: text(payload.source_kind),
+    entries: connected && runtime.status === "available" && payload.ok === true
+      ? (Array.isArray(payload.plugins) ? payload.plugins : []).map((entry) => ({
+          pluginId: text(entry.plugin_id), version: text(entry.version), displayName: text(entry.display_name),
+          summary: text(entry.summary), digest: text(entry.sha256), sizeBytes: Number(entry.size_bytes || 0),
+          installedVersion: text(entry.installed_version), installedStatus: text(entry.installed_status),
+          permissions: (Array.isArray(entry.permissions) ? entry.permissions : []).map(text).filter(Boolean),
+          requirements: (Array.isArray(entry.requirements) ? entry.requirements : []).map(text).filter(Boolean)
+        })).filter((entry) => entry.pluginId && /^[a-f0-9]{64}$/.test(entry.digest))
+      : []
   };
 }
 

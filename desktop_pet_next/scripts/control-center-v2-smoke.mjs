@@ -20,7 +20,7 @@ import {
   MODEL_SERVICE_ACTIONS,
   runModelServiceBridgeAction
 } from "../src/control-center-v2/model-service.js";
-import { shouldUseInstanceAdminProxy } from "../src/control-center-v2/bridge.js";
+import { createControlCenterBridge, shouldUseInstanceAdminProxy } from "../src/control-center-v2/bridge.js";
 import { bindInstanceStorage } from "../src/instance-storage.js";
 import {
   resolveActiveMediaControl,
@@ -180,7 +180,7 @@ const rawSnapshot = {
     data: {
       management: {
         status: "ready",
-        supports: ["stage_source", "stage_wheel", "install", "discard_stage", "uninstall"]
+        supports: ["stage_source", "stage_wheel", "stage_market", "install", "discard_stage", "uninstall"]
       },
       artifacts: {
         status: "ready",
@@ -199,6 +199,14 @@ const rawSnapshot = {
         }]
       }
     }
+  },
+  pluginMarketRuntime: {
+    status: "available",
+    data: { ok: true, status: "ready", source_kind: "local_release", plugins: [{
+      plugin_id: "akane.media-convert", display_name: "媒体格式转换", version: "0.1.0", summary: "提取与转换音频",
+      sha256: "a".repeat(64), size_bytes: 12000, permissions: ["resource.read", "artifact.write"],
+      requirements: ["FFmpeg 和 FFprobe"], installed_status: "not_installed", installed_version: ""
+    }] }
   },
   overviewRuntime: {
     shell: { status: "在线" },
@@ -1004,6 +1012,29 @@ assert.match(abilitiesHtml, /选择源码目录/);
 assert.match(abilitiesHtml, /选择 wheel/);
 assert.match(abilitiesHtml, /data-action="abilities\.plugin\.stageSource"/);
 assert.match(abilitiesHtml, /data-action="abilities\.plugin\.stageWheel"/);
+assert.match(abilitiesHtml, /可选插件市场/);
+assert.match(abilitiesHtml, /本地发行目录/);
+assert.match(abilitiesHtml, /FFmpeg 和 FFprobe/);
+assert.match(abilitiesHtml, /data-plugin-market-stage="akane\.media-convert"/);
+assert.equal(viewModel.actions["abilities.plugin.stageMarket"].available, true);
+const marketPendingHtml = renderAbilities({ viewModel, actionStates: { "abilities.plugin.stageMarket": { phase: "pending" } } });
+assert.match(marketPendingHtml, /data-plugin-market-stage="akane\.media-convert" disabled/);
+assert.match(marketPendingHtml, /data-action="abilities\.plugin\.stageSource" disabled/);
+const marketFailedHtml = renderAbilities({ viewModel, actionStates: { "abilities.plugin.stageMarket": { phase: "failed", detail: "文件校验失败" } } });
+assert.match(marketFailedHtml, /role="status">文件校验失败/);
+for (const [runtime, message] of [
+  [{ status: "loading" }, "正在读取市场目录"],
+  [{ status: "unavailable", reason: "market_index_unavailable" }, "尚无可读取的市场目录"],
+  [{ status: "available", data: { ok: true, plugins: [] } }, "此目录当前没有可选插件"]
+]) {
+  const marketVm = createControlCenterViewModel({ ...rawSnapshot, pluginMarketRuntime: runtime }, runtimeSnapshot);
+  const html = renderAbilities({ viewModel: marketVm, actionStates: {} });
+  assert.ok(html.includes(message));
+  assert.doesNotMatch(html, /data-plugin-market-stage/);
+}
+const disconnectedMarketVm = createControlCenterViewModel({ ...rawSnapshot, sourceKind: "mock" }, runtimeSnapshot);
+assert.equal(disconnectedMarketVm.abilities.plugins.market.entries.length, 0);
+assert.equal(disconnectedMarketVm.actions["abilities.plugin.stageMarket"].available, false);
 assert.match(abilitiesHtml, /akane\.sample\.timer/);
 assert.match(abilitiesHtml, /akane\.sample\.timer\.schedule/);
 assert.match(abilitiesHtml, /storage\.write/);
@@ -1219,5 +1250,51 @@ const mergedOlderPage = mergeChatSessions(refreshedTail, {
 assert.deepEqual(mergedOlderPage.messages.map((item) => item.seq_no), Array.from({ length: 100 }, (_, index) => index + 1));
 assert.equal(mergedOlderPage.message_page.has_more, false);
 assert.equal(prependedHistoryScrollTop({ scrollHeight: 800, scrollTop: 36 }, 1280), 516);
+
+// Actual bridge scheduling: a slow market must neither block the main view nor
+// publish an old Bot's catalog after a source change or bridge shutdown.
+const savedWindow = globalThis.window;
+const pendingMarkets = [];
+globalThis.window = {
+  location: { search: "?backend=http://market-a" }, setTimeout, clearTimeout,
+  fetch: async (url) => {
+    const path = new URL(url).pathname;
+    if (path === "/plugins/market") return new Promise((resolve) => pendingMarkets.push(resolve));
+    if (path === "/health") return Response.json({ status: "ok", root_binding: "valid", instance_id: "local-default" });
+    if (path === "/plugins/catalog") return Response.json({ ok: true, status: "active", plugins: [] });
+    if (path === "/admin/plugins/status") return Response.json({ management: { status: "ready", supports: ["stage_market"] }, artifacts: { stages: [] } });
+    return Response.json({ ok: true });
+  }
+};
+const marketBridge = createControlCenterBridge({ isTauri: false });
+const marketPublished = [];
+marketBridge.subscribe((vm) => marketPublished.push(vm.abilities.plugins.market));
+const marketResponse = (name) => Response.json({ ok: true, source_kind: "https", plugins: [{
+  plugin_id: name, version: "1", display_name: name, sha256: "b".repeat(64), size_bytes: 1
+}] });
+try {
+  await marketBridge.start();
+  assert.equal(pendingMarkets.length, 1);
+  assert.equal(marketPublished.at(-1).status, "loading", "main snapshot must publish before the slow market");
+  window.location.search = "?backend=http://market-b";
+  await marketBridge.start();
+  assert.equal(pendingMarkets.length, 2);
+  pendingMarkets[0](marketResponse("old.bot"));
+  await new Promise(setImmediate);
+  assert.equal(marketPublished.at(-1).entries.length, 0, "old source result must not enter new Bot");
+  pendingMarkets[1](marketResponse("new.bot"));
+  await new Promise(setImmediate);
+  assert.equal(marketPublished.at(-1).entries[0].pluginId, "new.bot");
+  await marketBridge.refresh();
+  marketBridge.stop();
+  const beforeStop = marketPublished.length;
+  pendingMarkets[2](marketResponse("late.bot"));
+  await new Promise(setImmediate);
+  assert.equal(marketPublished.length, beforeStop);
+} finally {
+  marketBridge.stop();
+  if (savedWindow === undefined) delete globalThis.window;
+  else globalThis.window = savedWindow;
+}
 
 console.log("control-center V2 smoke passed");

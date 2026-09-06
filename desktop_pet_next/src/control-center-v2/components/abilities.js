@@ -103,11 +103,40 @@ function renderPluginLibrary(state, plugins) {
       <div><small>INSTALLED PLUGINS</small><strong>插件</strong><p>安装与适用渠道分离；这里只展示宿主确认过的运行状态和贡献。</p></div>
       <span class="plugin-library-count"><strong>${plugins.active}</strong><small>运行中 / ${plugins.total}</small></span>
     </div>
+    ${renderPluginMarket(state, plugins)}
     ${renderPluginStaging(state, plugins)}
+    ${plugins.stages.length ? `<div class="plugin-stage-list">${plugins.stages.map((stage) => renderPluginStage(state, stage)).join("")}</div>` : ""}
     ${plugins.entries.length
       ? `<div class="plugin-library-list">${plugins.entries.map((plugin) => renderPluginCard(state, plugin)).join("")}</div>`
       : `<div class="plugin-library-empty is-${escapeHtml(plugins.status)}">${statusCopy}</div>`}
   </section>`;
+}
+
+function renderPluginMarket(state, plugins) {
+  const market = plugins.market;
+  if (!market || market.status === "not-requested") return "";
+  const pending = ["stageMarket", "stageSource", "stageWheel", "install", "discardStage"]
+    .some((name) => ["pressed", "pending"].includes(actionPhase(state, `abilities.plugin.${name}`)));
+  const available = state.viewModel?.actions?.["abilities.plugin.stageMarket"]?.available;
+  const feedback = state.actionStates?.["abilities.plugin.stageMarket"];
+  const reason = market.reason === "market_index_unavailable"
+    ? "尚无可读取的市场目录；管理员可构建本地市场或配置可信 HTTPS 目录。"
+    : market.reason === "not-supported" ? "当前后端尚不支持市场浏览。" : market.reason;
+  return `<details class="plugin-stage-panel" data-plugin-market-status="${escapeHtml(market.status)}" data-capability-key="plugin:market" open>
+    <summary><span><strong>可选插件市场</strong><small>${market.sourceKind === "https" ? "HTTPS 目录" : market.sourceKind === "local_release" ? "本地发行目录" : "分发目录"}</small></span><i aria-hidden="true">⌄</i></summary>
+    <div class="capability-config-form">
+    <p class="plugin-stage-note">先获取并校验制品，再审查真实贡献和权限。插件是可信 Python 代码；哈希校验不等于安全沙箱。系统依赖需要在宿主准备。</p>
+    ${feedback ? `<p class="plugin-stage-note" role="status">${escapeHtml(feedback.detail || feedback.label || "正在获取并检查…")}</p>` : ""}
+    ${market.entries.length ? `<div class="plugin-stage-list">${market.entries.map((entry) => `<article class="plugin-stage-item">
+      <div class="plugin-stage-heading"><span><strong>${escapeHtml(entry.displayName)}</strong><small>${escapeHtml(entry.pluginId)} · v${escapeHtml(entry.version)} · ${(entry.sizeBytes / 1024).toFixed(1)} KiB</small></span><em>${entry.installedVersion ? `已安装 v${escapeHtml(entry.installedVersion)}` : "未安装"}</em></div>
+      <p>${escapeHtml(entry.summary)}</p>
+      <div class="plugin-detail-section"><strong>运行依赖</strong>${entry.requirements.map((requirement) => `<p>${escapeHtml(requirement)}</p>`).join("")}</div>
+      <div class="plugin-permission-list">${entry.permissions.map((permission) => `<code>${escapeHtml(permission)}</code>`).join("")}</div>
+      <details class="plugin-card-details"><summary><span>SHA-256 制品校验</span><i aria-hidden="true">⌄</i></summary><div class="plugin-permission-list"><code>${escapeHtml(entry.digest.slice(0, 32))}<wbr>${escapeHtml(entry.digest.slice(32))}</code></div></details>
+      <div class="plugin-stage-confirm"><small>获取会隔离探测，但还不会启用。</small><button class="action-button is-primary" type="button" data-plugin-market-stage="${escapeHtml(entry.pluginId)}"${pending || !available ? " disabled" : ""}><span>↓</span><b>${pending ? "处理中" : "获取并检查"}</b></button></div>
+    </article>`).join("")}</div>` : `<p class="plugin-library-empty">${market.status === "loading" ? "正在读取市场目录…" : market.status === "available" ? "此目录当前没有可选插件" : `市场暂不可用：${escapeHtml(reason || "请刷新重试")}`}</p>`}
+    </div>
+  </details>`;
 }
 
 function renderPluginStaging(state, plugins) {
@@ -117,7 +146,8 @@ function renderPluginStaging(state, plugins) {
   const discardPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.discardStage"));
   const pickSourcePending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.pickSource"));
   const pickWheelPending = ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.pickWheel"));
-  const pending = sourcePending || wheelPending || installPending || discardPending || pickSourcePending || pickWheelPending;
+  const pending = sourcePending || wheelPending || installPending || discardPending || pickSourcePending || pickWheelPending
+    || ["pressed", "pending"].includes(actionPhase(state, "abilities.plugin.stageMarket"));
   const sourceAvailable = state.viewModel?.actions?.["abilities.plugin.stageSource"]?.available;
   const wheelAvailable = state.viewModel?.actions?.["abilities.plugin.stageWheel"]?.available;
   const pickerAvailable = plugins.localPickerAvailable;
@@ -141,7 +171,6 @@ function renderPluginStaging(state, plugins) {
         <button class="action-button is-primary" type="submit" data-action="abilities.plugin.stageSource"${pending || !sourceAvailable ? " disabled" : ""}><span>⌁</span><b>${sourcePending ? "构建并探测中" : "检查源码"}</b></button>
       </div>
     </form>
-    ${plugins.stages.length ? `<div class="plugin-stage-list">${plugins.stages.map((stage) => renderPluginStage(state, stage)).join("")}</div>` : ""}
   </details>`;
 }
 

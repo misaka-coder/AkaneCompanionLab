@@ -149,11 +149,13 @@ class ExtensionManagementService:
         plugin_runtime: PluginManagementRuntime,
         selection_store: PluginSelectionStore,
         artifact_store: ManagedPluginArtifactStore | None = None,
+        market: Any = None,
         sync_timeout_seconds: float | None = None,
     ) -> None:
         self.plugin_runtime = plugin_runtime
         self.selection_store = selection_store
         self.artifact_store = artifact_store
+        self.market = market
         self.sync_timeout_seconds = (
             None if sync_timeout_seconds is None else max(1.0, float(sync_timeout_seconds))
         )
@@ -177,6 +179,7 @@ class ExtensionManagementService:
                 "list",
                 "enable",
                 "disable",
+                *(["market", "stage_market"] if self.market is not None and self.artifact_store is not None else []),
                 *(
                     [
                         "test_source",
@@ -511,6 +514,51 @@ class ExtensionManagementService:
         except Exception:
             return False
 
+    async def browse_market(self) -> dict[str, Any]:
+        if self.market is None:
+            return {**_failure("unavailable", "plugin_market_not_configured"), "plugins": []}
+        try:
+            payload = await asyncio.to_thread(self.market.browse)
+            installed = {item["plugin_id"]: item for item in self.public_snapshot()["plugins"]}
+            for item in payload["plugins"]:
+                current = installed.get(item["plugin_id"], {})
+                item["installed_version"] = current.get("version", "")
+                item["installed_status"] = current.get("runtime_status", "not_installed")
+            return payload
+        except PluginInstallationError as exc:
+            return {**_failure(exc.status, exc.reason), "plugins": []}
+        except Exception:
+            return {**_failure("error", "plugin_market_read_failed"), "plugins": []}
+
+    async def stage_market(self, *, plugin_id: str, digest: str) -> dict[str, Any]:
+        if self.market is None or self.artifact_store is None:
+            return _failure("unavailable", "plugin_market_not_configured")
+        async with self._operation_lock:
+            task = asyncio.create_task(asyncio.to_thread(
+                self.market.stage, self.artifact_store, plugin_id=plugin_id, digest=digest,
+            ))
+            cancelled = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break
+            if cancelled:
+                # A synchronous installer cannot be abandoned mid-probe. Wait for
+                # its terminal state and discard any candidate before unlocking.
+                if not task.cancelled() and task.exception() is None:
+                    staged = task.result()
+                    self.artifact_store.discard_stage(staged["stage_id"])
+                raise asyncio.CancelledError
+            try:
+                return dict(task.result())
+            except PluginInstallationError as exc:
+                return _failure(exc.status, exc.reason)
+            except Exception:
+                return _failure("error", "plugin_market_stage_failed")
+
     async def stage_wheel(self, *, wheel_path: str) -> dict[str, Any]:
         if self.artifact_store is None:
             return _failure("unavailable", "plugin_artifact_store_unavailable")
@@ -752,6 +800,7 @@ class ExtensionManagementService:
         plugin_id: str = "",
         path: str = "",
         stage_id: str = "",
+        digest: str = "",
         approved_permissions: Iterable[str] = (),
     ) -> dict[str, Any]:
         normalized_action = str(action or "").strip().lower()
@@ -759,7 +808,11 @@ class ExtensionManagementService:
             payload = self.snapshot()
             payload["action"] = "list"
             return payload
-        if normalized_action == "test_source":
+        if normalized_action == "market":
+            coroutine = self.browse_market()
+        elif normalized_action == "stage_market":
+            coroutine = self.stage_market(plugin_id=plugin_id, digest=digest)
+        elif normalized_action == "test_source":
             coroutine = self.test_source(source_path=path)
         elif normalized_action == "stage_source":
             coroutine = self.stage_source(source_path=path)

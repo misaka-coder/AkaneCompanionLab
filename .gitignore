@@ -57,6 +57,7 @@ tmp_*.log
 tmp_*.wav
 
 # Local model / tool scratch space
+.plugin-market/
 .cache/
 .codex/
 .claude/settings.json

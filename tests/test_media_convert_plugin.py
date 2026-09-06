@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
 import os
@@ -20,7 +21,9 @@ from companion_v01.plugin_generation_candidate import PluginGenerationCandidateB
 from companion_v01.plugin_generation_runtime import PluginGenerationRuntime
 from companion_v01.plugin_installation import ManagedPluginArtifactStore
 from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink
+from companion_v01.plugin_market import StaticPluginMarket
 from companion_v01.plugin_resources import GeneratedFileResourceProvider
+from scripts.build_plugin_market import build_market
 from tests.test_plugin_resources import services
 
 
@@ -52,7 +55,10 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
             runtime.bind_managed_artifact_sink(GeneratedFileManagedArtifactSink(files))
             runtime.bind_resource_provider(GeneratedFileResourceProvider(files, work_root=root / "copies"))
             service = ExtensionManagementService(
-                plugin_runtime=runtime, selection_store=selections, artifact_store=artifacts
+                plugin_runtime=runtime,
+                selection_store=selections,
+                artifact_store=artifacts,
+                market=StaticPluginMarket(await asyncio.to_thread(build_market, root / "market")),
             )
             audio = root / "attachments" / "source.wav"
             audio.parent.mkdir(exist_ok=True)
@@ -79,12 +85,18 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
             await runtime.start()
             try:
                 self.assertNotIn(CAPABILITY_ID, runtime.capability_ids)
-                staged = await service.stage_source(source_path=str(source_project))
+                catalog = await service.browse_market()
+                self.assertTrue(catalog["ok"], catalog)
+                entry = catalog["plugins"][0]
+                self.assertEqual(entry["plugin_id"], PLUGIN_ID)
+                self.assertEqual(entry["installed_status"], "not_installed")
+                staged = await service.stage_market(plugin_id=PLUGIN_ID, digest=entry["sha256"])
                 self.assertTrue(staged["ok"], staged)
                 installed = await service.install_stage(
                     stage_id=staged["stage_id"], approved_permissions=staged["permissions"]
                 )
                 self.assertTrue(installed["ok"], installed)
+                self.assertEqual((await service.browse_market())["plugins"][0]["installed_status"], "active")
                 self.assertIn(CAPABILITY_ID, runtime.capability_ids)
                 self.assertEqual(runtime.capability_descriptors[CAPABILITY_ID].raw["execution_class"], "long_task")
                 self.assertEqual(runtime.stable_system_prompt_blocks(), ())
@@ -151,5 +163,6 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(CAPABILITY_ID, runtime.capability_ids)
                 self.assertEqual(artifacts.snapshot()["plugins"], [])
                 self.assertEqual(selections.load(), ())
+                self.assertEqual((await service.browse_market())["plugins"][0]["installed_status"], "not_installed")
             finally:
                 await runtime.stop()

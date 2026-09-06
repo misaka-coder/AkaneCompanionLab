@@ -76,6 +76,7 @@ export function createControlCenterBridge(options = {}) {
   let chatRefreshTimer = 0;
   let pluginCatalogRefreshSequence = 0;
   let pluginManagementRefreshSequence = 0;
+  let pluginMarketRefreshSequence = 0;
   let publishedSource = null;
   let lastChatRuntimeSignature = "";
   let liveSnapshotStatus = isTauri ? "connecting" : "not-applicable";
@@ -156,6 +157,10 @@ export function createControlCenterBridge(options = {}) {
       const requestSource = source;
       const pluginCatalogSequence = ++pluginCatalogRefreshSequence;
       const pluginManagementSequence = ++pluginManagementRefreshSequence;
+      const pluginMarketSequence = ++pluginMarketRefreshSequence;
+      const pluginMarketPromise = typeof requestSource.readPluginMarket === "function"
+        ? requestSource.readPluginMarket().catch((error) => ({ ok: false, status: "request-failed", error: formatError(error) }))
+        : Promise.resolve({ ok: false, status: "not-supported", data: null });
       const pluginCatalogPromise = typeof requestSource.readPluginCatalog === "function"
         ? requestSource.readPluginCatalog().catch((error) => ({
             ok: false,
@@ -195,6 +200,9 @@ export function createControlCenterBridge(options = {}) {
         pluginManagementRuntime: publishedSource === requestSource
           ? rawSnapshot?.pluginManagementRuntime || { status: "loading", reason: "", data: null }
           : { status: "loading", reason: "", data: null },
+        pluginMarketRuntime: publishedSource === requestSource
+          ? rawSnapshot?.pluginMarketRuntime || { status: "loading", reason: "", data: null }
+          : { status: "loading", reason: "", data: null },
         ...(rawSnapshot?.chatSession ? { chatSession: rawSnapshot.chatSession } : {}),
         ...(rawSnapshot?.chatRuntime ? { chatRuntime: rawSnapshot.chatRuntime } : {})
       };
@@ -202,6 +210,7 @@ export function createControlCenterBridge(options = {}) {
       publish();
       void publishPluginCatalog(requestSource, pluginCatalogPromise, pluginCatalogSequence);
       void publishPluginManagement(requestSource, pluginManagementPromise, pluginManagementSequence);
+      void publishPluginMarket(requestSource, pluginMarketPromise, pluginMarketSequence);
       await refreshChatSession();
       return createControlCenterViewModel(withBridgeStatus(
         withLiveRuntime(rawSnapshot, runtimeSnapshot),
@@ -274,6 +283,7 @@ export function createControlCenterBridge(options = {}) {
   function stop() {
     pluginCatalogRefreshSequence += 1;
     pluginManagementRefreshSequence += 1;
+    pluginMarketRefreshSequence += 1;
     window.clearTimeout(chatRefreshTimer);
     chatRefreshTimer = 0;
     disposeRuntimeListener?.();
@@ -311,6 +321,18 @@ export function createControlCenterBridge(options = {}) {
             reason: String(result?.error || result?.status || "plugin-management-unavailable"),
             data: null
           }
+    };
+    publish();
+  }
+
+  async function publishPluginMarket(requestSource, request, sequence) {
+    const result = await request;
+    if (sequence !== pluginMarketRefreshSequence || source !== requestSource || !rawSnapshot) return;
+    rawSnapshot = {
+      ...rawSnapshot,
+      pluginMarketRuntime: result?.ok && result.data && typeof result.data === "object"
+        ? { status: "available", reason: "", data: result.data }
+        : { status: "unavailable", reason: String(result?.error || result?.status || "plugin-market-unavailable"), data: null }
     };
     publish();
   }

@@ -95,6 +95,14 @@ root.addEventListener("click", (event) => {
     if (operation === "clear") void runAction("abilities.provider.voiceProfile.clearCurrentCharacter", payload);
     return;
   }
+  const marketStageButton = event.target.closest("button[data-plugin-market-stage]");
+  if (marketStageButton && !marketStageButton.disabled) {
+    const entry = store.getState().viewModel?.abilities?.plugins?.market?.entries?.find(
+      (item) => item.pluginId === marketStageButton.dataset.pluginMarketStage
+    );
+    if (entry) void runAction("abilities.plugin.stageMarket", { pluginId: entry.pluginId, digest: entry.digest });
+    return;
+  }
   const pluginInstallButton = event.target.closest("button[data-plugin-stage-install]");
   if (pluginInstallButton && !pluginInstallButton.disabled) {
     const stageId = String(pluginInstallButton.dataset.pluginStageInstall || "").trim();

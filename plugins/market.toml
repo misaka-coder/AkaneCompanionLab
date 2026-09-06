@@ -1,0 +1,9 @@
+schema_version = 1
+
+[[plugins]]
+source = "akane_media_convert"
+plugin_id = "akane.media-convert"
+display_name = "媒体格式转换"
+summary = "音频转换与视频提取音频；支持裁剪、采样率、声道、码率、响度、静音、淡入淡出和变速。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write"]
+requirements = ["Python 3.11+；宿主提供 CapCore 和 Akane 插件公共 SDK。", "宿主需安装 FFmpeg 和 FFprobe，包含目标格式编码器。", "置于宿主 PATH，或设置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE；改变环境后重启宿主。", "仅接收独立媒体文件，不处理播放列表、网络流或受保护缓存。", "wheel 不捆绑系统二进制，不隐式安装 Python/系统依赖。"]

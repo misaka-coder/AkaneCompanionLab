@@ -9,7 +9,9 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
     capability_id="manage_extension",
     display_name="Manage installed extensions",
     description=(
-        "Inspect and manage local Akane plugins. For source development, run its unittest suite against the "
+        "Browse the configured plugin market with action=market, then stage_market using the selected plugin_id "
+        "and exact sha256 as digest. Staging verifies downloaded bytes before probing; review requirements and permissions. "
+        "Inspect and manage installed Akane plugins. For source development, run its unittest suite against the "
         "current release SDK, then stage the source project to build and probe an immutable candidate. "
         "Install that stage with the exact returned permission list; the host "
         "publishes and activates it as one operation. Existing plugins can be enabled, disabled, rolled back, "
@@ -23,6 +25,8 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "enum": [
                     "list",
+                    "market",
+                    "stage_market",
                     "test_source",
                     "stage_source",
                     "stage_wheel",
@@ -38,7 +42,11 @@ MANAGE_EXTENSION_TOOL_SPEC = CapabilityToolSpec(
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64,
-                "description": "Plugin id for enable, disable, rollback, or uninstall.",
+                "description": "Plugin id for stage_market, enable, disable, rollback, or uninstall.",
+            },
+            "digest": {
+                "type": "string", "pattern": "^[a-f0-9]{64}$",
+                "description": "For stage_market, copy the exact sha256 of the reviewed market entry.",
             },
             "path": {
                 "type": "string",

@@ -230,6 +230,13 @@ assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { source_path:
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginStageWheel, { path: "C:/work/timer-plugin.whl" });
 assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/stages(?:\?|$)/);
 assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { wheel_path: "C:/work/timer-plugin.whl" });
+await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginStageMarket, { pluginId: "akane.media-convert", digest: "a".repeat(64) });
+assert.match(backendRequests.at(-1).url, /\/admin\/plugins\/market\/akane\.media-convert\/stage/);
+assert.deepEqual(JSON.parse(backendRequests.at(-1).options.body), { digest: "a".repeat(64) });
+const beforeInvalidMarket = backendRequests.length;
+const invalidMarket = await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginStageMarket, { pluginId: "akane.media-convert" });
+assert.equal(invalidMarket.ok, false);
+assert.equal(backendRequests.length, beforeInvalidMarket);
 await backendRouter.run(CONTROL_CENTER_ACTIONS.abilitiesPluginInstall, {
   stageId: "stage-review-1",
   approvedPermissions: ["agent.event.submit", "storage.write"]
@@ -303,6 +310,26 @@ const managementSource = createBackendControlCenterSource({
 const managementSnapshot = await managementSource.readPluginManagement();
 assert.equal(managementSnapshot.ok, true);
 assert.equal(managementSnapshot.data.artifacts.stages[0].stage_id, "stage-1");
+
+const marketRequests = [];
+const marketSource = createBackendControlCenterSource({
+  baseUrl: "http://control-center-market-smoke", expectedInstanceId: "local-default",
+  fetchImpl: async (url) => {
+    marketRequests.push(String(url));
+    if (String(url).includes("/health")) return jsonResponse({ status: "ok", root_binding: "valid", instance_id: "local-default" });
+    return jsonResponse({ ok: true, status: "ready", plugins: [{ plugin_id: "akane.media-convert", sha256: "a".repeat(64) }] });
+  }
+});
+assert.equal((await marketSource.readPluginMarket()).data.plugins[0].plugin_id, "akane.media-convert");
+assert.match(marketRequests.at(-1), /\/plugins\/market/);
+const failedMarketSource = createBackendControlCenterSource({
+  baseUrl: "http://control-center-market-smoke",
+  fetchImpl: async () => jsonResponse({ ok: false, status: "conflict", reason: "market_selection_changed" }, 409)
+});
+const failedMarket = await failedMarketSource.runAction(CONTROL_CENTER_ACTIONS.abilitiesPluginStageMarket,
+  { pluginId: "akane.media-convert", digest: "a".repeat(64) });
+assert.equal(failedMarket.ok, false);
+assert.match(failedMarket.reason, /市场版本已经变化/);
 
 assert.ok(afterActionLog.length >= settingsCases.length);
 console.log(

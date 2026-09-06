@@ -42,6 +42,23 @@ def build_plugins_router(
             )
         return _response(extension_management_service.snapshot())
 
+    @router.get("/plugins/market")
+    async def read_plugin_market() -> JSONResponse:
+        result = await extension_management_service.browse_market()
+        return _response(result, status_code=_management_status_code(result))
+
+    @router.post("/admin/plugins/market/{plugin_id}/stage")
+    async def stage_market_plugin(plugin_id: str, request: Request) -> JSONResponse:
+        authorization = management_auth.authorize(request)
+        if not authorization.ok:
+            return _response({"ok": False, "status": "forbidden", "reason": authorization.reason},
+                             status_code=authorization.status_code)
+        payload, error = await _read_bounded_json_object(request)
+        if error is not None:
+            return _response(error, status_code=400)
+        result = await extension_management_service.stage_market(plugin_id=plugin_id, digest=payload.get("digest"))
+        return _response(result, status_code=_management_status_code(result))
+
     @router.post("/admin/plugins/restart")
     async def restart_plugin_runtime(request: Request) -> JSONResponse:
         """Recreate installed plugin instances using the persisted selection snapshot."""
@@ -240,7 +257,7 @@ def _management_status_code(payload: Mapping[str, Any], *, success: int = 200) -
         return 400
     if status in {"unavailable", "timeout"}:
         return 503
-    if status in {"approval_required", "activation_failed", "deactivation_failed"}:
+    if status in {"approval_required", "activation_failed", "deactivation_failed", "conflict"}:
         return 409
     return 500
 
