@@ -293,6 +293,9 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
             contribution_policy=TrustedStatefulPluginContributionPolicy(),
             entry_points_provider=lambda: entries,
             managed_artifact_timeout_seconds=float(args.managed_artifact_timeout),
+            # Managed plugins may verify prepared ML model weights at startup.
+            # Stay below the parent's 45-second generation startup bound.
+            activation_timeout_seconds=30.0,
         )
         storage_data_root = (
             Path(args.storage_data_root).resolve()

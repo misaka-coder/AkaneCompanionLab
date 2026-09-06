@@ -9,5 +9,8 @@ description = "Isolated audio separation business runtime for Akane"
 readme = "README.md"
 requires-python = ">=3.11"
 
+[project.entry-points."akane.plugins.v1"]
+"akane.audio-separation" = "akane_audio_separation:create_plugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]
