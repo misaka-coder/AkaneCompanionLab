@@ -16,6 +16,7 @@ import time
 import uuid
 
 from .errors import CoverSongError
+from .models import matching_models
 
 
 CACHE_VERSION = "cover-cache-v3"
@@ -159,7 +160,7 @@ class CoverCache:
             raise CoverSongError(
                 stage="cache", reason="source_or_title_required", public_message="请提供歌曲材料或已翻唱过的歌曲名。"
             )
-        matches = []
+        candidates = []
         for path in self._child("covers").glob("*.json"):
             if not HEX.fullmatch(path.stem):
                 continue
@@ -170,17 +171,33 @@ class CoverCache:
             if (
                 lookup_label(meta.get("song_title")) != title
                 or (artist_key and lookup_label(meta.get("artist")) != artist_key)
-                or str(meta.get("voice_model") or "").lower() != model_name.lower()
                 or meta.get("output_format") != output_format
                 or (params is not None and meta.get("params") != params)
+                or not isinstance(meta.get("voice_model"), str)
+                or not meta["voice_model"]
             ):
                 continue
-            entry = self.get("covers", path.stem)
-            if entry:
+            entry = self.get("covers", path.stem, verify_content=False)
+            if entry and entry["metadata"] == meta:
                 try:
                     sequence = int(manifest.get("stored_at_ns") or 0)
                 except (ValueError, TypeError):
                     continue
+                candidates.append((sequence, entry))
+        if model_name:
+            names = matching_models([item[1]["metadata"]["voice_model"] for item in candidates], str(model_name))
+            candidates = [item for item in candidates if item[1]["metadata"]["voice_model"] in names]
+        # Verify the newest intact object per song/voice identity, not every
+        # historical render. A corrupt newest object still falls back safely.
+        matches, verified = [], set()
+        for sequence, candidate in sorted(candidates, key=lambda item: item[0], reverse=True):
+            meta = candidate["metadata"]
+            identity = (lookup_label(meta.get("artist")), meta["voice_model"].lower())
+            if identity in verified:
+                continue
+            entry = self.get("covers", candidate["key"])
+            if entry and entry["metadata"] == meta:
+                verified.add(identity)
                 matches.append((sequence, entry))
         if not matches:
             raise CoverSongError(
@@ -193,6 +210,12 @@ class CoverCache:
                 stage="cache",
                 reason="cached_cover_ambiguous",
                 public_message="同名歌曲有不同原唱的翻唱缓存，请补充原唱。",
+            )
+        if len({x[1]["metadata"]["voice_model"].lower() for x in matches}) > 1:
+            raise CoverSongError(
+                stage="cache",
+                reason="cached_voice_model_ambiguous",
+                public_message="这首歌有不同音色的已完成翻唱，请指定音色模型。",
             )
         return max(matches, key=lambda item: item[0])[1]
 

@@ -138,6 +138,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(float(json.loads(probe.stdout)["format"]["duration"]), 0.4, delta=0.06)
             seconds = json.loads(response.headers["X-Akane-Cover-Timings"])
             self.assertIn("mix", seconds)
+            self.assertNotIn("decode", seconds)  # Demucs owns the single decode.
             self.assertEqual(seconds["rvc_voice_synthesis"], 0.1)
             self.assertFalse(RvcFixture.converted_sources[-1].exists())
         self.assertEqual(DemucsFixture.count, 3)

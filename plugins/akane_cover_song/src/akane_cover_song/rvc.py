@@ -16,6 +16,7 @@ import requests
 
 from .errors import CoverSongError
 from .lease import EndpointLease, check_cancelled
+from .models import matching_models, normalize_model_key
 
 _AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 
@@ -112,18 +113,11 @@ class RvcWebUiProvider:
                 reason="voice_model_missing",
                 public_message="本机 RVC 暂时没有可用的目标音色模型。",
             )
-        lowered = raw.lower()
-        exact = [
-            item for item in models if item.lower() == lowered or Path(item).stem.lower() == Path(raw).stem.lower()
-        ]
-        if len(exact) == 1:
-            return exact[0]
-        normalized = self._normalize_model_key(raw)
-        fuzzy = [item for item in models if normalized and normalized in self._normalize_model_key(item)]
-        if len(fuzzy) == 1:
-            return fuzzy[0]
-        if len(fuzzy) > 1:
-            names = "、".join(fuzzy[:6])
+        matches = matching_models(models, raw)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            names = "、".join(matches[:6])
             raise CoverSongError(
                 stage="voice_model",
                 reason="voice_model_ambiguous",
@@ -527,7 +521,7 @@ class RvcWebUiProvider:
         return output
 
     def _normalize_model_key(self, value: str) -> str:
-        return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(value or "").lower())
+        return normalize_model_key(value)
 
     def _stat_fingerprint(self, path: Path) -> dict[str, Any]:
         try:

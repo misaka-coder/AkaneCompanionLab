@@ -15,7 +15,7 @@ from .cache import CoverCache, cache_key
 from .errors import CoverSongError
 
 
-PIPELINE_VERSION = "rvc-cover-v3"
+PIPELINE_VERSION = "rvc-cover-v4-stereo"
 STEM_VERSION = "rvc-cover-stems-v3"
 PROTECTED = {"kgm", "kgma", "mflac", "mgg", "ncm", "qmc", "qmc0", "qmc3", "qmcflac", "tkm", "vpr", "uc"}
 
@@ -142,22 +142,32 @@ class CoverPipeline:
         output = work_dir / f"cover.{output_format}"
         if output.exists() or output.is_symlink():
             raise error("source", "cover_output_already_exists")
-        model = await self.calls.call(self.provider.resolve_voice_model, voice_model, default_model=self.default_model)
         if source_path is None:
             if self.cache is None:
                 raise error("source", "source_required")
             if force_rebuild:
                 raise error("source", "source_required_for_rebuild")
-            entry = self.cache.find_cover(
-                song_title=title, artist=artist, model_name=model, output_format=output_format, params=params
+            requested = str(voice_model or "").strip()
+            if requested.lower() in {"", "auto", "default", "默认", "自动"}:
+                requested = self.default_model or getattr(self.provider, "default_model", "")
+            # Completed recordings are historical artifacts. Restoring one
+            # requires cache integrity, not a running or loaded voice model.
+            entry = await self.calls.call(
+                self.cache.find_cover,
+                song_title=title,
+                artist=artist,
+                model_name=requested,
+                output_format=output_format,
+                params=params,
             )
-            shutil.copyfile(entry["paths"]["cover"], output)
+            await self.calls.call(shutil.copyfile, entry["paths"]["cover"], output)
             return {
                 "path": output,
                 "metadata": entry["metadata"],
                 "cache_key": entry["key"],
-                "processing": {"cache_hit": True, "seconds": {"total": time.perf_counter() - started}},
+                "processing": {"cache_hit": True, "seconds": {"total": round(time.perf_counter() - started, 3)}},
             }
+        model = await self.calls.call(self.provider.resolve_voice_model, voice_model, default_model=self.default_model)
         source_path = Path(source_path)
         if not source_path.is_file():
             raise error("source", "source_file_missing")
@@ -195,14 +205,15 @@ class CoverPipeline:
                 "output_format": output_format,
             }
         )
-        entry = None if force_rebuild or self.cache is None else self.cache.get("covers", key)
+        entry = None if force_rebuild or self.cache is None else await self.calls.call(self.cache.get, "covers", key)
         if entry:
-            shutil.copyfile(entry["paths"]["cover"], output)
+            await self.calls.call(shutil.copyfile, entry["paths"]["cover"], output)
+            timings["total"] = time.perf_counter() - started
             return {
                 "path": output,
                 "metadata": {**entry["metadata"], "song_title": title, "artist": artist},
                 "cache_key": key,
-                "processing": {"cache_hit": True, "seconds": timings},
+                "processing": {"cache_hit": True, "seconds": {k: round(v, 3) for k, v in timings.items()}},
             }
         stem_key = cache_key({**base, "pipeline": STEM_VERSION})
         stem_hit, stem_stored, notices = False, False, []
@@ -222,18 +233,24 @@ class CoverPipeline:
             )
             timings["local_full_pipeline"] = time.perf_counter() - tick
         else:
-            stems = None if force_rebuild or self.cache is None else self.cache.get("stems", stem_key)
+            stems = (
+                None
+                if force_rebuild or self.cache is None
+                else await self.calls.call(self.cache.get, "stems", stem_key)
+            )
             if stems:
                 # Work copies protect immutable cache audio from provider code.
                 vocals, instrumental = work_dir / "vocals.wav", work_dir / "instrumental.wav"
-                shutil.copyfile(stems["paths"]["vocals"], vocals)
-                shutil.copyfile(stems["paths"]["instrumental"], instrumental)
+                await self.calls.call(shutil.copyfile, stems["paths"]["vocals"], vocals)
+                await self.calls.call(shutil.copyfile, stems["paths"]["instrumental"], instrumental)
                 stem_hit = True
             else:
-                prepared = work_dir / "source.wav"
-                tick = time.perf_counter()
-                await self.media.decode(source_path=source_path, output_path=prepared)
-                timings["decode"] = time.perf_counter() - tick
+                prepared = source_path
+                if not getattr(self.provider, "prepares_source", False):
+                    prepared = work_dir / "source.wav"
+                    tick = time.perf_counter()
+                    await self.media.decode(source_path=source_path, output_path=prepared)
+                    timings["decode"] = time.perf_counter() - tick
                 tick = time.perf_counter()
                 vocals, instrumental = await self.calls.call(
                     self.provider.separate_vocals, source_path=prepared, work_dir=work_dir
@@ -243,8 +260,12 @@ class CoverPipeline:
                     await self.media.probe_duration(path)
                 try:
                     if self.cache is not None:
-                        self.cache.put(
-                            "stems", stem_key, files={"vocals": vocals, "instrumental": instrumental}, metadata=base
+                        await self.calls.call(
+                            self.cache.put,
+                            "stems",
+                            stem_key,
+                            files={"vocals": vocals, "instrumental": instrumental},
+                            metadata=base,
                         )
                         stem_stored = True
                 except (OSError, ValueError):
@@ -269,7 +290,11 @@ class CoverPipeline:
                 instrumental_gain_db=options.instrumental_gain_db,
             )
             timings["mix"] = time.perf_counter() - tick
-        actual_duration = await self.media.probe_duration(output)
+        probe = getattr(self.media, "probe_audio", None)
+        audio_info = await probe(output) if callable(probe) else {}
+        actual_duration = audio_info.get("duration_seconds") or await self.media.probe_duration(output)
+        if audio_info and (audio_info["sample_rate"], audio_info["channels"]) != (44100, 2):
+            notices.append("provider_output_audio_format_changed")
         if output.stat().st_size <= 0 or output.stat().st_size > 1024 * 1024 * 1024:
             raise error("mix", "cover_output_invalid")
         rvc = {
@@ -284,11 +309,12 @@ class CoverPipeline:
             "params": params,
             "output_format": output_format,
             "duration_seconds": actual_duration,
+            "audio_info": audio_info,
             "pipeline": PIPELINE_VERSION,
         }
         try:
             if self.cache is not None:
-                self.cache.put("covers", key, files={"cover": output}, metadata=metadata)
+                await self.calls.call(self.cache.put, "covers", key, files={"cover": output}, metadata=metadata)
         except (OSError, ValueError):
             notices.append("cover_cache_write_failed")
         timings["total"] = time.perf_counter() - started

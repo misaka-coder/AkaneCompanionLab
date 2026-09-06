@@ -15,7 +15,10 @@ the public SDK's cancellation-safe process runner to this same implementation.
 The caller owns fresh input/work paths and removes partial outputs on failure.
 FFprobe is required: an unverified duration is no longer treated as zero.
 
-Mixing supports FFmpeg 4.3 as well as current versions. Both tracks are padded
+Mixing explicitly negotiates **44.1 kHz stereo before amix**. RVC's usual mono
+40 kHz output must not fold the stereo backing down to mono. Resampling a voice
+does not invent frequencies or stereo content; it preserves the backing's
+existing stereo information. Mixing supports FFmpeg 4.3 as well as current versions. Both tracks are padded
 to the longer audio duration before undoing amix's default averaging; this
 avoids doubling the tail when one track ends first. Input demuxers/protocols
 are restricted, metadata is removed, and existing output files are rejected.
@@ -65,6 +68,21 @@ artifacts remain readable. Provide the original source to rebuild v3 cache.
 Title-only restoration requires matching voice, format and parameters; a
 different artist is ambiguous. Force-rebuild requires source media and bypasses
 both cache layers.
+
+Title-only restoration does not contact RVC: completed recordings remain usable
+while the model service is offline. A configured default or explicit voice is
+respected; without either, multiple cached voices require an explicit selection.
+Online and cached voice matching share one implementation. Only the newest intact
+object per song/voice identity is hashed; a corrupt newest entry falls back to
+older intact content. Large integrity checks, cache publication and file copies
+run outside the event loop, with cancellation still draining their owned work.
+
+Pipeline `rvc-cover-v4-stereo` invalidates old source-key final mixes, not the
+compatible stem cache. Historical title-only recordings are returned as stored;
+they are not silently rewritten or falsely labeled stereo. New results include
+probed audio format; an older remote service returning another format produces
+`provider_output_audio_format_changed`. Provide source media to rebuild a prior
+mono recording. No existing generated files or caches are deleted.
 
 `ProviderCalls` drains blocking provider threads on repeated cancellation.
 Pass its `cancelled` callback into each per-invocation WebUI provider. The
@@ -173,3 +191,14 @@ WAV in 34.010 seconds (Demucs 24.511 s, conversion 8.056 s, mix 0.389 s).
 Source-key and title-only client cache restoration both returned identical
 bytes without another inference. Both endpoint fences were clear, and both
 owned services were stopped. No new model downloads, paid calls, QQ or playback.
+
+After eliminating redundant cover pre-decoding and reusing the service's actual
+startup probe for its unchanged default Demucs model, a separate six-second full
+remote sample took 16.441 seconds (separation 9.254 s). This is a single comparison
+with the earlier 34.010-second run, not a general speed guarantee; system caches
+and workload differ. The stereo mix correction was then separately verified on
+the actual preserved UVR/RVC stems: WAV 1,586,982 bytes, FLAC 631,460 bytes, MP3
+242,459 bytes; all 44.1 kHz stereo and 5.997279 seconds, inputs unchanged.
+Seven media tests pass on both current FFmpeg and RVC's FFmpeg 4.3, including
+distinct left/right backing signals with mono 40 kHz voice. With both services
+stopped, the earlier real 720,102-byte recording restored identically in 0.016 s.

@@ -27,10 +27,35 @@ from plugins.akane_cover_song.src.akane_cover_song import (
     ProviderCalls,
 )
 from plugins.akane_cover_song.src.akane_cover_song.cache import cache_key
+from plugins.akane_cover_song.src.akane_cover_song import cache as cache_module
 from plugins.akane_cover_song.tests.test_media import tone
 
 
 class CacheTests(unittest.TestCase):
+    def test_title_restore_hashes_latest_only_and_falls_back_from_corruption(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = CoverCache(root / "cache", scope="u")
+            source = root / "source.wav"
+            tone(source)
+            meta = dict(song_title="song", artist="artist", voice_model="voice.pth", output_format="wav")
+            keys = [cache_key({"render": index}) for index in range(10)]
+            for key in keys:
+                cache.put("covers", key, files={"cover": source}, metadata=meta)
+            args = dict(song_title="song", artist="artist", model_name="voice", output_format="wav")
+            with patch.object(cache_module, "digest_file", wraps=cache_module.digest_file) as digest:
+                self.assertEqual(cache.find_cover(**args)["key"], keys[-1])
+                self.assertEqual(digest.call_count, 1)
+            tone(source, amplitude=0.3)
+            newest = cache_key({"render": 11})
+            cache.put("covers", newest, files={"cover": source}, metadata=meta)
+            path = cache.get("covers", newest)["paths"]["cover"]
+            content = path.read_bytes()
+            path.write_bytes(content[:-1] + bytes([content[-1] ^ 1]))
+            with patch.object(cache_module, "digest_file", wraps=cache_module.digest_file) as digest:
+                self.assertEqual(cache.find_cover(**args)["key"], keys[-1])
+                self.assertEqual(digest.call_count, 2)
+
     def test_atomic_manifest_survives_partial_write_and_scope_collision(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -174,7 +199,9 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         self.cache = CoverCache(self.root / "cache", scope="user")
         self.provider = RecordingProvider()
         self.media = CoverMedia(run=self.runner.run, ffmpeg=shutil.which("ffmpeg"), ffprobe=shutil.which("ffprobe"))
-        self.pipeline = CoverPipeline(provider=self.provider, media=self.media, cache=self.cache)
+        self.pipeline = CoverPipeline(
+            provider=self.provider, media=self.media, cache=self.cache, default_model="voice.pth"
+        )
 
     async def asyncTearDown(self):
         await self.runner.aclose()
@@ -218,6 +245,34 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             await self.run_cover()
         self.assertFalse(self.cache.has_cover())
         self.assertEqual(len(list(self.cache.root.joinpath("stems").glob("*.json"))), 1)
+
+    async def test_title_only_restore_works_offline_and_does_not_guess_ambiguous_voice(self):
+        first = await self.run_cover()
+        await self.run_cover(voice_model="other.pth")
+        with patch.object(
+            self.provider, "resolve_voice_model", side_effect=AssertionError("offline provider must not be called")
+        ) as resolve:
+            restored = await self.run_cover(source_path=None)
+            self.assertEqual(restored["path"].read_bytes(), first["path"].read_bytes())
+            resolve.assert_not_called()
+            self.pipeline.default_model = ""
+            with self.assertRaises(CoverSongError) as caught:
+                await self.run_cover(source_path=None)
+            self.assertEqual(caught.exception.reason, "cached_voice_model_ambiguous")
+            selected = await self.run_cover(source_path=None, voice_model="voice")
+            self.assertEqual(selected["metadata"]["voice_model"], "voice.pth")
+
+    async def test_cache_integrity_io_runs_off_event_loop(self):
+        await self.run_cover()
+        event_loop_thread = threading.get_ident()
+        original = self.cache.find_cover
+
+        def checked(**kwargs):
+            self.assertNotEqual(threading.get_ident(), event_loop_thread)
+            return original(**kwargs)
+
+        with patch.object(self.cache, "find_cover", side_effect=checked):
+            self.assertTrue((await self.run_cover(source_path=None))["processing"]["cache_hit"])
 
     async def test_cache_write_failure_preserves_real_output_with_explicit_notice(self):
         with patch.object(self.cache, "put", side_effect=OSError("fixture_disk_full")):

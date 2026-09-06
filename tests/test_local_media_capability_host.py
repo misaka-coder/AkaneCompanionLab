@@ -12,7 +12,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.akane_local_capability_host import LocalDemucsRuntime, _mix_local_cover, create_app
+from scripts.akane_local_capability_host import LocalDemucsRuntime, _cover_media, create_app
+from companion_v01.plugin_subprocess import PluginProcessRunner
 
 
 class LocalMediaCapabilityHostTests(unittest.TestCase):
@@ -24,7 +25,7 @@ class LocalMediaCapabilityHostTests(unittest.TestCase):
                 calls.append(("init", kwargs))
 
             async def probe(self):
-                return {"ok": True, "cuda_available": True}
+                return {"ok": True, "cuda_available": True, "sample_rate": 44100, "channels": 2}
 
             async def separate_media(self, **kwargs):
                 calls.append(("separate", kwargs))
@@ -51,6 +52,10 @@ class LocalMediaCapabilityHostTests(unittest.TestCase):
             self.assertEqual(calls[2][1]["model"], "htdemucs_ft")
             self.assertEqual(calls[2][1]["python"], root / "python.exe")
             self.assertEqual(calls[2][1]["package_root"], root / "packages")
+            self.assertIsNone(calls[3][1]["model_info"])
+            runtime.separate(source_path=root / "source.mp3", output_root=root / "stems-default", model="htdemucs")
+            self.assertEqual(calls[-2][1]["model_info"]["sample_rate"], 44100)
+            self.assertEqual(calls[-2][1]["model_info"]["channels"], 2)
 
     def test_missing_package_is_structured_unavailable(self) -> None:
         with patch("scripts.akane_local_capability_host.local_demucs_class", side_effect=RuntimeError("missing")):
@@ -160,37 +165,34 @@ class LocalMediaCapabilityHostTests(unittest.TestCase):
                 self.assertNotEqual(signals[0], signals[1])
             self.assertEqual(compressed.read_bytes(), before)
 
-    def test_local_cover_mix_compensates_for_legacy_amix_normalization(self) -> None:
+    def test_local_cover_mix_uses_real_audio(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            vocals = root / "vocals.wav"
-            instrumental = root / "instrumental.wav"
-            output = root / "cover.mp3"
-            vocals.write_bytes(b"vocals")
-            instrumental.write_bytes(b"instrumental")
-            captured: dict[str, object] = {}
+            source, output = root / "source.wav", root / "cover.mp3"
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.4", str(source)],
+                check=True,
+            )
 
-            def fake_run(command, **_kwargs):
-                captured["command"] = command
-                output.write_bytes(b"mixed")
-                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            async def mix():
+                runner = PluginProcessRunner()
+                try:
+                    media = _cover_media(Path(shutil.which("ffmpeg")), runner)
+                    await media.mix(
+                        converted_vocals=source,
+                        instrumental=source,
+                        output_path=output,
+                        output_format="mp3",
+                        vocal_gain_db=0,
+                        instrumental_gain_db=-1,
+                    )
+                    return await media.probe_duration(output)
+                finally:
+                    await runner.aclose()
 
-            with patch("scripts.akane_local_capability_host.subprocess.run", side_effect=fake_run):
-                _mix_local_cover(
-                    ffmpeg_path=root / "ffmpeg.exe",
-                    converted_vocals=vocals,
-                    instrumental=instrumental,
-                    output_path=output,
-                    output_format="mp3",
-                    vocal_gain_db=0.0,
-                    instrumental_gain_db=-1.0,
-                )
-
-        command = captured["command"]
-        filter_graph = command[command.index("-filter_complex") + 1]
-        self.assertIn("amix=inputs=2:duration=longest:dropout_transition=0", filter_graph)
-        self.assertIn("volume=2.0", filter_graph)
-        self.assertIn("alimiter=limit=0.95", filter_graph)
+            duration = asyncio.run(mix())
+            self.assertGreater(output.stat().st_size, 1000)
+            self.assertAlmostEqual(duration, 0.4, delta=0.06)
 
 
 if __name__ == "__main__":

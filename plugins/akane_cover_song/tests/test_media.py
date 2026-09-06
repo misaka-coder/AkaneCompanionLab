@@ -68,6 +68,38 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(rms / baseline_rms, 1.9)
             self.assertLess(rms / baseline_rms, 2.2)
 
+    async def test_mono_40khz_voice_preserves_stereo_instrumental(self):
+        vocals, backing = self.root / "rvc-mono.wav", self.root / "backing-stereo.wav"
+        tone(vocals, rate=40000, amplitude=0.05)
+        frames = [
+            (int(2500 * math.sin(2 * math.pi * 330 * i / 44100)), int(2500 * math.sin(2 * math.pi * 880 * i / 44100)))
+            for i in range(44100)
+        ]
+        with wave.open(str(backing), "wb") as writer:
+            writer.setparams((2, 2, 44100, 44100, "NONE", "not compressed"))
+            writer.writeframes(b"".join(struct.pack("<hh", left, right) for left, right in frames))
+        for fmt in ("wav", "flac", "mp3"):
+            output = self.root / f"stereo-cover.{fmt}"
+            await self.media.mix(
+                converted_vocals=vocals,
+                instrumental=backing,
+                output_path=output,
+                output_format=fmt,
+                vocal_gain_db=0,
+                instrumental_gain_db=0,
+            )
+            info = await self.media.probe_audio(output)
+            self.assertEqual((info["sample_rate"], info["channels"]), (44100, 2))
+            pcm = self.root / f"stereo-measure-{fmt}.wav"
+            await self.media.decode(source_path=output, output_path=pcm)
+            with wave.open(str(pcm), "rb") as reader:
+                raw = reader.readframes(reader.getnframes())
+            values = struct.unpack(f"<{len(raw) // 2}h", raw)
+            differences = [left - right for left, right in zip(values[::2], values[1::2])]
+            # Upmixing an already folded mono result would produce identical
+            # channels; actual backing stereo must survive before amix.
+            self.assertGreater(math.sqrt(sum(v * v for v in differences) / len(differences)), 1500)
+
     async def test_unequal_tracks_do_not_double_remaining_tail(self):
         short = self.root / "short.wav"
         tone(short, seconds=0.5)

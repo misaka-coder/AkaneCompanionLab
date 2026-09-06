@@ -106,6 +106,7 @@ class LocalDemucsRuntime:
                 result = await runtime.separate_media(
                     source=source_path,
                     output_root=output_root,
+                    model_info=self._status if model == "htdemucs" else None,
                     timeout=max(1.0, min(3600.0, float(timeout_seconds))),
                     ffmpeg=self.ffmpeg_path,
                 )
@@ -188,6 +189,7 @@ class _DemucsCoverProvider:
     """Product binding: existing Demucs deployment + package RVC provider."""
 
     provider_id = "local_demucs_rvc"
+    prepares_source = True
 
     def __init__(self, rvc, demucs, lock, model):
         self.rvc, self.demucs, self.lock, self.separation_model = rvc, demucs, lock, model

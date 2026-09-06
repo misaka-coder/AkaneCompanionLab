@@ -36,7 +36,7 @@ class CoverMedia:
         self.ffmpeg = str(ffmpeg or "")
         self.ffprobe = str(ffprobe or "")
 
-    async def probe_duration(self, path: Path) -> float:
+    async def probe_audio(self, path: Path) -> dict:
         if not self.ffprobe:
             raise failure("source", "ffprobe_not_found")
         code, raw = await self.run(
@@ -72,7 +72,14 @@ class CoverMedia:
                 raise ValueError
         except (ValueError, TypeError, KeyError, IndexError):
             raise failure("source", "cover_media_invalid") from None
-        return duration
+        return {
+            "duration_seconds": duration,
+            "sample_rate": int(stream["sample_rate"]),
+            "channels": int(stream["channels"]),
+        }
+
+    async def probe_duration(self, path: Path) -> float:
+        return (await self.probe_audio(path))["duration_seconds"]
 
     async def decode(self, *, source_path, output_path):
         await self._render(
@@ -112,9 +119,12 @@ class CoverMedia:
             ):
                 raise failure("mix", "cover_gain_invalid")
         duration = max(await self.probe_duration(converted_vocals), await self.probe_duration(instrumental))
+        # RVC commonly returns mono 40 kHz. Do not let that first input force
+        # the stereo instrumental down to mono or lower the final sample rate.
+        pcm = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
         filters = (
-            f"[0:a:0]volume={vocal_gain_db:.3f}dB,apad=whole_dur={duration:.6f}[v];"
-            f"[1:a:0]volume={instrumental_gain_db:.3f}dB,apad=whole_dur={duration:.6f}[i];"
+            f"[0:a:0]{pcm},volume={vocal_gain_db:.3f}dB,apad=whole_dur={duration:.6f}[v];"
+            f"[1:a:0]{pcm},volume={instrumental_gain_db:.3f}dB,apad=whole_dur={duration:.6f}[i];"
             # FFmpeg 4.3 lacks amix normalize=0. Undo two-input averaging
             # explicitly. Pad to equal durations to prevent amix doubling the
             # remaining track when the other track ends first.
