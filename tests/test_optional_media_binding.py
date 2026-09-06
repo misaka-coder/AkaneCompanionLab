@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 from capcore import CapabilityDescriptor, CapabilityIOSlot
 
 from companion_v01.desktop_music_timeline import DesktopMusicTimelineService
-from companion_v01.optional_media_binding import prepare_timeline_vocals
+from companion_v01.optional_media_binding import prepare_timeline_vocals, prepare_dataset_voice
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
 
 
@@ -21,14 +21,68 @@ class TimelinePluginBindingTests(unittest.TestCase):
         self.assertFalse(hasattr(GeneratedFileService, "separate_audio_stems"))
         self.assertFalse(hasattr(GeneratedFileService, "audio_separation_status"))
         self.assertFalse(hasattr(generated_files_media, "separate_audio_with_demucs"))
+        self.assertFalse(hasattr(GeneratedFileService, "clean_voice_track"))
+        self.assertFalse(hasattr(GeneratedFileService, "voice_cleaning_status"))
+        self.assertFalse(hasattr(generated_files_media, "clean_voice_track"))
         root = Path(__file__).resolve().parents[1]
         for folder in ("companion_v01", "scripts"):
             for path in (root / folder).rglob("*.py"):
                 source = path.read_text(encoding="utf-8")
                 self.assertNotIn("separate_audio_stems", source, str(path))
                 self.assertNotIn("separate_audio_with_demucs", source, str(path))
+                self.assertNotIn("clean_voice_track", source, str(path))
+                self.assertNotIn("_build_basic_voice_clean_filter_chain", source, str(path))
                 if path.name != "optional_media_binding.py":
                     self.assertNotIn("akane.audio-separation", source, str(path))
+                    self.assertNotIn("akane.voice-clean", source, str(path))
+
+    def test_dataset_missing_cleaning_plugin_is_structured(self):
+        engine = SimpleNamespace(_resolve_tool_handlers=Mock(return_value={}))
+        result = prepare_dataset_voice(
+            engine, profile_user_id="owner", session_id="session", source_id="audio_1", client_mode="qq_text"
+        )
+        self.assertEqual(result["reason"], "cleaning_plugin_unavailable")
+        self.assertEqual(
+            engine._resolve_tool_handlers.call_args.kwargs["client_context"].effective_mode.value, "qq_text"
+        )
+
+    def test_dataset_cleaning_uses_normal_permission_admission(self):
+        capability = "akane.voice-clean.run.v1"
+        adapter = SimpleNamespace(invoke=Mock(side_effect=AssertionError("Approval required")))
+        descriptor = CapabilityDescriptor(
+            id=capability,
+            display_name="Cleaning",
+            short_hint="test",
+            visible_in=("base", "qq"),
+            prompt_exposed=True,
+            risk="high",
+            confirm="always",
+            effects=("filesystem",),
+            trigger=None,
+            inputs=tuple(
+                CapabilityIOSlot(name, kind)
+                for name, kind in (
+                    ("source_id", "string"),
+                    ("mode", "string"),
+                    ("quality", "string"),
+                    ("post_filter", "boolean"),
+                    ("output_format", "string"),
+                    ("send_to_user", "boolean"),
+                )
+            ),
+            outputs=(),
+            raw={},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            handler = PluginCapabilityToolHandler(
+                capability_id=capability, adapter=adapter, descriptor=descriptor, config_base_dir=tmp
+            )
+            engine = SimpleNamespace(_resolve_tool_handlers=lambda **_: {capability: handler})
+            result = prepare_dataset_voice(
+                engine, profile_user_id="owner", session_id="session", source_id="audio_1", client_mode="qq_text"
+            )
+        self.assertEqual(result["reason"], "cleaning_not_admitted_or_failed")
+        adapter.invoke.assert_not_called()
 
     def test_missing_plugin_and_missing_scope_never_call_business(self):
         engine = SimpleNamespace(_resolve_tool_handlers=Mock(return_value={}))

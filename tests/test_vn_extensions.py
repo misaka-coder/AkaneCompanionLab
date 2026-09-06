@@ -1026,7 +1026,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "read_attachment_section",
                     "apply_style_to_existing_file",
                     "inspect_media_info",
-                    "clean_voice_track",
                     "transcribe_media",
                     "prepare_voice_dataset",
                     "inspect_generated_file",
@@ -1207,7 +1206,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "revise_generated_file",
                     "apply_style_to_existing_file",
                     "inspect_media_info",
-                    "clean_voice_track",
                     "transcribe_media",
                     "prepare_voice_dataset",
                     "inspect_generated_file",
@@ -1258,7 +1256,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- fetch_media_from_url", prompt)
             self.assertIn("\n- read_attachment_section", prompt)
             self.assertNotIn("\n- separate_audio_stems", prompt)
-            self.assertIn("\n- clean_voice_track", prompt)
+            self.assertNotIn("\n- clean_voice_track", prompt)
             self.assertIn("\n- transcribe_media", prompt)
             self.assertIn("\n- prepare_voice_dataset", prompt)
             self.assertIn("\n- inspect_media_info", prompt)
@@ -1274,15 +1272,6 @@ class EngineExtensionTests(unittest.TestCase):
                     session_id="qq_pri_1",
                 ),
                 {"type": "inspect_media_info"},
-            )
-            self.assertEqual(
-                self.engine._normalize_tool_call(
-                    {"type": "clean_voice_track", "source_id": media["attachment_handle"]},
-                    client_context=qq_context,
-                    profile_user_id="master",
-                    session_id="qq_pri_1",
-                ),
-                {"type": "clean_voice_track"},
             )
             self.assertEqual(
                 self.engine._normalize_tool_call(
@@ -1366,7 +1355,6 @@ class EngineExtensionTests(unittest.TestCase):
             self.engine.capability_registry = CapabilityRegistry()
             media_tools = (
                 "inspect_media_info",
-                "clean_voice_track",
                 "transcribe_media",
                 "prepare_voice_dataset",
             )
@@ -1405,8 +1393,8 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("transcribe_media output_format=srt", prompt)
             self.assertNotIn("convert_media_file", prompt)
             self.assertNotIn("提取视频音频 →", prompt)
-            self.assertIn("人声降噪", prompt)
-            self.assertIn("clean_voice_track", prompt)
+            self.assertNotIn("人声降噪 →", prompt)
+            self.assertNotIn("clean_voice_track", prompt)
             self.assertNotIn("人声伴奏分离 →", prompt)
             self.assertNotIn("separate_audio_stems", prompt)
             self.assertIn("训练素材切片打包", prompt)
@@ -1430,7 +1418,6 @@ class EngineExtensionTests(unittest.TestCase):
         for tool in {
             "inspect_media_info",
             "separate_audio_stems",
-            "clean_voice_track",
             "transcribe_media",
             "prepare_voice_dataset",
         }:

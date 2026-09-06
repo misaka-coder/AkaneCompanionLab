@@ -1,6 +1,6 @@
 # 剩余可选业务能力插件化 V2
 
-日期：2026-09-06。起点：`87c1c6f`。状态：分轨独立工作进程与 SDK/市场隔离安装链已实施，尚未关闭旧业务迁移窗口。
+日期：2026-09-06。起点：`87c1c6f`。状态：分轨与人声净化已切换；其余五项继续按顺序推进。
 
 目标是持续完成七项已识别能力，不以一个插件完成代替整项目标完成。已完成的媒体转换及其资源、产物、市场、Job 基础见 [V1 验收](optional_media_plugin_migration_v1.md)。每项验证、清除旧实现并聚焦提交后继续下一项。
 
@@ -11,14 +11,14 @@
 | 顺序 | 能力 | 当前权威与调用者 | 迁移边界 / 必须保留的行为 | 状态 |
 |---|---|---|---|---|
 | 1 | 分轨 | 原内置函数/handler/spec 已删除；插件为模型入口，脚本为包的薄绑定 | Demucs CPU/CUDA 与媒体服务 Demucs/UVR；两件产物；wav/flac/mp3；真实 CPU 已验收，GPU/UVR 真机未验收 | 已切换，见分轨 C |
-| 2 | 人声净化 | `generated_files_media.clean_voice_track` 与服务内 CLI、滤镜 helper | FFmpeg 基础处理、DeepFilterNet AI、auto 降级及真实后端说明；四种现有模式、post_filter、三种格式 | 待迁移 |
+| 2 | 人声净化 | 原内置函数/handler/spec/filter 已删除；插件拥有唯一净化实现，素材集薄绑定 | FFmpeg 基础处理、DeepFilterNet AI、auto 降级及真实后端说明；四模式、post_filter、三种格式；CPU 已验收 | 已切换，见净化 B/C |
 | 3 | 文件转写 | `generated_files_media.transcribe_media`、本地模型 helper、媒体执行服务客户端 | 多输入、部分失败、合并/独立输出、md/txt/srt/vtt/json、时间戳、语言/VAD/模型选项；不迁移实时语音 ASR | 待迁移 |
 | 4 | 训练素材准备 | `generated_files_media.prepare_voice_dataset` 与 PCM 切片、分析、manifest helper | 原 profile/采样/切片规则、真实 WAV/ZIP/manifest、来源关联与质量统计；不扩展为模型训练 | 待迁移 |
 | 5 | 生图 | `image_generation.py` 的 provider/service、Engine 绑定、模型服务配置 | 生成及参考图编辑、多图、输入大小/质量/格式参数、现有实际 provider；密钥不进入模型参数或产物 | 待迁移 |
 | 6 | 翻唱 | `cover_song.py`、`LocalRvcExecutorProvider`、Engine 绑定 | RVC WebUI 与本机服务、模型选择、分轨/推理/混音、现有缓存与交付语义；复用已迁移分轨权威 | 待迁移 |
 | 7 | 文档生成 | `GeneratedFileService`、`generated_files_io.py`、`generated_files_delivery.py` 及 compose/revise/style 调用链 | 创建、修订、已有 docx/xlsx 格式处理必须共同审计；txt/md/html/json/csv/xlsx/docx/pdf；不能只移 compose 而留下第二套渲染实现 | 待迁移 |
 
-审计起点市场仅有媒体转换。分轨 C 后 `plugins/market.toml` 有转换和分轨两个条目；其余六项仍是内置能力，不能把插件基础算成它们已经迁移。
+审计起点市场仅有媒体转换。净化 B/C 后 `plugins/market.toml` 有转换、分轨、净化三个条目；其余五项仍是内置能力，不能把插件基础算成它们已经迁移。
 
 ## 宿主与插件职责
 
@@ -171,6 +171,33 @@
   已执行；`ruff`、格式、diff 检查通过。本轮临时目录最终为空，模型/安装缓存保留供复用。
 - 此项仅关闭“缺可用 AI 环境”的验收缺口。仍没有净化 entry point/市场条目，旧入口删除、
   资源/Job/渠道和生命周期接入尚未完成；不把依赖安装或信号测试当成整个净化迁移完成。
+
+### 净化 B/C：唯一插件入口与实际产品链路
+
+- 关闭从 `1fe951d` 开始的净化迁移窗口。删除旧内置工具、状态、参数归一化、
+  DeepFilter CLI/输出查找、滤镜、专属卡片生成和固定模型提示；历史产物仍能读取交付。
+  公共 SDK entry point/descriptor 与静态市场条目只对应现有实际实现。
+- 单件输出通过当前会话资源端口、托管产物接口；真实 wheel 安装/暂存/权限确认/
+  隔离 generation 验证后，QQ/桌面 native 与兼容描述同源且调用前后稳定。
+  停用/卸载后不可见，FFmpeg 缺失的候选不会替换正在运行的代。
+- 素材集 `clean_first` 经普通权限入口与 ExecutorBroker 调用已安装净化能力，
+  保留先前 basic/voice_focus 规则与实际渠道。缺插件/停用/需要批准会令该来源失败，
+  不继续生成“已净化”的切片。成功调用登记的净化音频是普通产物，不伪装私有缓存。
+  完整链路核对 ZIP/manifest/切片；缺插件时没有成功产物。
+- 三种格式均执行真实 CPU DeepFilterNet 推理、48kHz 单声道、长度正确、原件哈希不变。
+  模型反馈明确实际 AI 或基础后端、auto 降级原因与原件未修改；显式 ai 缺依赖直接失败。
+  四模式/后置滤波/信号变化/坏模型/全程取消由包内真实测试覆盖。
+- 真实 Host Job 前台迅速返回，重复提交幂等、跨用户不能取消；120 秒输入完成预处理并
+  进入模型进程后重复取消，运行中停用撤掉发现入口，清理结束后无迟到产物、可再次启用。
+  成功/失败/取消终态经 MemCore 幂等记录；实际 MP3 经过 send_file、桌面交付模块 smoke
+  和 QQ 文件上传边界。QQ 响应仍为测试替身，未实际网络投递、未冒充真人试听/GPU 验收。
+- 已通过：旧入口/发现/来源/权限组合 214 项；路由/generation/Engine/Job 组合 163 项；
+  包内 17 项（45.502 秒，无跳过，实际 CPU）。各组有重叠，不累加成独立用例数。
+  净化/转换真实市场安装与市场协议最终 11 项通过（89.355 秒），包含完整 AI/Job/
+  素材集/auto 降级场景。扩展市场后转换测试改为按 ID 选条目，不依赖首条位置。
+  市场构建、相关 ruff/格式/编译及 diff 检查通过。
+- 仅构建仓库忽略目录内的市场索引；未替用户实例启用插件、未公网发布、未更改全局
+  Python 或持久化环境设置。F 盘独立环境配置方式保留在包 README。
 
 ## 最终交付与授权边界
 

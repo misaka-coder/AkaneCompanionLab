@@ -15,7 +15,6 @@ from companion_v01.generated_files import GeneratedFileService
 from companion_v01.store import MemoryStore
 from companion_v01.tool_runtime import (
     ApplyStyleToExistingFileToolHandler,
-    CleanVoiceTrackToolHandler,
     ComposeFileToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
@@ -89,11 +88,6 @@ class GeneratedFileTests(unittest.TestCase):
             handle = failed["attachment_handle"]
 
             results = [
-                generated_service.clean_voice_track(
-                    profile_user_id="user",
-                    session_id="session",
-                    source_target=handle,
-                ),
                 generated_service.inspect_media_info(
                     profile_user_id="user",
                     session_id="session",
@@ -701,127 +695,6 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertIn("视频", result["followup_context"])
 
 
-    def test_clean_voice_track_creates_generated_audio(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "voice.wav"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_bytes(b"fake wav payload")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="audio",
-                origin_name="voice.wav",
-                storage_relpath="master/voice.wav",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="voice.wav",
-                short_hint="一段带点底噪的人声。",
-                detail={"file_kind": "wav", "media_info": {"audio": {"codec": "pcm_s16le"}}},
-                timestamp=110,
-            )
-
-            def fake_run(command, capture_output, text, timeout, check):
-                if "-codec:a" in command and "pcm_s16le" in command:
-                    Path(command[-1]).write_bytes(b"prepared wav")
-                    return subprocess.CompletedProcess(command, 0, "", "")
-                if command and str(command[0]).lower().startswith("deepfilter"):
-                    out_dir = Path(command[command.index("-o") + 1])
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    (out_dir / "voice.wav").write_bytes(b"cleaned wav")
-                    return subprocess.CompletedProcess(command, 0, "", "")
-                raise AssertionError(f"unexpected command: {command}")
-
-            with (
-                patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg.exe"),
-                patch.object(
-                    GeneratedFileService,
-                    "_resolve_deepfilternet_runner",
-                    return_value={"kind": "binary", "command": ["deepFilter.exe"]},
-                ),
-                patch("companion_v01.generated_files.subprocess.run", side_effect=fake_run),
-            ):
-                result = generated_service.clean_voice_track(
-                    profile_user_id="user",
-                    session_id="session",
-                    source_target="audio_001",
-                    mode="denoise",
-                    quality="auto",
-                    output_format="wav",
-                    output_title="voice_clean",
-                    timestamp=120,
-                )
-
-            self.assertTrue(result["ok"])
-            generated = result["generated"]
-            self.assertEqual(generated["generated_handle"], "gen_001")
-            self.assertEqual(generated["created_by_tool"], "clean_voice_track")
-            self.assertTrue(Path(generated["absolute_path"]).exists())
-            self.assertEqual(
-                (generated.get("content_card") or {}).get("voice_cleaning", {}).get("backend_used"),
-                "deepfilternet",
-            )
-            media_info = (generated.get("content_card") or {}).get("media_info", {})
-            self.assertEqual(media_info.get("format_name"), "wav")
-            self.assertEqual((media_info.get("audio") or {}).get("sample_rate"), 48000)
-            self.assertEqual((media_info.get("audio") or {}).get("channels"), 1)
-            self.assertIn("AI 净化", result["followup_context"])
-
-    def test_clean_voice_track_tool_handler_emits_generated_event(self) -> None:
-        class FakeGeneratedService:
-            def clean_voice_track(self, **kwargs):
-                return {
-                    "ok": True,
-                    "generated": {"generated_id": "generated::1", "generated_handle": "gen_001"},
-                    "send_to_user": True,
-                    "followup_context": "净化完成。",
-                }
-
-        handler = CleanVoiceTrackToolHandler(generated_file_service=FakeGeneratedService())
-        call = handler.normalize_call(
-            {
-                "type": "clean_voice_track",
-                "source_id": "audio_001",
-                "mode": "去混响",
-                "quality": "deepfilternet",
-                "output_format": "wave",
-                "post_filter": True,
-                "send_to_user": True,
-            }
-        )
-
-        self.assertIsNotNone(call)
-        self.assertEqual((call or {}).get("mode"), "dereverb")
-        self.assertEqual((call or {}).get("quality"), "ai")
-        self.assertEqual((call or {}).get("output_format"), "wav")
-        result = handler.execute(
-            call=call or {},
-            context=ToolExecutionContext(
-                profile_user_id="user",
-                session_id="session",
-                now_ts=100,
-                visual_payload={},
-            ),
-        )
-
-        self.assertEqual(result.stream_events[0]["type"], "generated_file_ready")
-        self.assertEqual(result.stream_events[0]["generated_file"]["generated_handle"], "gen_001")
-        self.assertEqual(result.followup_context, "净化完成。")
-
     def test_prepare_voice_dataset_creates_zip_manifest_with_issue_filenames(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1198,10 +1071,6 @@ class GeneratedFileTests(unittest.TestCase):
     def test_media_handlers_do_not_report_ready_without_real_executors(self) -> None:
         class FakeGeneratedService:
             @staticmethod
-            def voice_cleaning_status():
-                return {"enabled": True, "status": "ready", "reason": "", "provider": "ffmpeg"}
-
-            @staticmethod
             def asr_status():
                 return {
                     "enabled": False,
@@ -1219,13 +1088,11 @@ class GeneratedFileTests(unittest.TestCase):
 
         service = FakeGeneratedService()
         statuses = {
-            "clean": CleanVoiceTrackToolHandler(generated_file_service=service).capability_status(),
             "transcribe": TranscribeMediaToolHandler(generated_file_service=service).capability_status(),
             "dataset": PrepareVoiceDatasetToolHandler(generated_file_service=service).capability_status(),
             "inspect": InspectMediaInfoToolHandler(generated_file_service=service).capability_status(),
         }
 
-        self.assertEqual(statuses["clean"]["status"], "ready")
         self.assertEqual(statuses["transcribe"]["reason"], "local_media_executor_unreachable")
         self.assertEqual(statuses["dataset"]["status"], "missing_executor")
         self.assertEqual(statuses["inspect"]["provider"], "ffprobe")

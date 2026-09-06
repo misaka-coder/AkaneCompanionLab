@@ -199,7 +199,6 @@ DOCUMENT_WORKBENCH_TOOL_NAMES = (
 
 MEDIA_WORKBENCH_TOOL_NAMES = (
     "inspect_media_info",
-    "clean_voice_track",
     "transcribe_media",
     "prepare_voice_dataset",
 )
@@ -1314,57 +1313,6 @@ INSPECT_MEDIA_INFO_TOOL_SPEC = CapabilityToolSpec(
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=4096,
-)
-
-CLEAN_VOICE_TRACK_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="clean_voice_track",
-    display_name="Clean voice track",
-    description=(
-        "净化现有语音或人声轨，可做降噪、去混响、去回声或人声聚焦。"
-        "它不负责普通转码、裁剪和音量调整。"
-        "成功后返回一个新的 gen_* 句柄，需要交付时再调用 send_file。"
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "source_id": {
-                "type": "string",
-                "maxLength": 120,
-                "description": "来源语音/人声句柄，如 audio_*、file_*、gen_*。",
-            },
-            "mode": {
-                "type": "string",
-                "enum": ["denoise", "dereverb", "deecho", "voice_focus"],
-                "description": "处理意图；默认 denoise。",
-            },
-            "quality": {
-                "type": "string",
-                "enum": ["auto", "ai", "basic"],
-                "description": "auto 优先 AI、不可用时基础降级；ai 只接受 AI；basic 直接基础净化。",
-            },
-            "output_format": {
-                "type": "string",
-                "enum": ["wav", "flac", "mp3"],
-                "description": "输出格式；默认 wav 便于后续处理，直接聊天交付可选 mp3。",
-            },
-            "output_title": {"type": "string", "maxLength": 80, "description": "可选输出标题。"},
-            "post_filter": {
-                "type": "boolean",
-                "description": "仅 AI 净化时的额外后处理；用户未提出且证据不足时不要硬填。",
-            },
-        },
-        "required": ["source_id"],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_create",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
-    execution_class="long_task",
-    idempotency="effectful",
-    max_result_bytes=8192,
 )
 
 TRANSCRIBE_MEDIA_TOOL_SPEC = CapabilityToolSpec(

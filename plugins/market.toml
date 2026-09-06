@@ -1,6 +1,14 @@
 schema_version = 1
 
 [[plugins]]
+source = "akane_voice_clean"
+plugin_id = "akane.voice-clean"
+display_name = "人声降噪与净化"
+summary = "基础滤波或现有 DeepFilterNet AI 人声增强；输出 WAV/FLAC/MP3，明确报告实际后端和降级。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write"]
+requirements = ["Python 3.11+；宿主提供 CapCore 与 Akane 插件公共 SDK。", "FFmpeg/FFprobe 在 PATH，或配置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE。", "可选 AI：配置兼容 DeepFilterNet/PyTorch/Torchaudio 的 AKANE_CLEAN_PYTHON 和已下载的 AKANE_CLEAN_MODEL_ROOT；设备 AKANE_CLEAN_DEVICE=auto|cpu|cuda。不会隐式安装或下载。", "basic 不运行 AI；auto 在 AI 失败时明确降级；ai 失败不返回基础结果。", "dereverb/deecho 是增强预设，不保证消除混响或声学回声；输出单声道 48kHz。", "只接收当前会话材料句柄；默认登记不发送、不播放。"]
+
+[[plugins]]
 source = "akane_media_convert"
 plugin_id = "akane.media-convert"
 display_name = "媒体格式转换"

@@ -30,7 +30,6 @@ from .capability_registry import (
     CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
     COMPOSE_FILE_TOOL_SPEC,
     COVER_SONG_TOOL_SPEC,
-    CLEAN_VOICE_TRACK_TOOL_SPEC,
     FETCH_MEDIA_FROM_URL_TOOL_SPEC,
     GENERATE_IMAGE_TOOL_SPEC,
     INSPECT_ATTACHMENT_TOOL_SPEC,
@@ -109,7 +108,6 @@ from .tool_handlers.workspace import (
 
 from .tool_handlers.generated_media import (
     ApplyStyleToExistingFileToolHandler,
-    CleanVoiceTrackToolHandler,
     ComposeFileToolHandler,
     CoverSongToolHandler,
     GenerateImageToolHandler,

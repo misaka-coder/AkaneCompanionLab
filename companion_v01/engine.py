@@ -106,7 +106,6 @@ from .tool_runtime import (
     ApplyStyleToExistingFileToolHandler,
     BaseToolHandler,
     BrowserPageToolHandler,
-    CleanVoiceTrackToolHandler,
     CoverSongToolHandler,
     ClearAttachmentFocusToolHandler,
     ComposeFileToolHandler,
@@ -283,7 +282,6 @@ MEDIA_PRESET_ROUTING = [
     "【媒体任务预设路由】",
     "- 生成字幕 → transcribe_media output_format=srt/vtt",
     "- 转写文字稿/会议纪要前置 → transcribe_media output_format=md/txt",
-    "- 人声降噪/去混响 → clean_voice_track",
     "- 固定角色音色翻唱整首歌 → cover_song",
     "- 训练素材切片打包 → prepare_voice_dataset",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
@@ -468,6 +466,7 @@ class AkaneMemoryEngine:
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             work_dir=self.base_dir / "generated_work",
             asr_executor=self.local_media_executor,
+            voice_preparer=self._prepare_dataset_voice,
         )
         self.cover_song_service: CoverSongService | None = None
         self.desktop_music_timeline_service = DesktopMusicTimelineService(
@@ -2446,9 +2445,15 @@ class AkaneMemoryEngine:
             ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
             work_dir=self.base_dir / "generated_work",
             asr_executor=self._get_local_media_executor(),
+            voice_preparer=self._prepare_dataset_voice,
         )
         self.generated_file_service = service
         return service
+
+    def _prepare_dataset_voice(self, **kwargs):
+        from .optional_media_binding import prepare_dataset_voice
+
+        return prepare_dataset_voice(self, **kwargs)
 
     def _create_local_media_executor(self) -> LocalMediaExecutorClient | None:
         base_url = str(getattr(config, "LOCAL_MEDIA_EXECUTOR_BASE_URL", "") or "").strip()

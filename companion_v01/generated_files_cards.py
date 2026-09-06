@@ -143,42 +143,6 @@ def build_style_followup(
     return "\n".join(lines)
 
 
-def build_voice_clean_followup(
-    service: Any,
-    *,
-    generated: dict[str, Any],
-    source: dict[str, Any],
-    mode: str,
-    backend_used: str,
-    send_to_user: bool,
-) -> str:
-    source_handle = str(source.get("handle") or "").strip()
-    source_title = str(source.get("title") or "媒体文件").strip()
-    handle = str(generated.get("generated_handle") or "").strip()
-    title = str(generated.get("output_title") or handle or "净化结果").strip()
-    size_label = _format_size_from_item(service, generated)
-    mode_label = {
-        "denoise": "降噪净化",
-        "dereverb": "去混响净化",
-        "deecho": "去回声净化",
-        "voice_focus": "人声聚焦净化",
-    }.get(mode, "净化")
-    backend_label = "AI 净化（DeepFilterNet）" if backend_used == "deepfilternet" else "基础净化（ffmpeg）"
-    lines = [
-        f"你刚刚已经把 {source_handle or '媒体文件'}《{source_title}》做了{mode_label}。",
-        f"输出结果：{handle}《{title}》。",
-        f"本次后端：{backend_label}。",
-    ]
-    if size_label:
-        lines.append(f"文件大小：{size_label}。")
-    if send_to_user:
-        lines.append("当前客户端如果支持发送文件，系统会尝试把净化后的文件发给用户。")
-    else:
-        lines.append("这次只生成净化结果，不自动发送给用户。")
-    lines.append("请基于这个既成事实自然回应，不要重复调用 clean_voice_track。")
-    return "\n".join(lines)
-
-
 def build_voice_dataset_followup(
     service: Any,
     *,

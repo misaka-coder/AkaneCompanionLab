@@ -359,7 +359,7 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                 self.discovery_snapshot(engine, installed=False)
                 catalog = await service.browse_market()
                 self.assertTrue(catalog["ok"], catalog)
-                entry = catalog["plugins"][0]
+                entry = next(item for item in catalog["plugins"] if item["plugin_id"] == PLUGIN_ID)
                 self.assertEqual(entry["plugin_id"], PLUGIN_ID)
                 self.assertEqual(entry["installed_status"], "not_installed")
                 staged = await service.stage_market(plugin_id=PLUGIN_ID, digest=entry["sha256"])
@@ -368,7 +368,12 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                     stage_id=staged["stage_id"], approved_permissions=staged["permissions"]
                 )
                 self.assertTrue(installed["ok"], installed)
-                self.assertEqual((await service.browse_market())["plugins"][0]["installed_status"], "active")
+                self.assertEqual(
+                    next(item for item in (await service.browse_market())["plugins"] if item["plugin_id"] == PLUGIN_ID)[
+                        "installed_status"
+                    ],
+                    "active",
+                )
                 self.assertIn(CAPABILITY_ID, runtime.capability_ids)
                 self.assertEqual(runtime.capability_descriptors[CAPABILITY_ID].raw["execution_class"], "long_task")
                 self.assertEqual(runtime.stable_system_prompt_blocks(), ())
@@ -467,7 +472,12 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                 self.discovery_snapshot(engine, installed=False)
                 self.assertEqual(artifacts.snapshot()["plugins"], [])
                 self.assertEqual(selections.load(), ())
-                self.assertEqual((await service.browse_market())["plugins"][0]["installed_status"], "not_installed")
+                self.assertEqual(
+                    next(item for item in (await service.browse_market())["plugins"] if item["plugin_id"] == PLUGIN_ID)[
+                        "installed_status"
+                    ],
+                    "not_installed",
+                )
             finally:
                 await runtime.stop()
 

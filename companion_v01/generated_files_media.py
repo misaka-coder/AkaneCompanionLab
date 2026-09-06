@@ -491,7 +491,6 @@ def prepare_voice_dataset_input(
     prepared_path: Path,
     target_sr: int,
     channels: int,
-    clean_first: bool,
     normalize_volume: bool,
 ) -> dict[str, Any]:
     prepared_path.parent.mkdir(parents=True, exist_ok=True)
@@ -503,8 +502,6 @@ def prepare_voice_dataset_input(
         "-vn",
     ]
     filters: list[str] = []
-    if clean_first:
-        filters.extend(service._build_basic_voice_clean_filter_chain(mode="voice_focus", post_filter=False))
     if normalize_volume:
         filters.append("loudnorm=I=-18:TP=-1.5:LRA=11")
     if filters:
@@ -1109,302 +1106,6 @@ def build_generated_media_info_projection(
     }
 
 
-def clean_voice_track(
-    service: Any,
-    *,
-    profile_user_id: str,
-    session_id: str,
-    source_target: str,
-    mode: str = "denoise",
-    quality: str = "auto",
-    output_format: str = "wav",
-    output_title: str = "",
-    post_filter: bool = False,
-    send_to_user: bool = True,
-    timestamp: int | None = None,
-    protected_media_extensions: set[str],
-) -> dict[str, Any]:
-    effective_ts = int(timestamp or time.time())
-    normalized_mode = service._normalize_voice_clean_mode(mode)
-    normalized_quality = service._normalize_voice_clean_quality(quality)
-    normalized_format = service._normalize_media_output_format(output_format)
-    if normalized_format not in {"wav", "flac", "mp3"}:
-        return {
-            "ok": False,
-            "generated": None,
-            "error": "unsupported_voice_clean_output_format",
-            "followup_context": "你刚刚想输出净化后的人声文件，但当前只支持 wav、flac 或 mp3。",
-        }
-
-    source = service._resolve_media_source(
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        target=source_target,
-    )
-    if source is None:
-        return {
-            "ok": False,
-            "generated": None,
-            "error": "source_not_found",
-            "followup_context": "你刚刚想净化一段人声，但没有找到明确的来源。请自然向用户确认要处理哪一个附件或生成文件。",
-        }
-
-    source_path = Path(source.get("absolute_path") or "")
-    if not source_path.exists() or not source_path.is_file():
-        error, followup_context = _media_source_unavailable_feedback(
-            source,
-            action="净化人声",
-            default_message="你刚刚想净化一段人声，但本地来源文件不存在。请自然告诉用户这个文件暂时无法处理。",
-        )
-        return {
-            "ok": False,
-            "generated": None,
-            "error": error,
-            "followup_context": followup_context,
-        }
-
-    input_ext = source_path.suffix.lower().lstrip(".")
-    if input_ext in protected_media_extensions:
-        return {
-            "ok": False,
-            "generated": None,
-            "error": "protected_media_format",
-            "followup_context": (
-                f"你刚刚识别到 {input_ext} 这类平台加密或专有缓存格式。"
-                "不要尝试解密或绕过保护；请自然告诉用户可以提供普通 mp3、flac、wav、m4a 等非加密源文件。"
-            ),
-        }
-
-    ffmpeg_path = shutil.which("ffmpeg")
-    if not ffmpeg_path:
-        return {
-            "ok": False,
-            "generated": None,
-            "error": "ffmpeg_not_found",
-            "followup_context": "你刚刚想净化人声，但本机没有找到 ffmpeg。请自然提醒用户先安装 ffmpeg 或配置 PATH。",
-        }
-
-    deepfilter = service._resolve_deepfilternet_runner()
-    use_ai = normalized_quality == "ai" or (normalized_quality == "auto" and deepfilter is not None)
-    if normalized_quality == "ai" and deepfilter is None:
-        return {
-            "ok": False,
-            "generated": None,
-            "error": "deepfilternet_not_found",
-            "followup_context": (
-                "你刚刚明确想用 AI 人声净化，但本机没有找到可用的 DeepFilterNet 环境。"
-                "请自然提醒用户先安装 deepfilternet，再重新尝试。"
-            ),
-        }
-
-    base_name = Path(str(source.get("title") or source_path.stem)).stem.strip() or source_path.stem or "voice"
-    clean_label = {
-        "denoise": "降噪净化",
-        "dereverb": "去混响净化",
-        "deecho": "去回声净化",
-        "voice_focus": "人声聚焦净化",
-    }.get(normalized_mode, "净化")
-    clean_title = service._normalize_title(output_title) or f"{base_name}_{clean_label}"
-    work_dir = (
-        service.work_dir
-        / "_voice_clean_tmp"
-        / service._safe_filename(profile_user_id or "profile")[:48]
-        / service._safe_filename(session_id or "session")[:48]
-        / str(effective_ts)
-    )
-    prepared_input_path: Path | None = None
-    enhanced_wav_path: Path | None = None
-    try:
-        work_dir.mkdir(parents=True, exist_ok=True)
-        prepared_input_path = work_dir / f"{service._safe_filename(base_name)[:48] or 'source'}_clean_input.wav"
-        prepare_command = [
-            str(ffmpeg_path),
-            "-y",
-            "-i",
-            str(source_path),
-            "-vn",
-            "-codec:a",
-            "pcm_s16le",
-            "-ar",
-            "48000",
-            "-ac",
-            "1",
-            str(prepared_input_path),
-        ]
-        prepare_result = subprocess.run(
-            prepare_command,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-        )
-        if prepare_result.returncode != 0 or not prepared_input_path.exists():
-            error_text = (prepare_result.stderr or prepare_result.stdout or "ffmpeg 预处理失败").strip()[:500]
-            return {
-                "ok": False,
-                "generated": None,
-                "error": error_text,
-                "followup_context": f"你刚刚想净化人声，但前置音频准备失败：{error_text[:180]}。请自然告诉用户失败原因。",
-            }
-
-        if use_ai and deepfilter is not None:
-            try:
-                enhanced_wav_path = service._run_deepfilternet_cleaning(
-                    runner=deepfilter,
-                    prepared_input_path=prepared_input_path,
-                    output_root=work_dir / "deepfilter_out",
-                    post_filter=bool(post_filter or normalized_mode in {"dereverb", "deecho", "voice_focus"}),
-                )
-                backend_used = "deepfilternet"
-            except Exception as exc:
-                if normalized_quality == "ai":
-                    error_text = service._summarize_voice_clean_error(str(exc))
-                    return {
-                        "ok": False,
-                        "generated": None,
-                        "error": error_text,
-                        "followup_context": f"你刚刚想用 AI 人声净化，但执行失败：{error_text[:220]}。请自然告诉用户失败原因。",
-                    }
-                enhanced_wav_path = None
-                backend_used = "basic_ffmpeg"
-            else:
-                backend_used = "deepfilternet"
-        else:
-            backend_used = "basic_ffmpeg"
-
-        if enhanced_wav_path is None:
-            enhanced_wav_path = work_dir / "basic_clean.wav"
-            clean_command = [
-                str(ffmpeg_path),
-                "-y",
-                "-i",
-                str(prepared_input_path),
-                "-vn",
-                "-codec:a",
-                "pcm_s16le",
-                "-ar",
-                "48000",
-                "-ac",
-                "1",
-            ]
-            basic_filters = service._build_basic_voice_clean_filter_chain(
-                mode=normalized_mode,
-                post_filter=bool(post_filter),
-            )
-            if basic_filters:
-                clean_command.extend(["-filter:a", ",".join(basic_filters)])
-            clean_command.append(str(enhanced_wav_path))
-            clean_result = subprocess.run(
-                clean_command,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                check=False,
-            )
-            if clean_result.returncode != 0 or not enhanced_wav_path.exists():
-                error_text = (clean_result.stderr or clean_result.stdout or "ffmpeg 基础净化失败").strip()[:500]
-                return {
-                    "ok": False,
-                    "generated": None,
-                    "error": error_text,
-                    "followup_context": f"你刚刚想净化人声，但基础净化也失败了：{error_text[:180]}。请自然告诉用户失败原因。",
-                }
-
-        output_path = service._build_output_path(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            title=clean_title,
-            output_format=normalized_format,
-            timestamp=effective_ts,
-        )
-        service._render_clean_voice_output(
-            cleaned_source_path=enhanced_wav_path,
-            output_path=output_path,
-            output_format=normalized_format,
-            ffmpeg_path=str(ffmpeg_path),
-        )
-
-        source_ids = [str(source.get("source_id") or "").strip()]
-        source_ids.extend(str(item or "").strip() for item in list(source.get("extra_source_ids") or []))
-        source_ids = [item for item in source_ids if item]
-        source_media = source.get("media_info") if isinstance(source.get("media_info"), dict) else {}
-        content_card = {
-            "type": "voice_cleaning",
-            "summary": (
-                f"基于 {source.get('handle') or source.get('title') or '媒体文件'} 做了{clean_label}，"
-                f"使用 {'AI 净化' if backend_used == 'deepfilternet' else '基础净化'}。"
-            ),
-            "source": {
-                "source_type": str(source.get("source_type") or "").strip(),
-                "source_id": str(source.get("source_id") or "").strip(),
-                "handle": str(source.get("handle") or "").strip(),
-                "title": str(source.get("title") or "").strip(),
-                "input_ext": input_ext,
-            },
-            "voice_cleaning": {
-                "mode": normalized_mode,
-                "quality_requested": normalized_quality,
-                "backend_used": backend_used,
-                "output_format": normalized_format,
-                "post_filter": bool(post_filter),
-            },
-        }
-        content_card["media_info"] = build_generated_media_info_projection(
-            service,
-            output_path=output_path,
-            output_format=normalized_format,
-            source=source,
-            hints={
-                "duration_seconds": source_media.get("duration_seconds"),
-                "sample_rate": 48000,
-                "channels": 1,
-                "file_size": output_path.stat().st_size,
-            },
-        )
-        generated = service.store.add_generated_file(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            output_title=clean_title,
-            output_format=normalized_format,
-            storage_relpath=service._storage_relpath(output_path),
-            mime_type=service._mime_type_for_format(normalized_format),
-            file_ext=normalized_format,
-            file_size=output_path.stat().st_size,
-            source_ids=source_ids,
-            content_card=content_card,
-            summary=str(content_card.get("summary") or "").strip(),
-            created_by_tool="clean_voice_track",
-            delivery_status="pending" if send_to_user else "not_requested",
-            timestamp=effective_ts,
-        )
-        generated["absolute_path"] = str(service.absolute_path(generated))
-        return {
-            "ok": True,
-            "generated": generated,
-            "send_to_user": bool(send_to_user),
-            "followup_context": service._build_voice_clean_followup(
-                generated=generated,
-                source=source,
-                mode=normalized_mode,
-                backend_used=backend_used,
-                send_to_user=send_to_user,
-            ),
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "generated": None,
-            "error": str(exc),
-            "followup_context": f"你刚刚做人声净化时失败了：{str(exc)[:180]}。请自然告诉用户失败原因。",
-        }
-    finally:
-        if work_dir.exists():
-            try:
-                shutil.rmtree(work_dir, ignore_errors=True)
-            except Exception:
-                pass
-
-
 def prepare_voice_dataset(
     service: Any,
     *,
@@ -1426,6 +1127,7 @@ def prepare_voice_dataset(
     timestamp: int | None = None,
     protected_media_extensions: set[str],
     voice_dataset_presets: dict[str, dict[str, Any]],
+    client_mode: str = "web",
 ) -> dict[str, Any]:
     effective_ts = int(timestamp or time.time())
     preset_name = service._normalize_voice_dataset_profile(profile)
@@ -1532,13 +1234,30 @@ def prepare_voice_dataset(
             source_title = str(source.get("title") or source_path.name).strip()
             prepared_path = work_dir / f"source_{source_index:02d}.wav"
             prepared_paths.append(prepared_path)
+            if clean_first:
+                preparer = getattr(service, "voice_preparer", None)
+                try:
+                    cleaned = preparer(
+                        profile_user_id=profile_user_id, session_id=session_id,
+                        source_id=str(source.get("source_id") or source.get("handle") or ""),
+                        client_mode=client_mode,
+                    ) if callable(preparer) else {"reason": "cleaning_plugin_unavailable"}
+                except Exception:
+                    cleaned = {"reason": "cleaning_binding_failed"}
+                if cleaned.get("status") != "ready" or not cleaned.get("absolute_path"):
+                    source_stats.append({
+                        "source_index": source_index, "source_id": str(source.get("source_id") or ""),
+                        "handle": source_label, "title": source_title, "status": "failed", "slice_count": 0,
+                        "error": cleaned.get("reason") or "cleaning_preparation_failed",
+                    })
+                    continue
+                source_path = Path(cleaned["absolute_path"])
             prepare_result = service._prepare_voice_dataset_input(
                 ffmpeg_path=str(ffmpeg_path),
                 source_path=source_path,
                 prepared_path=prepared_path,
                 target_sr=int(options["target_sr"]),
                 channels=1 if bool(options["mono"]) else 2,
-                clean_first=bool(clean_first),
                 normalize_volume=bool(normalize_volume),
             )
             if not prepare_result.get("ok"):
@@ -1633,6 +1352,7 @@ def prepare_voice_dataset(
                 "ok": False,
                 "generated": None,
                 "error": "no_slices_created",
+                "source_failures": source_stats,
                 "followup_context": (
                     "你刚刚想准备语音训练集，但没有成功切出任何片段。"
                     + (f"失败信息：{'; '.join(errors[:3])}。" if errors else "")

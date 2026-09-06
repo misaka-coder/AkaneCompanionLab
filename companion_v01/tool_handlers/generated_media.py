@@ -554,139 +554,6 @@ class CoverSongToolHandler(BaseToolHandler):
         return default
 
 
-class CleanVoiceTrackToolHandler(BaseToolHandler):
-    tool_type = "clean_voice_track"
-
-    def __init__(self, *, generated_file_service) -> None:
-        self.generated_file_service = generated_file_service
-
-    def capability_status(self) -> dict[str, Any]:
-        return _generated_media_capability_status(
-            self.generated_file_service,
-            getter_name="voice_cleaning_status",
-            missing_reason="voice_cleaning_status_missing",
-        )
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- clean_voice_track：当用户想把语音/人声再净化一下时使用，比如降噪、去混响、去回声、让说话更干净。"
-            '格式为 {"type":"clean_voice_track","source_id":"file_001|audio_001|gen_001",'
-            '"mode":"denoise|dereverb|deecho|voice_focus","quality":"auto|ai|basic",'
-            '"output_format":"wav|flac|mp3","output_title":"输出标题","post_filter":false,"send_to_user":false}。'
-            "它适合说话录音、直播片段、播客人声、分离后的人声轨，不负责普通转码、裁剪或调音量。"
-            "quality=auto 会优先尝试本地 AI 语音净化模型（当前设计对接 DeepFilterNet），没装环境时再退回基础净化；quality=basic 表示直接走 ffmpeg 轻净化；quality=ai 表示只接受 AI 净化。"
-            "mode 主要是意图提示：denoise 更偏降噪，dereverb/deecho 更偏混响与回声整理，voice_focus 更偏让人声主体更靠前。"
-            "post_filter 只在 AI 净化时有意义，适合杂音更重的情况；用户没提时不要硬填。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if str(value.get("type") or "").strip() != self.tool_type:
-            return None
-        source_id = str(
-            value.get("source_id") or value.get("source") or value.get("target") or value.get("attachment_id") or ""
-        ).strip()
-        if not source_id:
-            return None
-        return {
-            "type": self.tool_type,
-            "source_id": source_id[:120],
-            "mode": self._normalize_mode(value.get("mode") or value.get("clean_mode") or "denoise"),
-            "quality": self._normalize_quality(value.get("quality") or value.get("backend") or "auto"),
-            "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or "wav"),
-            "output_title": str(value.get("output_title") or value.get("title") or "").strip()[:80],
-            "post_filter": self._coerce_bool(value.get("post_filter") or value.get("pf"), default=False),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
-        }
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.generated_file_service.clean_voice_track(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            source_target=str(call.get("source_id") or ""),
-            mode=str(call.get("mode") or "denoise"),
-            quality=str(call.get("quality") or "auto"),
-            output_format=str(call.get("output_format") or "wav"),
-            output_title=str(call.get("output_title") or ""),
-            post_filter=bool(call.get("post_filter")),
-            send_to_user=bool(call.get("send_to_user")),
-            timestamp=context.now_ts,
-        )
-        generated = result.get("generated") if isinstance(result, dict) else None
-        events = []
-        if isinstance(generated, dict):
-            events.append(
-                {
-                    "type": "generated_file_ready",
-                    "generated_file": generated,
-                    "send_to_user": bool(result.get("send_to_user")),
-                }
-            )
-        return operation_tool_result(
-            tool_type=self.tool_type,
-            operation_result=result,
-            success_events=events,
-        )
-
-    def _normalize_mode(self, value: Any) -> str:
-        text = str(value or "denoise").strip().lower()
-        aliases = {
-            "denoise": "denoise",
-            "noise": "denoise",
-            "remove_noise": "denoise",
-            "降噪": "denoise",
-            "去噪": "denoise",
-            "dereverb": "dereverb",
-            "reverb": "dereverb",
-            "去混响": "dereverb",
-            "deecho": "deecho",
-            "echo": "deecho",
-            "去回声": "deecho",
-            "voice_focus": "voice_focus",
-            "speech": "voice_focus",
-            "focus": "voice_focus",
-            "人声聚焦": "voice_focus",
-            "净化人声": "voice_focus",
-        }
-        return aliases.get(text, "denoise")
-
-    def _normalize_quality(self, value: Any) -> str:
-        text = str(value or "auto").strip().lower()
-        aliases = {
-            "auto": "auto",
-            "默认": "auto",
-            "ai": "ai",
-            "model": "ai",
-            "deepfilternet": "ai",
-            "basic": "basic",
-            "ffmpeg": "basic",
-            "基础": "basic",
-        }
-        return aliases.get(text, "auto")
-
-    def _normalize_output_format(self, value: Any) -> str:
-        text = str(value or "wav").strip().lower().lstrip(".")
-        aliases = {
-            "wave": "wav",
-            "waveform": "wav",
-            "mpeg3": "mp3",
-        }
-        return aliases.get(text, text)
-
-    def _coerce_bool(self, value: Any, *, default: bool) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        text = str(value).strip().lower()
-        if text in {"1", "true", "yes", "y", "on", "发送", "发给用户"}:
-            return True
-        if text in {"0", "false", "no", "n", "off", "不发送", "仅生成"}:
-            return False
-        return default
-
-
 class TranscribeMediaToolHandler(BaseToolHandler):
     tool_type = "transcribe_media"
 
@@ -953,6 +820,7 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
             normalize_volume=bool(call.get("normalize_volume")),
             send_to_user=bool(call.get("send_to_user")),
             timestamp=context.now_ts,
+            client_mode=context.client_mode,
         )
         generated = result.get("generated") if isinstance(result, dict) else None
         events = []

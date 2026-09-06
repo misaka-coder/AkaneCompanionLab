@@ -21,7 +21,6 @@ from companion_v01.tool_orchestration_engine import native_legacy_prompt_exclusi
 from companion_v01.tool_runtime import (
     AdapterCapabilityToolHandler,
     ApplyStyleToExistingFileToolHandler,
-    CleanVoiceTrackToolHandler,
     ComposeFileToolHandler,
     PrepareVoiceDatasetToolHandler,
     ReviseGeneratedFileToolHandler,
@@ -133,7 +132,7 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 49)
+        self.assertEqual(len(handlers), 48)
         self.assertNotIn("convert_media_file", handlers)
         self.assertNotIn("separate_audio_stems", handlers)
         self.assertEqual(missing, [])
@@ -441,24 +440,8 @@ class NativeToolSchemaTests(unittest.TestCase):
             self.assertNotIn("tool_call", native["description"])
 
     def test_media_native_specs_match_handlers_and_do_not_silently_drop_primary_options(self) -> None:
-        clean = CleanVoiceTrackToolHandler(generated_file_service=None)
         transcribe = TranscribeMediaToolHandler(generated_file_service=None)
         dataset = PrepareVoiceDatasetToolHandler(generated_file_service=None)
-
-        clean_call = clean.normalize_call(
-            {
-                "type": "clean_voice_track",
-                "source_id": "gen_001",
-                "mode": "dereverb",
-                "quality": "ai",
-                "output_format": "wav",
-                "output_title": "净化人声",
-                "post_filter": True,
-            }
-        )
-        self.assertEqual(clean_call["mode"], "dereverb")
-        self.assertEqual(clean_call["quality"], "ai")
-        self.assertTrue(clean_call["post_filter"])
 
         transcribe_call = transcribe.normalize_call(
             {
@@ -501,14 +484,6 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertTrue(dataset_call["clean_first"])
 
         expected_properties = {
-            "clean_voice_track": {
-                "source_id",
-                "mode",
-                "quality",
-                "output_format",
-                "output_title",
-                "post_filter",
-            },
             "transcribe_media": {
                 "source_ids",
                 "output_format",
@@ -535,7 +510,6 @@ class NativeToolSchemaTests(unittest.TestCase):
             },
         }
         handlers = {
-            "clean_voice_track": clean,
             "transcribe_media": transcribe,
             "prepare_voice_dataset": dataset,
         }

@@ -49,7 +49,6 @@ TOOL_GROUPS: dict[str, str] = {
     "apply_style_to_existing_file": "documents",
     "inspect_media_info": "media",
     "cover_song": "audio",
-    "clean_voice_track": "audio",
     "transcribe_media": "asr",
     "prepare_voice_dataset": "voice_dataset",
     "inspect_generated_file": "generated_files",

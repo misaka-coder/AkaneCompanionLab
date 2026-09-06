@@ -26,7 +26,6 @@ from .character_world import LoadCharacterContextToolHandler
 from .core import BaseToolHandler
 from .generated_media import (
     ApplyStyleToExistingFileToolHandler,
-    CleanVoiceTrackToolHandler,
     ComposeFileToolHandler,
     CoverSongToolHandler,
     GenerateImageToolHandler,
@@ -141,9 +140,6 @@ def build_builtin_tool_handlers(
             generated_file_service=generated_file_service
         ),
         "inspect_media_info": InspectMediaInfoToolHandler(
-            generated_file_service=generated_file_service
-        ),
-        "clean_voice_track": CleanVoiceTrackToolHandler(
             generated_file_service=generated_file_service
         ),
         "transcribe_media": TranscribeMediaToolHandler(

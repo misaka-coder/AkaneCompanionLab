@@ -82,6 +82,7 @@ class GeneratedFileService:
         ensure_storage_ready: Callable[[], Any] | None = None,
         work_dir: Path | None = None,
         asr_executor: Any = None,
+        voice_preparer: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -97,6 +98,7 @@ class GeneratedFileService:
         self.attachment_service = attachment_service
         self._whisper_model_cache: dict[tuple[str, str, str], Any] = {}
         self.asr_executor = asr_executor
+        self.voice_preparer = voice_preparer
 
 
     def voice_dataset_status(self) -> dict[str, Any]:
@@ -106,25 +108,6 @@ class GeneratedFileService:
             "status": "ready" if ffmpeg_path else "missing_executor",
             "reason": "" if ffmpeg_path else "ffmpeg_not_found",
             "provider": "ffmpeg" if ffmpeg_path else "",
-        }
-
-    def voice_cleaning_status(self) -> dict[str, Any]:
-        ffmpeg_path = shutil.which("ffmpeg")
-        if not ffmpeg_path:
-            return {
-                "enabled": False,
-                "status": "missing_executor",
-                "reason": "ffmpeg_not_found",
-                "provider": "",
-                "ai_ready": False,
-            }
-        deepfilter = self._resolve_deepfilternet_runner()
-        return {
-            "enabled": True,
-            "status": "ready",
-            "reason": "",
-            "provider": "deepfilternet" if deepfilter is not None else "ffmpeg",
-            "ai_ready": deepfilter is not None,
         }
 
     def asr_status(self) -> dict[str, Any]:
@@ -341,35 +324,6 @@ class GeneratedFileService:
         }
 
 
-    def clean_voice_track(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        source_target: str,
-        mode: str = "denoise",
-        quality: str = "auto",
-        output_format: str = "wav",
-        output_title: str = "",
-        post_filter: bool = False,
-        send_to_user: bool = True,
-        timestamp: int | None = None,
-    ) -> dict[str, Any]:
-        return generated_files_media.clean_voice_track(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            source_target=source_target,
-            mode=mode,
-            quality=quality,
-            output_format=output_format,
-            output_title=output_title,
-            post_filter=post_filter,
-            send_to_user=send_to_user,
-            timestamp=timestamp,
-            protected_media_extensions=PROTECTED_MEDIA_EXTENSIONS,
-        )
-
     def prepare_voice_dataset(
         self,
         *,
@@ -389,6 +343,7 @@ class GeneratedFileService:
         normalize_volume: bool = False,
         send_to_user: bool = True,
         timestamp: int | None = None,
+        client_mode: str = "web",
     ) -> dict[str, Any]:
         return generated_files_media.prepare_voice_dataset(
             self,
@@ -410,6 +365,7 @@ class GeneratedFileService:
             timestamp=timestamp,
             protected_media_extensions=PROTECTED_MEDIA_EXTENSIONS,
             voice_dataset_presets=VOICE_DATASET_PRESETS,
+            client_mode=client_mode,
         )
 
     def transcribe_media(
@@ -1704,24 +1660,6 @@ class GeneratedFileService:
         )
 
 
-    def _build_voice_clean_followup(
-        self,
-        *,
-        generated: dict[str, Any],
-        source: dict[str, Any],
-        mode: str,
-        backend_used: str,
-        send_to_user: bool,
-    ) -> str:
-        return generated_files_cards.build_voice_clean_followup(
-            self,
-            generated=generated,
-            source=source,
-            mode=mode,
-            backend_used=backend_used,
-            send_to_user=send_to_user,
-        )
-
     def _build_voice_dataset_followup(
         self,
         *,
@@ -1774,7 +1712,6 @@ class GeneratedFileService:
         prepared_path: Path,
         target_sr: int,
         channels: int,
-        clean_first: bool,
         normalize_volume: bool,
     ) -> dict[str, Any]:
         return generated_files_media.prepare_voice_dataset_input(
@@ -1784,7 +1721,6 @@ class GeneratedFileService:
             prepared_path=prepared_path,
             target_sr=target_sr,
             channels=channels,
-            clean_first=clean_first,
             normalize_volume=normalize_volume,
         )
 
@@ -2224,148 +2160,8 @@ class GeneratedFileService:
         return command
 
 
-    def _resolve_deepfilternet_runner(self) -> dict[str, Any] | None:
-        for candidate in ("deepFilter", "deep-filter"):
-            resolved = shutil.which(candidate)
-            if resolved:
-                return {"kind": "binary", "command": [resolved]}
-        scripts_dir = Path(sys.executable).parent
-        for candidate in ("deepFilter.exe", "deep-filter.exe", "deepFilter", "deep-filter"):
-            resolved = scripts_dir / candidate
-            if resolved.exists():
-                return {"kind": "binary", "command": [str(resolved)]}
-        if importlib.util.find_spec("df") is not None:
-            return {"kind": "python", "command": [sys.executable, "-m", "df.enhance"]}
-        return None
-
-    def _run_deepfilternet_cleaning(
-        self,
-        *,
-        runner: dict[str, Any],
-        prepared_input_path: Path,
-        output_root: Path,
-        post_filter: bool,
-    ) -> Path:
-        command_prefix = list(runner.get("command") or [])
-        runner_kind = str(runner.get("kind") or "").strip().lower()
-        if not command_prefix:
-            raise RuntimeError("DeepFilterNet 运行入口无效。")
-        output_root.mkdir(parents=True, exist_ok=True)
-        if runner_kind == "binary":
-            command = [
-                *command_prefix,
-                "-m",
-                "DeepFilterNet2",
-                "-o",
-                str(output_root),
-            ]
-        else:
-            command = [
-                *command_prefix,
-                "-m",
-                "DeepFilterNet2",
-                "--output-dir",
-                str(output_root),
-            ]
-        if post_filter:
-            command.append("--pf")
-        command.append(str(prepared_input_path))
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            check=False,
-        )
-        if completed.returncode != 0:
-            error_text = self._summarize_voice_clean_error(completed.stderr or completed.stdout or "DeepFilterNet 净化失败")
-            raise RuntimeError(error_text)
-        output_path = self._collect_deepfilternet_output(output_root=output_root, source_path=prepared_input_path)
-        if output_path is None:
-            raise RuntimeError("DeepFilterNet 已执行，但没有找到净化后的输出文件。")
-        return output_path
-
-
-    def _collect_deepfilternet_output(self, *, output_root: Path, source_path: Path) -> Path | None:
-        if not output_root.exists():
-            return None
-        preferred_stem = source_path.stem.lower()
-        candidates = [path for path in output_root.rglob("*.wav") if path.is_file()]
-        if not candidates:
-            candidates = [path for path in output_root.rglob("*") if path.is_file()]
-        if not candidates:
-            return None
-        exact = [path for path in candidates if path.stem.lower() == preferred_stem]
-        if exact:
-            return sorted(exact)[0]
-        partial = [path for path in candidates if preferred_stem in path.stem.lower()]
-        if partial:
-            return sorted(partial)[0]
-        return sorted(candidates)[0]
-
-    def _summarize_voice_clean_error(self, raw: str) -> str:
-        text = str(raw or "").replace("\r", "\n")
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        cleaned = [
-            line
-            for line in lines
-            if "processing time total" not in line.lower()
-            and "enhance.py" not in line.lower()
-            and "log level" not in line.lower()
-        ]
-        if not cleaned:
-            return "人声净化失败，但没有拿到明确的错误细节。"
-        return " | ".join(cleaned[-8:])[:500]
-
-
-    def _render_clean_voice_output(
-        self,
-        *,
-        cleaned_source_path: Path,
-        output_path: Path,
-        output_format: str,
-        ffmpeg_path: str,
-    ) -> None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        if output_format == "wav":
-            shutil.copy2(cleaned_source_path, output_path)
-            return
-        command = self._build_ffmpeg_command(
-            ffmpeg_path=ffmpeg_path,
-            source_path=cleaned_source_path,
-            output_path=output_path,
-            output_format=output_format,
-            bitrate="",
-            sample_rate=0,
-            channels=0,
-        )
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-        )
-        if completed.returncode != 0 or not output_path.exists():
-            error_text = (completed.stderr or completed.stdout or "ffmpeg 转换失败").strip()[:500]
-            raise RuntimeError(error_text)
-
     def _is_video_media_format(self, value: str) -> bool:
         return str(value or "").strip().lower().lstrip(".") in VIDEO_MEDIA_EXTENSIONS
-
-    def _build_basic_voice_clean_filter_chain(self, *, mode: str, post_filter: bool) -> list[str]:
-        filters: list[str] = ["highpass=f=70", "lowpass=f=12000"]
-        if mode == "denoise":
-            filters.append("afftdn=nr=18:nf=-28")
-        elif mode == "voice_focus":
-            filters.append("afftdn=nr=20:nf=-30")
-        elif mode in {"dereverb", "deecho"}:
-            filters.append("afftdn=nr=22:nf=-26")
-        else:
-            filters.append("afftdn=nr=18:nf=-28")
-        if post_filter:
-            filters.append("afftdn=nr=24:nf=-24")
-        return filters
 
     def _probe_media_duration(self, *, ffprobe_path: str, source_path: Path) -> float | None:
         return generated_files_media.probe_media_duration(ffprobe_path=ffprobe_path, source_path=source_path)
@@ -2444,42 +2240,6 @@ class GeneratedFileService:
             "oga": "ogg",
         }
         return aliases.get(text, text)
-
-    def _normalize_voice_clean_mode(self, value: Any) -> str:
-        text = str(value or "denoise").strip().lower()
-        aliases = {
-            "denoise": "denoise",
-            "noise": "denoise",
-            "remove_noise": "denoise",
-            "降噪": "denoise",
-            "去噪": "denoise",
-            "dereverb": "dereverb",
-            "reverb": "dereverb",
-            "去混响": "dereverb",
-            "deecho": "deecho",
-            "echo": "deecho",
-            "去回声": "deecho",
-            "voice_focus": "voice_focus",
-            "speech": "voice_focus",
-            "focus": "voice_focus",
-            "人声聚焦": "voice_focus",
-            "净化人声": "voice_focus",
-        }
-        return aliases.get(text, "denoise")
-
-    def _normalize_voice_clean_quality(self, value: Any) -> str:
-        text = str(value or "auto").strip().lower()
-        aliases = {
-            "auto": "auto",
-            "默认": "auto",
-            "ai": "ai",
-            "model": "ai",
-            "deepfilternet": "ai",
-            "basic": "basic",
-            "ffmpeg": "basic",
-            "基础": "basic",
-        }
-        return aliases.get(text, "auto")
 
     def _normalize_bitrate(self, value: Any) -> str:
         text = str(value or "").strip().lower().replace(" ", "")

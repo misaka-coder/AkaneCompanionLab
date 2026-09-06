@@ -1,9 +1,18 @@
-# Voice cleaning business runtime (migration slice A)
+# Voice cleaning plugin
 
-This is not yet a discoverable plugin or market entry. The old built-in remains
-the sole product entry until resource/Job/market integration and deletion are
-validated. This library contains the new recipe; do not add product callers to
-both implementations.
+The optional market plugin `akane.voice-clean` exposes
+`akane.voice-clean.run.v1` through the public SDK. The old built-in cleaning
+tool, status, command helpers and filter implementation are deleted. Current
+dataset `clean_first` calls the installed capability through normal permission
+admission; missing/disabled/not-admitted cleaning fails that source rather than
+claiming a cleaned dataset. Historical generated files remain readable.
+
+The descriptor owns native and legacy discovery. Only installation/activation
+makes it visible in QQ/desktop; it uses scoped resource handles and returns one
+managed artifact. Host Jobs, cancellation, terminal MemCore records and explicit
+`send_file` delivery remain host-owned. No new task queue or automatic playback
+is introduced. Build the repository static market with
+`python scripts/build_plugin_market.py`; installation remains explicit.
 
 The basic pipeline uses real FFmpeg high/low-pass and spectral denoising. It
 preserves `denoise`, `voice_focus`, `dereverb`, `deecho`, optional post-filter and
