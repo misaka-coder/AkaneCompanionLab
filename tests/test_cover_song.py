@@ -423,18 +423,12 @@ class CoverSongTests(unittest.TestCase):
             "dependencies": [{"api_name": "infer_change_voice", "inputs": [6], "outputs": []}],
         }
 
-        class FakeResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self):
-                return config
-
-        with patch("companion_v01.cover_song.requests.get", return_value=FakeResponse()) as request:
+        with patch.object(provider, "_request_json", return_value=config) as request, patch("time.monotonic", return_value=100.0):
             status = provider.capability_status()
 
         self.assertTrue(status["enabled"])
-        self.assertEqual(request.call_args.kwargs["timeout"], 2.0)
+        self.assertEqual(request.call_args.args, ("GET", "/config"))
+        self.assertEqual(request.call_args.kwargs["deadline"], 102.0)
 
     def test_qq_audio_delivery_mode_can_send_cover_as_voice(self) -> None:
         gateway = NapCatQQGateway()

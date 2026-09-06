@@ -1,5 +1,12 @@
 # Akane RVC 自动翻唱 V1
 
+> 2026-09-06 迁移注记：RVC 协议实现已移至
+> `plugins/akane_cover_song/src/akane_cover_song/rvc.py`，本文件的进程内锁、
+> 任意服务器路径读取与旧重试描述已被新库替换。现在使用跨进程锁、远端状态
+> 不明时的持久保护和受信输出目录；部署/恢复要求见该包 README。
+> `CoverSongService` 的编排尚在迁移窗口，完整状态见
+> `docs/optional_business_plugins_v2.md`，不表示市场翻唱插件已完成。
+
 本文档是 `cover_song` 的实现与续作基线。上下文压缩后，继续工作前先阅读本文档、`docs/audio_separation_tool_v1.md`、`companion_v01/generated_files.py`、`companion_v01/generated_files_media.py` 和 `companion_v01/tool_runtime.py`。
 
 ## 1. V1 目标
