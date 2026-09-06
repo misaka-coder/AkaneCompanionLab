@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -27,6 +29,20 @@ _TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 _PENDING_ID_PREFIX = "generated::generation-artifact:"
 _PENDING_HANDLE_PREFIX = "generation-artifact-"
 _MAX_METADATA_BYTES = 16 * 1024
+_handoff_cleanup: ContextVar[list | None] = ContextVar("artifact_handoff_cleanup", default=None)
+
+
+@contextmanager
+def artifact_handoff_scope():
+    """Unsent worker results never leave orphaned outbox files on cancellation."""
+    pending = []
+    token = _handoff_cleanup.set(pending)
+    try:
+        yield pending
+    finally:
+        _handoff_cleanup.reset(token)
+        for paths in pending:
+            _cleanup_paths(*paths)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +110,9 @@ class GenerationArtifactOutboxSink:
         finally:
             if not staged:
                 _cleanup_paths(metadata_temp, data_temp, metadata_path, data_path)
+        pending = _handoff_cleanup.get()
+        if pending is not None:
+            pending.append((metadata_path, data_path))
         return {
             "generated_id": f"{_PENDING_ID_PREFIX}{token}",
             "generated_handle": f"{_PENDING_HANDLE_PREFIX}{token}",

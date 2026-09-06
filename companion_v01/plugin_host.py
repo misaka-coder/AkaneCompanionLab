@@ -34,6 +34,7 @@ from .plugin_api import (
     EVENT_SUBSCRIBE_PERMISSION,
     HOOK_SUBSCRIBE_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
+    RESOURCE_READ_PERMISSION,
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
     PLUGIN_STORAGE_WRITE_PERMISSION,
@@ -69,6 +70,7 @@ from .plugin_managed_artifacts import (
     validate_managed_artifact_draft,
 )
 from .plugin_notifications import _NotificationDeliveryLedger, _PluginScopedNotificationPort
+from .plugin_resources import ResourceInvocation, ScopedPluginResourcePort, current_resource_invocation
 from .plugin_agent_events import _PluginScopedAgentEventPort
 from .plugin_qq_commands import PluginQQCommandBroker, _PluginCommandRegistration
 from .plugin_storage import PluginStorageService
@@ -248,6 +250,7 @@ class _StagedRegistrar(PluginRegistrar):
         self._adapters: list[CapabilityAdapter] = []
         self._sealed = False
         self._storage_dir: Path | None = None
+        self._resource_port: Any = None
         self._background_services: list[_BackgroundServiceRegistration] = []
         self._job_permission: bool = False
         self._notification_port: Any = None  # NotificationPort | None
@@ -346,6 +349,13 @@ class _StagedRegistrar(PluginRegistrar):
         if self._storage_dir is None:
             raise RuntimeError("storage_permission_required")
         return self._storage_dir
+
+    def get_resource_port(self) -> Any:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if self._resource_port is None:
+            raise RuntimeError("resource_read_permission_required")
+        return self._resource_port
 
     def get_notification_port(self) -> Any:
         if self._sealed:
@@ -511,6 +521,7 @@ class PluginHost:
             None if invoke_timeout_seconds is None else max(0.1, float(invoke_timeout_seconds))
         )
         self._managed_artifact_timeout_seconds = max(0.0, float(managed_artifact_timeout_seconds))
+        self._resource_provider: Any = None
         self._close_timeout_seconds = max(0.1, float(close_timeout_seconds))
         self._event_handler_timeout_seconds = max(0.01, float(event_handler_timeout_seconds))
         self._hook_handler_timeout_seconds = max(0.01, float(hook_handler_timeout_seconds))
@@ -723,6 +734,13 @@ class PluginHost:
         if not callable(getattr(sink, "materialize", None)):
             raise TypeError("invalid_managed_artifact_sink")
         self._managed_artifact_sink = sink
+
+    def bind_resource_provider(self, provider: Any) -> None:
+        if self._state != "created":
+            raise RuntimeError("plugin_host_already_started")
+        if not callable(getattr(provider, "open", None)):
+            raise TypeError("invalid_resource_provider")
+        self._resource_provider = provider
 
     def bind_plugin_storage_service(self, storage_service: PluginStorageService) -> None:
         """Bind the host-owned scoped storage service before restart-only startup.
@@ -1113,6 +1131,8 @@ class PluginHost:
             self._inflight_count += 1
             self._inflight_zero.clear()
 
+        resource_invocation = ResourceInvocation(registration.plugin_id, context)
+        resource_token = current_resource_invocation.set(resource_invocation)
         try:
             validation = validate_invocation_args(registration.descriptor, args)
             if not validation.ok:
@@ -1164,6 +1184,8 @@ class PluginHost:
                 context=context,
             )
         finally:
+            current_resource_invocation.reset(resource_token)
+            await resource_invocation.aclose()
             async with self._invoke_lock:
                 self._inflight_count = max(0, self._inflight_count - 1)
                 if self._inflight_count == 0:
@@ -1311,6 +1333,10 @@ class PluginHost:
                     raise _ActivationFailure("storage_dir_creation_failed") from None
                 registrar._set_storage_dir(plugin_data_dir)
             # Inject job permission flag if declared
+            if RESOURCE_READ_PERMISSION in manifest.permissions:
+                if self._resource_provider is None:
+                    raise _ActivationFailure("resource_provider_unavailable")
+                registrar._resource_port = ScopedPluginResourcePort(selection.plugin_id, self._resource_provider)
             if BACKGROUND_JOB_PERMISSION in manifest.permissions:
                 registrar._set_job_permission(True)
             # Inject notification port if declared and bound

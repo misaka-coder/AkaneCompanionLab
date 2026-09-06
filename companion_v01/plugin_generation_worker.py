@@ -14,11 +14,13 @@ from capcore import CapabilityResult
 from .instance_profile import PluginSelection
 from .plugin_api import AKANE_PLUGIN_ENTRYPOINT_GROUP
 from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
-from .plugin_generation_artifacts import GenerationArtifactOutboxSink
+from .plugin_generation_artifacts import GenerationArtifactOutboxSink, artifact_handoff_scope
 from .plugin_generation_callbacks import (
     GenerationAgentEventPort,
     GenerationNotificationPort,
+    GenerationResourceProvider,
 )
+from .plugin_resources import generation_request_id
 from .plugin_generation_codec import (
     PluginGenerationCodecError,
     capability_descriptor_to_wire,
@@ -133,21 +135,27 @@ async def _handle_request(
             ):
                 raise PluginGenerationCodecError("invocation_args_invalid")
             context = invocation_context_from_wire(request.get("context"))
-            result = await host.invoke(
-                str(request.get("capability_id") or ""),
-                dict(raw_args),
-                context=context,
-            )
-            emit_protocol_message(
-                protocol_stream,
-                {
-                    **base,
-                    "ok": True,
-                    "status": str(result.status or ""),
-                    "reason": str(result.reason or ""),
-                    "result": capability_result_to_wire(result),
-                },
-            )
+            resource_token = generation_request_id.set(request_id)
+            try:
+                with artifact_handoff_scope() as pending_artifacts:
+                    result = await host.invoke(
+                        str(request.get("capability_id") or ""),
+                        dict(raw_args),
+                        context=context,
+                    )
+                    emit_protocol_message(
+                        protocol_stream,
+                        {
+                            **base,
+                            "ok": True,
+                            "status": str(result.status or ""),
+                            "reason": str(result.reason or ""),
+                            "result": capability_result_to_wire(result),
+                        },
+                    )
+                    pending_artifacts.clear()
+            finally:
+                generation_request_id.reset(resource_token)
             return
         emit_protocol_message(
             protocol_stream,
@@ -314,6 +322,11 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
         host.bind_managed_artifact_sink(
             GenerationArtifactOutboxSink(work_dir / "outbox" / generation_id)
         )
+        host.bind_resource_provider(GenerationResourceProvider(
+            generation_id=generation_id,
+            emit=lambda payload: emit_protocol_message(protocol_stream, payload),
+            pending=callback_responses,
+        ))
         status = await host.start()
         plugin_status = next(
             (

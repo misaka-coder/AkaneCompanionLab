@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import mimetypes
 import re
 import stat
@@ -18,6 +17,7 @@ from capcore import CapabilityResult, InvocationContext
 
 from .generated_files import GeneratedFileService
 from .plugin_api import MAX_MANAGED_ARTIFACT_BYTES, ManagedArtifactDraft
+from .plugin_file_io import PluginFileCopyError, copy_file, run_cancellable_copy
 from .plugin_result_projection import project_capability_result
 
 
@@ -36,7 +36,6 @@ _KNOWN_FORMAT_MIME_TYPES: dict[str, frozenset[str]] = {
 }
 _FORMAT_RE = re.compile(r"^[a-z0-9]{1,16}$")
 _MIME_RE = re.compile(r"^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+(?:;[^\r\n]*)?$")
-_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 class ManagedArtifactError(RuntimeError):
@@ -60,36 +59,14 @@ class ValidatedArtifact:
         if self.path is None:
             target.write_bytes(self.data)
             return
-        copied = 0
-        with self.path.open("rb") as source, target.open("wb") as destination:
-            while chunk := source.read(_COPY_CHUNK_BYTES):
-                if cancelled is not None and cancelled.is_set():
-                    raise ManagedArtifactError("managed_artifact_copy_cancelled")
-                copied += len(chunk)
-                if copied > self.file_size:
-                    raise ManagedArtifactError("managed_artifact_source_changed")
-                destination.write(chunk)
-        if copied != self.file_size:
-            raise ManagedArtifactError("managed_artifact_source_changed")
+        try:
+            copy_file(self.path, target, expected_size=self.file_size, cancelled=cancelled or threading.Event())
+        except PluginFileCopyError as exc:
+            raise ManagedArtifactError(f"managed_artifact_{exc}") from None
 
     async def copy_to_async(self, target: Path) -> None:
         """Drain cancelled IO before callers remove its temporary files."""
-        cancelled = threading.Event()
-        task = asyncio.create_task(asyncio.to_thread(self.copy_to, target, cancelled=cancelled))
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled.set()
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            if not task.cancelled():
-                task.exception()
-            raise
+        await run_cancellable_copy(self.copy_to, target)
 
 
 class ManagedArtifactSink(Protocol):

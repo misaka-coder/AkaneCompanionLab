@@ -17,7 +17,11 @@ from .plugin_api import (
     PluginAgentEventResult,
     NotificationIntent,
     NotificationResult,
+    PluginResourceResult,
 )
+from pathlib import Path
+from capcore import InvocationContext
+from .plugin_resources import ResourceInvocation, generation_request_id
 from .plugin_generation_codec import (
     agent_event_request_from_wire,
     agent_event_request_to_wire,
@@ -54,6 +58,23 @@ class GenerationHostCallbackRouter:
         self._fallback_loop_ready = threading.Event()
         self._lock = threading.Lock()
         self._futures: dict[str, Any] = {}
+        self._resource_provider: Any = None
+        self._invocations: dict[str, ResourceInvocation] = {}
+
+    def bind_resource_provider(self, provider: Any) -> None:
+        if not callable(getattr(provider, "open", None)):
+            raise TypeError("invalid_resource_provider")
+        self._resource_provider = provider
+
+    def begin_invocation(self, request_id: str, *, plugin_id: str, context: InvocationContext) -> None:
+        with self._lock:
+            self._invocations[request_id] = ResourceInvocation(plugin_id, context)
+
+    async def finish_invocation(self, request_id: str) -> None:
+        with self._lock:
+            invocation = self._invocations.pop(request_id, None)
+        if invocation is not None:
+            await invocation.aclose()
 
     def bind_notification_port(self, port: Any) -> None:
         if not callable(getattr(port, "send", None)):
@@ -90,7 +111,36 @@ class GenerationHostCallbackRouter:
         if callback == "agent.event":
             self._dispatch_agent_event(callback_id, request)
             return
+        if callback == "resource.open":
+            with self._lock:
+                invocation = self._invocations.get(str(request.get("invocation_id") or ""))
+            if invocation is None or not invocation.active:
+                self._send_failure(callback_id, "resource_invocation_expired")
+                return
+            if self._resource_provider is None:
+                self._send_failure(callback_id, "resource_provider_unavailable")
+                return
+            self._schedule(
+                callback_id, self._open_resource(callback_id, request.get("target"), invocation),
+                loop=invocation.loop, unavailable_reason="resource_host_unavailable",
+            )
+            return
         self._send_failure(callback_id, "callback_protocol_invalid")
+
+    async def _open_resource(self, callback_id: str, target: Any, invocation: ResourceInvocation) -> None:
+        try:
+            result = await self._resource_provider.open(target, invocation=invocation)
+            if not isinstance(result, PluginResourceResult):
+                result = PluginResourceResult(False, "error", "resource_result_invalid")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            result = PluginResourceResult(False, "error", "resource_open_failed")
+        self._send_wire_result(callback_id, {
+            "ok": result.ok, "status": result.status, "reason": result.reason,
+            "path": str(result.path) if result.ok and result.path else "",
+            "handle": result.handle, "name": result.name, "file_size": result.file_size,
+        })
 
     def _dispatch_notification(
         self,
@@ -340,6 +390,52 @@ class GenerationHostCallbackRouter:
                     asyncio.gather(*pending, return_exceptions=True)
                 )
             loop.close()
+
+
+class GenerationResourceProvider:
+    """Private callback; request identity is set by the worker, not the plugin."""
+
+    def __init__(self, *, generation_id: str, emit: Callable, pending: dict) -> None:
+        self._generation_id = generation_id
+        self._emit = emit
+        self._pending = pending
+
+    async def open(self, target: str, *, invocation: ResourceInvocation) -> PluginResourceResult:
+        request_id = generation_request_id.get()
+        if not request_id or not invocation.active:
+            return PluginResourceResult(False, "rejected", "resource_invocation_required")
+        if not isinstance(target, str) or not target.strip() or len(target) > 512:
+            return PluginResourceResult(False, "rejected", "resource_target_invalid")
+        callback_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._pending[callback_id] = future
+        self._emit({
+            "protocol": PLUGIN_GENERATION_PROTOCOL, "type": "callback_request",
+            "generation_id": self._generation_id, "callback_id": callback_id,
+            "callback": "resource.open", "invocation_id": request_id, "target": target,
+        })
+        try:
+            response = await future
+        except asyncio.CancelledError:
+            self._emit({
+                "protocol": PLUGIN_GENERATION_PROTOCOL, "type": "callback_cancel",
+                "generation_id": self._generation_id, "callback_id": callback_id,
+            })
+            raise
+        finally:
+            self._pending.pop(callback_id, None)
+        if not response.get("ok"):
+            return PluginResourceResult(False, "error", str(response.get("reason") or "resource_callback_failed"))
+        result = response.get("result")
+        if not isinstance(result, Mapping) or not isinstance(result.get("ok"), bool):
+            return PluginResourceResult(False, "error", "resource_result_invalid")
+        if not result["ok"]:
+            return PluginResourceResult(False, str(result.get("status") or "error"), str(result.get("reason") or "resource_open_failed"))
+        path, size = result.get("path"), result.get("file_size")
+        if not isinstance(path, str) or not Path(path).is_absolute() or isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            return PluginResourceResult(False, "error", "resource_result_invalid")
+        return PluginResourceResult(True, "ready", path=Path(path), file_size=size,
+                                    handle=str(result.get("handle") or ""), name=str(result.get("name") or ""))
 
 
 class GenerationNotificationPort:

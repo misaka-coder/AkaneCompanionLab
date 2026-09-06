@@ -32,7 +32,11 @@ from companion_v01.plugin_managed_artifacts import (
     ManagedArtifactError,
     ValidatedArtifact,
 )
-from companion_v01.plugin_generation_artifacts import GenerationArtifactOutboxSink, consume_generation_artifact
+from companion_v01.plugin_generation_artifacts import (
+    GenerationArtifactOutboxSink,
+    consume_generation_artifact,
+    artifact_handoff_scope,
+)
 from companion_v01.plugin_generation import PluginGenerationProcess
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
 from companion_v01.routes.qq import _hydrate_plugin_managed_artifact_events
@@ -181,6 +185,23 @@ def _host_for(
 
 
 class PluginManagedArtifactTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unsent_worker_handoff_removes_already_staged_files_on_cancel(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sink = GenerationArtifactOutboxSink(root)
+            with self.assertRaises(asyncio.CancelledError):
+                with artifact_handoff_scope():
+                    await sink.materialize(
+                        ManagedArtifactDraft(
+                            data=b"content", title="report", output_format="md", mime_type="text/markdown"
+                        ),
+                        context=InvocationContext("user", "session", "web"),
+                        capability_id=CAPABILITY_ID,
+                    )
+                    self.assertEqual(len(list(root.iterdir())), 2)
+                    raise asyncio.CancelledError
+            self.assertEqual(list(root.iterdir()), [])
+
     async def test_api_v1_singular_constructor_is_only_a_tuple_adapter(self) -> None:
         draft = ManagedArtifactDraft(data=b"data", title="report", output_format="md", mime_type="text/markdown")
         payload = ManagedArtifactPayload(content={}, artifact=draft)

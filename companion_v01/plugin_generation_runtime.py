@@ -86,6 +86,9 @@ class PluginGenerationRuntime:
     def bind_managed_artifact_sink(self, sink: Any) -> None:
         self._builder.managed_artifact_sink = sink
 
+    def bind_resource_provider(self, provider: Any) -> None:
+        self._builder.resource_provider = provider
+
     def bind_notification_port(self, port: Any) -> None:
         self._builder.notification_port = port
 

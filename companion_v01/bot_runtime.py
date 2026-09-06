@@ -42,6 +42,7 @@ from .extension_management import (
     PluginSelectionStore,
 )
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
+from .plugin_resources import GeneratedFileResourceProvider
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_agent_events import HostAgentEventRouter
 from .plugin_api import PluginAgentEventRequest, PluginAgentEventResult, PluginExternalEvent
@@ -541,6 +542,9 @@ class BotRuntimeFactory:
                 plugin_runtime.bind_managed_artifact_sink(
                     GeneratedFileManagedArtifactSink(generated_file_service)
                 )
+                plugin_runtime.bind_resource_provider(GeneratedFileResourceProvider(
+                    generated_file_service, work_root=runtime_layout.run_dir / "plugin-inputs",
+                ))
 
             qq_gateway: NapCatQQGateway | None
             qq_followup_tasks: AsyncTaskSupervisor | None

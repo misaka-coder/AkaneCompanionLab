@@ -84,11 +84,16 @@ effects against explicitly declared permissions:
 - `network` -> `network.read`
 - `plugin_state` -> `storage.write`
 - generated-file output -> `artifact.write`
+- invocation-scoped attachment/generated-file work copies -> `resource.read`
 - `storage.write`
 - `job.run`
 - `notification.send`
 - `artifact.write`
 - `qq.command.register`
+
+The later optional-media migration adds `get_resource_port().open(target)`;
+its scope is bound by the host invocation, not supplied by plugin arguments.
+See `optional_media_plugin_migration_v1.md` for the file/lifetime contract.
 
 Future domain effects are not rejected merely because this document predates
 them; CapCore confirmation remains authoritative. This keeps permission

@@ -88,3 +88,27 @@
 - 成功多产物逐件进入原 `generated_file_ready` 事件；部分失败保留真实句柄，不自动宣称发送成功。此处的 QQ 传输验证为本地替身，不是实际群聊发送。
 - 回归：`tests.test_plugin_managed_artifacts tests.test_plugin_generation tests.test_plugin_host tests.test_plugin_engine_bridge tests.test_backend_route_modules tests.test_qq_gateway tests.test_generated_files`，340 项通过（追加末轮坏引用清理用例前）。
 - B/C/D 尚未完成；本切片不使媒体转换变成已安装插件，也不删除仍在服务的旧转换入口。
+
+### B — 当前调用输入资源
+
+- 公开契约为 manifest 的 `resource.read` 与 `registrar.get_resource_port()`；调用 `await resources.open(target)` 返回结构化 `ok/status/reason` 和仅供插件使用的工作副本。
+- 端口没有用户号/会话号参数。隔离 worker 自动绑定实际 request id，父进程在发送调用前登记可信 `InvocationContext`；过期回调和非调用上下文不具有读取范围。
+- `GeneratedFileService.resolve_input_resource` 仍是附件/生成文件解析的唯一权威；插件不导入这个服务，输入与输出只复用同一个可取消分块复制原语。
+- `result.path` 位于本次调用的临时目录，可在其目录创建本次输出并返回 `ManagedArtifactDraft(path=...)`；不可把这个临时路径返回为普通公开内容或保存为长期引用。宿主完成产物交接后清理整次调用目录。
+- 宿主取消等待 worker 的真实结束响应后再删除副本；复制取消先等线程退出。未交接的 worker outbox 文件也随取消清理，已发送响应的产物由父进程接管。
+- 本地测试覆盖真实隔离进程读取两种资源、跨用户/会话拒绝、未知句柄、权限缺失、过期调用、修改副本不影响原件、复制中取消、worker 取消后复用 generation。尚未以此完成真实媒体转换插件的安装与业务验收。
+- 回归：资源/产物/generation/candidate/runtime/host 共 81 项通过；Engine bridge 与 BotRuntime 共 34 项通过。`ruff check` 与 `git diff --check` 通过。
+
+插件使用示意（仅展示公共接口，完整例子随 C 提交）：
+
+```python
+def register(self, registrar):
+    self.resources = registrar.get_resource_port()
+    registrar.add_capability_adapter(self.adapter)
+
+async def invoke(self, capability_id, args, context):
+    source = await self.resources.open(args["target"])
+    if not source.ok:
+        return CapabilityResult(is_error=True, status=source.status, reason=source.reason)
+    # source.path 是可操作副本，不是原始附件缓存位置。
+```

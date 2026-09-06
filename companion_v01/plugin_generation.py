@@ -284,6 +284,11 @@ class PluginGenerationProcess:
             raise RuntimeError("plugin_generation_already_started")
         self._callback_router.bind_notification_port(port)
 
+    def bind_resource_provider(self, provider: Any) -> None:
+        if self._process is not None:
+            raise RuntimeError("plugin_generation_already_started")
+        self._callback_router.bind_resource_provider(provider)
+
     def bind_agent_event_port(self, port: Any) -> None:
         if self._process is not None:
             raise RuntimeError("plugin_generation_already_started")
@@ -644,28 +649,42 @@ class PluginGenerationProcess:
             wire_context = invocation_context_to_wire(context)
         except (TypeError, ValueError, PluginGenerationCodecError) as exc:
             raise PluginGenerationError("plugin_generation_invocation_invalid") from exc
-        request_id, response_queue = self._send_request(
-            "invoke",
-            {
-                "capability_id": str(capability_id or ""),
-                "args": wire_args,
-                "context": wire_context,
-            },
-        )
+        request_id = uuid.uuid4().hex
+        self._callback_router.begin_invocation(request_id, plugin_id=self.plugin_id, context=context)
+        try:
+            request_id, response_queue = self._send_request(
+                "invoke",
+                {
+                    "capability_id": str(capability_id or ""),
+                    "args": wire_args,
+                    "context": wire_context,
+                },
+                request_id=request_id,
+            )
+        except BaseException:
+            await self._callback_router.finish_invocation(request_id)
+            raise
+        response_task = asyncio.create_task(asyncio.to_thread(self._next_response, response_queue, None))
         try:
             try:
-                response = await asyncio.to_thread(
-                    self._next_response,
-                    response_queue,
-                    None,
-                )
+                response = await asyncio.shield(response_task)
             except asyncio.CancelledError:
-                self._discard_pending(request_id, response_queue)
-                try:
-                    response_queue.put_nowait(None)
-                except queue.Full:
-                    pass
                 self._send_cancel(request_id)
+                # Wait for the worker's actual terminal response before
+                # deleting input copies that a converter may still have open.
+                while not response_task.done():
+                    try:
+                        await asyncio.shield(response_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not response_task.cancelled() and response_task.exception() is None:
+                    cancelled_response = response_task.result()
+                    wire_result = cancelled_response.get("result", {})
+                    content = wire_result.get("content", {}) if isinstance(wire_result, Mapping) else {}
+                    if isinstance(content, Mapping):
+                        discard_generation_artifacts(self._artifact_outbox_dir, content.get("managed_artifacts"))
                 raise
             finally:
                 self._discard_pending(request_id, response_queue)
@@ -686,6 +705,7 @@ class PluginGenerationProcess:
                 context=context,
             )
         finally:
+            await self._callback_router.finish_invocation(request_id)
             self._finish_invocation()
 
     async def _materialize_generation_artifact(
@@ -807,9 +827,11 @@ class PluginGenerationProcess:
         self,
         command: str,
         extra: Mapping[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
     ) -> tuple[str, queue.Queue[dict[str, Any] | None]]:
         response_queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=1)
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         with self._write_lock:
             process = self._process
             if (

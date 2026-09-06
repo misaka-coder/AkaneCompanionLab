@@ -21,6 +21,7 @@ DIAGNOSTICS_INVOKE_PERMISSION = "diagnostics.invoke"
 CAPABILITY_PROMPT_INVOKE_PERMISSION = "capability.prompt.invoke"
 NETWORK_READ_PERMISSION = "network.read"
 MANAGED_ARTIFACT_WRITE_PERMISSION = "artifact.write"
+RESOURCE_READ_PERMISSION = "resource.read"
 PLUGIN_STORAGE_WRITE_PERMISSION = "storage.write"
 BACKGROUND_JOB_PERMISSION = "job.run"
 NOTIFICATION_SEND_PERMISSION = "notification.send"
@@ -141,6 +142,33 @@ class ManagedArtifactPayload:
             artifacts = (artifacts,)
         object.__setattr__(self, "content", content)
         object.__setattr__(self, "artifacts", artifacts if artifacts is not None else ())
+
+
+# ---------------------------------------------------------------------------
+# Invocation resource contracts
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PluginResourceResult:
+    """Private input work copy; valid only until the current invocation ends.
+
+    The source is resolved in the host-bound conversation, never one supplied
+    by the plugin. Do not return this object/path as public capability content.
+    """
+
+    ok: bool
+    status: str
+    reason: str = ""
+    path: Path | None = None
+    handle: str = ""
+    name: str = ""
+    file_size: int = 0
+
+
+class PluginResourcePort(Protocol):
+    async def open(self, target: str) -> PluginResourceResult:
+        """Copy one existing attachment/generated handle for this invocation."""
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +601,14 @@ class PluginQQCommandHandler(Protocol):
 class PluginRegistrar(Protocol):
     def add_capability_adapter(self, adapter: CapabilityAdapter) -> None: ...
 
+    def get_resource_port(self) -> PluginResourcePort:
+        """Capture the current-invocation resource port; requires resource.read.
+
+        Call open(target) while a capability runs. Background services and
+        completed invocations have no implicit conversation resource access.
+        """
+        ...
+
     def add_skill(self, skill_root: Path) -> None:
         """Register one read-only Skill package shipped by this plugin.
 
@@ -700,6 +736,9 @@ __all__ = [
     "AkanePlugin",
     "ManagedArtifactDraft",
     "ManagedArtifactPayload",
+    "RESOURCE_READ_PERMISSION",
+    "PluginResourcePort",
+    "PluginResourceResult",
     "NotificationIntent",
     "NotificationPort",
     "NotificationResult",
