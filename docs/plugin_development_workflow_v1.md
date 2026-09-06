@@ -62,6 +62,20 @@ Windows 子进程无控制台窗口。它不提供任务队列、权限审批、
 没有运行中 event loop 时直接运行；已有 loop 时在一个线程内运行并同步等到结束。
 它不创建后台 Job、不提前返回、不提供同步调用方取消协议；新异步插件直接 await。
 
+## 当前调用内组合已安装能力
+
+需要复用另一个插件的实际产物时，声明 `capability.invoke` 并在注册阶段捕获
+`registrar.get_capability_port()`，执行中 `await port.invoke(capability_id, arguments)`。
+返回真实 `CapabilityResult`：成功时 `content["artifacts"]` 为有序生成文件句柄，
+需要读文件时继续用 resource port。只能调用当前启用、当前渠道可见的插件产物能力，
+目标须声明布尔 `send_to_user`；内部调用强制为 false，不允许嵌套渠道投递。
+
+宿主复用目标的普通权限 admission 和 ExecutorBroker，不自动批准、不新建 Host Job。
+调用方不能指定身份；会话和调用链由宿主绑定，循环、超过四层或单次调用超过 32 个
+依赖请求会拒绝。后台服务/完成后调用无隐式会话权限。缺依赖/需要确认必须真实报告。
+取消会等依赖真正结束并清理；依赖已完成的独立产物可能保留，但不能在取消确认后迟到登记。
+依赖返回完成未确认等真实失败时必须向上传播，不能把它转成“已停止”。
+
 ## 真实闭环验收
 
 单个组件通过不代表插件可用。回归必须覆盖全新源码项目从 stage 到 install、active 和真实 capability/command/event/background 行为。运行时未尝试某个插件时不能将其报告为 activation_failed，目标插件没有进入候选 generation 时也不能报告安装成功。

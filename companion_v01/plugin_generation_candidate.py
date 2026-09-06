@@ -50,6 +50,7 @@ class PluginGenerationCandidateBuilder:
         process_factory: Callable[..., PluginGenerationEndpoint] = PluginGenerationProcess,
         managed_artifact_sink: Any = None,
         resource_provider: Any = None,
+        capability_provider: Any = None,
         notification_port: Any = None,
         agent_event_port: Any = None,
         plugin_storage_data_root: Path | None = None,
@@ -64,6 +65,7 @@ class PluginGenerationCandidateBuilder:
         self.process_factory = process_factory
         self.managed_artifact_sink = managed_artifact_sink
         self.resource_provider = resource_provider
+        self.capability_provider = capability_provider
         self.notification_port = notification_port
         self.agent_event_port = agent_event_port
         self.plugin_storage_data_root = (
@@ -181,6 +183,7 @@ class PluginGenerationCandidateBuilder:
         bindings = (
             ("bind_managed_artifact_sink", self.managed_artifact_sink),
             ("bind_resource_provider", self.resource_provider),
+            ("bind_capability_provider", self.capability_provider),
             ("bind_notification_port", self.notification_port),
             ("bind_agent_event_port", self.agent_event_port),
         )

@@ -290,6 +290,11 @@ class PluginGenerationProcess:
             raise RuntimeError("plugin_generation_already_started")
         self._callback_router.bind_resource_provider(provider)
 
+    def bind_capability_provider(self, provider: Any) -> None:
+        if self._process is not None:
+            raise RuntimeError("plugin_generation_already_started")
+        self._callback_router.bind_capability_provider(provider)
+
     def bind_agent_event_port(self, port: Any) -> None:
         if self._process is not None:
             raise RuntimeError("plugin_generation_already_started")
@@ -651,7 +656,10 @@ class PluginGenerationProcess:
         except (TypeError, ValueError, PluginGenerationCodecError) as exc:
             raise PluginGenerationError("plugin_generation_invocation_invalid") from exc
         request_id = uuid.uuid4().hex
-        self._callback_router.begin_invocation(request_id, plugin_id=self.plugin_id, context=context)
+        self._callback_router.begin_invocation(
+            request_id, plugin_id=self.plugin_id, context=context, capability_id=capability_id,
+            permissions=self._permissions,
+        )
         try:
             request_id, response_queue = self._send_request(
                 "invoke",

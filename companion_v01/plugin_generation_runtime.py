@@ -89,6 +89,9 @@ class PluginGenerationRuntime:
     def bind_resource_provider(self, provider: Any) -> None:
         self._builder.resource_provider = provider
 
+    def bind_capability_provider(self, provider: Any) -> None:
+        self._builder.capability_provider = provider
+
     def bind_notification_port(self, port: Any) -> None:
         self._builder.notification_port = port
 

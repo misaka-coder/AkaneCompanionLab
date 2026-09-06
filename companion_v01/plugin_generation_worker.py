@@ -16,6 +16,7 @@ from .plugin_api import AKANE_PLUGIN_ENTRYPOINT_GROUP
 from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from .plugin_generation_artifacts import GenerationArtifactOutboxSink, artifact_handoff_scope
 from .plugin_generation_callbacks import (
+    GenerationCapabilityProvider,
     GenerationAgentEventPort,
     GenerationNotificationPort,
     GenerationResourceProvider,
@@ -326,6 +327,11 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
             GenerationArtifactOutboxSink(work_dir / "outbox" / generation_id)
         )
         host.bind_resource_provider(GenerationResourceProvider(
+            generation_id=generation_id,
+            emit=lambda payload: emit_protocol_message(protocol_stream, payload),
+            pending=callback_responses,
+        ))
+        host.bind_capability_provider(GenerationCapabilityProvider(
             generation_id=generation_id,
             emit=lambda payload: emit_protocol_message(protocol_stream, payload),
             pending=callback_responses,

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from capcore import CapabilityAdapter, InvocationContext
+from capcore import CapabilityAdapter, CapabilityResult, InvocationContext
 
 
 AKANE_PLUGIN_API_VERSION = 1
@@ -22,6 +22,7 @@ CAPABILITY_PROMPT_INVOKE_PERMISSION = "capability.prompt.invoke"
 NETWORK_READ_PERMISSION = "network.read"
 MANAGED_ARTIFACT_WRITE_PERMISSION = "artifact.write"
 RESOURCE_READ_PERMISSION = "resource.read"
+CAPABILITY_INVOKE_PERMISSION = "capability.invoke"
 PLUGIN_STORAGE_WRITE_PERMISSION = "storage.write"
 BACKGROUND_JOB_PERMISSION = "job.run"
 NOTIFICATION_SEND_PERMISSION = "notification.send"
@@ -168,6 +169,21 @@ class PluginResourceResult:
 class PluginResourcePort(Protocol):
     async def open(self, target: str) -> PluginResourceResult:
         """Copy one existing attachment/generated handle for this invocation."""
+        ...
+
+
+class PluginCapabilityPort(Protocol):
+    async def invoke(self, capability_id: str, arguments: dict[str, Any]) -> CapabilityResult:
+        """Invoke an enabled artifact capability within the current conversation.
+
+        Requires capability.invoke. Ordinary target permissions still apply;
+        no auto-approval, extra Job or delivery. Targets must expose send_to_user,
+        which is false for this operation. Success content contains an ordered
+        `artifacts` list of existing generated handles; open them via resources.
+        No raw paths, identity override or background use. Cycles/depth/call
+        budgets are host-enforced. Cancellation waits for actual dependency
+        cleanup; a real failure after cancellation is returned, not hidden.
+        """
         ...
 
 
@@ -600,6 +616,10 @@ class PluginQQCommandHandler(Protocol):
 
 class PluginRegistrar(Protocol):
     def add_capability_adapter(self, adapter: CapabilityAdapter) -> None: ...
+
+    def get_capability_port(self) -> PluginCapabilityPort:
+        """Capture the invocation-scoped dependency port; requires capability.invoke."""
+        ...
 
     def get_resource_port(self) -> PluginResourcePort:
         """Capture the current-invocation resource port; requires resource.read.

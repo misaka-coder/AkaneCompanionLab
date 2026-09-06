@@ -18,9 +18,10 @@ from .plugin_api import (
     NotificationIntent,
     NotificationResult,
     PluginResourceResult,
+    CAPABILITY_INVOKE_PERMISSION,
 )
 from pathlib import Path
-from capcore import InvocationContext
+from capcore import CapabilityResult, InvocationContext
 from .plugin_resources import ResourceInvocation, generation_request_id
 from .plugin_generation_codec import (
     agent_event_request_from_wire,
@@ -32,7 +33,11 @@ from .plugin_generation_codec import (
     notification_intent_to_wire,
     notification_result_from_wire,
     notification_result_to_wire,
+    capability_result_to_wire,
+    capability_result_from_wire,
 )
+from .plugin_result_projection import sanitize_capability_result
+from .plugin_subprocess import drain
 from .plugin_generation_protocol import PLUGIN_GENERATION_PROTOCOL
 
 
@@ -59,6 +64,8 @@ class GenerationHostCallbackRouter:
         self._lock = threading.Lock()
         self._futures: dict[str, Any] = {}
         self._resource_provider: Any = None
+        self._capability_provider: Any = None
+        self._capability_callbacks: dict[str, dict] = {}
         self._invocations: dict[str, ResourceInvocation] = {}
 
     def bind_resource_provider(self, provider: Any) -> None:
@@ -66,9 +73,18 @@ class GenerationHostCallbackRouter:
             raise TypeError("invalid_resource_provider")
         self._resource_provider = provider
 
-    def begin_invocation(self, request_id: str, *, plugin_id: str, context: InvocationContext) -> None:
+    def bind_capability_provider(self, provider: Any) -> None:
+        if not callable(getattr(provider, "invoke", None)):
+            raise TypeError("invalid_capability_provider")
+        self._capability_provider = provider
+
+    def begin_invocation(self, request_id: str, *, plugin_id: str, context: InvocationContext,
+                         capability_id: str = "", permissions=()) -> None:
         with self._lock:
-            self._invocations[request_id] = ResourceInvocation(plugin_id, context)
+            self._invocations[request_id] = ResourceInvocation(
+                plugin_id, context, capability_id=capability_id,
+                can_invoke_capabilities=CAPABILITY_INVOKE_PERMISSION in permissions,
+            )
 
     async def finish_invocation(self, request_id: str) -> None:
         with self._lock:
@@ -125,7 +141,53 @@ class GenerationHostCallbackRouter:
                 loop=invocation.loop, unavailable_reason="resource_host_unavailable",
             )
             return
+        if callback == "capability.invoke":
+            with self._lock:
+                invocation = self._invocations.get(str(request.get("invocation_id") or ""))
+            if invocation is None or not invocation.active:
+                self._send_failure(callback_id, "capability_invocation_expired")
+                return
+            if not invocation.can_invoke_capabilities:
+                self._send_failure(callback_id, "capability_invoke_permission_required")
+                return
+            if self._capability_provider is None:
+                self._send_failure(callback_id, "capability_provider_unavailable")
+                return
+            with self._lock:
+                if callback_id in self._capability_callbacks:
+                    return
+                self._capability_callbacks[callback_id] = {"task": None, "cancelled": False}
+            self._schedule(callback_id, self._invoke_capability(callback_id, request, invocation),
+                           loop=invocation.loop, unavailable_reason="capability_host_unavailable")
+            return
         self._send_failure(callback_id, "callback_protocol_invalid")
+
+    async def _invoke_capability(self, callback_id, request, invocation):
+        task = asyncio.current_task()
+        invocation.pending.add(task)
+        with self._lock:
+            control = self._capability_callbacks[callback_id]
+            control["task"] = task
+            cancelled = control["cancelled"]
+        try:
+            if cancelled:
+                result = CapabilityResult(is_error=True, status="cancelled", reason="invocation_cancelled")
+            else:
+                result = await self._capability_provider.invoke(
+                    request.get("capability_id"), request.get("arguments"), invocation=invocation,
+                )
+                if not isinstance(result, CapabilityResult):
+                    result = CapabilityResult(is_error=True, status="error", reason="capability_dependency_result_invalid")
+        except asyncio.CancelledError:
+            result = CapabilityResult(is_error=True, status="cancelled", reason="invocation_cancelled")
+        except Exception:
+            result = CapabilityResult(is_error=True, status="error", reason="capability_dependency_failed")
+        try:
+            self._send_wire_result(callback_id, capability_result_to_wire(sanitize_capability_result(result)))
+        finally:
+            invocation.pending.discard(task)
+            with self._lock:
+                self._capability_callbacks.pop(callback_id, None)
 
     async def _open_resource(self, callback_id: str, target: Any, invocation: ResourceInvocation) -> None:
         try:
@@ -231,6 +293,13 @@ class GenerationHostCallbackRouter:
             return
         callback_id = str(request.get("callback_id") or "")
         with self._lock:
+            control = self._capability_callbacks.get(callback_id)
+            if control is not None:
+                control["cancelled"] = True
+                task = control["task"]
+                if task is not None:
+                    task.get_loop().call_soon_threadsafe(task.cancel)
+                return
             future = self._futures.get(callback_id)
         if future is not None:
             future.cancel()
@@ -390,6 +459,45 @@ class GenerationHostCallbackRouter:
                     asyncio.gather(*pending, return_exceptions=True)
                 )
             loop.close()
+
+
+class GenerationCapabilityProvider:
+    """Worker callback with cancellation acknowledgement, using the existing lane."""
+
+    def __init__(self, *, generation_id, emit, pending):
+        self._generation_id, self._emit, self._pending = generation_id, emit, pending
+
+    async def invoke(self, capability_id, arguments, *, invocation):
+        request_id = generation_request_id.get()
+        if not request_id or not invocation.active:
+            return CapabilityResult(is_error=True, status="rejected", reason="capability_invocation_required")
+        callback_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._pending[callback_id] = future
+        self._emit({
+            "protocol": PLUGIN_GENERATION_PROTOCOL, "type": "callback_request",
+            "generation_id": self._generation_id, "callback_id": callback_id,
+            "callback": "capability.invoke", "invocation_id": request_id,
+            "capability_id": capability_id, "arguments": arguments,
+        })
+        try:
+            try:
+                response = await asyncio.shield(future)
+            except asyncio.CancelledError:
+                self._emit({
+                    "protocol": PLUGIN_GENERATION_PROTOCOL, "type": "callback_cancel",
+                    "generation_id": self._generation_id, "callback_id": callback_id,
+                })
+                # Parent cancellation only acknowledges after the real target
+                # has drained. Do not abandon a reverse call still doing work.
+                response, _ = await drain(future)
+            if not response.get("ok"):
+                return CapabilityResult(is_error=True, status="error", reason=str(response.get("reason") or "capability_callback_failed"))
+            return capability_result_from_wire(response.get("result"))
+        except PluginGenerationCodecError:
+            return CapabilityResult(is_error=True, status="error", reason="capability_dependency_result_invalid")
+        finally:
+            self._pending.pop(callback_id, None)
 
 
 class GenerationResourceProvider:

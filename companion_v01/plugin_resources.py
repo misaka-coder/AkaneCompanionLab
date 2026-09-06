@@ -21,11 +21,13 @@ from capcore import InvocationContext
 
 from .plugin_api import PluginResourceResult
 from .plugin_file_io import PluginFileCopyError, copy_file, run_cancellable_copy
+from .plugin_subprocess import drain
 
 
 _logger = logging.getLogger(__name__)
 _SAFE_SUFFIX = re.compile(r"^\.[a-zA-Z0-9]{1,16}$")
 generation_request_id: ContextVar[str] = ContextVar("plugin_generation_request_id", default="")
+dependency_chain: ContextVar[tuple[str, ...]] = ContextVar("plugin_dependency_chain", default=())
 
 
 @dataclass(eq=False)
@@ -36,6 +38,10 @@ class ResourceInvocation:
     loop: asyncio.AbstractEventLoop = field(default_factory=asyncio.get_running_loop)
     temporary: tempfile.TemporaryDirectory | None = None
     pending: set[asyncio.Task] = field(default_factory=set)
+    capability_id: str = ""
+    can_invoke_capabilities: bool = False
+    dependency_chain: tuple[str, ...] = field(default_factory=dependency_chain.get)
+    dependency_calls: int = 0
 
     async def aclose(self) -> None:
         self.active = False
@@ -43,7 +49,7 @@ class ResourceInvocation:
         for task in pending:
             task.cancel()
         if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+            await drain(asyncio.ensure_future(asyncio.gather(*pending, return_exceptions=True)))
         if self.temporary is not None:
             try:
                 self.temporary.cleanup()
