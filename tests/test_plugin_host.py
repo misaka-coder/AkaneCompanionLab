@@ -422,6 +422,31 @@ class PluginHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(timed_out.is_error)
         self.assertEqual(timed_out.reason, "plugin_invoke_timeout")
 
+    async def test_activation_preserves_safe_dependency_reason_but_never_private_details(self) -> None:
+        for reason in ("ffmpeg_not_found", "", "C:/private/ffmpeg.exe failed"):
+
+            class UnavailableAdapter(FakeAdapter):
+                async def health(self):
+                    return HealthStatus(False, "unavailable", reason)
+
+            adapter = UnavailableAdapter()
+            host = _host(
+                (PluginSelection(PLUGIN_ID, True),),
+                entry_points_provider=lambda: (_entry_point_for(FakePlugin((adapter,))),),
+            )
+            try:
+                status = await host.start()
+                actual = status["plugins"][0]["reason"]
+                if reason == "ffmpeg_not_found":
+                    self.assertEqual(actual, reason)
+                else:
+                    self.assertNotIn("private", actual)
+                    self.assertTrue(actual)
+                self.assertEqual(host.capability_descriptors, {})
+                self.assertEqual(adapter.close_count, 1)
+            finally:
+                await host.stop()
+
     async def test_missing_enabled_plugin_degrades_without_removing_active_plugin(self) -> None:
         active_id = PLUGIN_ID
         missing_id = "akane.test.missing"

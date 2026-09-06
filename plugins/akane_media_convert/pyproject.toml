@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-media-convert"
+version = "0.1.0"
+description = "Optional Akane media conversion with scoped inputs and managed outputs"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.entry-points."akane.plugins.v1"]
+"akane.media-convert" = "akane_media_convert:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

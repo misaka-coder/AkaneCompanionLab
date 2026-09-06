@@ -1411,7 +1411,10 @@ class PluginHost:
                 if not isinstance(health, HealthStatus):
                     raise _ActivationFailure("invalid_plugin_health_result")
                 if not health.ok:
-                    raise _ActivationFailure("plugin_health_unavailable")
+                    safe_health = sanitize_capability_result(
+                        CapabilityResult(is_error=True, status="unavailable", reason=health.reason)
+                    )
+                    raise _ActivationFailure(safe_health.reason or "plugin_health_unavailable")
                 descriptors = await _bounded_adapter_call(
                     adapter.list_capabilities(),
                     timeout_seconds=self._activation_timeout_seconds,
