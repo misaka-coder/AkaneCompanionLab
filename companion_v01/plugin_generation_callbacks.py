@@ -19,6 +19,7 @@ from .plugin_api import (
     NotificationResult,
     PluginResourceResult,
     CAPABILITY_INVOKE_PERMISSION,
+    RESOURCE_READ_PERMISSION,
 )
 from pathlib import Path
 from capcore import CapabilityResult, InvocationContext
@@ -94,6 +95,7 @@ class GenerationHostCallbackRouter:
                 plugin_id, context, capability_id=capability_id,
                 can_invoke_capabilities=CAPABILITY_INVOKE_PERMISSION in permissions,
                 connection_names=permitted_connections(permissions),
+                can_read_resources=RESOURCE_READ_PERMISSION in permissions,
             )
 
     async def finish_invocation(self, request_id: str) -> None:
@@ -143,11 +145,15 @@ class GenerationHostCallbackRouter:
             if invocation is None or not invocation.active:
                 self._send_failure(callback_id, "resource_invocation_expired")
                 return
+            if not invocation.can_read_resources:
+                self._send_failure(callback_id, "resource_read_permission_required")
+                return
             if self._resource_provider is None:
                 self._send_failure(callback_id, "resource_provider_unavailable")
                 return
             self._schedule(
-                callback_id, self._open_resource(callback_id, request.get("target"), invocation),
+                callback_id, self._open_resource(callback_id, request.get("target"), invocation,
+                                                request.get("representation", "original")),
                 loop=invocation.loop, unavailable_reason="resource_host_unavailable",
             )
             return
@@ -230,11 +236,18 @@ class GenerationHostCallbackRouter:
             with self._lock:
                 self._capability_callbacks.pop(callback_id, None)
 
-    async def _open_resource(self, callback_id: str, target: Any, invocation: ResourceInvocation) -> None:
+    async def _open_resource(self, callback_id: str, target: Any, invocation: ResourceInvocation,
+                             representation: str = "original") -> None:
         try:
-            result = await self._resource_provider.open(target, invocation=invocation)
+            if representation not in ("original", "document"):
+                result = PluginResourceResult(False, "rejected", "resource_representation_invalid")
+            else:
+                options = {} if representation == "original" else {"representation": representation}
+                result = await self._resource_provider.open(target, invocation=invocation, **options)
             if not isinstance(result, PluginResourceResult):
                 result = PluginResourceResult(False, "error", "resource_result_invalid")
+            if result.ok and result.representation != representation:
+                result = PluginResourceResult(False, "error", "resource_representation_mismatch")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -243,6 +256,7 @@ class GenerationHostCallbackRouter:
             "ok": result.ok, "status": result.status, "reason": result.reason,
             "path": str(result.path) if result.ok and result.path else "",
             "handle": result.handle, "name": result.name, "file_size": result.file_size,
+            "representation": result.representation,
         })
 
     def _dispatch_notification(
@@ -580,12 +594,15 @@ class GenerationResourceProvider:
         self._emit = emit
         self._pending = pending
 
-    async def open(self, target: str, *, invocation: ResourceInvocation) -> PluginResourceResult:
+    async def open(self, target: str, *, invocation: ResourceInvocation,
+                   representation: str = "original") -> PluginResourceResult:
         request_id = generation_request_id.get()
         if not request_id or not invocation.active:
             return PluginResourceResult(False, "rejected", "resource_invocation_required")
         if not isinstance(target, str) or not target.strip() or len(target) > 512:
             return PluginResourceResult(False, "rejected", "resource_target_invalid")
+        if representation not in ("original", "document"):
+            return PluginResourceResult(False, "rejected", "resource_representation_invalid")
         callback_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._pending[callback_id] = future
@@ -593,6 +610,7 @@ class GenerationResourceProvider:
             "protocol": PLUGIN_GENERATION_PROTOCOL, "type": "callback_request",
             "generation_id": self._generation_id, "callback_id": callback_id,
             "callback": "resource.open", "invocation_id": request_id, "target": target,
+            "representation": representation,
         })
         try:
             response = await future
@@ -611,11 +629,14 @@ class GenerationResourceProvider:
             return PluginResourceResult(False, "error", "resource_result_invalid")
         if not result["ok"]:
             return PluginResourceResult(False, str(result.get("status") or "error"), str(result.get("reason") or "resource_open_failed"))
+        if result.get("representation", "original") != representation:
+            return PluginResourceResult(False, "error", "resource_representation_mismatch")
         path, size = result.get("path"), result.get("file_size")
         if not isinstance(path, str) or not Path(path).is_absolute() or isinstance(size, bool) or not isinstance(size, int) or size < 0:
             return PluginResourceResult(False, "error", "resource_result_invalid")
         return PluginResourceResult(True, "ready", path=Path(path), file_size=size,
-                                    handle=str(result.get("handle") or ""), name=str(result.get("name") or ""))
+                                    handle=str(result.get("handle") or ""), name=str(result.get("name") or ""),
+                                    representation=representation)
 
 
 class GenerationNotificationPort:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
+import sys
 import tempfile
 import textwrap
 import threading
@@ -25,6 +28,7 @@ from companion_v01.plugin_resources import (
     ScopedPluginResourcePort,
     current_resource_invocation,
 )
+from companion_v01.plugin_subprocess import PluginProcessRunner
 from companion_v01.store import MemoryStore
 
 
@@ -59,6 +63,7 @@ def write_resource_plugin(root: Path, *, permission: bool = True) -> Path:
                     visible_in=("diagnostics",), prompt_exposed=True, risk="low", confirm="never",
                     effects=("filesystem",), trigger=None,
                     inputs=(CapabilityIOSlot(name="target", kind="string", required=True),
+                            CapabilityIOSlot(name="representation", kind="string", required=False),
                             CapabilityIOSlot(name="delay", kind="integer", required=False)),
                     outputs=(CapabilityIOSlot(name="file", kind="file", required=True,
                                               max_bytes=32*1024*1024, delivery="generated_file"),), raw={},
@@ -72,13 +77,13 @@ def write_resource_plugin(root: Path, *, permission: bool = True) -> Path:
                     return CapabilityResult(is_error=False, status="ok", content=ManagedArtifactPayload(
                         content={"new_file": True}, artifacts=(ManagedArtifactDraft(path=output,
                             title="new-file", output_format="txt", mime_type="text/plain"),)))
-                result = await self.port.open(args["target"])
+                result = await self.port.open(args["target"], representation=args.get("representation", "original"))
                 if not result.ok:
                     return CapabilityResult(is_error=True, status=result.status, reason=result.reason)
                 digest = hashlib.sha256(result.path.read_bytes()).hexdigest()
                 await asyncio.sleep(args.get("delay", 0))
                 return CapabilityResult(is_error=False, status="ok", content=ManagedArtifactPayload(
-                    content={"digest": digest, "handle": result.handle},
+                    content={"digest": digest, "handle": result.handle, "representation": result.representation},
                     artifacts=(ManagedArtifactDraft(path=result.path, title="copied-input",
                                                    output_format="txt", mime_type="text/plain"),),
                 ))
@@ -132,6 +137,90 @@ def add_attachment(root, attachments):
 
 
 class ResourcePortTests(unittest.IsolatedAsyncioTestCase):
+    async def test_document_parser_cancellation_drains_real_child_and_partial_file(self):
+        runners = []
+
+        class SlowParser(PluginProcessRunner):
+            def __init__(self):
+                super().__init__()
+                runners.append(self)
+
+            async def run(self, argv, **options):
+                return await super().run([
+                    sys.executable, "-c",
+                    "from pathlib import Path; import sys,time; Path(sys.argv[1]).write_bytes(b'partial'); time.sleep(120)",
+                    argv[-1],
+                ], **options)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attachments, service = services(root)
+            source, item = add_attachment(root, attachments)
+            provider = GeneratedFileResourceProvider(service, work_root=root / "copies")
+            scope = ResourceInvocation(PLUGIN_ID, InvocationContext("owner", "session", "web"))
+            with patch("companion_v01.plugin_resources.PluginProcessRunner", SlowParser):
+                task = asyncio.create_task(provider.open(item["attachment_id"], representation="document", invocation=scope))
+                try:
+                    for _ in range(250):
+                        if list((root / "copies").glob("*/*.json")):
+                            break
+                        await asyncio.sleep(.02)
+                    self.assertTrue(list((root / "copies").glob("*/*.json")))
+                    child = next(iter(runners[0].processes))
+                    closing = asyncio.create_task(scope.aclose())
+                    await asyncio.sleep(0)
+                    task.cancel()
+                    await asyncio.wait_for(closing, 10)
+                    self.assertTrue(task.cancelled())
+                    self.assertIsNotNone(child.returncode)
+                    self.assertFalse(runners[0].processes)
+                    self.assertEqual(list((root / "copies").iterdir()), [])
+                    self.assertEqual(source.read_bytes(), b"original resource")
+                finally:
+                    await scope.aclose()
+
+    async def test_document_representation_real_worker_complete_content_and_scope(self):
+        from companion_v01.document_material import read_document_material
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, attachments, service = services(root)
+            source, item = add_attachment(root, attachments)
+            source.write_text("原文\n" * 12000 + "结尾保留 0 False\n", encoding="utf-8")
+            expected = json.dumps(read_document_material(source), ensure_ascii=False, allow_nan=False).encode("utf-8")
+            sink = GeneratedFileManagedArtifactSink(service)
+            context = InvocationContext("owner", "session", "web")
+            generated = await sink.materialize(
+                ManagedArtifactDraft(path=source, title="source", output_format="txt", mime_type="text/plain"),
+                context=context, capability_id="source",
+            )
+            generation = PluginGenerationProcess(
+                project_root=PROJECT_ROOT, site_dir=write_resource_plugin(root), plugin_id=PLUGIN_ID,
+                work_dir=root / "work",
+            )
+            generation.bind_resource_provider(GeneratedFileResourceProvider(service, work_root=root / "copies"))
+            generation.bind_managed_artifact_sink(sink)
+            await asyncio.to_thread(generation.start)
+            try:
+                for target in (item["attachment_id"], generated["generated_handle"]):
+                    result = await generation.invoke(CAPABILITY_ID, {"target": target, "representation": "document"}, context=context)
+                    self.assertFalse(result.is_error, result.reason)
+                    self.assertEqual(result.content["digest"], hashlib.sha256(expected).hexdigest())
+                    self.assertEqual(result.content["representation"], "document")
+                    self.assertNotIn(str(root), str(result.content))
+                    self.assertEqual(list((root / "copies").iterdir()), [])
+                    denied = await generation.invoke(CAPABILITY_ID, {"target": target, "representation": "document"},
+                                                     context=InvocationContext("owner", "other", "web"))
+                    self.assertEqual(denied.reason, "resource_not_found")
+                invalid = await generation.invoke(CAPABILITY_ID, {"target": item["attachment_id"], "representation": "preview"}, context=context)
+                self.assertEqual(invalid.reason, "resource_representation_invalid")
+                source.write_bytes(b"\x00unreadable")
+                failed = await generation.invoke(CAPABILITY_ID, {"target": item["attachment_id"], "representation": "document"}, context=context)
+                self.assertEqual(failed.reason, "document_text_invalid")
+                self.assertEqual(list((root / "copies").iterdir()), [])
+            finally:
+                await asyncio.to_thread(generation.stop)
+
     async def test_real_worker_large_input_free_file_and_cancellation_cleanup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -245,6 +334,8 @@ class ResourcePortTests(unittest.IsolatedAsyncioTestCase):
         router.dispatch(request)
         self.assertEqual(responses[-1]["reason"], "resource_invocation_expired")
         router.begin_invocation("unknown", plugin_id=PLUGIN_ID, context=InvocationContext("owner", "session", "web"))
+        router.dispatch(request)
+        self.assertEqual(responses[-1]["reason"], "resource_read_permission_required")
         await router.finish_invocation("unknown")
         router.dispatch(request)
         self.assertEqual(responses[-1]["reason"], "resource_invocation_expired")

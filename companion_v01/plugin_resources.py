@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import json
+import sys
 import tempfile
 import time
 import uuid
@@ -21,7 +23,7 @@ from capcore import InvocationContext
 
 from .plugin_api import PluginResourceResult
 from .plugin_file_io import PluginFileCopyError, copy_file, run_cancellable_copy
-from .plugin_subprocess import drain
+from .plugin_subprocess import PluginProcessRunner, drain
 
 
 _logger = logging.getLogger(__name__)
@@ -43,6 +45,7 @@ class ResourceInvocation:
     dependency_chain: tuple[str, ...] = field(default_factory=dependency_chain.get)
     dependency_calls: int = 0
     connection_names: tuple[str, ...] = ()
+    can_read_resources: bool = True
 
     async def aclose(self) -> None:
         self.active = False
@@ -80,16 +83,21 @@ class ScopedPluginResourcePort:
             invocation.temporary = tempfile.TemporaryDirectory(prefix="akane-plugin-work-")
         return Path(invocation.temporary.name)
 
-    async def open(self, target: str) -> PluginResourceResult:
+    async def open(self, target: str, *, representation: str = "original") -> PluginResourceResult:
         invocation = current_resource_invocation.get()
         if invocation is None or not invocation.active or invocation.plugin_id != self._plugin_id:
             return PluginResourceResult(False, "rejected", "resource_invocation_required")
         task = asyncio.current_task()
         invocation.pending.add(task)
         try:
-            result = await self._provider.open(target, invocation=invocation)
+            if representation not in ("original", "document"):
+                return PluginResourceResult(False, "rejected", "resource_representation_invalid")
+            options = {} if representation == "original" else {"representation": representation}
+            result = await self._provider.open(target, invocation=invocation, **options)
             if not isinstance(result, PluginResourceResult):
                 return PluginResourceResult(False, "error", "resource_result_invalid")
+            if result.ok and result.representation != representation:
+                return PluginResourceResult(False, "error", "resource_representation_mismatch")
             return result
         except asyncio.CancelledError:
             raise
@@ -108,7 +116,8 @@ class GeneratedFileResourceProvider:
         self._service = service
         self._work_root = Path(work_root).resolve()
 
-    async def open(self, target: str, *, invocation: ResourceInvocation) -> PluginResourceResult:
+    async def open(self, target: str, *, invocation: ResourceInvocation,
+                   representation: str = "original") -> PluginResourceResult:
         if not invocation.active:
             return PluginResourceResult(False, "rejected", "resource_invocation_expired")
         context = invocation.context
@@ -116,6 +125,8 @@ class GeneratedFileResourceProvider:
             return PluginResourceResult(False, "rejected", "resource_context_required")
         if not isinstance(target, str) or not target.strip() or len(target) > 512:
             return PluginResourceResult(False, "rejected", "resource_target_invalid")
+        if representation not in ("original", "document"):
+            return PluginResourceResult(False, "rejected", "resource_representation_invalid")
         task = asyncio.current_task()
         invocation.pending.add(task)
         destination = None
@@ -132,12 +143,20 @@ class GeneratedFileResourceProvider:
             if not source.is_file():
                 return PluginResourceResult(False, "not_found", "resource_unavailable")
             size = source.stat().st_size
+            if representation == "document" and size > 50_000_000:
+                return PluginResourceResult(False, "rejected", "document_source_too_large")
             if invocation.temporary is None:
                 self._work_root.mkdir(parents=True, exist_ok=True)
                 invocation.temporary = tempfile.TemporaryDirectory(prefix="input-", dir=self._work_root)
             suffix = source.suffix if _SAFE_SUFFIX.fullmatch(source.suffix) else ""
             destination = Path(invocation.temporary.name) / f"{uuid.uuid4().hex}{suffix}"
             await run_cancellable_copy(copy_file, source, destination, expected_size=size)
+            if representation == "document":
+                document = await self._document(destination)
+                destination.unlink(missing_ok=True)
+                if not document.ok:
+                    return document
+                destination, size = document.path, document.file_size
             if not invocation.active:
                 destination.unlink(missing_ok=True)
                 return PluginResourceResult(False, "rejected", "resource_invocation_expired")
@@ -148,6 +167,7 @@ class GeneratedFileResourceProvider:
                 handle=str(resource.get("handle") or target),
                 name=Path(str(resource.get("name") or source.name)).name,
                 file_size=size,
+                representation=representation,
             )
         except asyncio.CancelledError:
             if destination is not None:
@@ -162,3 +182,36 @@ class GeneratedFileResourceProvider:
             return PluginResourceResult(False, "error", "resource_copy_failed")
         finally:
             invocation.pending.discard(task)
+
+    async def _document(self, source: Path) -> PluginResourceResult:
+        """Bound parsing in an owned child; cancellation drains before cleanup."""
+        output = source.with_name(f"{uuid.uuid4().hex}.json")
+        runner = PluginProcessRunner()
+        keep_output = False
+        try:
+            code, wire = await runner.run(
+                [sys.executable, Path(__file__).with_name("document_material.py"), source, output],
+                capture=True, timeout=60,
+            )
+            try:
+                result = json.loads(wire)
+            except (ValueError, UnicodeError):
+                result = {}
+            if code or result != {"ok": True} or not output.is_file():
+                from .document_material import MATERIAL_REASONS
+                reason = result.get("reason") if isinstance(result, dict) else None
+                return PluginResourceResult(False, "error", reason if isinstance(reason, str) and reason in MATERIAL_REASONS
+                                            else "document_read_failed")
+            keep_output = True
+            return PluginResourceResult(True, "ready", path=output, file_size=output.stat().st_size,
+                                        representation="document")
+        except asyncio.TimeoutError:
+            return PluginResourceResult(False, "error", "document_read_timeout")
+        finally:
+            _, cancelled = await drain(asyncio.create_task(runner.aclose()))
+            # The invocation owns successful output; failed/cancelled workers
+            # can never publish a late file after this point.
+            if cancelled or not keep_output:
+                output.unlink(missing_ok=True)
+            if cancelled:
+                raise asyncio.CancelledError()

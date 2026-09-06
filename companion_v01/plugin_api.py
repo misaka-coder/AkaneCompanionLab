@@ -173,11 +173,23 @@ class PluginResourceResult:
     handle: str = ""
     name: str = ""
     file_size: int = 0
+    representation: str = "original"
 
 
 class PluginResourcePort(Protocol):
-    async def open(self, target: str) -> PluginResourceResult:
-        """Copy one existing attachment/generated handle for this invocation."""
+    async def open(self, target: str, *, representation: str = "original") -> PluginResourceResult:
+        """Copy one existing attachment/generated handle for this invocation.
+
+        original returns the unchanged bytes. document returns a private UTF-8
+        JSON file (schema akane.document-material.v1) produced by the host's
+        parser: source_format, blocks, complete, limitations. Blocks preserve
+        source order: text/paragraph(text), table(rows), sheet(name, rows), or
+        page(number, text). Cells retain JSON scalar types; formula/date cells
+        are tagged objects. No preview fallback or silent size truncation.
+        complete=False means unsupported content was detected: consumers must
+        not use that extraction as a complete replacement of the original.
+        Even complete=True describes content extraction, not layout fidelity.
+        """
         ...
 
     async def work_directory(self) -> Path:
