@@ -199,6 +199,23 @@
 - 仅构建仓库忽略目录内的市场索引；未替用户实例启用插件、未公网发布、未更改全局
   Python 或持久化环境设置。F 盘独立环境配置方式保留在包 README。
 
+### 文件转写 A：离线推理、格式与远端生命周期
+
+- 新建独立业务库 `plugins/akane_file_transcription`，当前还没有 entry point/市场条目；
+  旧文件转写入口仍是产品权威，临时窗口从净化完成提交 `a9a31b6` 起。
+  切换时需删除旧模型/预处理/转写/渲染/handler/spec，歌词时间轴与本机服务改薄绑定。
+- 本机缓存的 Whisper tiny 已实际离线加载，无新下载。真实 Windows Zira 语音合成
+  录音经 faster-whisper 识别，核对 hello world、speech recognition、字幕时间范围、
+  VAD 开关、视频音轨时长、静音/坏媒体拒绝、长语音重复取消后的实际进程退出。
+- 新进程仅读取已预处理 PCM，模型/cache/device/compute/language/VAD 都走真实调用。
+  cache 查找 local-only，并要求 tokenizer 文件存在以堵住 faster-whisper 自带在线
+  tokenizer fallback；离线变量只设置在该 ML 子进程，不修改宿主环境。
+- md/txt/json/srt/vtt 的单份及合并渲染由新库拥有。远端使用现有同步 ASR 协议，
+  分块上传、限制结果体，取消等待真实响应；连接丢失不冒充服务端已停止。
+  HTTP 测试使用明确 fixture 文本，不计作真实远端语音识别。实时语音产品入口不迁移。
+- 本切片 12 项全部通过（48.908 秒，无跳过），包括实际 CPU 推理/取消与真实本地 HTTP
+  传输；新包 ruff、格式和 diff 检查通过。尚不能把这组业务测试称为完成插件迁移。
+
 ## 最终交付与授权边界
 
 - 全部七项逐项关闭，才可完成整个目标。每项报告提交、真实命令/结果、用户能感受到的变化和仍未实测部分。
