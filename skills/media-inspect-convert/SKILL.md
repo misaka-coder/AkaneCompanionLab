@@ -21,7 +21,7 @@ This skill is only relevant when `exec_run` is actually offered in the current t
 
 - `exec_run` is not in this turn's tool list (Shell off). Use an installed media capability only if it is actually offered; otherwise report that conversion is unavailable.
 - An installed media capability already covers the request. Use that capability's schema instead of loading a second conversion recipe.
-- The task is transcription (`transcribe_media`), vocal separation (`separate_audio_stems`), voice cleaning (`clean_voice_track`), dataset slicing (`prepare_voice_dataset`), or voice-clone covers. Those stay on their own tools.
+- The task is transcription, vocal separation, voice cleaning, dataset slicing, or voice-clone covers. Use their currently available tools; do not assume an optional capability is installed.
 - A simple chat question with no actual media resource to operate on. Do not invent a command to "check" something that does not exist.
 
 ## Handle and resource rules

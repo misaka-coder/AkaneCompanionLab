@@ -10,7 +10,7 @@
 
 | 顺序 | 能力 | 当前权威与调用者 | 迁移边界 / 必须保留的行为 | 状态 |
 |---|---|---|---|---|
-| 1 | 分轨 | `generated_files_media.separate_audio_stems`、`GeneratedFileService`、工具 handler；独立 Demucs 函数还被两个本机 worker 脚本使用 | Demucs CPU/CUDA 与媒体执行服务的 Demucs/UVR 路径；两件真实产物；wav/flac/mp3；不把双声道拆分冒充分轨 | 待迁移 |
+| 1 | 分轨 | 原内置函数/handler/spec 已删除；插件为模型入口，脚本为包的薄绑定 | Demucs CPU/CUDA 与媒体服务 Demucs/UVR；两件产物；wav/flac/mp3；真实 CPU 已验收，GPU/UVR 真机未验收 | 已切换，见分轨 C |
 | 2 | 人声净化 | `generated_files_media.clean_voice_track` 与服务内 CLI、滤镜 helper | FFmpeg 基础处理、DeepFilterNet AI、auto 降级及真实后端说明；四种现有模式、post_filter、三种格式 | 待迁移 |
 | 3 | 文件转写 | `generated_files_media.transcribe_media`、本地模型 helper、媒体执行服务客户端 | 多输入、部分失败、合并/独立输出、md/txt/srt/vtt/json、时间戳、语言/VAD/模型选项；不迁移实时语音 ASR | 待迁移 |
 | 4 | 训练素材准备 | `generated_files_media.prepare_voice_dataset` 与 PCM 切片、分析、manifest helper | 原 profile/采样/切片规则、真实 WAV/ZIP/manifest、来源关联与质量统计；不扩展为模型训练 | 待迁移 |
@@ -18,7 +18,7 @@
 | 6 | 翻唱 | `cover_song.py`、`LocalRvcExecutorProvider`、Engine 绑定 | RVC WebUI 与本机服务、模型选择、分轨/推理/混音、现有缓存与交付语义；复用已迁移分轨权威 | 待迁移 |
 | 7 | 文档生成 | `GeneratedFileService`、`generated_files_io.py`、`generated_files_delivery.py` 及 compose/revise/style 调用链 | 创建、修订、已有 docx/xlsx 格式处理必须共同审计；txt/md/html/json/csv/xlsx/docx/pdf；不能只移 compose 而留下第二套渲染实现 | 待迁移 |
 
-`plugins/market.toml` 当前只有媒体转换条目。上述七项仍在 `tool_handlers/catalog.py` 中注册为内置能力；不能把已补齐的插件基础算成它们已经迁移。
+审计起点市场仅有媒体转换。分轨 C 后 `plugins/market.toml` 有转换和分轨两个条目；其余六项仍是内置能力，不能把插件基础算成它们已经迁移。
 
 ## 宿主与插件职责
 
@@ -104,6 +104,23 @@
 - `tests.test_audio_separation_plugin` 从复制源码构建真实 wheel 和私有静态市场目录，经暂存/权限确认/隔离激活进入真实 Engine 工具桥；验证 WAV/FLAC/MP3 双产物、跨会话拒绝、原件不变、临时副本清空、同源 native/兼容描述及 schema 稳定、坏模型候选保留旧代、停用/启用/卸载。
 - 分轨、既有转换及 generation/candidate/runtime 组合回归 37 项通过；最终源码测试 16 项全部通过，更新后的真实 wheel 完整安装/业务/生命周期用例再次通过（63.991 秒）。最后 UVR 中文模型名与非法控制字符检查后的远端 7 项再通过；`ruff`、格式和 diff 检查通过。以上回归有重叠，不相加宣称独立用例总数。
 - 用户市场索引尚不增加分轨条目，用户实例没有安装。下一切片必须处理旧配置/脚本绑定、完整 Job/渠道表现与旧实现删除，随后发布真实市场条目；不能把私有目录安装成功当成整个分轨迁移已经完成。
+
+### 分轨 C：旧入口删除、共享调用收口与产品执行验收
+
+- 删除宿主分轨业务函数、Demucs 推理/命令 fallback、专属状态/构造参数、handler/spec/固定提示、旧客户端分轨方法及专属卡片生成；历史生成文件仍可读取和发送，不迁移或删除用户文件。旧工具不会因附件出现而重新可见。
+- `MediaTools` 与 `LocalDemucs.separate_media` 统一 FFmpeg 预处理和独立推理；本机服务/兼容 CLI 改为薄绑定，保留独立 Python/package-root/FFmpeg 配置以及外部运行时不可用时的本机 fallback。真实模型加载决定 ready，不再使用 find_spec 假定可执行。
+- 歌词时间轴的隐藏 Demucs 调用/命令路径已删除，改为调用实际安装启用的分轨能力，复用普通权限 admission 和 ExecutorBroker。未安装、停用或未获许可时回退 mixed ASR，不自动安装或批准；人声文件直接转写、伴奏跳过的行为保留。ASR 临时文件只写到调用工作目录，原件旁边不再留下 prepared 文件。内部产物通过普通文件登记存在，不宣称仅是私有缓存。
+- 插件配置属于可选业务，原 `LOCAL_MEDIA_EXECUTOR_BASE_URL`、RVC 分离模型配置仍供 ASR/翻唱使用，不删除共享服务。原远端用户须把现有端点显式配置为进程环境 `AKANE_SEPARATION_REMOTE_URL`；不私下导入宿主 `.env`、不修改实例环境、不假定设置会自动传给 worker。市场条目与 README 写明迁移要求。
+- 从真实双条目市场构建 wheel、校验暂存/审批/隔离安装；默认不启用用户实例。桌宠/QQ 模式 prompt 与 native/兼容描述只随实际安装启停变化，普通调用不改变稳定 schema。源码市场已构建到忽略目录，未公网发布。
+- 真实长 Job 在前台迅速返回，成功登记两轨；同一调用不重复创建，跨用户不能取消；120 秒源音频真实预处理/推理后重复取消，无迟到登记。运行中停用先撤掉发现入口，再等待原调用取消清理，之后可重新启用。未知句柄得到 failed，不伪造成功。
+- 两件真实 MP3 产物分别经过既有 MemCore 终态幂等记录、send_file、桌面交付模块 smoke 与 OneBot 文件上传边界验证；默认 available-not-delivered，不自动播放两轨。OneBot 传输响应是测试替身，不是实际 QQ 发送；未声称桌宠真人点击/试听或 GPU 主观质量验收。
+- 真实 CPU 验证覆盖本地插件 WAV/FLAC/MP3、独立 CLI、同步服务绑定和 ASGI `/v1/audio/separate` 的实际 ZIP 两轨；两秒输入长度/声道正确、音轨互不相同、原件不变。远端客户端 Demucs/UVR、异常 ZIP、取消确认等使用真实 HTTP fixture；没有配置现成远端服务（只读配置探测 `configured=false`），不把这些 fixture 算作真实 UVR/GPU 推理。
+- 窗口状态：从 `276f2f7` 开始的旧分轨产品入口已关闭。`tests.test_optional_media_binding` 守卫宿主/脚本不再含旧入口、普通权限不被内部调用绕过、缺插件不执行 ML。仅内部歌词消费者保留稳定能力 ID 绑定，不把它加入稳定模型提示。
+- 已通过：旧入口删除相关组合回归 218 项；路由、generation/candidate/runtime、插件 Engine 桥、Host Job 组合 163 项；真实市场分轨/转换及市场协议组合 11 项；服务/CLI/真实 ASGI 分轨 5 项。各组有重叠，不相加当作独立总数。
+- 最终包内 19 项全部通过（55.830 秒，无跳过），含视频画面长于音轨、全流程超时、实际进程取消与坏 package-root。最新真实市场完整分轨用例再次通过（107.700 秒），含双模式发现/schema 稳定、Job 和运行中停用；时间轴/权限/原件保护聚焦 8 项通过。新增文件及包格式检查、相关 `ruff check`、Python 编译、`git diff --check` 均通过。
+- 桌面活动整组 28 项中 27 通过，1 项旧提示断言失败：`test_desktop_audio_capability_discourages_task_workspace_for_playback_control` 要求旧句子“不要为这些动作创建任务工作区或委派后台任务”。已核对该测试方法与 HEAD 完全一致，HEAD 宿主源码也不含此句；本次不补回无关提示来使断言变绿。时间轴相关行为与新权限/原件保护测试通过。此前记录的 MCP/策略基线失败也未混入修复。
+
+后续仍按顺序推进净化、文件转写、素材、生图、翻唱、文档；CPU 分轨代码切换不代表其余六项或 GPU/UVR 真机边界已经完成。
 
 ## 最终交付与授权边界
 

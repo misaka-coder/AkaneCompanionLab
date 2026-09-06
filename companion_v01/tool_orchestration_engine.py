@@ -49,7 +49,6 @@ _EXPLICIT_DELIVERY_TOOL_TYPES = frozenset(
         "compose_file",
         "revise_generated_file",
         "apply_style_to_existing_file",
-        "separate_audio_stems",
         "cover_song",
         "clean_voice_track",
         "transcribe_media",
@@ -59,7 +58,6 @@ _EXPLICIT_DELIVERY_TOOL_TYPES = frozenset(
 
 _DIRECT_MEDIA_TOOL_TYPES = frozenset(
     {
-        "separate_audio_stems",
         "cover_song",
         "clean_voice_track",
         "transcribe_media",

@@ -235,9 +235,9 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertEqual(handler.normalized_inputs, [{"type": "web_search", "query": "天气", "ignored": ""}])
 
     def test_generated_artifact_tools_defer_delivery_to_send_file_round(self) -> None:
-        separated = tool_orchestration_engine.defer_generated_artifact_delivery(
+        cleaned = tool_orchestration_engine.defer_generated_artifact_delivery(
             {
-                "type": "separate_audio_stems",
+                "type": "clean_voice_track",
                 "source_id": "audio_001",
                 "send_to_user": True,
             }
@@ -249,7 +249,7 @@ class ToolInvocationTests(unittest.TestCase):
             {"type": "send_file", "targets": ["gen_001", "gen_002"]}
         )
 
-        self.assertFalse(separated["send_to_user"])
+        self.assertFalse(cleaned["send_to_user"])
         self.assertEqual(cover["delivery"], "none")
         self.assertEqual(delivery["targets"], ["gen_001", "gen_002"])
 

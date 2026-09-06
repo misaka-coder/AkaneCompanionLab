@@ -173,11 +173,17 @@ def main() -> int:
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--model", choices=MODELS, default="htdemucs")
     parser.add_argument("--model-root", type=Path)
+    parser.add_argument("--package-root", type=Path)
     parser.add_argument("--source", type=Path)
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
     try:
+        if args.package_root is not None:
+            root = args.package_root.resolve()
+            if not (root / "demucs").is_dir():
+                raise SeparationError("demucs_package_root_invalid")
+            sys.path.insert(0, str(root))
         model = load_model(model_name=args.model, model_root=args.model_root)
         if args.probe:
             data = model_info(model)

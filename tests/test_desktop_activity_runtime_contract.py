@@ -469,8 +469,8 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
                 self.vocals_path = vocals_path
                 self.calls = []
 
-            def _separate_vocals_to_cache(self, *, source_path: Path, work_dir: Path):
-                return self.vocals_path
+            def _separate_vocals_to_cache(self, *, work_dir: Path, **_context):
+                return {"path": self.vocals_path}
 
             def _transcribe_audio_path(self, *, audio_path: Path, source: dict, ffmpeg_path: str, quality: str):
                 self.calls.append((audio_path.name, quality))
@@ -522,7 +522,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
                 self.calls = []
                 self.separation_called = False
 
-            def _separate_vocals_to_cache(self, *, source_path: Path, work_dir: Path):
+            def _separate_vocals_to_cache(self, *, work_dir: Path, **_context):
                 self.separation_called = True
                 return None
 
@@ -555,8 +555,8 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
                 self.vocals_path = vocals_path
                 self.calls = []
 
-            def _separate_vocals_to_cache(self, *, source_path: Path, work_dir: Path):
-                return self.vocals_path
+            def _separate_vocals_to_cache(self, *, work_dir: Path, **_context):
+                return {"path": self.vocals_path}
 
             def _transcribe_audio_path(self, *, audio_path: Path, source: dict, ffmpeg_path: str, quality: str):
                 self.calls.append((audio_path.name, quality))
@@ -591,7 +591,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
                 self.separation_called = False
                 self.transcribe_called = False
 
-            def _separate_vocals_to_cache(self, *, source_path: Path, work_dir: Path):
+            def _separate_vocals_to_cache(self, *, work_dir: Path, **_context):
                 self.separation_called = True
                 return None
 

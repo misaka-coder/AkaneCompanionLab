@@ -209,47 +209,6 @@ class LocalMediaExecutorClient:
                     )
         return output
 
-    def separate_audio_stems(
-        self,
-        *,
-        source_path: Path,
-        model: str = "htdemucs",
-        output_format: str = "wav",
-    ) -> tuple[bytes, bytes]:
-        normalized_format = str(output_format or "wav").strip().lower().lstrip(".")
-        if normalized_format not in {"wav", "flac", "mp3"}:
-            raise LocalMediaExecutorError(
-                "local_audio_separation_format_invalid",
-                "本地高质量分轨不支持这个输出格式。",
-            )
-        try:
-            with source_path.open("rb") as source_file:
-                response = self.session.post(
-                    f"{self.base_url}/v1/audio/separate",
-                    files={
-                        "file": (
-                            source_path.name,
-                            source_file,
-                            _audio_content_type(source_path.suffix),
-                        )
-                    },
-                    data={
-                        "model": str(model or "htdemucs"),
-                        "output_format": normalized_format,
-                    },
-                    timeout=self.timeout_seconds,
-                )
-        except Exception as exc:
-            raise LocalMediaExecutorError(
-                "local_audio_separation_unreachable",
-                "本地高质量分轨服务暂时无法连接。",
-            ) from exc
-        if not response.ok:
-            raise LocalMediaExecutorError(
-                _response_reason(response, "local_audio_separation_failed"),
-                _response_message(response, "本地高质量分轨没有成功。"),
-            )
-        return _read_stem_archive(response.content, output_format=normalized_format)
 
     def separate_rvc_vocals(
         self,

@@ -43,7 +43,6 @@ from ..capability_registry import (
     SEND_FILE_TOOL_SPEC,
     SEND_MUSIC_CARD_TOOL_SPEC,
     SEND_STICKER_TOOL_SPEC,
-    SEPARATE_AUDIO_STEMS_TOOL_SPEC,
     TRANSCRIBE_MEDIA_TOOL_SPEC,
     WEB_SEARCH_TOOL_SPEC,
 )
@@ -688,14 +687,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=3,
         input_schema=INSPECT_MEDIA_INFO_INPUT_SCHEMA,
     ),
-    "separate_audio_stems": ToolMetadata(
-        family="media_workbench",
-        operation="background",
-        risk="medium",
-        default_round_budget=4,
-        background=True,
-        requires_confirmation=True,
-    ),
     "cover_song": ToolMetadata(
         family="media_workbench",
         operation="background",
@@ -830,7 +821,6 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "send_music_card": SEND_MUSIC_CARD_TOOL_SPEC,
     "onebot_action": ONEBOT_ACTION_TOOL_SPEC,
     "inspect_media_info": INSPECT_MEDIA_INFO_TOOL_SPEC,
-    "separate_audio_stems": SEPARATE_AUDIO_STEMS_TOOL_SPEC,
     "clean_voice_track": CLEAN_VOICE_TRACK_TOOL_SPEC,
     "transcribe_media": TRANSCRIBE_MEDIA_TOOL_SPEC,
     "prepare_voice_dataset": PREPARE_VOICE_DATASET_TOOL_SPEC,

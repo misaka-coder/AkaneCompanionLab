@@ -199,7 +199,6 @@ DOCUMENT_WORKBENCH_TOOL_NAMES = (
 
 MEDIA_WORKBENCH_TOOL_NAMES = (
     "inspect_media_info",
-    "separate_audio_stems",
     "clean_voice_track",
     "transcribe_media",
     "prepare_voice_dataset",
@@ -1317,46 +1316,6 @@ INSPECT_MEDIA_INFO_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=4096,
 )
 
-SEPARATE_AUDIO_STEMS_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="separate_audio_stems",
-    display_name="Separate audio stems",
-    description=(
-        "把一个现有音频或带音轨视频拆成人声、伴奏两个独立文件。当前只支持人声/伴奏两轨，"
-        "一次成功结果应明确返回两个 gen_* 句柄。它只生成结果；用户要收到文件时，等结果返回后再用 send_file。"
-        "普通聊天交付默认 mp3；只有用户明确要无损或后续处理需要时才选 wav/flac。"
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "source_id": {
-                "type": "string",
-                "maxLength": 120,
-                "description": "来源音频/视频句柄，如 audio_*、file_*、gen_*。",
-            },
-            "output_format": {
-                "type": "string",
-                "enum": ["mp3", "wav", "flac"],
-                "description": "两个结果的格式；默认 mp3，wav/flac 体积会明显更大。",
-            },
-            "output_title": {
-                "type": "string",
-                "maxLength": 80,
-                "description": "可选基础标题，系统会分别加上人声/伴奏。",
-            },
-        },
-        "required": ["source_id"],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_create",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
-    execution_class="long_task",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
 CLEAN_VOICE_TRACK_TOOL_SPEC = CapabilityToolSpec(
     capability_id="clean_voice_track",
     display_name="Clean voice track",
@@ -2628,7 +2587,7 @@ class CapabilityRegistry:
                 layer="shared_media",
                 modes=CHAT_FILE_CLIENT_MODES,
                 tools=MEDIA_WORKBENCH_TOOL_NAMES,
-                light_hint="你可以使用当前可用的媒体工具转写、降噪、分离人声或切片打包训练素材；处理工具返回成果句柄后，再按用户要求调用 send_file 交付。",
+                light_hint="你可以使用当前可用的媒体工具处理素材；处理工具返回成果句柄后，再按用户要求调用 send_file 交付。",
                 trigger=_has_media_context,
                 latent_reason="当前会话和可见工作区里还没有可处理的音频或视频，因此没有展开媒体处理工具。",
                 activation_hint="用户上传音频/视频、提供可下载的公开媒体链接，或在桌宠的 Akane 工作区放入媒体文件后会自动开放；工作区文件可先登记为 handle。",

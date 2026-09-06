@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 
+from .media import MediaTools
 from .process import ProcessRunner
 
 
@@ -16,7 +19,7 @@ class LocalSeparationError(RuntimeError):
 
 
 class LocalDemucs:
-    def __init__(self, *, python=None, model="htdemucs", model_root=None, device="auto"):
+    def __init__(self, *, python=None, model="htdemucs", model_root=None, device="auto", package_root=None):
         if model not in ("htdemucs", "htdemucs_ft"):
             raise LocalSeparationError("separation_model_not_supported")
         if device not in ("auto", "cpu", "cuda"):
@@ -25,6 +28,9 @@ class LocalDemucs:
         self.model = model
         self.model_root = model_root or os.environ.get("AKANE_SEPARATION_MODEL_ROOT", "").strip()
         self.device = device
+        self.package_root = (
+            package_root if package_root is not None else os.environ.get("AKANE_SEPARATION_PACKAGE_ROOT", "").strip()
+        )
         self.runner = ProcessRunner()
 
     def command(self):
@@ -34,6 +40,8 @@ class LocalDemucs:
         args = [python, str(Path(__file__).with_name("worker.py")), "--model", self.model]
         if self.model_root:
             args.extend(("--model-root", str(self.model_root)))
+        if self.package_root:
+            args.extend(("--package-root", str(self.package_root)))
         return args
 
     async def _execute(self, *args, timeout):
@@ -48,6 +56,7 @@ class LocalDemucs:
             reason = result.get("reason")
             allowed = {
                 "demucs_runtime_incompatible",
+                "demucs_package_root_invalid",
                 "demucs_model_missing",
                 "demucs_model_unavailable",
                 "demucs_model_invalid",
@@ -73,3 +82,23 @@ class LocalDemucs:
 
     async def aclose(self):
         await self.runner.aclose()
+
+    async def separate_media(
+        self, *, source: Path, output_root: Path, model_info=None, timeout=1800, ffmpeg=None, ffprobe=None
+    ):
+        """Single preparation/inference path shared by SDK and service callers."""
+        media = MediaTools(ffmpeg=ffmpeg, ffprobe=ffprobe)
+        try:
+            async with asyncio.timeout(timeout):
+                info = model_info or await self.probe()
+                output_root.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix="prepared-", dir=output_root) as tmp:
+                    prepared = Path(tmp) / "input.wav"
+                    await media.encode(
+                        source, prepared, "wav", sample_rate=info["sample_rate"], channels=info["channels"]
+                    )
+                    input_media = await media.probe_audio(prepared)
+                    result = await self.separate(source=prepared, output_root=output_root)
+                    return {**result, "input_media": input_media}
+        finally:
+            await media.aclose()

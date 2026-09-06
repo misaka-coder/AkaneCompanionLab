@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from akane_audio_separation.local import LocalDemucs, LocalSeparationError
 from akane_audio_separation.process import ProcessRunner
+from akane_audio_separation.media import MediaTools, executable
 
 
 def write_input(path, *, seconds=2):
@@ -159,6 +160,15 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await runtime.aclose()
 
+    async def test_invalid_explicit_package_root_is_structured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = LocalDemucs(package_root=tmp)
+            try:
+                with self.assertRaisesRegex(LocalSeparationError, "^demucs_package_root_invalid$"):
+                    await runtime.probe()
+            finally:
+                await runtime.aclose()
+
 
 @unittest.skipUnless(importlib.util.find_spec("demucs") is not None, "Demucs runtime required")
 class RealDemucsTests(unittest.IsolatedAsyncioTestCase):
@@ -226,6 +236,54 @@ class RealDemucsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(LocalSeparationError, "separation_input_pcm_invalid"):
             await self.runtime.separate(source=source, output_root=self.root / "stems")
         self.assertFalse((self.root / "stems").exists())
+
+    async def test_media_pipeline_timeout_drains_ml_and_removes_prepared_file(self):
+        source = self.root / "long.wav"
+        write_input(source, seconds=120)
+        with self.assertRaises(asyncio.TimeoutError):
+            await self.runtime.separate_media(
+                source=source, output_root=self.root / "stems", model_info=self.info, timeout=4
+            )
+        self.assertFalse(self.runtime.runner.processes)
+        self.assertEqual(list((self.root / "stems").iterdir()), [])
+
+    async def test_video_with_longer_picture_uses_real_audio_duration(self):
+        source = self.root / "source.wav"
+        video = self.root / "source.mp4"
+        write_input(source)
+        code, _ = await self.runtime.runner.run(
+            [
+                executable("ffmpeg"),
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=32x32:r=10:d=4",
+                "-i",
+                str(source),
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "aac",
+                str(video),
+            ],
+            timeout=30,
+        )
+        self.assertEqual(code, 0)
+        before = video.read_bytes()
+        media = MediaTools()
+        try:
+            info = await media.probe_audio(video)
+            self.assertAlmostEqual(info["duration_seconds"], 2, delta=0.06)
+            result = await self.runtime.separate_media(
+                source=video, output_root=self.root / "stems", model_info=self.info
+            )
+        finally:
+            await media.aclose()
+        self.assertAlmostEqual(result["input_media"]["duration_seconds"], 2, delta=0.06)
+        self.assertAlmostEqual(audio(self.root / "stems/vocals.wav")[0][2] / 44100, 2, delta=0.06)
+        self.assertEqual(video.read_bytes(), before)
 
 
 if __name__ == "__main__":

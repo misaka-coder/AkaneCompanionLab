@@ -1026,7 +1026,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "read_attachment_section",
                     "apply_style_to_existing_file",
                     "inspect_media_info",
-                    "separate_audio_stems",
                     "clean_voice_track",
                     "transcribe_media",
                     "prepare_voice_dataset",
@@ -1208,7 +1207,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "revise_generated_file",
                     "apply_style_to_existing_file",
                     "inspect_media_info",
-                    "separate_audio_stems",
                     "clean_voice_track",
                     "transcribe_media",
                     "prepare_voice_dataset",
@@ -1259,7 +1257,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- sync_attachment_workspace", prompt)
             self.assertIn("\n- fetch_media_from_url", prompt)
             self.assertIn("\n- read_attachment_section", prompt)
-            self.assertIn("\n- separate_audio_stems", prompt)
+            self.assertNotIn("\n- separate_audio_stems", prompt)
             self.assertIn("\n- clean_voice_track", prompt)
             self.assertIn("\n- transcribe_media", prompt)
             self.assertIn("\n- prepare_voice_dataset", prompt)
@@ -1311,7 +1309,7 @@ class EngineExtensionTests(unittest.TestCase):
                     profile_user_id="master",
                     session_id="qq_pri_1",
                 ),
-                {"type": "separate_audio_stems"},
+                {"type": "separate_audio_stems", "source_id": media["attachment_handle"]},
             )
 
             self.engine.store.clear_attachment_inbox_items(
@@ -1368,7 +1366,6 @@ class EngineExtensionTests(unittest.TestCase):
             self.engine.capability_registry = CapabilityRegistry()
             media_tools = (
                 "inspect_media_info",
-                "separate_audio_stems",
                 "clean_voice_track",
                 "transcribe_media",
                 "prepare_voice_dataset",
@@ -1410,13 +1407,13 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("提取视频音频 →", prompt)
             self.assertIn("人声降噪", prompt)
             self.assertIn("clean_voice_track", prompt)
-            self.assertIn("人声伴奏分离", prompt)
-            self.assertIn("separate_audio_stems", prompt)
+            self.assertNotIn("人声伴奏分离 →", prompt)
+            self.assertNotIn("separate_audio_stems", prompt)
             self.assertIn("训练素材切片打包", prompt)
             self.assertIn("prepare_voice_dataset", prompt)
             self.assertIn("只要原文件不处理", prompt)
             self.assertIn("先读取当前规格", prompt)
-            self.assertIn("人声处理组合", prompt)
+            self.assertNotIn("人声处理组合", prompt)
             self.assertIn("send_file", prompt)
 
             desktop_prompt = self.engine._build_tool_prompt_context(

@@ -30,10 +30,12 @@ class DesktopMusicTimelineService:
         store: Any,
         generated_file_service: Any,
         background_tasks: Any | None = None,
+        vocal_preparer: Any | None = None,
     ) -> None:
         self.store = store
         self.generated_file_service = generated_file_service
         self.background_tasks = background_tasks
+        self.vocal_preparer = vocal_preparer
 
     def prepare_timeline(
         self,
@@ -221,7 +223,7 @@ class DesktopMusicTimelineService:
             error_message="",
         )
         try:
-            transcript = self._transcribe_source(source)
+            transcript = self._transcribe_source(source, profile_user_id=profile_user_id, session_id=session_id)
             if transcript.get("status") != "ready":
                 self._mark_timeline_failed(
                     profile_user_id=profile_user_id,
@@ -246,7 +248,9 @@ class DesktopMusicTimelineService:
                 error_message=str(exc)[:240],
             )
 
-    def _transcribe_source(self, source: dict[str, Any]) -> dict[str, Any]:
+    def _transcribe_source(
+        self, source: dict[str, Any], *, profile_user_id: str = "", session_id: str = ""
+    ) -> dict[str, Any]:
         if importlib.util.find_spec("faster_whisper") is None:
             return {"status": "failed", "error": "faster_whisper_not_found"}
         ffmpeg_path = shutil.which("ffmpeg")
@@ -259,6 +263,11 @@ class DesktopMusicTimelineService:
             if self._source_is_instrumental_stem(source):
                 return {"status": "failed", "error": "instrumental_has_no_lyrics", "segments": []}
 
+            # ASR prepares a sibling file; never write beside a managed original.
+            cached_source = work_dir / source_path.name
+            shutil.copy2(source_path, cached_source)
+            source_path = cached_source
+
             if self._source_is_vocal_stem(source):
                 return self._transcribe_audio_path(
                     audio_path=source_path,
@@ -267,7 +276,13 @@ class DesktopMusicTimelineService:
                     quality=TIMELINE_QUALITY_VOCAL,
                 )
 
-            vocals_path = self._separate_vocals_to_cache(source_path=source_path, work_dir=work_dir)
+            prepared = self._separate_vocals_to_cache(
+                work_dir=work_dir,
+                source_id=source.get("source_id", ""),
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            )
+            vocals_path = prepared.get("path")
             if vocals_path is not None:
                 transcript = self._transcribe_audio_path(
                     audio_path=vocals_path,
@@ -278,62 +293,34 @@ class DesktopMusicTimelineService:
                 if transcript.get("status") == "ready" and self._transcript_has_segments(transcript):
                     return transcript
 
-            return self._transcribe_audio_path(
+            transcript = self._transcribe_audio_path(
                 audio_path=source_path,
                 source=source,
                 ffmpeg_path=str(ffmpeg_path),
                 quality=TIMELINE_QUALITY_MIXED,
             )
+            return {**transcript, "separation_reason": prepared.get("reason", "vocal_asr_empty")}
 
-    def _separate_vocals_to_cache(self, *, source_path: Path, work_dir: Path) -> Path | None:
-        separation_output_dir = work_dir / "vocal_cache"
+    def _separate_vocals_to_cache(
+        self, *, work_dir: Path, source_id: str = "", profile_user_id: str = "", session_id: str = ""
+    ) -> dict[str, Any]:
+        if not callable(self.vocal_preparer):
+            return {"status": "unavailable", "reason": "separation_plugin_unavailable"}
         try:
-            if importlib.util.find_spec("demucs") is not None:
-                stems = self.generated_file_service._separate_audio_with_demucs_module(
-                    source_path=source_path,
-                    output_root=separation_output_dir,
-                )
-            else:
-                demucs_command = self.generated_file_service._resolve_demucs_command()
-                if demucs_command is None:
-                    return None
-                completed = self._run_demucs_command(
-                    demucs_command=demucs_command,
-                    source_path=source_path,
-                    output_root=separation_output_dir,
-                )
-                if not completed:
-                    return None
-                stems = self.generated_file_service._collect_demucs_stems(separation_output_dir)
-            vocals_path = stems.get("vocals")
-            if vocals_path and Path(vocals_path).exists():
-                return Path(vocals_path)
-        except Exception:
-            return None
-        return None
-
-    def _run_demucs_command(self, *, demucs_command: list[str], source_path: Path, output_root: Path) -> bool:
-        import subprocess
-
-        command = [
-            *demucs_command,
-            "--two-stems",
-            "vocals",
-            "-o",
-            str(output_root),
-            str(source_path),
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=1800,
-                check=False,
+            result = self.vocal_preparer(
+                profile_user_id=profile_user_id, session_id=session_id, source_id=source_id
             )
+            if result.get("status") != "ready":
+                return {
+                    "status": result.get("status", "failed"),
+                    "reason": result.get("reason", "separation_failed"),
+                }
+            path = Path(result["absolute_path"])
+            cached = work_dir / "vocals.wav"
+            shutil.copy2(path, cached)
+            return {"status": "ready", "path": cached}
         except Exception:
-            return False
-        return completed.returncode == 0
+            return {"status": "failed", "reason": "separation_vocal_cache_failed"}
 
     def _transcribe_audio_path(
         self,

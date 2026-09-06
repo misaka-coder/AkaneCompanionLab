@@ -48,7 +48,6 @@ TOOL_GROUPS: dict[str, str] = {
     "revise_generated_file": "documents",
     "apply_style_to_existing_file": "documents",
     "inspect_media_info": "media",
-    "separate_audio_stems": "audio",
     "cover_song": "audio",
     "clean_voice_track": "audio",
     "transcribe_media": "asr",

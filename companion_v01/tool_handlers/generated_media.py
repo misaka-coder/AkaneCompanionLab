@@ -418,118 +418,6 @@ def _generated_media_capability_status(
     return dict(status)
 
 
-class SeparateAudioStemsToolHandler(BaseToolHandler):
-    tool_type = "separate_audio_stems"
-
-    def __init__(self, *, generated_file_service) -> None:
-        self.generated_file_service = generated_file_service
-
-    def capability_status(self) -> dict[str, Any]:
-        getter = getattr(self.generated_file_service, "audio_separation_status", None)
-        if not callable(getter):
-            return {
-                "enabled": False,
-                "status": "missing_executor",
-                "reason": "audio_separation_executor_unavailable",
-            }
-        return dict(getter() or {})
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- separate_audio_stems：当用户想把一首歌、录音或带音轨视频拆成人声和伴奏两轨时使用。"
-            '格式为 {"type":"separate_audio_stems","source_id":"file_001|audio_001|gen_001",'
-            '"mode":"vocals_instrumental","output_format":"wav|flac|mp3",'
-            '"output_title":"输出标题","send_to_user":false}。'
-            "当前只支持 vocals_instrumental，也就是分离出人声（vocals）和伴奏（instrumental）两份结果。"
-            "用户没有指定格式时默认用 mp3，适合聊天交付；只有明确要无损或后续处理需要时才选 wav/flac。"
-            "这个工具负责拆轨，不负责后续精修。"
-            "如果来源是普通视频文件，系统会先尝试抽取音轨再分离。不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if str(value.get("type") or "").strip() != self.tool_type:
-            return None
-        source_id = str(
-            value.get("source_id") or value.get("source") or value.get("target") or value.get("attachment_id") or ""
-        ).strip()
-        if not source_id:
-            return None
-        return {
-            "type": self.tool_type,
-            "source_id": source_id[:120],
-            "mode": self._normalize_mode(value.get("mode") or value.get("separation_mode") or "vocals_instrumental"),
-            "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or "mp3"),
-            "output_title": str(value.get("output_title") or value.get("title") or "").strip()[:80],
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
-        }
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.generated_file_service.separate_audio_stems(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            source_target=str(call.get("source_id") or ""),
-            mode=str(call.get("mode") or "vocals_instrumental"),
-            output_format=str(call.get("output_format") or "mp3"),
-            output_title=str(call.get("output_title") or ""),
-            send_to_user=bool(call.get("send_to_user")),
-            timestamp=context.now_ts,
-        )
-        generated_files = result.get("generated_files") if isinstance(result, dict) else None
-        events: list[dict[str, Any]] = []
-        if isinstance(generated_files, list):
-            for generated in generated_files:
-                if not isinstance(generated, dict):
-                    continue
-                events.append(
-                    {
-                        "type": "generated_file_ready",
-                        "generated_file": generated,
-                        "send_to_user": bool(result.get("send_to_user")),
-                    }
-                )
-        return operation_tool_result(
-            tool_type=self.tool_type,
-            operation_result=result,
-            success_events=events,
-        )
-
-    def _normalize_mode(self, value: Any) -> str:
-        text = str(value or "vocals_instrumental").strip().lower()
-        aliases = {
-            "vocals": "vocals_instrumental",
-            "vocals+instrumental": "vocals_instrumental",
-            "vocals_instrumental": "vocals_instrumental",
-            "voice_music": "vocals_instrumental",
-            "voice_and_music": "vocals_instrumental",
-            "人声伴奏": "vocals_instrumental",
-            "人声_伴奏": "vocals_instrumental",
-        }
-        return aliases.get(text, "vocals_instrumental")
-
-    def _normalize_output_format(self, value: Any) -> str:
-        text = str(value or "mp3").strip().lower().lstrip(".")
-        aliases = {
-            "wave": "wav",
-            "waveform": "wav",
-            "mpeg3": "mp3",
-        }
-        return aliases.get(text, text)
-
-    def _coerce_bool(self, value: Any, *, default: bool) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        text = str(value).strip().lower()
-        if text in {"1", "true", "yes", "y", "on", "发送", "发给用户"}:
-            return True
-        if text in {"0", "false", "no", "n", "off", "不发送", "仅生成"}:
-            return False
-        return default
-
-
 class CoverSongToolHandler(BaseToolHandler):
     tool_type = "cover_song"
 
@@ -550,7 +438,7 @@ class CoverSongToolHandler(BaseToolHandler):
             '"index_rate":0.6,"filter_radius":3,"rms_mix_rate":0.25,"protect":0.33,'
             '"vocal_gain_db":0,"instrumental_gain_db":-1,"output_format":"mp3|flac|wav",'
             '"delivery":"auto|voice|file|both|none","force_rebuild":false}。'
-            "它会自动做人声/伴奏分离、RVC 音色转换和重新混音；不要先手工调用 separate_audio_stems，除非用户只想要分轨。"
+            "它会自动做人声/伴奏分离、RVC 音色转换和重新混音，无需提前手工拆轨。"
             "没有明确音域证据时 pitch_shift 保持 0，不要只根据男女声标签强制升降八度。"
             "delivery=auto 在 QQ 中会优先作为语音发送，其他客户端保留普通生成文件交付；完整高质量结果始终进入生成区。"
             "如果没有 source_id，只有在用户明确点播此前已翻唱歌曲时才用 song_title 查缓存；缓存不存在时应告诉用户需要歌曲材料。"
@@ -821,7 +709,7 @@ class TranscribeMediaToolHandler(BaseToolHandler):
             '"vad_filter":true,"send_to_user":false}。'
             "V1 支持批量来源：merge_outputs=true 会生成一份合并转写稿；merge_outputs=false 会每个来源各生成一份。"
             "如果用户要字幕文件，优先用 srt 或 vtt；如果要后续总结、会议纪要、内容梳理，优先用 md 并保留时间戳。"
-            "音频较吵、歌曲伴奏很重或人声不清时，可先调用 separate_audio_stems / clean_voice_track，再对生成的人声结果调用 transcribe_media。"
+            "音频较吵、歌曲伴奏很重或人声不清时，可先使用当前已提供的音频处理工具，再转写处理结果。"
             "用户没有明确指定模型大小时保持 model_size=auto，沿用当前执行器的质量配置。"
             "这个工具负责转写，不负责总结；转写完成后如果用户要总结内容，再基于生成的转写稿继续用 compose_file。"
             "如果用户只要原视频/原音频，不要为了回复而转写；直接发送原文件即可。"
@@ -1003,7 +891,7 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
             '"silence_threshold_db":-40,"min_silence_ms":300,"max_silence_kept_ms":300,'
             '"clean_first":false,"normalize_volume":false,"send_to_user":false}。'
             "这个工具会把多个来源统一成训练用 wav、按停顿切片、生成 manifest.json 和 zip 批次；摘要会列出过短、过长、音量偏低、可能爆音等片段文件名，方便后续和用户一起筛。"
-            "它适合处理已经分离/净化后的人声轨，也可以直接处理普通语音音频或带音轨视频；如果用户还没做人声分离/净化，且需要更干净素材，可先调用 separate_audio_stems 或 clean_voice_track。"
+            "它适合处理已经分离/净化后的人声轨，也可以直接处理普通语音音频或带音轨视频；需要更干净素材时，可先使用当前已提供的音频处理工具。"
             "训练素材任务可按当前实际可用工具分步组合；不要把人声处理和切片打包用于只要原文件的请求。"
             "用户没指定细节时，profile=gpt_sovits 就够了，不要硬填一堆参数。"
         )

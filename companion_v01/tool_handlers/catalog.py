@@ -37,7 +37,6 @@ from .generated_media import (
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     SendStickerToolHandler,
-    SeparateAudioStemsToolHandler,
     TranscribeMediaToolHandler,
 )
 from .memory import (
@@ -142,9 +141,6 @@ def build_builtin_tool_handlers(
             generated_file_service=generated_file_service
         ),
         "inspect_media_info": InspectMediaInfoToolHandler(
-            generated_file_service=generated_file_service
-        ),
-        "separate_audio_stems": SeparateAudioStemsToolHandler(
             generated_file_service=generated_file_service
         ),
         "clean_voice_track": CleanVoiceTrackToolHandler(

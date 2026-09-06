@@ -16,7 +16,6 @@ from companion_v01.capability_registry import (
     RETRIEVE_MEMORY_TOOL_SPEC,
 )
 from companion_v01.generated_files import GeneratedFileService
-from companion_v01.generated_files_media import separate_audio_stems as separate_audio_stems_service
 from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, build_openai_native_tool_specs
 from companion_v01.tool_orchestration_engine import native_legacy_prompt_exclusions
 from companion_v01.tool_runtime import (
@@ -27,7 +26,6 @@ from companion_v01.tool_runtime import (
     PrepareVoiceDatasetToolHandler,
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
-    SeparateAudioStemsToolHandler,
     TOOL_METADATA_BY_TYPE,
     TOOL_SPEC_BY_TYPE,
     TranscribeMediaToolHandler,
@@ -135,8 +133,9 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 50)
+        self.assertEqual(len(handlers), 49)
         self.assertNotIn("convert_media_file", handlers)
+        self.assertNotIn("separate_audio_stems", handlers)
         self.assertEqual(missing, [])
 
     def test_retired_tools_are_absent_and_sticker_has_one_exact_contract(self) -> None:
@@ -442,33 +441,9 @@ class NativeToolSchemaTests(unittest.TestCase):
             self.assertNotIn("tool_call", native["description"])
 
     def test_media_native_specs_match_handlers_and_do_not_silently_drop_primary_options(self) -> None:
-        separate = SeparateAudioStemsToolHandler(generated_file_service=None)
         clean = CleanVoiceTrackToolHandler(generated_file_service=None)
         transcribe = TranscribeMediaToolHandler(generated_file_service=None)
         dataset = PrepareVoiceDatasetToolHandler(generated_file_service=None)
-
-        default_separation = separate.normalize_call(
-            {"type": "separate_audio_stems", "source_id": "audio_001"}
-        )
-        self.assertEqual(default_separation["output_format"], "mp3")
-        self.assertEqual(
-            inspect.signature(GeneratedFileService.separate_audio_stems).parameters["output_format"].default,
-            "mp3",
-        )
-        self.assertEqual(
-            inspect.signature(separate_audio_stems_service).parameters["output_format"].default,
-            "mp3",
-        )
-        separation_call = separate.normalize_call(
-            {
-                "type": "separate_audio_stems",
-                "source_id": "audio_001",
-                "output_format": "flac",
-                "output_title": "幻听",
-            }
-        )
-        self.assertEqual(separation_call["output_format"], "flac")
-        self.assertEqual(separation_call["output_title"], "幻听")
 
         clean_call = clean.normalize_call(
             {
@@ -526,7 +501,6 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertTrue(dataset_call["clean_first"])
 
         expected_properties = {
-            "separate_audio_stems": {"source_id", "output_format", "output_title"},
             "clean_voice_track": {
                 "source_id",
                 "mode",
@@ -561,7 +535,6 @@ class NativeToolSchemaTests(unittest.TestCase):
             },
         }
         handlers = {
-            "separate_audio_stems": separate,
             "clean_voice_track": clean,
             "transcribe_media": transcribe,
             "prepare_voice_dataset": dataset,

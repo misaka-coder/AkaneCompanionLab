@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import io
 import json
 import os
@@ -22,6 +21,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
+from scripts.akane_separation_package import local_demucs_class, run_completed
+
 from companion_v01.cover_song import CoverSongError, RvcWebUiProvider
 from companion_v01.generated_files_media import (
     load_faster_whisper_model,
@@ -30,7 +31,6 @@ from companion_v01.generated_files_media import (
     normalize_whisper_device,
     normalize_whisper_model_size,
     prepare_transcription_input,
-    separate_audio_with_demucs,
 )
 from companion_v01.local_media_executor import safe_model_fingerprint, safe_uploaded_suffix
 
@@ -41,134 +41,86 @@ DEFAULT_PORT = 9879
 
 
 class LocalDemucsRuntime:
-    def __init__(
-        self,
-        *,
-        python_path: Path | None,
-        package_root: Path | None,
-    ) -> None:
-        self.python_path = Path(python_path).resolve() if python_path else None
-        self.package_root = Path(package_root).resolve() if package_root else None
-        self.worker_path = (PROJECT_ROOT / "scripts" / "akane_demucs_worker.py").resolve()
-        self._external_status = self._probe_external()
-        self._in_process_ready = importlib.util.find_spec("demucs") is not None
+    """Legacy service shape over the optional package's sole ML implementation."""
+
+    def __init__(self, *, python_path: Path | None, package_root: Path | None, ffmpeg_path: Path | None = None) -> None:
+        self.python_path = python_path
+        self.package_root = package_root
+        self.ffmpeg_path = ffmpeg_path
+        self._runtime_class = None
+        self._status = {"ok": False, "reason": "separation_package_missing"}
+        try:
+            self._runtime_class = local_demucs_class()
+            self._status = run_completed(self._probe)
+            if not self._status.get("ok") and (python_path or package_root):
+                external_reason = self._status.get("reason", "demucs_probe_failed")
+                self.python_path, self.package_root = None, None
+                self._status = run_completed(self._probe)
+                self._status["fallback_reason"] = external_reason
+        except Exception:
+            self._status = {"ok": False, "reason": "separation_package_unavailable"}
+
+    def _runtime(self, model="htdemucs"):
+        return self._runtime_class(
+            python=self.python_path or sys.executable,
+            package_root=self.package_root or "",
+            model=model,
+        )
+
+    async def _probe(self):
+        runtime = self._runtime()
+        try:
+            return await runtime.probe()
+        except RuntimeError as exc:
+            return {"ok": False, "reason": str(exc)}
+        except Exception:
+            return {"ok": False, "reason": "demucs_probe_failed"}
+        finally:
+            await runtime.aclose()
 
     @property
     def ready(self) -> bool:
-        return bool(self._external_status.get("ok")) or self._in_process_ready
+        return bool(self._status.get("ok"))
 
     def public_status(self) -> dict[str, Any]:
-        if bool(self._external_status.get("ok")):
-            cuda_ready = bool(self._external_status.get("cuda_available"))
-            return {
-                "ready": True,
-                "reason": "",
-                "provider": "demucs",
-                "model": "htdemucs",
-                "executor": "isolated_cuda" if cuda_ready else "isolated_cpu",
-                "device": "cuda" if cuda_ready else "cpu",
-                "device_name": str(self._external_status.get("device") or ""),
-            }
-        if self._in_process_ready:
-            return {
-                "ready": True,
-                "reason": "",
-                "provider": "demucs",
-                "model": "htdemucs",
-                "executor": "in_process",
-                "device": "cuda" if _in_process_cuda_available() else "cpu",
-                "device_name": "",
-            }
+        cuda = bool(self._status.get("cuda_available"))
         return {
-            "ready": False,
-            "reason": str(self._external_status.get("reason") or "demucs_not_found"),
-            "provider": "",
-            "model": "",
-            "executor": "",
-            "device": "",
+            "ready": self.ready,
+            "reason": "" if self.ready else self._status.get("reason", "demucs_not_found"),
+            "provider": "demucs" if self.ready else "",
+            "model": "htdemucs" if self.ready else "",
+            "executor": ("isolated_cuda" if cuda else "isolated_cpu") if self.ready else "",
+            "device": ("cuda" if cuda else "cpu") if self.ready else "",
             "device_name": "",
+            "fallback_reason": self._status.get("fallback_reason", ""),
         }
 
     def separate(
-        self,
-        *,
-        source_path: Path,
-        output_root: Path,
-        model: str,
-        timeout_seconds: float = 1800.0,
+        self, *, source_path: Path, output_root: Path, model: str, timeout_seconds: float = 1800.0
     ) -> dict[str, Any]:
-        if bool(self._external_status.get("ok")):
-            assert self.python_path is not None
-            assert self.package_root is not None
-            started = time.perf_counter()
-            completed = subprocess.run(
-                [
-                    str(self.python_path),
-                    str(self.worker_path),
-                    "--package-root",
-                    str(self.package_root),
-                    "--source",
-                    str(source_path),
-                    "--output-root",
-                    str(output_root),
-                    "--model",
-                    model,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=max(30.0, min(3600.0, float(timeout_seconds))),
-                check=False,
-            )
-            payload = _last_json_object(completed.stdout)
-            if completed.returncode != 0 or not bool(payload.get("ok")):
-                raise RuntimeError(str(payload.get("reason") or "demucs_cuda_worker_failed"))
-            vocals = output_root / "vocals.wav"
-            instrumental = output_root / "instrumental.wav"
-            if not vocals.is_file() or not instrumental.is_file():
-                raise RuntimeError("demucs_outputs_missing")
-            return {
-                "vocals": vocals,
-                "instrumental": instrumental,
-                "device_used": str(payload.get("device") or ""),
-                "seconds": round(time.perf_counter() - started, 3),
-            }
-        if not self._in_process_ready:
-            raise RuntimeError("demucs_not_found")
-        return separate_audio_with_demucs(
-            source_path=source_path,
-            output_root=output_root,
-            model_name=model,
-        )
+        if not self.ready:
+            raise RuntimeError(self._status.get("reason") or "demucs_not_found")
 
-    def _probe_external(self) -> dict[str, Any]:
-        if (
-            self.python_path is None
-            or self.package_root is None
-            or not self.python_path.is_file()
-            or not self.package_root.is_dir()
-            or not self.worker_path.is_file()
-        ):
-            return {"ok": False, "reason": "demucs_cuda_runtime_not_configured"}
-        try:
-            completed = subprocess.run(
-                [
-                    str(self.python_path),
-                    str(self.worker_path),
-                    "--package-root",
-                    str(self.package_root),
-                    "--probe",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except Exception:
-            return {"ok": False, "reason": "demucs_cuda_probe_failed"}
-        payload = _last_json_object(completed.stdout)
-        if completed.returncode != 0 or not bool(payload.get("ok")):
-            return {"ok": False, "reason": str(payload.get("reason") or "demucs_cuda_probe_failed")}
-        return payload
+        async def execute():
+            runtime = self._runtime(model)
+            started = time.perf_counter()
+            try:
+                result = await runtime.separate_media(
+                    source=source_path,
+                    output_root=output_root,
+                    timeout=max(1.0, min(3600.0, float(timeout_seconds))),
+                    ffmpeg=self.ffmpeg_path,
+                )
+                return {
+                    "vocals": output_root / "vocals.wav",
+                    "instrumental": output_root / "instrumental.wav",
+                    "device_used": result.get("device_used", ""),
+                    "seconds": round(time.perf_counter() - started, 3),
+                }
+            finally:
+                await runtime.aclose()
+
+        return run_completed(execute)
 
 
 class LocalAsrRuntime:
@@ -279,6 +231,7 @@ def create_app(
     demucs_runtime = LocalDemucsRuntime(
         python_path=demucs_python_path,
         package_root=demucs_package_root,
+        ffmpeg_path=ffmpeg_path,
     )
     demucs_lock = threading.RLock()
     cover_lock = threading.RLock()
@@ -754,26 +707,6 @@ def _mix_local_cover(
     )
     if completed.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
         raise RuntimeError("local_cover_mix_failed")
-
-
-def _last_json_object(value: str) -> dict[str, Any]:
-    for line in reversed(str(value or "").splitlines()):
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
-
-
-def _in_process_cuda_available() -> bool:
-    try:
-        import torch
-
-        return bool(torch.cuda.is_available())
-    except Exception:
-        return False
 
 
 def _unlink_quietly(path: Path) -> None:

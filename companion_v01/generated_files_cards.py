@@ -143,39 +143,6 @@ def build_style_followup(
     return "\n".join(lines)
 
 
-def build_audio_separation_followup(
-    service: Any,
-    *,
-    generated_files: list[dict[str, Any]],
-    source: dict[str, Any],
-    output_format: str,
-    send_to_user: bool,
-) -> str:
-    source_handle = str(source.get("handle") or "").strip()
-    source_title = str(source.get("title") or "媒体文件").strip()
-    lines = [
-        f"你刚刚已经把 {source_handle or '媒体文件'}《{source_title}》做成人声 / 伴奏分离。",
-        f"输出格式：{output_format}。",
-    ]
-    for generated in generated_files:
-        handle = str(generated.get("generated_handle") or "").strip()
-        title = str(generated.get("output_title") or handle or "生成文件").strip()
-        size_label = _format_size_from_item(service, generated)
-        card = generated.get("content_card") if isinstance(generated.get("content_card"), dict) else {}
-        separation = card.get("separation") if isinstance(card.get("separation"), dict) else {}
-        stem_role = str(separation.get("stem_role") or "").strip().lower()
-        role_label = (
-            "人声" if stem_role == "vocals" else "伴奏" if stem_role == "instrumental" else (stem_role or "分离轨")
-        )
-        lines.append(f"- {role_label}：{handle}《{title}》" + (f"，大小：{size_label}" if size_label else ""))
-    if send_to_user:
-        lines.append("当前客户端如果支持发送文件，系统会尝试把这些分离结果发给用户。")
-    else:
-        lines.append("这次只生成分离结果，不自动发送给用户。")
-    lines.append("请基于这个既成事实自然回应，不要重复调用 separate_audio_stems。")
-    return "\n".join(lines)
-
-
 def build_voice_clean_followup(
     service: Any,
     *,

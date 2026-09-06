@@ -1,10 +1,10 @@
-# Audio separation runtime (migration in progress)
+# Audio separation plugin
 
 This package contains the isolated Demucs business worker, the public SDK
-adapter and the existing loopback media-service protocol client. A private
-release catalog is used for real wheel installation/lifecycle acceptance.
-It is not yet listed in the user-facing market: the existing built-in remains
-the product entry until old-callers/configuration cutover is verified.
+adapter and the existing loopback media-service protocol client. It is listed
+in the source market manifest; build the local market before installation.
+Akane no longer registers a built-in separation tool. Installing and enabling
+this plugin is required for model discovery and timeline vocal preprocessing.
 
 The worker is independent of Akane private services. Its parent prepares
 16-bit PCM WAV with FFmpeg; the worker uses real Demucs inference to produce
@@ -23,6 +23,9 @@ input as a synthetic successful result.
   current interpreter is used, but a real model-load probe is mandatory.
 - `AKANE_SEPARATION_MODEL_ROOT`: optional directory of model checkpoint files.
   Default: the selected interpreter's existing Torch hub checkpoints directory.
+- `AKANE_SEPARATION_PACKAGE_ROOT`: optional administrator-provisioned ML package
+  overlay for the selected interpreter; it must contain `demucs`. This is not
+  a user-input import path, and no packages are installed automatically.
 - No model downloads, package installation, shell command expansion or hidden
   GPU runtime installation occur. Missing/incompatible runtime or weights fail
   with a structured reason. Paths stay private to the worker boundary.
@@ -58,8 +61,9 @@ as local, not as a successful remote action.
 These are environment variables, not newly added model-service UI fields.
 The old `LOCAL_MEDIA_EXECUTOR_BASE_URL` setting also serves ASR/RVC and is not
 removed or automatically imported from the host's private configuration. Full
-configuration/caller cutover remains a migration gate; do not assume adding
-these names to the old `.env` settings model will export them to subprocesses.
+remote-service migration therefore requires explicitly setting the new plugin
+variable to the existing endpoint before restarting the host. Do not assume
+adding these names to the old `.env` settings model exports them to subprocesses.
 
 The plugin declares `network.read`, `resource.read`, `artifact.write` and
 `capability.prompt.invoke`. It accepts only current-session material handles,
@@ -76,6 +80,18 @@ remote model was stopped. No retries or new job queue are created.
 The model tool defaults `send_to_user` to false, so two registered files do not
 automatically become duplicate playback/delivery. The existing host file tools
 can deliver the returned handles explicitly.
+
+The standalone `akane_demucs_worker.py` and local media service now delegate
+to this package's `LocalDemucs.separate_media`; FFmpeg preparation and model
+inference have one implementation for these callers and the SDK adapter.
+The service retains its existing explicit Python/package-root/FFmpeg settings
+and reports a real model-load probe. If an external runtime is unavailable,
+it probes the same package with the service interpreter and reports the
+fallback reason. It no longer labels a mere import as a ready model.
+Standalone source deployments may resolve this package from the checkout;
+this never installs or activates the model tool in Akane. Missing package or
+weights is unavailable. The blocking service protocol still waits for actual
+completion; its sync/async bridge does not create a background queue.
 
 ## Verification
 

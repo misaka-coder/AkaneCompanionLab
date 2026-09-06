@@ -82,8 +82,6 @@ class GeneratedFileService:
         ensure_storage_ready: Callable[[], Any] | None = None,
         work_dir: Path | None = None,
         asr_executor: Any = None,
-        audio_separation_executor: Any = None,
-        audio_separation_model: str = "HP5_only_main_vocal",
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -99,46 +97,7 @@ class GeneratedFileService:
         self.attachment_service = attachment_service
         self._whisper_model_cache: dict[tuple[str, str, str], Any] = {}
         self.asr_executor = asr_executor
-        self.audio_separation_executor = audio_separation_executor
-        self.audio_separation_model = (
-            str(audio_separation_model or "HP5_only_main_vocal").strip() or "HP5_only_main_vocal"
-        )
 
-    def audio_separation_status(self) -> dict[str, Any]:
-        executor = self.audio_separation_executor
-        if executor is not None:
-            try:
-                status = dict(executor.capability_status() or {})
-                separation = status.get("separation") if isinstance(status.get("separation"), dict) else {}
-                if bool(separation.get("ready")):
-                    return {
-                        "enabled": True,
-                        "status": "ready",
-                        "reason": "",
-                        "provider": "local_media_executor",
-                        "backend": str(separation.get("provider") or "demucs"),
-                        "model": str(separation.get("model") or "htdemucs"),
-                    }
-                rvc = status.get("rvc") if isinstance(status.get("rvc"), dict) else {}
-                if bool(rvc.get("ready")):
-                    return {
-                        "enabled": True,
-                        "status": "ready",
-                        "reason": "",
-                        "provider": "local_media_executor",
-                        "backend": "rvc_uvr",
-                        "model": self.audio_separation_model,
-                    }
-            except Exception:
-                pass
-        if importlib.util.find_spec("demucs") is not None or self._resolve_demucs_command() is not None:
-            return {"enabled": True, "status": "ready", "reason": "", "provider": "demucs"}
-        return {
-            "enabled": False,
-            "status": "missing_executor",
-            "reason": "audio_separation_executor_unavailable",
-            "provider": "",
-        }
 
     def voice_dataset_status(self) -> dict[str, Any]:
         ffmpeg_path = shutil.which("ffmpeg")
@@ -381,30 +340,6 @@ class GeneratedFileService:
             ),
         }
 
-    def separate_audio_stems(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        source_target: str,
-        mode: str = "vocals_instrumental",
-        output_format: str = "mp3",
-        output_title: str = "",
-        send_to_user: bool = True,
-        timestamp: int | None = None,
-    ) -> dict[str, Any]:
-        return generated_files_media.separate_audio_stems(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            source_target=source_target,
-            mode=mode,
-            output_format=output_format,
-            output_title=output_title,
-            send_to_user=send_to_user,
-            timestamp=timestamp,
-            protected_media_extensions=PROTECTED_MEDIA_EXTENSIONS,
-        )
 
     def clean_voice_track(
         self,
@@ -1768,21 +1703,6 @@ class GeneratedFileService:
             send_to_user=send_to_user,
         )
 
-    def _build_audio_separation_followup(
-        self,
-        *,
-        generated_files: list[dict[str, Any]],
-        source: dict[str, Any],
-        output_format: str,
-        send_to_user: bool,
-    ) -> str:
-        return generated_files_cards.build_audio_separation_followup(
-            self,
-            generated_files=generated_files,
-            source=source,
-            output_format=output_format,
-            send_to_user=send_to_user,
-        )
 
     def _build_voice_clean_followup(
         self,
@@ -2303,13 +2223,6 @@ class GeneratedFileService:
         command.append(str(output_path))
         return command
 
-    def _resolve_demucs_command(self) -> list[str] | None:
-        demucs_path = shutil.which("demucs")
-        if demucs_path:
-            return [demucs_path]
-        if importlib.util.find_spec("demucs") is not None:
-            return [sys.executable, "-m", "demucs.separate"]
-        return None
 
     def _resolve_deepfilternet_runner(self) -> dict[str, Any] | None:
         for candidate in ("deepFilter", "deep-filter"):
@@ -2372,47 +2285,6 @@ class GeneratedFileService:
             raise RuntimeError("DeepFilterNet 已执行，但没有找到净化后的输出文件。")
         return output_path
 
-    def _separate_audio_with_demucs_module(
-        self,
-        *,
-        source_path: Path,
-        output_root: Path,
-        model_name: str = "htdemucs",
-    ) -> dict[str, Path]:
-        return generated_files_media.separate_audio_with_demucs(
-            source_path=source_path,
-            output_root=output_root,
-            model_name=model_name,
-        )
-
-    def _collect_demucs_stems(self, output_root: Path) -> dict[str, Path]:
-        stems: dict[str, Path] = {}
-        if not output_root.exists():
-            return stems
-        for path in output_root.rglob("*"):
-            if not path.is_file():
-                continue
-            name = path.name.lower()
-            if name == "vocals.wav":
-                stems["vocals"] = path
-            elif name in {"no_vocals.wav", "instrumental.wav", "accompaniment.wav"}:
-                stems["instrumental"] = path
-        return stems
-
-    def _summarize_audio_separation_error(self, raw: str) -> str:
-        text = str(raw or "").replace("\r", "\n")
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        cleaned = [
-            line
-            for line in lines
-            if "seconds/s" not in line
-            and "Selected model is a bag" not in line
-            and "Separating track " not in line
-            and not line.startswith(("0%", "1%", "2%", "3%", "4%", "5%", "6%", "7%", "8%", "9%"))
-        ]
-        if not cleaned:
-            return "音频分离失败，但没有拿到明确的错误细节。"
-        return " | ".join(cleaned[-8:])[:500]
 
     def _collect_deepfilternet_output(self, *, output_root: Path, source_path: Path) -> Path | None:
         if not output_root.exists():
@@ -2445,38 +2317,6 @@ class GeneratedFileService:
             return "人声净化失败，但没有拿到明确的错误细节。"
         return " | ".join(cleaned[-8:])[:500]
 
-    def _render_separated_stem_output(
-        self,
-        *,
-        stem_source_path: Path,
-        output_path: Path,
-        output_format: str,
-        ffmpeg_path: str = "",
-    ) -> None:
-        if stem_source_path.suffix.lower() == f".{output_format}":
-            shutil.copy2(stem_source_path, output_path)
-            return
-        if not ffmpeg_path:
-            raise RuntimeError("缺少 ffmpeg，无法把分离结果转成目标格式。")
-        command = self._build_ffmpeg_command(
-            ffmpeg_path=ffmpeg_path,
-            source_path=stem_source_path,
-            output_path=output_path,
-            output_format=output_format,
-            bitrate="",
-            sample_rate=0,
-            channels=0,
-        )
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-        )
-        if completed.returncode != 0 or not output_path.exists():
-            error_text = (completed.stderr or completed.stdout or "ffmpeg 转换失败").strip()[:500]
-            raise RuntimeError(error_text)
 
     def _render_clean_voice_output(
         self,

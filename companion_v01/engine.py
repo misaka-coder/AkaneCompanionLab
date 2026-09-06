@@ -134,7 +134,6 @@ from .tool_runtime import (
     RetryAttachmentToolHandler,
     SendFileToolHandler,
     SendStickerToolHandler,
-    SeparateAudioStemsToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
     TranscribeMediaToolHandler,
@@ -285,14 +284,12 @@ MEDIA_PRESET_ROUTING = [
     "- 生成字幕 → transcribe_media output_format=srt/vtt",
     "- 转写文字稿/会议纪要前置 → transcribe_media output_format=md/txt",
     "- 人声降噪/去混响 → clean_voice_track",
-    "- 人声伴奏分离 → separate_audio_stems",
     "- 固定角色音色翻唱整首歌 → cover_song",
     "- 训练素材切片打包 → prepare_voice_dataset",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
     "",
     "生成与交付是两件事：生成或媒体处理工具只负责产出句柄，不直接发送；拿到 gen_ 等结果后，根据用户要求调用 send_file 精确交付，多个结果可一次批量发送。",
     "涉及大小、码率、分辨率、时长、格式兼容等具体约束时，先读取当前规格，再根据当前实际可用工具决定处理方式。",
-    "人声处理组合：需要人声/伴奏分离时先 separate_audio_stems；需要更干净人声时，再对 vocals 结果调用 clean_voice_track。",
     "完整翻唱不要手工串联分轨和转码；优先直接调用 cover_song，让后端统一处理缓存、RVC 推理、混音与交付。",
 ]
 
@@ -471,16 +468,13 @@ class AkaneMemoryEngine:
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             work_dir=self.base_dir / "generated_work",
             asr_executor=self.local_media_executor,
-            audio_separation_executor=self.local_media_executor,
-            audio_separation_model=str(
-                getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
-            ),
         )
         self.cover_song_service: CoverSongService | None = None
         self.desktop_music_timeline_service = DesktopMusicTimelineService(
             store=self.store,
             generated_file_service=self.generated_file_service,
             background_tasks=self.background_tasks,
+            vocal_preparer=self._prepare_timeline_vocals,
         )
         self.gift_assets = self.gift_service
         sticker_assets_dir = (
@@ -2452,10 +2446,6 @@ class AkaneMemoryEngine:
             ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
             work_dir=self.base_dir / "generated_work",
             asr_executor=self._get_local_media_executor(),
-            audio_separation_executor=self._get_local_media_executor(),
-            audio_separation_model=str(
-                getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
-            ),
         )
         self.generated_file_service = service
         return service
@@ -2586,9 +2576,15 @@ class AkaneMemoryEngine:
             store=store,
             generated_file_service=generated_file_service,
             background_tasks=getattr(self, "background_tasks", None),
+            vocal_preparer=self._prepare_timeline_vocals,
         )
         self.desktop_music_timeline_service = service
         return service
+
+    def _prepare_timeline_vocals(self, **kwargs):
+        from .optional_media_binding import prepare_timeline_vocals
+
+        return prepare_timeline_vocals(self, **kwargs)
 
     def _get_music_context_assembler(self):
         assembler = getattr(self, "music_context_assembler", None)

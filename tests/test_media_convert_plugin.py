@@ -57,7 +57,7 @@ CAPABILITY_ID = f"{PLUGIN_ID}.run.v1"
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and FFprobe required")
 class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
-    def verify_job_memory_and_delivery(self, *, root, files, completed):
+    def verify_job_memory_and_delivery(self, *, root, files, completed, artifact_index=0):
         manager = MemcoreManager(
             backend="memcore",
             storage_path=root / "memory.sqlite3",
@@ -106,7 +106,7 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
         success = completed[0]
         handler = SendFileToolHandler(generated_file_service=files)
         call = handler.normalize_call(
-            {"type": "send_file", "target": success.artifacts[0]["handle"], "delivery_action": "open"}
+            {"type": "send_file", "target": success.artifacts[artifact_index]["handle"], "delivery_action": "open"}
         )
         desktop = handler.execute(
             call=call, context=ToolExecutionContext("owner", "session", 1, {}, client_mode="desktop_pet")

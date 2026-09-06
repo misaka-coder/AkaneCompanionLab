@@ -55,7 +55,6 @@ from .capability_registry import (
     SEND_FILE_TOOL_SPEC,
     SEND_MUSIC_CARD_TOOL_SPEC,
     SEND_STICKER_TOOL_SPEC,
-    SEPARATE_AUDIO_STEMS_TOOL_SPEC,
     TRANSCRIBE_MEDIA_TOOL_SPEC,
     WEB_SEARCH_TOOL_SPEC,
 )
@@ -121,7 +120,6 @@ from .tool_handlers.generated_media import (
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     SendStickerToolHandler,
-    SeparateAudioStemsToolHandler,
     TranscribeMediaToolHandler,
 )
 from .tool_handlers.music import SendAudioToolHandler, SendMusicCardToolHandler

@@ -7,3 +7,11 @@ display_name = "媒体格式转换"
 summary = "音频转换与视频提取音频；支持裁剪、采样率、声道、码率、响度、静音、淡入淡出和变速。"
 permissions = ["capability.prompt.invoke", "resource.read", "artifact.write"]
 requirements = ["Python 3.11+；宿主提供 CapCore 和 Akane 插件公共 SDK。", "宿主需安装 FFmpeg 和 FFprobe，包含目标格式编码器。", "置于宿主 PATH，或设置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE；改变环境后重启宿主。", "仅接收独立媒体文件，不处理播放列表、网络流或受保护缓存。", "wheel 不捆绑系统二进制，不隐式安装 Python/系统依赖。"]
+
+[[plugins]]
+source = "akane_audio_separation"
+plugin_id = "akane.audio-separation"
+display_name = "人声／伴奏分轨"
+summary = "使用已准备的 Demucs 或现有本机媒体服务分离人声、伴奏，输出两个 WAV/FLAC/MP3 文件。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "network.read"]
+requirements = ["Python 3.11+；宿主提供 CapCore 和 Akane 插件公共 SDK。", "FFmpeg/FFprobe 在 PATH，或设置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE。", "本地：已安装兼容 Demucs 4/PyTorch/NumPy 的解释器及已缓存模型；可设 AKANE_SEPARATION_PYTHON / MODEL_ROOT / PACKAGE_ROOT。不会自动下载、安装依赖。", "可选 AKANE_SEPARATION_BACKEND=auto|local|remote；MODEL=htdemucs|htdemucs_ft、DEVICE=auto|cpu|cuda 均使用 AKANE_SEPARATION_ 前缀。", "已有本机/隧道媒体服务需显式设置 AKANE_SEPARATION_REMOTE_URL；可设 AKANE_SEPARATION_UVR_MODEL。旧 ASR/RVC 的共享连接配置不会自动导入。", "远端取消等待实际完成响应；无法确认远端结束时返回明确失败，不声称已停止。", "只处理当前会话材料句柄；默认登记两件文件，不自动发送或播放；分轨可能有串音。"]
