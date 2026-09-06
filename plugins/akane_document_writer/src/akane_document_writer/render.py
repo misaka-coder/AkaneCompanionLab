@@ -262,7 +262,14 @@ def _docx(path: Path, title: str, content: str, rows: list[list[Any]], rules: di
         style = document.styles[name]
         style.font.name = "Calibri"
         style.font.color.rgb = RGBColor(0, 0, 0)
-        style._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "Microsoft YaHei")
+        style.font.underline = False
+        properties = style._element.get_or_add_pPr()
+        for border in list(properties.findall(qn("w:pBdr"))):
+            properties.remove(border)
+        fonts = style._element.get_or_add_rPr().get_or_add_rFonts()
+        for key in ("asciiTheme", "eastAsiaTheme", "hAnsiTheme", "cstheme"):
+            fonts.attrib.pop(qn(f"w:{key}"), None)
+        fonts.set(qn("w:eastAsia"), "Microsoft YaHei")
     normal = document.styles["Normal"]
     normal.font.size = Pt(11)
     normal.paragraph_format.space_after = Pt(8)

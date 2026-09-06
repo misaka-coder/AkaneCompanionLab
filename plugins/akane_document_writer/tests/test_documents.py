@@ -80,6 +80,10 @@ class DocumentTests(unittest.TestCase):
         )
         document = Document(path)
         self.assertEqual(document.paragraphs[0].style.name, "Title")
+        for name in ("Normal", "Title", "Heading 1", "Heading 2"):
+            self.assertIsNone(document.styles[name]._element.find(".//" + qn("w:pBdr")))
+            self.assertFalse(document.styles[name].font.underline)
+        self.assertNotIn(qn("w:eastAsiaTheme"), document.styles["Title"]._element.rPr.rFonts.attrib)
         self.assertEqual(document.paragraphs[1].text, "第一节")
         self.assertEqual(document.paragraphs[2].text, "完整正文 强调")
         self.assertTrue(document.paragraphs[2].runs[-1].bold)
