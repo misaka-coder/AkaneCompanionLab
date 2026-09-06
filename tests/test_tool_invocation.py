@@ -237,7 +237,7 @@ class ToolInvocationTests(unittest.TestCase):
     def test_generated_artifact_tools_defer_delivery_to_send_file_round(self) -> None:
         cleaned = tool_orchestration_engine.defer_generated_artifact_delivery(
             {
-                "type": "prepare_voice_dataset",
+                "type": "compose_file",
                 "source_ids": ["audio_001"],
                 "send_to_user": True,
             }

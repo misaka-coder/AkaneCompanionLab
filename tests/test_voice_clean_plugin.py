@@ -29,7 +29,6 @@ from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactS
 from companion_v01.plugin_market import StaticPluginMarket
 from companion_v01.plugin_resources import GeneratedFileResourceProvider
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
-from companion_v01.optional_media_binding import prepare_dataset_voice
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.capability_registry import ExecutorBroker
@@ -329,45 +328,6 @@ class CleaningInstallationTests(unittest.IsolatedAsyncioTestCase):
                     source_id=item["attachment_id"],
                     service=service,
                 )
-                dataset_voice = await asyncio.to_thread(
-                    prepare_dataset_voice,
-                    engine,
-                    profile_user_id="owner",
-                    session_id="session",
-                    source_id=item["attachment_id"],
-                )
-                self.assertEqual(dataset_voice["status"], "ready", dataset_voice)
-                with wave.open(dataset_voice["absolute_path"], "rb") as output:
-                    self.assertEqual(output.getnframes(), 96000)
-                calls = []
-
-                def prepare(**kwargs):
-                    calls.append(kwargs)
-                    return prepare_dataset_voice(engine, **kwargs)
-
-                files.voice_preparer = prepare
-                dataset = await asyncio.to_thread(
-                    files.prepare_voice_dataset,
-                    profile_user_id="owner",
-                    session_id="session",
-                    source_targets=[item["attachment_id"]],
-                    clean_first=True,
-                    client_mode="qq_text",
-                    send_to_user=False,
-                    output_title="cleaned-dataset",
-                )
-                self.assertTrue(dataset["ok"], dataset)
-                self.assertEqual(len(calls), 1)
-                self.assertEqual(calls[0]["client_mode"], "qq_text")
-                with zipfile.ZipFile(dataset["generated"]["absolute_path"]) as archive:
-                    manifest = json.loads(archive.read("manifest.json"))
-                    self.assertTrue(manifest["options"]["clean_first"])
-                    self.assertTrue(all(s["status"] == "ready" for s in manifest["sources"]))
-                    self.assertEqual(
-                        len([n for n in archive.namelist() if n.startswith("slices/")]),
-                        manifest["stats"]["slice_count"],
-                    )
-                self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), original)
                 with patch.dict(os.environ, {"AKANE_MEDIA_FFMPEG": str(root / "missing-ffmpeg")}):
                     bad = await service.stage_source(source_path=str(source_project))
                 self.assertFalse(bad["ok"], bad)
@@ -377,23 +337,6 @@ class CleaningInstallationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(disabled["ok"], disabled)
                 self.assertNotIn(CAPABILITY_ID, engine._resolve_tool_handlers())
                 self.discovery_snapshot(engine, installed=False)
-                dataset_disabled = prepare_dataset_voice(
-                    engine, profile_user_id="owner", session_id="session", source_id=item["attachment_id"]
-                )
-                self.assertEqual(dataset_disabled["reason"], "cleaning_plugin_unavailable")
-                failed_dataset = await asyncio.to_thread(
-                    files.prepare_voice_dataset,
-                    profile_user_id="owner",
-                    session_id="session",
-                    source_targets=[item["attachment_id"]],
-                    clean_first=True,
-                    client_mode="qq_text",
-                    send_to_user=False,
-                    output_title="must-not-exist",
-                )
-                self.assertFalse(failed_dataset["ok"], failed_dataset)
-                self.assertIsNone(failed_dataset["generated"])
-                self.assertEqual(failed_dataset["source_failures"][0]["error"], "cleaning_plugin_unavailable")
                 with patch.dict(os.environ, {"AKANE_CLEAN_PYTHON": str(root / "missing-python")}):
                     self.assertTrue((await service.set_enabled(plugin_id=PLUGIN_ID, enabled=True))["ok"])
                 fallback_handler = engine._resolve_tool_handlers()[CAPABILITY_ID]

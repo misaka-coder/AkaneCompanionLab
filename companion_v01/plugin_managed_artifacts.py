@@ -24,10 +24,11 @@ from .plugin_result_projection import project_capability_result
 _KNOWN_FORMAT_MIME_TYPES: dict[str, frozenset[str]] = {
     "png": frozenset({"image/png"}),
     "md": frozenset({"text/markdown", "text/markdown; charset=utf-8"}),
-    # Windows registry associations may map SRT to text/plain. Accept the
-    # canonical subtitle MIME independently of machine-local associations.
+    # Windows registry associations vary for subtitles and archives. Accept
+    # canonical MIME types independently of machine-local associations.
     "srt": frozenset({"application/x-subrip", "text/plain"}),
     "vtt": frozenset({"text/vtt"}),
+    "zip": frozenset({"application/zip", "application/x-zip-compressed"}),
     "pdf": frozenset({"application/pdf"}),
     "xlsx": frozenset({"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),
     "wav": frozenset({"audio/wav", "audio/x-wav", "audio/wave"}),

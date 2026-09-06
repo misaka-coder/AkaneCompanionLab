@@ -31,22 +31,6 @@ def prepare_timeline_vocals(engine, *, profile_user_id, session_id, source_id):
     )
 
 
-def prepare_dataset_voice(engine, *, profile_user_id, session_id, source_id, client_mode="web"):
-    # Preserve dataset clean_first's previous basic voice-focus recipe. No AI
-    # download/automatic install, no second filter authority or nested Host Job.
-    return _prepare_media(
-        engine,
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        source_id=source_id,
-        capability_id="akane.voice-clean.run.v1",
-        reason_prefix="cleaning",
-        artifact_name="audio",
-        client_mode=client_mode,
-        arguments={"mode": "voice_focus", "quality": "basic", "post_filter": False},
-    )
-
-
 def prepare_timeline_transcript(engine, *, profile_user_id, session_id, source_id, options):
     prepared = _prepare_media(
         engine,

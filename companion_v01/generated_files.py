@@ -1,21 +1,13 @@
 from __future__ import annotations
 
-import csv
-import importlib.util
 import hashlib
 import mimetypes
 import os
 import json
-import math
 import re
 import shutil
-import subprocess
-import sys
 import time
-import wave
 import zipfile
-from array import array
-from copy import copy
 from pathlib import Path
 from services.asr_business import module as asr_business_module
 
@@ -36,37 +28,6 @@ _GENERIC_ARTIFACT_FORMAT_RE = re.compile(r"^[a-z0-9][a-z0-9_+-]{0,15}$")
 TEXT_INSPECT_FORMATS = {"txt", "md", "json", "csv", "html", "srt", "vtt", "xml", "log", "yaml", "yml"}
 PROTECTED_MEDIA_EXTENSIONS = {"kgm", "ncm", "qmc", "qmc0", "qmc3", "mflac", "mgg", "tkm"}
 VIDEO_MEDIA_EXTENSIONS = {"mp4", "mov", "mkv", "webm", "avi"}
-VOICE_DATASET_PRESETS: dict[str, dict[str, Any]] = {
-    "gpt_sovits": {
-        "target_sr": 44100,
-        "mono": True,
-        "min_clip_seconds": 3.0,
-        "max_clip_seconds": 12.0,
-        "silence_threshold_db": -40.0,
-        "min_silence_ms": 300,
-        "max_silence_kept_ms": 300,
-    },
-    "rvc": {
-        "target_sr": 40000,
-        "mono": True,
-        "min_clip_seconds": 3.0,
-        "max_clip_seconds": 15.0,
-        "silence_threshold_db": -40.0,
-        "min_silence_ms": 300,
-        "max_silence_kept_ms": 250,
-    },
-    "archive": {
-        "target_sr": 44100,
-        "mono": True,
-        "min_clip_seconds": 2.0,
-        "max_clip_seconds": 30.0,
-        "silence_threshold_db": -45.0,
-        "min_silence_ms": 450,
-        "max_silence_kept_ms": 500,
-    },
-}
-
-
 class GeneratedFileService:
     """Create and project files authored by Akane.
 
@@ -83,7 +44,6 @@ class GeneratedFileService:
         legacy_base_dirs: list[Path] | tuple[Path, ...] | None = None,
         ensure_storage_ready: Callable[[], Any] | None = None,
         work_dir: Path | None = None,
-        voice_preparer: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -98,17 +58,7 @@ class GeneratedFileService:
         self.store = store
         self.attachment_service = attachment_service
         self._whisper_model_cache: dict[tuple[str, str, str, str], Any] = {}
-        self.voice_preparer = voice_preparer
 
-
-    def voice_dataset_status(self) -> dict[str, Any]:
-        ffmpeg_path = shutil.which("ffmpeg")
-        return {
-            "enabled": bool(ffmpeg_path),
-            "status": "ready" if ffmpeg_path else "missing_executor",
-            "reason": "" if ffmpeg_path else "ffmpeg_not_found",
-            "provider": "ffmpeg" if ffmpeg_path else "",
-        }
 
     def media_inspection_status(self) -> dict[str, Any]:
         ffprobe_path = shutil.which("ffprobe")
@@ -288,50 +238,6 @@ class GeneratedFileService:
             ),
         }
 
-
-    def prepare_voice_dataset(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        source_targets: list[str] | tuple[str, ...] | str,
-        profile: str = "gpt_sovits",
-        output_title: str = "",
-        target_sr: int = 0,
-        mono: bool = True,
-        min_clip_seconds: Any = 0,
-        max_clip_seconds: Any = 0,
-        silence_threshold_db: Any = None,
-        min_silence_ms: Any = 0,
-        max_silence_kept_ms: Any = 0,
-        clean_first: bool = False,
-        normalize_volume: bool = False,
-        send_to_user: bool = True,
-        timestamp: int | None = None,
-        client_mode: str = "web",
-    ) -> dict[str, Any]:
-        return generated_files_media.prepare_voice_dataset(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            source_targets=source_targets,
-            profile=profile,
-            output_title=output_title,
-            target_sr=target_sr,
-            mono=mono,
-            min_clip_seconds=min_clip_seconds,
-            max_clip_seconds=max_clip_seconds,
-            silence_threshold_db=silence_threshold_db,
-            min_silence_ms=min_silence_ms,
-            max_silence_kept_ms=max_silence_kept_ms,
-            clean_first=clean_first,
-            normalize_volume=normalize_volume,
-            send_to_user=send_to_user,
-            timestamp=timestamp,
-            protected_media_extensions=PROTECTED_MEDIA_EXTENSIONS,
-            voice_dataset_presets=VOICE_DATASET_PRESETS,
-            client_mode=client_mode,
-        )
 
     def inspect_media_info(
         self,
@@ -1587,159 +1493,6 @@ class GeneratedFileService:
             send_to_user=send_to_user,
         )
 
-
-    def _build_voice_dataset_followup(
-        self,
-        *,
-        generated: dict[str, Any],
-        manifest: dict[str, Any],
-        send_to_user: bool,
-    ) -> str:
-        return generated_files_cards.build_voice_dataset_followup(
-            self,
-            generated=generated,
-            manifest=manifest,
-            send_to_user=send_to_user,
-        )
-
-    def _normalize_voice_dataset_profile(self, value: Any) -> str:
-        return generated_files_media.normalize_voice_dataset_profile(value)
-
-    def _normalize_voice_dataset_options(
-        self,
-        *,
-        preset: dict[str, Any],
-        target_sr: Any,
-        mono: Any,
-        min_clip_seconds: Any,
-        max_clip_seconds: Any,
-        silence_threshold_db: Any,
-        min_silence_ms: Any,
-        max_silence_kept_ms: Any,
-    ) -> dict[str, Any]:
-        return generated_files_media.normalize_voice_dataset_options(
-            self,
-            preset=preset,
-            target_sr=target_sr,
-            mono=mono,
-            min_clip_seconds=min_clip_seconds,
-            max_clip_seconds=max_clip_seconds,
-            silence_threshold_db=silence_threshold_db,
-            min_silence_ms=min_silence_ms,
-            max_silence_kept_ms=max_silence_kept_ms,
-        )
-
-    def _infer_voice_dataset_title(self, *, sources: list[dict[str, Any]], profile: str) -> str:
-        return generated_files_media.infer_voice_dataset_title(sources=sources, profile=profile)
-
-    def _prepare_voice_dataset_input(
-        self,
-        *,
-        ffmpeg_path: str,
-        source_path: Path,
-        prepared_path: Path,
-        target_sr: int,
-        channels: int,
-        normalize_volume: bool,
-    ) -> dict[str, Any]:
-        return generated_files_media.prepare_voice_dataset_input(
-            self,
-            ffmpeg_path=ffmpeg_path,
-            source_path=source_path,
-            prepared_path=prepared_path,
-            target_sr=target_sr,
-            channels=channels,
-            normalize_volume=normalize_volume,
-        )
-
-    def _read_pcm16_wav_samples(self, path: Path) -> tuple[array, int]:
-        return generated_files_media.read_pcm16_wav_samples(path)
-
-    def _write_pcm16_wav(self, path: Path, *, samples: array, sample_rate: int, channels: int = 1) -> None:
-        return generated_files_io.write_pcm16_wav(
-            path,
-            samples=samples,
-            sample_rate=sample_rate,
-            channels=channels,
-        )
-
-    def _slice_voice_samples(
-        self,
-        *,
-        samples: array,
-        sample_rate: int,
-        silence_threshold_db: float,
-        min_silence_ms: int,
-        max_silence_kept_ms: int,
-    ) -> list[dict[str, Any]]:
-        return generated_files_media.slice_voice_samples(
-            self,
-            samples=samples,
-            sample_rate=sample_rate,
-            silence_threshold_db=silence_threshold_db,
-            min_silence_ms=min_silence_ms,
-            max_silence_kept_ms=max_silence_kept_ms,
-        )
-
-    def _merge_tiny_voice_intervals(self, intervals: list[dict[str, Any]], *, sample_rate: int) -> list[dict[str, Any]]:
-        return generated_files_media.merge_tiny_voice_intervals(intervals, sample_rate=sample_rate)
-
-    def _analyze_voice_slice(
-        self,
-        *,
-        samples: array,
-        sample_rate: int,
-        min_clip_seconds: float,
-        max_clip_seconds: float,
-    ) -> dict[str, Any]:
-        return generated_files_media.analyze_voice_slice(
-            self,
-            samples=samples,
-            sample_rate=sample_rate,
-            min_clip_seconds=min_clip_seconds,
-            max_clip_seconds=max_clip_seconds,
-        )
-
-    def _rms_dbfs_for_samples(self, samples: array) -> float:
-        return generated_files_media.rms_dbfs_for_samples(samples)
-
-    def _peak_dbfs_for_samples(self, samples: array) -> float:
-        return generated_files_media.peak_dbfs_for_samples(samples)
-
-    def _build_voice_dataset_manifest(
-        self,
-        *,
-        title: str,
-        profile: str,
-        options: dict[str, Any],
-        clean_first: bool,
-        normalize_volume: bool,
-        sources: list[dict[str, Any]],
-        slices: list[dict[str, Any]],
-        unresolved: list[str],
-        protected: list[str],
-        missing_files: list[str],
-        timestamp: int,
-    ) -> dict[str, Any]:
-        return generated_files_media.build_voice_dataset_manifest(
-            title=title,
-            profile=profile,
-            options=options,
-            clean_first=clean_first,
-            normalize_volume=normalize_volume,
-            sources=sources,
-            slices=slices,
-            unresolved=unresolved,
-            protected=protected,
-            missing_files=missing_files,
-            timestamp=timestamp,
-        )
-
-    def _build_voice_dataset_content_card(self, manifest: dict[str, Any]) -> dict[str, Any]:
-        return generated_files_cards.build_voice_dataset_content_card(self, manifest)
-
-    def _render_voice_dataset_readme(self, manifest: dict[str, Any]) -> str:
-        return generated_files_io.render_voice_dataset_readme(self, manifest)
 
     def _normalize_transcript_language(self, value):
         return asr_business_module("compatibility").normalize_language(value)

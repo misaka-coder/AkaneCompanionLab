@@ -32,7 +32,6 @@ from .generated_media import (
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ManageGeneratedFileToolHandler,
-    PrepareVoiceDatasetToolHandler,
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     SendStickerToolHandler,
@@ -139,9 +138,6 @@ def build_builtin_tool_handlers(
             generated_file_service=generated_file_service
         ),
         "inspect_media_info": InspectMediaInfoToolHandler(
-            generated_file_service=generated_file_service
-        ),
-        "prepare_voice_dataset": PrepareVoiceDatasetToolHandler(
             generated_file_service=generated_file_service
         ),
         "inspect_generated_file": InspectGeneratedFileToolHandler(

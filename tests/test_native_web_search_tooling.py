@@ -466,13 +466,13 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
-            config.NATIVE_TOOL_DECISION_ALLOWLIST = "inspect_media_info,prepare_voice_dataset,cover_song,send_file"
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "inspect_media_info,compose_file,cover_song,send_file"
             plan = tool_orchestration_engine.build_native_tool_decision_plan(
                 {
                     name: FakeNativeHandler(name)
                     for name in (
                         "inspect_media_info",
-                        "prepare_voice_dataset",
+                        "compose_file",
                         "cover_song",
                         "send_file",
                     )
@@ -481,7 +481,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 provider_supports_native_tools=True,
                 allowed_tool_names=(
                     "inspect_media_info",
-                    "prepare_voice_dataset",
+                    "compose_file",
                     "cover_song",
                     "send_file",
                 ),
@@ -491,7 +491,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             names = [tool["function"]["name"] for tool in plan.tools]
             self.assertEqual(
                 names,
-                ["inspect_media_info", "prepare_voice_dataset", "cover_song", "send_file"],
+                ["inspect_media_info", "compose_file", "cover_song", "send_file"],
             )
             self.assertEqual(plan.legacy_prompt_exclusions, set(names))
             for tool in plan.tools:

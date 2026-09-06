@@ -199,7 +199,6 @@ DOCUMENT_WORKBENCH_TOOL_NAMES = (
 
 MEDIA_WORKBENCH_TOOL_NAMES = (
     "inspect_media_info",
-    "prepare_voice_dataset",
 )
 
 # M68: Shell may replace built-in inspection. Installed extension descriptors
@@ -1312,73 +1311,6 @@ INSPECT_MEDIA_INFO_TOOL_SPEC = CapabilityToolSpec(
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=4096,
-)
-
-PREPARE_VOICE_DATASET_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="prepare_voice_dataset",
-    display_name="Prepare voice dataset",
-    description=(
-        "把一个或多个人声/语音来源切片、检查并打包为 GPT-SoVITS、RVC 或归档训练素材。"
-        "它会生成 manifest 和 zip，不负责训练模型。用户没指定细节时只选合适 profile，"
-        "不要凭空填写一整套切片参数。"
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "source_ids": {
-                "type": "array",
-                "items": {"type": "string", "maxLength": 120},
-                "minItems": 1,
-                "maxItems": 20,
-                "description": "来源人声/语音句柄列表。",
-            },
-            "profile": {
-                "type": "string",
-                "enum": ["gpt_sovits", "rvc", "archive"],
-                "description": "目标素材预设；默认 gpt_sovits。",
-            },
-            "output_title": {"type": "string", "maxLength": 80, "description": "可选训练集标题。"},
-            "target_sr": {
-                "type": "integer",
-                "minimum": 8000,
-                "maximum": 192000,
-                "description": "可选目标采样率；用户没指定时省略。",
-            },
-            "mono": {"type": "boolean", "description": "是否转单声道；默认 true。"},
-            "min_clip_seconds": {
-                "type": "number",
-                "minimum": 0.5,
-                "maximum": 30.0,
-                "description": "可选最短切片秒数。",
-            },
-            "max_clip_seconds": {
-                "type": "number",
-                "minimum": 1.0,
-                "maximum": 60.0,
-                "description": "可选最长切片秒数。",
-            },
-            "silence_threshold_db": {"type": "number", "description": "可选静音阈值 dB。"},
-            "min_silence_ms": {"type": "integer", "minimum": 0, "description": "可选最短静音间隔。"},
-            "max_silence_kept_ms": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "可选切片中保留的最大静音时长。",
-            },
-            "clean_first": {"type": "boolean", "description": "是否先做轻量净化；默认 false。"},
-            "normalize_volume": {"type": "boolean", "description": "是否做音量标准化；默认 false。"},
-        },
-        "required": ["source_ids"],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_create",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
-    execution_class="long_task",
-    idempotency="effectful",
-    max_result_bytes=8192,
 )
 
 COVER_SONG_TOOL_SPEC = CapabilityToolSpec(

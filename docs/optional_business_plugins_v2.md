@@ -1,6 +1,6 @@
 # 剩余可选业务能力插件化 V2
 
-日期：2026-09-06。起点：`87c1c6f`。状态：分轨、人声净化与文件转写已切换；其余四项继续按顺序推进。
+日期：2026-09-06。起点：`87c1c6f`。状态：分轨、人声净化、文件转写与素材集已切换；其余三项继续按顺序推进。
 
 目标是持续完成七项已识别能力，不以一个插件完成代替整项目标完成。已完成的媒体转换及其资源、产物、市场、Job 基础见 [V1 验收](optional_media_plugin_migration_v1.md)。每项验证、清除旧实现并聚焦提交后继续下一项。
 
@@ -11,14 +11,14 @@
 | 顺序 | 能力 | 当前权威与调用者 | 迁移边界 / 必须保留的行为 | 状态 |
 |---|---|---|---|---|
 | 1 | 分轨 | 原内置函数/handler/spec 已删除；插件为模型入口，脚本为包的薄绑定 | Demucs CPU/CUDA 与媒体服务 Demucs/UVR；两件产物；wav/flac/mp3；真实 CPU 已验收，GPU/UVR 真机未验收 | 已切换，见分轨 C |
-| 2 | 人声净化 | 原内置函数/handler/spec/filter 已删除；插件拥有唯一净化实现，素材集薄绑定 | FFmpeg 基础处理、DeepFilterNet AI、auto 降级及真实后端说明；四模式、post_filter、三种格式；CPU 已验收 | 已切换，见净化 B/C |
+| 2 | 人声净化 | 原内置函数/handler/spec/filter 已删除；插件拥有唯一净化实现，素材集经公共插件依赖端口调用 | FFmpeg 基础处理、DeepFilterNet AI、auto 降级及真实后端说明；四模式、post_filter、三种格式；CPU 已验收 | 已切换，见净化 B/C |
 | 3 | 文件转写 | 原文件工具及业务 helper 已删除；插件为文件入口，实时语音/媒体服务薄绑定唯一识别库 | 多输入、部分失败、合并/独立输出、md/txt/srt/vtt/json、时间戳、语言/VAD/模型选项；实时语音产品入口保留 | 已切换，见转写 B/C |
-| 4 | 训练素材准备 | `generated_files_media.prepare_voice_dataset` 与 PCM 切片、分析、manifest helper | 原 profile/采样/切片规则、真实 WAV/ZIP/manifest、来源关联与质量统计；不扩展为模型训练 | 待迁移 |
+| 4 | 训练素材准备 | 原内置入口/预设/PCM/切片/helper/handler/spec 已删除；插件拥有整理配方 | 三预设、采样/双声道/静音选项、真实 WAV/ZIP/manifest、来源与质量统计；clean_first 经已启用净化插件；不训练模型 | 已切换，见素材集 B/C |
 | 5 | 生图 | `image_generation.py` 的 provider/service、Engine 绑定、模型服务配置 | 生成及参考图编辑、多图、输入大小/质量/格式参数、现有实际 provider；密钥不进入模型参数或产物 | 待迁移 |
 | 6 | 翻唱 | `cover_song.py`、`LocalRvcExecutorProvider`、Engine 绑定 | RVC WebUI 与本机服务、模型选择、分轨/推理/混音、现有缓存与交付语义；复用已迁移分轨权威 | 待迁移 |
 | 7 | 文档生成 | `GeneratedFileService`、`generated_files_io.py`、`generated_files_delivery.py` 及 compose/revise/style 调用链 | 创建、修订、已有 docx/xlsx 格式处理必须共同审计；txt/md/html/json/csv/xlsx/docx/pdf；不能只移 compose 而留下第二套渲染实现 | 待迁移 |
 
-审计起点市场仅有媒体转换。转写 B/C 后 `plugins/market.toml` 有转换、分轨、净化、文件转写四个条目；其余四项仍是内置能力，不能把插件基础算成它们已经迁移。
+审计起点市场仅有媒体转换。素材集 B/C 后 `plugins/market.toml` 有转换、分轨、净化、文件转写、素材集五个条目；其余三项仍是内置能力，不能把插件基础算成它们已经迁移。
 
 ## 宿主与插件职责
 
@@ -291,6 +291,28 @@
 - 调用/宿主组合 33 项通过（77.255 秒）；generation/candidate/runtime/Engine/Host
   71 项通过（77.515 秒）；资源/终态 8 项通过（20.499 秒）。包括真实独立 worker
   和实际文件转化，不把测试文本转换称为业务模型验收。ruff 与 diff 检查通过。
+
+### 素材集 B/C：唯一整理实现与真实归档交付
+
+- 关闭 `d52416f` 开始的迁移窗口。旧内置 prepare_voice_dataset、预设、PCM/切片/质量
+  helper、ZIP/readme 构造、handler/spec、固定提示和宿主 prepare_dataset_voice 绑定删除。
+  历史 ZIP 的通用读取/检查保留；新插件不导入旧私有实现。
+- 显式安装 wheel 后提供一份 descriptor，native/兼容投影同源，调用前后稳定；未安装、
+  停用、卸载均撤掉发现。clean_first 经公共权限/会话端口调用实际净化插件，基础处理
+  成功才标记 cleaned；禁用/缺失净化没有 ZIP，不复制滤波配方。中间音频如实登记，
+  默认不发送、不播放，并在用户结果说明中明确这一点。
+- 实际三种预设、附件/生成来源、96 kHz 双声道反相音频、音量标准化、长度质量标记、
+  部分失败均核对 ZIP 成员、WAV 参数、来源关联和 manifest；原件哈希不变。
+  标准 ZIP MIME 不再受 Windows application/x-zip-compressed 注册表关联影响，仍保留
+  类型校验；新增 portable MIME 回归覆盖该情况。
+- 真实 10 分钟高采样率 PCM 归档 Job 快速提交，运行中停用撤发现，重复取消后实际进程
+  回收、无迟到产物；再启用可调用，缺 FFmpeg 候选保留 last-good。成功/失败/取消
+  三终态进入原 MemCore 幂等链；真实 ZIP 经原 send_file 和桌面交付模块 smoke。
+  OneBot 仅验证真实文件上传边界、HTTP 使用替身，未作实际 QQ 投递。
+- 完整市场验收单项通过（88.510 秒）；切换后市场/ZIP/路由组合 127 项通过（124.095 秒）。
+  工具/schema/提示/旧调用链组合 202 项通过（32.172 秒）；包内真实处理 12 项通过
+  （9.179 秒）；净化真实 DeepFilterNet/市场全链回归通过（75.670 秒，无跳过）。
+  ruff、格式与 diff 检查通过。未改用户持久设置、未公网发布、未增加训练或标注功能。
 
 ## 最终交付与授权边界
 

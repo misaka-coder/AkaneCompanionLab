@@ -19,7 +19,6 @@ from companion_v01.tool_runtime import (
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ManageGeneratedFileToolHandler,
-    PrepareVoiceDatasetToolHandler,
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     ToolExecutionContext,
@@ -671,7 +670,7 @@ class GeneratedFileTests(unittest.TestCase):
             with (
                 patch("companion_v01.generated_files.shutil.which", return_value="ffprobe"),
                 patch(
-                    "companion_v01.generated_files.subprocess.run",
+                    "companion_v01.generated_files_media.subprocess.run",
                     side_effect=fake_run,
                 ),
             ):
@@ -693,127 +692,6 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertIn("音频", result["followup_context"])
             self.assertIn("视频", result["followup_context"])
 
-
-    def test_prepare_voice_dataset_creates_zip_manifest_with_issue_filenames(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "voice.wav"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_bytes(b"fake wav payload")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="audio",
-                origin_name="voice.wav",
-                storage_relpath="master/voice.wav",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="voice.wav",
-                short_hint="一段待切片的人声。",
-                detail={"file_kind": "wav", "media_info": {"audio": {"codec": "pcm_s16le"}}},
-                timestamp=110,
-            )
-
-            def fake_run(command, capture_output, text, timeout, check):
-                _write_test_wav(Path(command[-1]), sample_rate=1000)
-                return subprocess.CompletedProcess(command, 0, "", "")
-
-            with (
-                patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg.exe"),
-                patch(
-                    "companion_v01.generated_files.subprocess.run",
-                    side_effect=fake_run,
-                ),
-            ):
-                result = generated_service.prepare_voice_dataset(
-                    profile_user_id="user",
-                    session_id="session",
-                    source_targets=["audio_001"],
-                    profile="gpt_sovits",
-                    output_title="akane_dataset",
-                    target_sr=44100,
-                    min_clip_seconds=3,
-                    max_clip_seconds=12,
-                    silence_threshold_db=-40,
-                    min_silence_ms=300,
-                    max_silence_kept_ms=100,
-                    timestamp=120,
-                )
-
-            self.assertTrue(result["ok"])
-            generated = result["generated"]
-            self.assertEqual(generated["generated_handle"], "gen_001")
-            self.assertEqual(generated["output_format"], "zip")
-            self.assertEqual(generated["mime_type"], "application/zip")
-            self.assertEqual(generated["created_by_tool"], "prepare_voice_dataset")
-            output_path = Path(generated["absolute_path"])
-            self.assertTrue(output_path.exists())
-            with zipfile.ZipFile(output_path) as archive:
-                names = archive.namelist()
-                self.assertIn("manifest.json", names)
-                self.assertTrue(any(name.startswith("slices/src01_slice_") for name in names))
-                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
-            self.assertGreaterEqual(manifest["stats"]["slice_count"], 3)
-            issue_slices = manifest["issue_slices"]
-            self.assertIn("too_short", issue_slices)
-            self.assertIn("too_long", issue_slices)
-            card_preview = (generated.get("content_card") or {}).get("content_preview", "")
-            self.assertIn("过短", card_preview)
-            self.assertIn("过长", card_preview)
-            self.assertIn("prepare_voice_dataset", result["followup_context"])
-
-    def test_prepare_voice_dataset_tool_handler_emits_generated_event(self) -> None:
-        class FakeGeneratedService:
-            def prepare_voice_dataset(self, **kwargs):
-                return {
-                    "ok": True,
-                    "generated": {"generated_id": "generated::1", "generated_handle": "gen_001"},
-                    "send_to_user": True,
-                    "followup_context": "训练集完成。",
-                }
-
-        handler = PrepareVoiceDatasetToolHandler(generated_file_service=FakeGeneratedService())
-        call = handler.normalize_call(
-            {
-                "type": "prepare_voice_dataset",
-                "source_ids": ["gen_001", "audio_002"],
-                "profile": "sovits",
-                "min_clip_seconds": 3,
-                "max_clip_seconds": 12,
-                "send_to_user": True,
-            }
-        )
-
-        self.assertIsNotNone(call)
-        self.assertEqual((call or {}).get("source_ids"), ["gen_001", "audio_002"])
-        self.assertEqual((call or {}).get("profile"), "gpt_sovits")
-        result = handler.execute(
-            call=call or {},
-            context=ToolExecutionContext(
-                profile_user_id="user",
-                session_id="session",
-                now_ts=100,
-                visual_payload={},
-            ),
-        )
-
-        self.assertEqual(result.stream_events[0]["type"], "generated_file_ready")
-        self.assertEqual(result.stream_events[0]["generated_file"]["generated_handle"], "gen_001")
-        self.assertEqual(result.followup_context, "训练集完成。")
 
     def test_inspect_media_info_tool_handler_emits_media_info_event(self) -> None:
         class FakeGeneratedService:
@@ -845,28 +723,15 @@ class GeneratedFileTests(unittest.TestCase):
     def test_media_handlers_do_not_report_ready_without_real_executors(self) -> None:
         class FakeGeneratedService:
             @staticmethod
-            def voice_dataset_status():
-                return {"enabled": False, "status": "missing_executor", "reason": "ffmpeg_not_found"}
-
-            @staticmethod
             def media_inspection_status():
                 return {"enabled": True, "status": "ready", "reason": "", "provider": "ffprobe"}
 
         service = FakeGeneratedService()
         statuses = {
-            "dataset": PrepareVoiceDatasetToolHandler(generated_file_service=service).capability_status(),
             "inspect": InspectMediaInfoToolHandler(generated_file_service=service).capability_status(),
         }
 
-        self.assertEqual(statuses["dataset"]["status"], "missing_executor")
         self.assertEqual(statuses["inspect"]["provider"], "ffprobe")
-
-    def test_media_tool_instructions_explain_video_task_routing_without_fixed_pipeline(self) -> None:
-        dataset_instruction = PrepareVoiceDatasetToolHandler(generated_file_service=object()).build_prompt_instruction()
-
-        self.assertIn("按当前实际可用工具分步组合", dataset_instruction)
-        self.assertNotIn("convert_media_file", dataset_instruction)
-        self.assertIn("不要把人声处理和切片打包用于只要原文件的请求", dataset_instruction)
 
     def test_compose_file_applies_xlsx_formatting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

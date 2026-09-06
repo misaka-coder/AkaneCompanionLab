@@ -1025,7 +1025,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "read_attachment_section",
                     "apply_style_to_existing_file",
                     "inspect_media_info",
-                    "prepare_voice_dataset",
                     "inspect_generated_file",
                     "send_file",
                     "manage_generated_file",
@@ -1203,7 +1202,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "revise_generated_file",
                     "apply_style_to_existing_file",
                     "inspect_media_info",
-                    "prepare_voice_dataset",
                     "inspect_generated_file",
                     "send_file",
                     "manage_generated_file",
@@ -1254,7 +1252,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- separate_audio_stems", prompt)
             self.assertNotIn("\n- clean_voice_track", prompt)
             self.assertNotIn("\n- transcribe_media", prompt)
-            self.assertIn("\n- prepare_voice_dataset", prompt)
+            self.assertNotIn("\n- prepare_voice_dataset", prompt)
             self.assertIn("\n- inspect_media_info", prompt)
             self.assertIn("\n- inspect_generated_file", prompt)
             self.assertIn("\n- send_file", prompt)
@@ -1276,7 +1274,7 @@ class EngineExtensionTests(unittest.TestCase):
                     profile_user_id="master",
                     session_id="qq_pri_1",
                 ),
-                {"type": "prepare_voice_dataset"},
+                {"type": "prepare_voice_dataset", "source_ids": [media["attachment_handle"]]},
             )
             self.assertEqual(
                 self.engine._normalize_tool_call(
@@ -1342,7 +1340,6 @@ class EngineExtensionTests(unittest.TestCase):
             self.engine.capability_registry = CapabilityRegistry()
             media_tools = (
                 "inspect_media_info",
-                "prepare_voice_dataset",
             )
             self.engine.tool_handlers = {name: StubMediaTool(name) for name in media_tools}
             self.engine.store.add_attachment_inbox_item(
@@ -1383,8 +1380,8 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("clean_voice_track", prompt)
             self.assertNotIn("人声伴奏分离 →", prompt)
             self.assertNotIn("separate_audio_stems", prompt)
-            self.assertIn("训练素材切片打包", prompt)
-            self.assertIn("prepare_voice_dataset", prompt)
+            self.assertNotIn("训练素材切片打包", prompt)
+            self.assertNotIn("prepare_voice_dataset", prompt)
             self.assertIn("只要原文件不处理", prompt)
             self.assertIn("先读取当前规格", prompt)
             self.assertNotIn("人声处理组合", prompt)
@@ -1404,7 +1401,6 @@ class EngineExtensionTests(unittest.TestCase):
         for tool in {
             "inspect_media_info",
             "separate_audio_stems",
-            "prepare_voice_dataset",
         }:
             self.assertNotIn(tool, scene_tools, f"{tool} should not be available in web scene mode")
 

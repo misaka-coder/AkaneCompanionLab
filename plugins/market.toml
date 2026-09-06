@@ -1,6 +1,14 @@
 schema_version = 1
 
 [[plugins]]
+source = "akane_voice_dataset"
+plugin_id = "akane.voice-dataset"
+display_name = "语音训练素材整理"
+summary = "静音切片、重采样、质量标记，生成含 WAV 与来源清单的 ZIP；不执行训练。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "capability.invoke"]
+requirements = ["Python 3.11+；宿主提供 CapCore 与支持 capability.invoke 的公共 SDK。", "FFmpeg/FFprobe 在 PATH，或配置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE。", "可选 clean_first 需显式安装启用并获准调用 akane.voice-clean，执行 basic 人声滤波；净化失败来源不冒充已处理。", "最多 20 来源、单来源 30 分钟、总 PCM 512 MiB、ZIP 256 MiB、10000 切片；超限失败而非暗中截短。", "长度上下限是质量标记，不是硬切；推荐片段仍需人工复核，不包含标注或训练。", "默认只登记 ZIP，净化中间音频也登记但不发送；不自动安装依赖、不自动启用用户实例。"]
+
+[[plugins]]
 source = "akane_file_transcription"
 plugin_id = "akane.file-transcription"
 display_name = "文件转写与字幕"

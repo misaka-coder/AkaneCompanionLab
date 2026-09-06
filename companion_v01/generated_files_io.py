@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
-import json
 import re
-import wave
-from array import array
 from copy import copy
 from pathlib import Path
 from typing import Any
@@ -465,36 +462,3 @@ def write_pdf(service: Any, *, output_path: Path, title: str, content: str) -> N
             story.append(Paragraph(text, styles["BodyText"]))
         story.append(Spacer(1, 8))
     doc.build(story)
-
-
-def write_pcm16_wav(path: Path, *, samples: array, sample_rate: int, channels: int = 1) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as writer:
-        writer.setnchannels(max(1, int(channels or 1)))
-        writer.setsampwidth(2)
-        writer.setframerate(max(1, int(sample_rate or 44100)))
-        writer.writeframes(samples.tobytes())
-
-
-def render_voice_dataset_readme(service: Any, manifest: dict[str, Any]) -> str:
-    stats = manifest.get("stats") if isinstance(manifest.get("stats"), dict) else {}
-    lines = [
-        f"# {manifest.get('title') or 'Voice Dataset'}",
-        "",
-        f"- Profile: {manifest.get('profile') or 'gpt_sovits'}",
-        f"- Slices: {stats.get('slice_count') or 0}",
-        f"- Recommended: {stats.get('recommended_count') or 0}",
-        f"- Flagged: {stats.get('flagged_count') or 0}",
-        f"- Total duration: {service._format_duration_label(stats.get('total_duration_seconds')) or '0:00'}",
-        "",
-        "## Issue Slices",
-    ]
-    issue_slices = manifest.get("issue_slices") if isinstance(manifest.get("issue_slices"), dict) else {}
-    if not issue_slices:
-        lines.append("- None")
-    for flag, items in issue_slices.items():
-        if not isinstance(items, list) or not items:
-            continue
-        lines.append(f"- {flag}: " + ", ".join(str(item.get("filename") or "") for item in items[:30] if item.get("filename")))
-    lines.extend(["", "Full metadata is stored in `manifest.json`."])
-    return "\n".join(lines)

@@ -9,5 +9,8 @@ description = "Voice material slicing and quality manifest business runtime"
 readme = "README.md"
 requires-python = ">=3.11"
 
+[project.entry-points."akane.plugins.v1"]
+"akane.voice-dataset" = "akane_voice_dataset.plugin:create_plugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]

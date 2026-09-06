@@ -11,13 +11,34 @@ from capcore import CapabilityDescriptor, CapabilityIOSlot
 from companion_v01.desktop_music_timeline import DesktopMusicTimelineService
 from companion_v01.optional_media_binding import (
     prepare_timeline_vocals,
-    prepare_dataset_voice,
     prepare_timeline_transcript,
 )
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
 
 
 class TimelinePluginBindingTests(unittest.TestCase):
+    def test_dataset_business_has_one_plugin_authority(self):
+        from companion_v01.generated_files import GeneratedFileService
+        from companion_v01 import generated_files_media, generated_files_io, generated_files_cards
+
+        self.assertFalse(hasattr(GeneratedFileService, "prepare_voice_dataset"))
+        self.assertFalse(hasattr(generated_files_media, "slice_voice_samples"))
+        self.assertFalse(hasattr(generated_files_io, "write_pcm16_wav"))
+        self.assertFalse(hasattr(generated_files_cards, "build_voice_dataset_content_card"))
+        root = Path(__file__).resolve().parents[1]
+        for folder in ("companion_v01", "scripts"):
+            for path in (root / folder).rglob("*.py"):
+                source = path.read_text(encoding="utf-8")
+                for symbol in (
+                    "prepare_voice_dataset",
+                    "PrepareVoiceDatasetToolHandler",
+                    "VOICE_DATASET_PRESETS",
+                    "PREPARE_VOICE_DATASET_TOOL_SPEC",
+                    "prepare_dataset_voice",
+                    "akane.voice-dataset",
+                ):
+                    self.assertNotIn(symbol, source, str(path))
+
     def test_old_business_and_prompt_authority_are_deleted(self):
         from companion_v01.generated_files import GeneratedFileService
         from companion_v01 import generated_files_media
@@ -39,16 +60,6 @@ class TimelinePluginBindingTests(unittest.TestCase):
                 if path.name != "optional_media_binding.py":
                     self.assertNotIn("akane.audio-separation", source, str(path))
                     self.assertNotIn("akane.voice-clean", source, str(path))
-
-    def test_dataset_missing_cleaning_plugin_is_structured(self):
-        engine = SimpleNamespace(_resolve_tool_handlers=Mock(return_value={}))
-        result = prepare_dataset_voice(
-            engine, profile_user_id="owner", session_id="session", source_id="audio_1", client_mode="qq_text"
-        )
-        self.assertEqual(result["reason"], "cleaning_plugin_unavailable")
-        self.assertEqual(
-            engine._resolve_tool_handlers.call_args.kwargs["client_context"].effective_mode.value, "qq_text"
-        )
 
     def test_transcription_internal_call_does_not_bypass_admission(self):
         capability = "akane.file-transcription.run.v1"
@@ -102,44 +113,6 @@ class TimelinePluginBindingTests(unittest.TestCase):
                 self.assertNotIn("class TranscribeMediaToolHandler", source, str(path))
                 self.assertNotIn("TRANSCRIBE_MEDIA_TOOL_SPEC", source, str(path))
                 self.assertNotIn("from faster_whisper import WhisperModel", source, str(path))
-
-    def test_dataset_cleaning_uses_normal_permission_admission(self):
-        capability = "akane.voice-clean.run.v1"
-        adapter = SimpleNamespace(invoke=Mock(side_effect=AssertionError("Approval required")))
-        descriptor = CapabilityDescriptor(
-            id=capability,
-            display_name="Cleaning",
-            short_hint="test",
-            visible_in=("base", "qq"),
-            prompt_exposed=True,
-            risk="high",
-            confirm="always",
-            effects=("filesystem",),
-            trigger=None,
-            inputs=tuple(
-                CapabilityIOSlot(name, kind)
-                for name, kind in (
-                    ("source_id", "string"),
-                    ("mode", "string"),
-                    ("quality", "string"),
-                    ("post_filter", "boolean"),
-                    ("output_format", "string"),
-                    ("send_to_user", "boolean"),
-                )
-            ),
-            outputs=(),
-            raw={},
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            handler = PluginCapabilityToolHandler(
-                capability_id=capability, adapter=adapter, descriptor=descriptor, config_base_dir=tmp
-            )
-            engine = SimpleNamespace(_resolve_tool_handlers=lambda **_: {capability: handler})
-            result = prepare_dataset_voice(
-                engine, profile_user_id="owner", session_id="session", source_id="audio_1", client_mode="qq_text"
-            )
-        self.assertEqual(result["reason"], "cleaning_not_admitted_or_failed")
-        adapter.invoke.assert_not_called()
 
     def test_missing_plugin_and_missing_scope_never_call_business(self):
         engine = SimpleNamespace(_resolve_tool_handlers=Mock(return_value={}))

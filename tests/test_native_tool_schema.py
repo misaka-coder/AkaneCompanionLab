@@ -22,7 +22,6 @@ from companion_v01.tool_runtime import (
     AdapterCapabilityToolHandler,
     ApplyStyleToExistingFileToolHandler,
     ComposeFileToolHandler,
-    PrepareVoiceDatasetToolHandler,
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     TOOL_METADATA_BY_TYPE,
@@ -131,7 +130,7 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 47)
+        self.assertEqual(len(handlers), 46)
         self.assertNotIn("convert_media_file", handlers)
         self.assertNotIn("separate_audio_stems", handlers)
         self.assertEqual(missing, [])
@@ -437,59 +436,6 @@ class NativeToolSchemaTests(unittest.TestCase):
             )
             self.assertNotIn("格式为", native["description"])
             self.assertNotIn("tool_call", native["description"])
-
-    def test_media_native_specs_match_handlers_and_do_not_silently_drop_primary_options(self) -> None:
-        dataset = PrepareVoiceDatasetToolHandler(generated_file_service=None)
-
-        dataset_call = dataset.normalize_call(
-            {
-                "type": "prepare_voice_dataset",
-                "source_ids": ["gen_001"],
-                "profile": "gpt_sovits",
-                "output_title": "训练集",
-                "target_sr": 44100,
-                "mono": True,
-                "min_clip_seconds": 3,
-                "max_clip_seconds": 12,
-                "silence_threshold_db": -40,
-                "min_silence_ms": 300,
-                "max_silence_kept_ms": 300,
-                "clean_first": True,
-                "normalize_volume": True,
-            }
-        )
-        self.assertEqual(dataset_call["source_ids"], ["gen_001"])
-        self.assertEqual(dataset_call["profile"], "gpt_sovits")
-        self.assertEqual(dataset_call["target_sr"], 44100)
-        self.assertTrue(dataset_call["clean_first"])
-
-        expected_properties = {
-            "prepare_voice_dataset": {
-                "source_ids",
-                "profile",
-                "output_title",
-                "target_sr",
-                "mono",
-                "min_clip_seconds",
-                "max_clip_seconds",
-                "silence_threshold_db",
-                "min_silence_ms",
-                "max_silence_kept_ms",
-                "clean_first",
-                "normalize_volume",
-            },
-        }
-        handlers = {
-            "prepare_voice_dataset": dataset,
-        }
-        for tool_name, expected in expected_properties.items():
-            spec = TOOL_SPEC_BY_TYPE[tool_name]
-            self.assertEqual(set(spec.input_schema["properties"]), expected, tool_name)
-            native = build_openai_native_tool_specs({tool_name: handlers[tool_name]})[0]["function"]
-            self.assertEqual(set(native["parameters"]["properties"]), expected, tool_name)
-            self.assertNotIn("model", native["parameters"]["properties"], tool_name)
-            self.assertNotIn("stems", native["parameters"]["properties"], tool_name)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -122,7 +122,6 @@ from .tool_runtime import (
     ManageGeneratedFileToolHandler,
     OpenBrowserToolHandler,
     OpenMusicSearchToolHandler,
-    PrepareVoiceDatasetToolHandler,
     ReadAttachmentSectionToolHandler,
     OpenMemoryToolHandler,
     ReadMemoryTimelineToolHandler,
@@ -280,7 +279,6 @@ MEMORY_METADATA_PRESENT_FIELD = "_memory_metadata_present"
 MEDIA_PRESET_ROUTING = [
     "【媒体任务预设路由】",
     "- 固定角色音色翻唱整首歌 → cover_song",
-    "- 训练素材切片打包 → prepare_voice_dataset",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
     "",
     "生成与交付是两件事：生成或媒体处理工具只负责产出句柄，不直接发送；拿到 gen_ 等结果后，根据用户要求调用 send_file 精确交付，多个结果可一次批量发送。",
@@ -462,7 +460,6 @@ class AkaneMemoryEngine:
             legacy_base_dirs=[self.base_dir / "generated_files"],
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             work_dir=self.base_dir / "generated_work",
-            voice_preparer=self._prepare_dataset_voice,
         )
         self.cover_song_service: CoverSongService | None = None
         self.desktop_music_timeline_service = DesktopMusicTimelineService(
@@ -2441,7 +2438,6 @@ class AkaneMemoryEngine:
             legacy_base_dirs=[self.base_dir / "generated_files"],
             ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
             work_dir=self.base_dir / "generated_work",
-            voice_preparer=self._prepare_dataset_voice,
         )
         self.generated_file_service = service
         return service
@@ -2450,11 +2446,6 @@ class AkaneMemoryEngine:
         from .optional_media_binding import prepare_timeline_transcript
 
         return prepare_timeline_transcript(self, **kwargs)
-
-    def _prepare_dataset_voice(self, **kwargs):
-        from .optional_media_binding import prepare_dataset_voice
-
-        return prepare_dataset_voice(self, **kwargs)
 
     def _create_local_media_executor(self) -> LocalMediaExecutorClient | None:
         base_url = str(getattr(config, "LOCAL_MEDIA_EXECUTOR_BASE_URL", "") or "").strip()
