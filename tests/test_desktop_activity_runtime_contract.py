@@ -462,157 +462,60 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("受伴奏影响", prompt)
         self.assert_no_music_backend_terms(prompt)
 
-    def test_timeline_build_prefers_vocal_track_before_mixed_audio(self) -> None:
-        class VocalFirstTimelineService(DesktopMusicTimelineService):
-            def __init__(self, *, store, generated_file_service, vocals_path: Path | None):
-                super().__init__(store=store, generated_file_service=generated_file_service)
-                self.vocals_path = vocals_path
-                self.calls = []
+    def test_timeline_build_prefers_vocal_track_before_mixed_audio(self):
+        calls = []
+        def transcribe(**kwargs):
+            calls.append(kwargs["source_id"])
+            return {"status": "ready", "segments": [{"start": 0, "end": 1, "text": "fixture"}]}
+        service = DesktopMusicTimelineService(store=None, generated_file_service=None, transcriber=transcribe,
+            vocal_preparer=lambda **_: {"status": "ready", "handle": "gen_vocals"})
+        result = service._transcribe_source({"source_id": "audio_1"})
+        self.assertEqual(result["quality"], "vocal_asr")
+        self.assertEqual(calls, ["gen_vocals"])
+        service.vocal_preparer = None
+        result = service._transcribe_source({"source_id": "audio_1"})
+        self.assertEqual(result["quality"], "mixed_asr")
+        self.assertEqual(calls, ["gen_vocals", "audio_1"])
 
-            def _separate_vocals_to_cache(self, *, work_dir: Path, **_context):
-                return {"path": self.vocals_path}
+    def test_direct_vocal_source_skips_separation(self):
+        def fail(**_):
+            raise AssertionError("Separation should not run")
+        calls = []
+        def transcribe(**kwargs):
+            calls.append(kwargs["source_id"])
+            return {"status": "ready", "segments": [{"text": "fixture"}]}
+        service = DesktopMusicTimelineService(store=None, generated_file_service=None, vocal_preparer=fail, transcriber=transcribe)
+        result = service._transcribe_source({"source_id": "gen_vocals", "role": "vocals"})
+        self.assertEqual(result["quality"], "vocal_asr")
+        self.assertEqual(calls, ["gen_vocals"])
 
-            def _transcribe_audio_path(self, *, audio_path: Path, source: dict, ffmpeg_path: str, quality: str):
-                self.calls.append((audio_path.name, quality))
-                return {
-                    "status": "ready",
-                    "quality": quality,
-                    "segments": [{"start": 0, "end": 1, "text": "测试"}],
-                }
+    def test_empty_vocal_separation_falls_back_to_source_audio(self):
+        calls = []
+        def transcribe(**kwargs):
+            handle = kwargs["source_id"]
+            calls.append(handle)
+            return {"status": "ready", "segments": [] if handle == "gen_vocals" else [{"text": "fixture"}]}
+        service = DesktopMusicTimelineService(store=None, generated_file_service=None, transcriber=transcribe,
+            vocal_preparer=lambda **_: {"status": "ready", "handle": "gen_vocals"})
+        result = service._transcribe_source({"source_id": "audio_1"})
+        self.assertEqual(result["quality"], "mixed_asr")
+        self.assertEqual(calls, ["gen_vocals", "audio_1"])
 
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source_path = root / "song.mp3"
-            source_path.write_bytes(b"fake")
-            vocals_path = root / "vocals.wav"
-            vocals_path.write_bytes(b"fake")
+    def test_instrumental_source_skips_separation_and_transcription(self):
+        calls = []
+        def operation(**_):
+            calls.append("unexpected")
+            return {}
+        service = DesktopMusicTimelineService(store=None, generated_file_service=None,
+            vocal_preparer=operation, transcriber=operation)
+        result = service._transcribe_source({"source_id": "gen_instrumental", "role": "instrumental"})
+        self.assertEqual(result["error"], "instrumental_has_no_lyrics")
+        self.assertEqual(calls, [])
 
-            service = VocalFirstTimelineService(
-                store=None,
-                generated_file_service=None,
-                vocals_path=vocals_path,
-            )
-            with patch("companion_v01.desktop_music_timeline.importlib.util.find_spec", return_value=object()), patch(
-                "companion_v01.desktop_music_timeline.shutil.which",
-                return_value="ffmpeg",
-            ):
-                vocal_result = service._transcribe_source({"absolute_path": source_path})
-
-            self.assertEqual(vocal_result["quality"], "vocal_asr")
-            self.assertEqual(service.calls, [("vocals.wav", "vocal_asr")])
-
-            service = VocalFirstTimelineService(
-                store=None,
-                generated_file_service=None,
-                vocals_path=None,
-            )
-            with patch("companion_v01.desktop_music_timeline.importlib.util.find_spec", return_value=object()), patch(
-                "companion_v01.desktop_music_timeline.shutil.which",
-                return_value="ffmpeg",
-            ):
-                mixed_result = service._transcribe_source({"absolute_path": source_path})
-
-            self.assertEqual(mixed_result["quality"], "mixed_asr")
-            self.assertEqual(service.calls, [("song.mp3", "mixed_asr")])
-
-    def test_direct_vocal_source_skips_separation(self) -> None:
-        class DirectVocalTimelineService(DesktopMusicTimelineService):
-            def __init__(self):
-                super().__init__(store=None, generated_file_service=None)
-                self.calls = []
-                self.separation_called = False
-
-            def _separate_vocals_to_cache(self, *, work_dir: Path, **_context):
-                self.separation_called = True
-                return None
-
-            def _transcribe_audio_path(self, *, audio_path: Path, source: dict, ffmpeg_path: str, quality: str):
-                self.calls.append((audio_path.name, quality))
-                return {
-                    "status": "ready",
-                    "quality": quality,
-                    "segments": [{"start": 0, "end": 1, "text": "纯人声测试"}],
-                }
-
-        with TemporaryDirectory() as tmp:
-            source_path = Path(tmp) / "voice.wav"
-            source_path.write_bytes(b"fake")
-            service = DirectVocalTimelineService()
-            with patch("companion_v01.desktop_music_timeline.importlib.util.find_spec", return_value=object()), patch(
-                "companion_v01.desktop_music_timeline.shutil.which",
-                return_value="ffmpeg",
-            ):
-                result = service._transcribe_source({"absolute_path": source_path, "role": "vocals"})
-
-            self.assertEqual(result["quality"], "vocal_asr")
-            self.assertEqual(service.calls, [("voice.wav", "vocal_asr")])
-            self.assertFalse(service.separation_called)
-
-    def test_empty_vocal_separation_falls_back_to_source_audio(self) -> None:
-        class EmptyVocalFallbackTimelineService(DesktopMusicTimelineService):
-            def __init__(self, *, vocals_path: Path):
-                super().__init__(store=None, generated_file_service=None)
-                self.vocals_path = vocals_path
-                self.calls = []
-
-            def _separate_vocals_to_cache(self, *, work_dir: Path, **_context):
-                return {"path": self.vocals_path}
-
-            def _transcribe_audio_path(self, *, audio_path: Path, source: dict, ffmpeg_path: str, quality: str):
-                self.calls.append((audio_path.name, quality))
-                if quality == "vocal_asr":
-                    return {"status": "ready", "quality": quality, "segments": []}
-                return {
-                    "status": "ready",
-                    "quality": quality,
-                    "segments": [{"start": 0, "end": 1, "text": "回退原音频测试"}],
-                }
-
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source_path = root / "song.mp3"
-            source_path.write_bytes(b"fake")
-            vocals_path = root / "vocals.wav"
-            vocals_path.write_bytes(b"fake")
-            service = EmptyVocalFallbackTimelineService(vocals_path=vocals_path)
-            with patch("companion_v01.desktop_music_timeline.importlib.util.find_spec", return_value=object()), patch(
-                "companion_v01.desktop_music_timeline.shutil.which",
-                return_value="ffmpeg",
-            ):
-                result = service._transcribe_source({"absolute_path": source_path})
-
-            self.assertEqual(result["quality"], "mixed_asr")
-            self.assertEqual(service.calls, [("vocals.wav", "vocal_asr"), ("song.mp3", "mixed_asr")])
-
-    def test_instrumental_source_skips_separation_and_transcription(self) -> None:
-        class InstrumentalTimelineService(DesktopMusicTimelineService):
-            def __init__(self):
-                super().__init__(store=None, generated_file_service=None)
-                self.separation_called = False
-                self.transcribe_called = False
-
-            def _separate_vocals_to_cache(self, *, work_dir: Path, **_context):
-                self.separation_called = True
-                return None
-
-            def _transcribe_audio_path(self, *, audio_path: Path, source: dict, ffmpeg_path: str, quality: str):
-                self.transcribe_called = True
-                return {"status": "ready", "quality": quality, "segments": [{"start": 0, "end": 1, "text": "不应出现"}]}
-
-        with TemporaryDirectory() as tmp:
-            source_path = Path(tmp) / "piano_pure_music.wav"
-            source_path.write_bytes(b"fake")
-            service = InstrumentalTimelineService()
-            with patch("companion_v01.desktop_music_timeline.importlib.util.find_spec", return_value=object()), patch(
-                "companion_v01.desktop_music_timeline.shutil.which",
-                return_value="ffmpeg",
-            ):
-                result = service._transcribe_source({"absolute_path": source_path, "role": "instrumental"})
-
-            self.assertEqual(result["status"], "failed")
-            self.assertEqual(result["error"], "instrumental_has_no_lyrics")
-            self.assertFalse(service.separation_called)
-            self.assertFalse(service.transcribe_called)
+    def test_missing_transcription_plugin_does_not_load_a_model(self):
+        service = DesktopMusicTimelineService(store=None, generated_file_service=None)
+        result = service._transcribe_source({"source_id": "audio_1"})
+        self.assertEqual(result["error"], "transcription_plugin_unavailable")
 
     def test_activity_prompt_triggers_timeline_prepare_for_workspace_audio(self) -> None:
         class PrepareAwareTimelineService:

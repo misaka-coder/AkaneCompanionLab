@@ -9,5 +9,8 @@ description = "Offline file transcription business runtime for Akane"
 readme = "README.md"
 requires-python = ">=3.11"
 
+[project.entry-points."akane.plugins.v1"]
+"akane.file-transcription" = "akane_file_transcription.plugin:create_plugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]

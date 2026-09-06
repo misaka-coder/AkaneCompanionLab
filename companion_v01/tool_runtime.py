@@ -54,7 +54,6 @@ from .capability_registry import (
     SEND_FILE_TOOL_SPEC,
     SEND_MUSIC_CARD_TOOL_SPEC,
     SEND_STICKER_TOOL_SPEC,
-    TRANSCRIBE_MEDIA_TOOL_SPEC,
     WEB_SEARCH_TOOL_SPEC,
 )
 from .local_capability_config import get_mcp_server_runtime_config
@@ -118,7 +117,6 @@ from .tool_handlers.generated_media import (
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     SendStickerToolHandler,
-    TranscribeMediaToolHandler,
 )
 from .tool_handlers.music import SendAudioToolHandler, SendMusicCardToolHandler
 from .tool_handlers.web_browser import (

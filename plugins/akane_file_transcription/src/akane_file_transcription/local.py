@@ -133,36 +133,55 @@ class LocalTranscriber:
         try:
             with tempfile.TemporaryDirectory(prefix="asr-", dir=work_root) as tmp:
                 prepared = Path(tmp) / "prepared.wav"
-                args = [
-                    self.binary("ffmpeg"),
-                    "-v",
-                    "error",
-                    "-nostdin",
-                    "-y",
-                    *INPUT_OPTIONS,
-                    "-i",
-                    source,
-                    "-map",
-                    "0:a:0",
-                    "-vn",
-                    "-map_metadata",
-                    "-1",
-                    "-ac",
-                    "1",
-                    "-ar",
-                    "16000",
-                    "-c:a",
-                    "pcm_s16le",
-                    prepared,
-                ]
-                code, _ = await self.runner.run(args, timeout=900)
-                if code or not prepared.is_file() or prepared.stat().st_size <= 44:
-                    raise TranscriptionError("asr_audio_prepare_failed")
+                await self.prepare(source=source, prepared=prepared)
                 return await self.worker(source=prepared, options=options)
         except asyncio.TimeoutError:
             raise TranscriptionError("asr_timeout") from None
         except OSError:
             raise TranscriptionError("asr_io_failed") from None
+
+    async def prepare(self, *, source, prepared):
+        source, prepared = Path(source), Path(prepared)
+        if source.resolve() == prepared.resolve() or prepared.exists():
+            raise TranscriptionError("asr_prepared_already_exists")
+        if source.suffix.lower().lstrip(".") in PROTECTED:
+            raise TranscriptionError("protected_media_format")
+        prepared.parent.mkdir(parents=True, exist_ok=True)
+        succeeded = False
+        try:
+            args = [
+                self.binary("ffmpeg"),
+                "-v",
+                "error",
+                "-nostdin",
+                "-y",
+                *INPUT_OPTIONS,
+                "-i",
+                source,
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-map_metadata",
+                "-1",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                prepared,
+            ]
+            code, _ = await self.runner.run(args, timeout=900)
+            if code or not prepared.is_file() or prepared.stat().st_size <= 44:
+                raise TranscriptionError("asr_audio_prepare_failed")
+            succeeded = True
+        except asyncio.TimeoutError:
+            raise TranscriptionError("asr_timeout") from None
+        except OSError:
+            raise TranscriptionError("asr_io_failed") from None
+        finally:
+            if not succeeded:
+                prepared.unlink(missing_ok=True)
 
     async def aclose(self):
         await self.runner.aclose()

@@ -24,14 +24,7 @@ from fastapi.responses import Response
 from scripts.akane_separation_package import local_demucs_class, run_completed
 
 from companion_v01.cover_song import CoverSongError, RvcWebUiProvider
-from companion_v01.generated_files_media import (
-    load_faster_whisper_model,
-    normalize_transcript_language,
-    normalize_whisper_compute_type,
-    normalize_whisper_device,
-    normalize_whisper_model_size,
-    prepare_transcription_input,
-)
+from services.asr_business import module as asr_business_module
 from companion_v01.local_media_executor import safe_model_fingerprint, safe_uploaded_suffix
 
 
@@ -124,85 +117,66 @@ class LocalDemucsRuntime:
 
 
 class LocalAsrRuntime:
+    """Existing service protocol over the package's shared inference authority."""
+
     def __init__(self, *, ffmpeg_path: Path, cache_dir: Path | None, default_model: str) -> None:
-        self.ffmpeg_path = Path(ffmpeg_path)
-        self.cache_dir = Path(cache_dir) if cache_dir else None
-        self.default_model = normalize_whisper_model_size(default_model)
-        self.device = normalize_whisper_device(os.environ.get("AKANE_LOCAL_ASR_DEVICE", "cpu"))
-        self.compute_type = normalize_whisper_compute_type(
-            os.environ.get("AKANE_LOCAL_ASR_COMPUTE_TYPE", "int8")
+        self.ffmpeg_path, self.cache_dir = Path(ffmpeg_path), cache_dir
+        self.default_model, self.device, self.compute_type = "small", "cpu", "int8"
+        self._status = {"ok": False, "reason": "asr_business_unavailable"}
+        try:
+            compatibility = asr_business_module("compatibility")
+            self.default_model = compatibility.normalize_model(default_model)
+            self.device = compatibility.normalize_device(os.environ.get("AKANE_LOCAL_ASR_DEVICE", "cpu"))
+            self.compute_type = compatibility.normalize_compute(os.environ.get("AKANE_LOCAL_ASR_COMPUTE_TYPE", "int8"))
+            self._status = run_completed(self._probe)
+        except Exception as exc:
+            reason = str(exc)
+            self._status = {"ok": False, "reason": reason if reason.startswith(("asr_", "ffmpeg_", "ffprobe_")) else "asr_business_unavailable"}
+
+    def _runtime(self):
+        return asr_business_module("local").LocalTranscriber(
+            model=self.default_model, device=self.device, compute_type=self.compute_type,
+            cache_dir=self.cache_dir, ffmpeg=self.ffmpeg_path,
         )
-        self._whisper_model_cache: dict[tuple[str, str, str, str], Any] = {}
-        self._lock = threading.RLock()
+
+    async def _probe(self):
+        runtime = self._runtime()
+        try:
+            return await runtime.probe()
+        finally:
+            await runtime.aclose()
 
     @property
     def ready(self) -> bool:
-        try:
-            import faster_whisper  # noqa: F401
-        except Exception:
-            return False
-        return self.ffmpeg_path.exists() and self.ffmpeg_path.is_file()
+        return self._status.get("ok") is True
 
-    def transcribe(
-        self,
-        *,
-        source_path: Path,
-        model_size: str,
-        language: str,
-        vad_filter: bool,
-    ) -> dict[str, Any]:
-        if not self.ready:
-            raise RuntimeError("local_asr_dependencies_missing")
-        normalized_model = normalize_whisper_model_size(model_size or self.default_model)
-        normalized_language = normalize_transcript_language(language)
-        with tempfile.TemporaryDirectory(prefix="akane_local_asr_") as tmp:
-            prepared_path = Path(tmp) / "prepared.wav"
-            prepared = prepare_transcription_input(
-                self,
-                ffmpeg_path=str(self.ffmpeg_path),
-                source_path=source_path,
-                prepared_path=prepared_path,
-            )
-            if not prepared.get("ok"):
-                raise RuntimeError("audio_prepare_failed")
-            with self._lock:
-                model = load_faster_whisper_model(
-                    self,
-                    model_size=normalized_model,
-                    device=self.device,
-                    compute_type=self.compute_type,
-                    download_root=str(self.cache_dir) if self.cache_dir else None,
-                )
-                kwargs: dict[str, Any] = {"beam_size": 5, "vad_filter": bool(vad_filter)}
-                if normalized_language:
-                    kwargs["language"] = normalized_language
-                segments_iter, info = model.transcribe(str(prepared_path), **kwargs)
-                raw_segments = list(segments_iter)
-        segments = []
-        for index, segment in enumerate(raw_segments, start=1):
-            text = str(getattr(segment, "text", "") or "").strip()
-            if not text:
-                continue
-            start = float(getattr(segment, "start", 0.0) or 0.0)
-            end = max(start, float(getattr(segment, "end", start) or start))
-            segments.append(
-                {
-                    "id": index - 1,
-                    "index": index,
-                    "start": round(start, 3),
-                    "end": round(end, 3),
-                    "text": text,
-                    "avg_logprob": _optional_float(getattr(segment, "avg_logprob", None)),
-                    "no_speech_prob": _optional_float(getattr(segment, "no_speech_prob", None)),
-                }
-            )
+    def public_status(self):
         return {
-            "text": " ".join(item["text"] for item in segments).strip(),
-            "language": str(getattr(info, "language", normalized_language) or normalized_language),
-            "duration": _optional_float(getattr(info, "duration", None)),
-            "segments": segments,
-            "model": normalized_model,
+            "ready": self.ready, "reason": "" if self.ready else self._status.get("reason", "asr_unavailable"),
+            "model": self.default_model, "device": self._status.get("device", self.device),
+            "compute_type": self._status.get("compute_type", self.compute_type),
         }
+
+    def transcribe(self, *, source_path: Path, model_size: str, language: str, vad_filter: bool):
+        if not self.ready:
+            raise RuntimeError(self._status.get("reason", "asr_unavailable"))
+        local = asr_business_module("local")
+        compatibility = asr_business_module("compatibility")
+        options = local.Options(
+            model_size=compatibility.normalize_model(model_size or self.default_model),
+            language=compatibility.normalize_language(language) or "auto", vad_filter=vad_filter,
+        )
+
+        async def execute():
+            runtime = self._runtime()
+            try:
+                return await runtime.transcribe(source=source_path, options=options)
+            finally:
+                await runtime.aclose()
+
+        result = run_completed(execute)
+        return {"text": result["text"], "language": result["language"], "duration": result["duration_seconds"],
+                "segments": result["segments"], "model": result["model"]}
 
 
 def create_app(
@@ -251,13 +225,7 @@ def create_app(
             "status": "ready" if asr_runtime.ready and demucs_runtime.ready and rvc_ready else "degraded",
             "service": "akane_local_media_capabilities",
             "protocol_version": 1,
-            "asr": {
-                "ready": asr_runtime.ready,
-                "reason": "" if asr_runtime.ready else "local_asr_dependencies_missing",
-                "model": asr_runtime.default_model,
-                "device": asr_runtime.device,
-                "compute_type": asr_runtime.compute_type,
-            },
+            "asr": asr_runtime.public_status(),
             "separation": demucs_runtime.public_status(),
             "rvc": {
                 "ready": rvc_ready,

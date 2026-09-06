@@ -23,7 +23,6 @@ from companion_v01.tool_runtime import (
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     ToolExecutionContext,
-    TranscribeMediaToolHandler,
 )
 
 
@@ -816,231 +815,6 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["generated_file"]["generated_handle"], "gen_001")
         self.assertEqual(result.followup_context, "训练集完成。")
 
-    def test_transcribe_media_creates_merged_markdown_transcript(self) -> None:
-        class FakeWhisperModel:
-            def transcribe(self, audio_path, **kwargs):
-                return (
-                    [
-                        {"start": 0.0, "end": 1.2, "text": "你好，主人。"},
-                        {"start": 1.5, "end": 3.0, "text": "这是转写测试。"},
-                    ],
-                    {"language": "zh", "duration": 3.0},
-                )
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "speech.mp3"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_bytes(b"fake mp3 payload")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="audio",
-                origin_name="speech.mp3",
-                storage_relpath="master/speech.mp3",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="speech.mp3",
-                short_hint="一段口播录音。",
-                detail={"file_kind": "mp3", "media_info": {"audio": {"codec": "mp3"}}},
-                timestamp=110,
-            )
-
-            def fake_run(command, capture_output, text, timeout, check):
-                _write_test_wav(Path(command[-1]), sample_rate=1000)
-                return subprocess.CompletedProcess(command, 0, "", "")
-
-            with (
-                patch("companion_v01.generated_files.importlib.util.find_spec", return_value=object()),
-                patch(
-                    "companion_v01.generated_files.shutil.which",
-                    return_value="ffmpeg.exe",
-                ),
-                patch("companion_v01.generated_files.subprocess.run", side_effect=fake_run),
-                patch.object(
-                    GeneratedFileService,
-                    "_load_faster_whisper_model",
-                    return_value=FakeWhisperModel(),
-                ),
-            ):
-                result = generated_service.transcribe_media(
-                    profile_user_id="user",
-                    session_id="session",
-                    source_targets=["audio_001"],
-                    output_format="md",
-                    output_title="speech_transcript",
-                    language="zh",
-                    with_timestamps=True,
-                    merge_outputs=True,
-                    timestamp=120,
-                )
-
-            self.assertTrue(result["ok"])
-            generated = result["generated"]
-            self.assertEqual(generated["generated_handle"], "gen_001")
-            self.assertEqual(generated["output_format"], "md")
-            self.assertEqual(generated["created_by_tool"], "transcribe_media")
-            output_text = Path(generated["absolute_path"]).read_text(encoding="utf-8")
-            self.assertIn("你好，主人", output_text)
-            self.assertIn("[0:00 - 0:01]", output_text)
-            card = generated.get("content_card") or {}
-            self.assertEqual(card.get("type"), "media_transcript")
-            self.assertIn("转写稿", result["followup_context"])
-
-    def test_transcribe_media_uses_remote_executor_without_cloud_whisper_or_ffmpeg(self) -> None:
-        class FakeAsrExecutor:
-            def __init__(self) -> None:
-                self.calls = []
-
-            @staticmethod
-            def capability_status():
-                return {"asr": {"ready": True, "model": "small"}}
-
-            def transcribe_file(self, path, **kwargs):
-                self.calls.append((Path(path), dict(kwargs)))
-                return {
-                    "ok": True,
-                    "text": "本机执行器转写成功。",
-                    "language": "zh",
-                    "duration_seconds": 1.5,
-                    "segments": [
-                        {
-                            "index": 1,
-                            "start": 0.0,
-                            "end": 1.5,
-                            "text": "本机执行器转写成功。",
-                        }
-                    ],
-                    "provider": "local_media_executor",
-                }
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "speech.ogg"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_bytes(b"remote executor audio")
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            executor = FakeAsrExecutor()
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-                asr_executor=executor,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="audio",
-                origin_name="speech.ogg",
-                storage_relpath="master/speech.ogg",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="speech.ogg",
-                short_hint="一段 QQ 语音。",
-                timestamp=101,
-            )
-
-            with (
-                patch("companion_v01.generated_files_media.importlib.util.find_spec", return_value=None),
-                patch("companion_v01.generated_files_media.shutil.which", return_value=None),
-            ):
-                result = generated_service.transcribe_media(
-                    profile_user_id="user",
-                    session_id="session",
-                    source_targets=["audio_001"],
-                    output_format="txt",
-                    timestamp=110,
-                )
-
-            self.assertTrue(result["ok"])
-            self.assertEqual(len(executor.calls), 1)
-            output_text = Path(result["generated"]["absolute_path"]).read_text(encoding="utf-8")
-            self.assertIn("本机执行器转写成功", output_text)
-
-    def test_transcribe_media_tool_handler_emits_multiple_generated_events(self) -> None:
-        class FakeGeneratedService:
-            def transcribe_media(self, **kwargs):
-                return {
-                    "ok": True,
-                    "generated": {"generated_id": "generated::1", "generated_handle": "gen_001"},
-                    "generated_files": [
-                        {"generated_id": "generated::1", "generated_handle": "gen_001"},
-                        {"generated_id": "generated::2", "generated_handle": "gen_002"},
-                    ],
-                    "send_to_user": True,
-                    "followup_context": "转写完成。",
-                }
-
-        handler = TranscribeMediaToolHandler(generated_file_service=FakeGeneratedService())
-        call = handler.normalize_call(
-            {
-                "type": "transcribe_media",
-                "source_ids": ["audio_001", "gen_002"],
-                "output_format": "srt",
-                "language": "中文",
-                "merge_outputs": False,
-                "with_timestamps": True,
-                "send_to_user": True,
-            }
-        )
-
-        self.assertIsNotNone(call)
-        self.assertEqual((call or {}).get("source_ids"), ["audio_001", "gen_002"])
-        self.assertEqual((call or {}).get("output_format"), "srt")
-        self.assertEqual((call or {}).get("language"), "zh")
-        self.assertFalse((call or {}).get("merge_outputs"))
-        result = handler.execute(
-            call=call or {},
-            context=ToolExecutionContext(
-                profile_user_id="user",
-                session_id="session",
-                now_ts=100,
-                visual_payload={},
-            ),
-        )
-
-        self.assertEqual(len(result.stream_events), 2)
-        self.assertEqual(result.stream_events[0]["type"], "generated_file_ready")
-        self.assertEqual(result.stream_events[1]["generated_file"]["generated_handle"], "gen_002")
-        self.assertEqual(result.followup_context, "转写完成。")
-
-    def test_transcribe_media_tool_handler_does_not_send_by_default(self) -> None:
-        handler = TranscribeMediaToolHandler(generated_file_service=object())
-
-        call = handler.normalize_call(
-            {
-                "type": "transcribe_media",
-                "source_ids": ["audio_001"],
-                "output_format": "md",
-            }
-        )
-
-        self.assertIsNotNone(call)
-        self.assertFalse((call or {}).get("send_to_user"))
-        self.assertEqual((call or {}).get("model_size"), "auto")
-        self.assertIn('"send_to_user":false', handler.build_prompt_instruction())
-
     def test_inspect_media_info_tool_handler_emits_media_info_event(self) -> None:
         class FakeGeneratedService:
             def inspect_media_info(self, **kwargs):
@@ -1071,14 +845,6 @@ class GeneratedFileTests(unittest.TestCase):
     def test_media_handlers_do_not_report_ready_without_real_executors(self) -> None:
         class FakeGeneratedService:
             @staticmethod
-            def asr_status():
-                return {
-                    "enabled": False,
-                    "status": "missing_executor",
-                    "reason": "local_media_executor_unreachable",
-                }
-
-            @staticmethod
             def voice_dataset_status():
                 return {"enabled": False, "status": "missing_executor", "reason": "ffmpeg_not_found"}
 
@@ -1088,22 +854,16 @@ class GeneratedFileTests(unittest.TestCase):
 
         service = FakeGeneratedService()
         statuses = {
-            "transcribe": TranscribeMediaToolHandler(generated_file_service=service).capability_status(),
             "dataset": PrepareVoiceDatasetToolHandler(generated_file_service=service).capability_status(),
             "inspect": InspectMediaInfoToolHandler(generated_file_service=service).capability_status(),
         }
 
-        self.assertEqual(statuses["transcribe"]["reason"], "local_media_executor_unreachable")
         self.assertEqual(statuses["dataset"]["status"], "missing_executor")
         self.assertEqual(statuses["inspect"]["provider"], "ffprobe")
 
     def test_media_tool_instructions_explain_video_task_routing_without_fixed_pipeline(self) -> None:
-        transcribe_instruction = TranscribeMediaToolHandler(generated_file_service=object()).build_prompt_instruction()
         dataset_instruction = PrepareVoiceDatasetToolHandler(generated_file_service=object()).build_prompt_instruction()
 
-        self.assertIn("如果用户要字幕文件，优先用 srt 或 vtt", transcribe_instruction)
-        self.assertIn("这个工具负责转写，不负责总结", transcribe_instruction)
-        self.assertIn("如果用户只要原视频/原音频，不要为了回复而转写", transcribe_instruction)
         self.assertIn("按当前实际可用工具分步组合", dataset_instruction)
         self.assertNotIn("convert_media_file", dataset_instruction)
         self.assertIn("不要把人声处理和切片打包用于只要原文件的请求", dataset_instruction)

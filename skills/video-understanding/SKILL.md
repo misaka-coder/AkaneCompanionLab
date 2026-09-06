@@ -9,7 +9,7 @@ metadata:
 
 # Video Understanding
 
-Answer questions about the real visual and audio content of a video: frames must be extracted with `ffmpeg` through `exec_run`, registered, then loaded through `load_material` into the multimodal round; audio evidence uses `transcribe_media`. Never answer from the filename, file size, or metadata alone, and never invent content you could not actually see or hear.
+Answer questions about the real visual and audio content of a video: frames must be extracted with `ffmpeg` through `exec_run`, registered, then loaded through `load_material` into the multimodal round; audio evidence uses an actually installed transcription capability from the current tool list. Never answer from the filename, file size, or metadata alone, and never invent content you could not actually see or hear.
 
 ## When to load
 
@@ -94,7 +94,7 @@ The loaded images are sent to the vision model in the next round. Track which ha
 
 ### 6. Audio evidence when the question needs it
 
-- If the question is about speech, dialogue, subtitles, or lyrics, call `transcribe_media` on the video handle (or a `gen_*` audio already extracted); it handles video files directly by using the audio track.
+- If the question is about speech, dialogue, subtitles, or lyrics, select an actually available transcription capability and follow its descriptor for the video handle (or an extracted `gen_*` audio). If no transcription capability is available, state that audio evidence is unavailable; do not invent a tool name or transcript.
 - If ffprobe showed no audio stream, do not invent dialogue; say the video has no audio track.
 - If transcription fails, answer from frames only and state that the spoken content could not be verified.
 
@@ -108,7 +108,7 @@ Before answering, make sure you can state: the video handle; duration; resolutio
 
 ## Memory and reload
 
-Tool rounds (`load_skill`, `exec_run`, `load_material`, `transcribe_media`) are recorded in order. If a later question in this session needs the same evidence (frame handles, transcript, or ffprobe results), reopen it with `open_memory` instead of re-extracting. Do not put video bytes, embedded image data, or host paths into replies.
+Tool rounds (skill loading, execution, material loading, and available transcription) are recorded in order. If a later question in this session needs the same evidence (frame handles, transcript, or ffprobe results), reopen it with `open_memory` instead of re-extracting. Do not put video bytes, embedded image data, or host paths into replies.
 
 ## Failure handling
 

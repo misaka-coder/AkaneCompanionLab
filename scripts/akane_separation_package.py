@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
+
+from companion_v01.plugin_subprocess import run_completed  # noqa: F401
 
 
 def local_demucs_class():
@@ -22,17 +22,3 @@ def local_demucs_class():
         sys.path.insert(0, str(source))
         from akane_audio_separation.local import LocalDemucs
     return LocalDemucs
-
-
-def run_completed(factory):
-    """Bridge legacy blocking routes; return only after all child work is drained.
-
-    No background job, retry, or cancellation acknowledgement is created here.
-    The synchronous HTTP contract still finishes inference before responding.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(factory())
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(lambda: asyncio.run(factory())).result()

@@ -17,6 +17,8 @@ import zipfile
 from array import array
 from copy import copy
 from pathlib import Path
+from services.asr_business import module as asr_business_module
+
 from typing import Any, Callable
 
 from . import generated_files_cards, generated_files_delivery, generated_files_io, generated_files_media
@@ -81,7 +83,6 @@ class GeneratedFileService:
         legacy_base_dirs: list[Path] | tuple[Path, ...] | None = None,
         ensure_storage_ready: Callable[[], Any] | None = None,
         work_dir: Path | None = None,
-        asr_executor: Any = None,
         voice_preparer: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.base_dir = Path(base_dir)
@@ -96,8 +97,7 @@ class GeneratedFileService:
         self.ensure_storage_ready = ensure_storage_ready
         self.store = store
         self.attachment_service = attachment_service
-        self._whisper_model_cache: dict[tuple[str, str, str], Any] = {}
-        self.asr_executor = asr_executor
+        self._whisper_model_cache: dict[tuple[str, str, str, str], Any] = {}
         self.voice_preparer = voice_preparer
 
 
@@ -108,41 +108,6 @@ class GeneratedFileService:
             "status": "ready" if ffmpeg_path else "missing_executor",
             "reason": "" if ffmpeg_path else "ffmpeg_not_found",
             "provider": "ffmpeg" if ffmpeg_path else "",
-        }
-
-    def asr_status(self) -> dict[str, Any]:
-        executor = self.asr_executor
-        if executor is not None:
-            try:
-                status = dict(executor.capability_status() or {})
-                asr = status.get("asr") if isinstance(status.get("asr"), dict) else {}
-                if bool(asr.get("ready")):
-                    return {
-                        "enabled": True,
-                        "status": "ready",
-                        "reason": "",
-                        "provider": "local_media_executor",
-                        "model": str(asr.get("model") or ""),
-                    }
-            except Exception:
-                pass
-        ffmpeg_path = shutil.which("ffmpeg")
-        whisper_ready = importlib.util.find_spec("faster_whisper") is not None
-        if ffmpeg_path and whisper_ready:
-            return {
-                "enabled": True,
-                "status": "ready",
-                "reason": "",
-                "provider": "faster_whisper",
-                "model": "",
-            }
-        reason = "ffmpeg_not_found" if not ffmpeg_path else "faster_whisper_not_found"
-        return {
-            "enabled": False,
-            "status": "missing_executor",
-            "reason": reason,
-            "provider": "",
-            "model": "",
         }
 
     def media_inspection_status(self) -> dict[str, Any]:
@@ -366,43 +331,6 @@ class GeneratedFileService:
             protected_media_extensions=PROTECTED_MEDIA_EXTENSIONS,
             voice_dataset_presets=VOICE_DATASET_PRESETS,
             client_mode=client_mode,
-        )
-
-    def transcribe_media(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        source_targets: list[str] | tuple[str, ...] | str,
-        output_format: str = "md",
-        output_title: str = "",
-        language: str = "zh",
-        with_timestamps: bool = True,
-        merge_outputs: bool = True,
-        model_size: str = "auto",
-        device: str = "auto",
-        compute_type: str = "auto",
-        vad_filter: bool = True,
-        send_to_user: bool = True,
-        timestamp: int | None = None,
-    ) -> dict[str, Any]:
-        return generated_files_media.transcribe_media(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            source_targets=source_targets,
-            output_format=output_format,
-            output_title=output_title,
-            language=language,
-            with_timestamps=with_timestamps,
-            merge_outputs=merge_outputs,
-            model_size=model_size,
-            device=device,
-            compute_type=compute_type,
-            vad_filter=vad_filter,
-            send_to_user=send_to_user,
-            timestamp=timestamp,
-            transcript_output_formats=TRANSCRIPT_OUTPUT_FORMATS,
         )
 
     def inspect_media_info(
@@ -1813,224 +1741,31 @@ class GeneratedFileService:
     def _render_voice_dataset_readme(self, manifest: dict[str, Any]) -> str:
         return generated_files_io.render_voice_dataset_readme(self, manifest)
 
-    def _resolve_media_sources_for_batch(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        source_targets: list[str],
-    ) -> tuple[list[dict[str, Any]], list[str], list[str], list[str]]:
-        return generated_files_media.resolve_media_sources_for_batch(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            source_targets=source_targets,
-            protected_media_extensions=PROTECTED_MEDIA_EXTENSIONS,
+    def _normalize_transcript_language(self, value):
+        return asr_business_module("compatibility").normalize_language(value)
+
+    def _normalize_whisper_model_size(self, value):
+        return asr_business_module("compatibility").normalize_model(value)
+
+    def _normalize_whisper_device(self, value):
+        return asr_business_module("compatibility").normalize_device(value)
+
+    def _normalize_whisper_compute_type(self, value):
+        return asr_business_module("compatibility").normalize_compute(value)
+
+    def _load_faster_whisper_model(self, *, model_size, device, compute_type, download_root=None):
+        return asr_business_module("compatibility").cached_model(
+            self._whisper_model_cache, model_size=model_size, device=device,
+            compute_type=compute_type, download_root=download_root,
         )
 
-    def _normalize_transcript_output_format(self, value: Any) -> str:
-        return generated_files_media.normalize_transcript_output_format(value)
-
-    def _normalize_transcript_language(self, value: Any) -> str:
-        return generated_files_media.normalize_transcript_language(value)
-
-    def _normalize_whisper_model_size(self, value: Any) -> str:
-        return generated_files_media.normalize_whisper_model_size(value)
-
-    def _normalize_whisper_device(self, value: Any) -> str:
-        return generated_files_media.normalize_whisper_device(value)
-
-    def _normalize_whisper_compute_type(self, value: Any) -> str:
-        return generated_files_media.normalize_whisper_compute_type(value)
-
-    def _load_faster_whisper_model(self, *, model_size: str, device: str, compute_type: str, download_root: str | None = None) -> Any:
-        return generated_files_media.load_faster_whisper_model(
-            self,
-            model_size=model_size,
-            device=device,
-            compute_type=compute_type,
-            download_root=download_root,
+    def _prepare_transcription_input(self, *, ffmpeg_path, source_path, prepared_path):
+        return asr_business_module("compatibility").prepare_input(
+            ffmpeg_path=ffmpeg_path, source_path=source_path, prepared_path=prepared_path,
         )
 
-    def _prepare_transcription_input(
-        self,
-        *,
-        ffmpeg_path: str,
-        source_path: Path,
-        prepared_path: Path,
-    ) -> dict[str, Any]:
-        return generated_files_media.prepare_transcription_input(
-            self,
-            ffmpeg_path=ffmpeg_path,
-            source_path=source_path,
-            prepared_path=prepared_path,
-        )
-
-    def _transcribe_prepared_audio(
-        self,
-        *,
-        model: Any,
-        audio_path: Path,
-        source: dict[str, Any],
-        source_index: int,
-        language: str,
-        vad_filter: bool,
-    ) -> dict[str, Any]:
-        return generated_files_media.transcribe_prepared_audio(
-            self,
-            model=model,
-            audio_path=audio_path,
-            source=source,
-            source_index=source_index,
-            language=language,
-            vad_filter=vad_filter,
-        )
-
-    def _segment_value(self, obj: Any, key: str, default: Any = None) -> Any:
-        return generated_files_media.segment_value(obj, key, default)
-
-    def _transcript_source_card(self, source: dict[str, Any]) -> dict[str, Any]:
-        return generated_files_media.transcript_source_card(source)
-
-    def _infer_transcript_title(self, *, sources: list[dict[str, Any]], output_format: str, merged: bool) -> str:
-        return generated_files_media.infer_transcript_title(
-            sources=sources,
-            output_format=output_format,
-            merged=merged,
-        )
-
-    def _store_transcript_output(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        title: str,
-        output_format: str,
-        transcripts: list[dict[str, Any]],
-        all_transcripts: list[dict[str, Any]],
-        language: str,
-        with_timestamps: bool,
-        merge_outputs: bool,
-        model_size: str,
-        device: str,
-        compute_type: str,
-        send_to_user: bool,
-        timestamp: int,
-    ) -> dict[str, Any]:
-        return generated_files_media.store_transcript_output(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            title=title,
-            output_format=output_format,
-            transcripts=transcripts,
-            all_transcripts=all_transcripts,
-            language=language,
-            with_timestamps=with_timestamps,
-            merge_outputs=merge_outputs,
-            model_size=model_size,
-            device=device,
-            compute_type=compute_type,
-            send_to_user=send_to_user,
-            timestamp=timestamp,
-        )
-
-    def _render_transcript_output(
-        self,
-        *,
-        transcripts: list[dict[str, Any]],
-        output_format: str,
-        title: str,
-        with_timestamps: bool,
-    ) -> str:
-        return generated_files_io.render_transcript_output(
-            self,
-            transcripts=transcripts,
-            output_format=output_format,
-            title=title,
-            with_timestamps=with_timestamps,
-        )
-
-    def _render_markdown_transcripts(self, transcripts: list[dict[str, Any]], *, title: str, with_timestamps: bool) -> str:
-        return generated_files_io.render_markdown_transcripts(
-            self,
-            transcripts,
-            title=title,
-            with_timestamps=with_timestamps,
-        )
-
-    def _render_plain_transcripts(self, transcripts: list[dict[str, Any]], *, with_timestamps: bool) -> str:
-        return generated_files_io.render_plain_transcripts(
-            self,
-            transcripts,
-            with_timestamps=with_timestamps,
-        )
-
-    def _render_srt_transcripts(self, transcripts: list[dict[str, Any]]) -> str:
-        return generated_files_io.render_srt_transcripts(self, transcripts)
-
-    def _render_vtt_transcripts(self, transcripts: list[dict[str, Any]]) -> str:
-        return generated_files_io.render_vtt_transcripts(self, transcripts)
-
-    def _build_transcript_content_card(
-        self,
-        *,
-        title: str,
-        output_format: str,
-        transcripts: list[dict[str, Any]],
-        all_transcripts: list[dict[str, Any]],
-        language: str,
-        with_timestamps: bool,
-        merge_outputs: bool,
-        model_size: str,
-        device: str,
-        compute_type: str,
-        content: str,
-    ) -> dict[str, Any]:
-        return generated_files_cards.build_transcript_content_card(
-            self,
-            title=title,
-            output_format=output_format,
-            transcripts=transcripts,
-            all_transcripts=all_transcripts,
-            language=language,
-            with_timestamps=with_timestamps,
-            merge_outputs=merge_outputs,
-            model_size=model_size,
-            device=device,
-            compute_type=compute_type,
-            content=content,
-        )
-
-    def _build_transcribe_followup(
-        self,
-        *,
-        generated_files: list[dict[str, Any]],
-        transcripts: list[dict[str, Any]],
-        output_format: str,
-        merge_outputs: bool,
-        send_to_user: bool,
-    ) -> str:
-        return generated_files_cards.build_transcribe_followup(
-            self,
-            generated_files=generated_files,
-            transcripts=transcripts,
-            output_format=output_format,
-            merge_outputs=merge_outputs,
-            send_to_user=send_to_user,
-        )
-
-    def _estimate_transcript_duration(self, segments: list[dict[str, Any]]) -> float:
-        return generated_files_media.estimate_transcript_duration(segments)
-
-    def _format_timestamp_label(self, value: Any) -> str:
-        return generated_files_media.format_timestamp_label(value)
-
-    def _format_srt_timestamp(self, value: Any) -> str:
-        return generated_files_media.format_srt_timestamp(value)
-
-    def _format_vtt_timestamp(self, value: Any) -> str:
-        return generated_files_media.format_vtt_timestamp(self, value)
+    def _transcribe_prepared_audio(self, **kwargs):
+        return asr_business_module("compatibility").transcribe_prepared(**kwargs)
 
     def _build_media_info_followup(
         self,

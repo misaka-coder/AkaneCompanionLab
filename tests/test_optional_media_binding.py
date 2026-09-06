@@ -9,7 +9,11 @@ from unittest.mock import Mock, patch
 from capcore import CapabilityDescriptor, CapabilityIOSlot
 
 from companion_v01.desktop_music_timeline import DesktopMusicTimelineService
-from companion_v01.optional_media_binding import prepare_timeline_vocals, prepare_dataset_voice
+from companion_v01.optional_media_binding import (
+    prepare_timeline_vocals,
+    prepare_dataset_voice,
+    prepare_timeline_transcript,
+)
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
 
 
@@ -45,6 +49,59 @@ class TimelinePluginBindingTests(unittest.TestCase):
         self.assertEqual(
             engine._resolve_tool_handlers.call_args.kwargs["client_context"].effective_mode.value, "qq_text"
         )
+
+    def test_transcription_internal_call_does_not_bypass_admission(self):
+        capability = "akane.file-transcription.run.v1"
+        adapter = SimpleNamespace(invoke=Mock(side_effect=AssertionError("Approval required")))
+        descriptor = CapabilityDescriptor(
+            id=capability,
+            display_name="Transcription",
+            short_hint="test",
+            visible_in=("base", "desktop"),
+            prompt_exposed=True,
+            risk="high",
+            confirm="always",
+            effects=("filesystem",),
+            trigger=None,
+            inputs=(
+                CapabilityIOSlot("source_ids", "array", raw={"items": {"type": "string"}}),
+                CapabilityIOSlot("output_format", "string"),
+                CapabilityIOSlot("merge_outputs", "boolean"),
+                CapabilityIOSlot("with_timestamps", "boolean"),
+                CapabilityIOSlot("send_to_user", "boolean"),
+            ),
+            outputs=(),
+            raw={},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            handler = PluginCapabilityToolHandler(
+                capability_id=capability, adapter=adapter, descriptor=descriptor, config_base_dir=tmp
+            )
+            engine = SimpleNamespace(_resolve_tool_handlers=lambda **_: {capability: handler})
+            result = prepare_timeline_transcript(
+                engine, profile_user_id="owner", session_id="session", source_id="audio_1", options={}
+            )
+        self.assertEqual(result["error"], "transcription_not_admitted_or_failed")
+        adapter.invoke.assert_not_called()
+
+    def test_old_file_transcription_business_is_deleted_but_voice_shape_remains(self):
+        from companion_v01.generated_files import GeneratedFileService
+        from companion_v01 import generated_files_media, generated_files_io
+
+        self.assertFalse(hasattr(GeneratedFileService, "transcribe_media"))
+        self.assertFalse(hasattr(GeneratedFileService, "asr_status"))
+        self.assertFalse(hasattr(generated_files_media, "load_faster_whisper_model"))
+        self.assertFalse(hasattr(generated_files_media, "transcribe_media"))
+        self.assertFalse(hasattr(generated_files_io, "render_transcript_output"))
+        self.assertTrue(hasattr(GeneratedFileService, "_prepare_transcription_input"))
+        root = Path(__file__).resolve().parents[1]
+        for folder in ("companion_v01", "scripts"):
+            for path in (root / folder).rglob("*.py"):
+                source = path.read_text(encoding="utf-8")
+                self.assertNotIn("def transcribe_media(", source, str(path))
+                self.assertNotIn("class TranscribeMediaToolHandler", source, str(path))
+                self.assertNotIn("TRANSCRIBE_MEDIA_TOOL_SPEC", source, str(path))
+                self.assertNotIn("from faster_whisper import WhisperModel", source, str(path))
 
     def test_dataset_cleaning_uses_normal_permission_admission(self):
         capability = "akane.voice-clean.run.v1"
@@ -125,43 +182,28 @@ class TimelinePluginBindingTests(unittest.TestCase):
         self.assertEqual(result["reason"], "separation_not_admitted_or_failed")
         adapter.invoke.assert_not_called()
 
-    def test_timeline_copies_original_and_plugin_vocals_before_asr(self):
+    def test_timeline_only_passes_scoped_handles_and_preserves_original(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            original, vocals = root / "source.wav", root / "vocals.wav"
+            original = Path(tmp) / "source.wav"
             original.write_bytes(b"original")
-            vocals.write_bytes(b"fixture vocals")
-            callback = Mock(return_value={"status": "ready", "absolute_path": str(vocals)})
-            service = DesktopMusicTimelineService(store=None, generated_file_service=None, vocal_preparer=callback)
-            captured = []
-
-            def transcribe(**kwargs):
-                path = kwargs["audio_path"]
-                self.assertNotEqual(path.parent, root)
-                self.assertTrue(path.is_file())
-                (path.parent / "prepared.wav").write_bytes(b"ASR scratch")
-                captured.append(path)
-                return {"status": "ready", "quality": kwargs["quality"], "segments": [{"text": "fixture"}]}
-
-            service._transcribe_audio_path = transcribe
-            with (
-                patch("companion_v01.desktop_music_timeline.importlib.util.find_spec", return_value=object()),
-                patch("companion_v01.desktop_music_timeline.shutil.which", return_value="ffmpeg"),
-            ):
-                ready = service._transcribe_source(
-                    {"absolute_path": str(original), "source_id": "audio_1"},
-                    profile_user_id="owner",
-                    session_id="session",
-                )
-                self.assertEqual(ready["quality"], "vocal_asr")
-                callback.assert_called_once_with(profile_user_id="owner", session_id="session", source_id="audio_1")
-                service.vocal_preparer = None
-                mixed = service._transcribe_source({"absolute_path": str(original)})
-            self.assertEqual(mixed["quality"], "mixed_asr")
-            self.assertEqual(mixed["separation_reason"], "separation_plugin_unavailable")
-            self.assertTrue(all(not p.exists() for p in captured))
-            self.assertEqual(sorted(p.name for p in root.iterdir()), ["source.wav", "vocals.wav"])
+            separation = Mock(return_value={"status": "ready", "handle": "gen_vocals"})
+            transcription = Mock(return_value={"status": "ready", "segments": [{"text": "fixture"}]})
+            service = DesktopMusicTimelineService(
+                store=None, generated_file_service=None, vocal_preparer=separation, transcriber=transcription
+            )
+            source = {"absolute_path": str(original), "source_id": "audio_1"}
+            result = service._transcribe_source(source, profile_user_id="owner", session_id="session")
+            self.assertEqual(result["quality"], "vocal_asr")
+            self.assertEqual(transcription.call_args.kwargs["source_id"], "gen_vocals")
+            self.assertNotIn("absolute_path", transcription.call_args.kwargs)
+            self.assertEqual(transcription.call_args.kwargs["profile_user_id"], "owner")
+            service.vocal_preparer = None
+            result = service._transcribe_source(source, profile_user_id="owner", session_id="session")
+            self.assertEqual(result["quality"], "mixed_asr")
+            self.assertEqual(result["separation_reason"], "separation_plugin_unavailable")
+            self.assertEqual(transcription.call_args.kwargs["source_id"], "audio_1")
             self.assertEqual(original.read_bytes(), b"original")
+            self.assertEqual(list(Path(tmp).iterdir()), [original])
 
 
 if __name__ == "__main__":

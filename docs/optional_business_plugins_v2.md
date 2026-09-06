@@ -1,6 +1,6 @@
 # 剩余可选业务能力插件化 V2
 
-日期：2026-09-06。起点：`87c1c6f`。状态：分轨与人声净化已切换；其余五项继续按顺序推进。
+日期：2026-09-06。起点：`87c1c6f`。状态：分轨、人声净化与文件转写已切换；其余四项继续按顺序推进。
 
 目标是持续完成七项已识别能力，不以一个插件完成代替整项目标完成。已完成的媒体转换及其资源、产物、市场、Job 基础见 [V1 验收](optional_media_plugin_migration_v1.md)。每项验证、清除旧实现并聚焦提交后继续下一项。
 
@@ -12,13 +12,13 @@
 |---|---|---|---|---|
 | 1 | 分轨 | 原内置函数/handler/spec 已删除；插件为模型入口，脚本为包的薄绑定 | Demucs CPU/CUDA 与媒体服务 Demucs/UVR；两件产物；wav/flac/mp3；真实 CPU 已验收，GPU/UVR 真机未验收 | 已切换，见分轨 C |
 | 2 | 人声净化 | 原内置函数/handler/spec/filter 已删除；插件拥有唯一净化实现，素材集薄绑定 | FFmpeg 基础处理、DeepFilterNet AI、auto 降级及真实后端说明；四模式、post_filter、三种格式；CPU 已验收 | 已切换，见净化 B/C |
-| 3 | 文件转写 | `generated_files_media.transcribe_media`、本地模型 helper、媒体执行服务客户端 | 多输入、部分失败、合并/独立输出、md/txt/srt/vtt/json、时间戳、语言/VAD/模型选项；不迁移实时语音 ASR | 待迁移 |
+| 3 | 文件转写 | 原文件工具及业务 helper 已删除；插件为文件入口，实时语音/媒体服务薄绑定唯一识别库 | 多输入、部分失败、合并/独立输出、md/txt/srt/vtt/json、时间戳、语言/VAD/模型选项；实时语音产品入口保留 | 已切换，见转写 B/C |
 | 4 | 训练素材准备 | `generated_files_media.prepare_voice_dataset` 与 PCM 切片、分析、manifest helper | 原 profile/采样/切片规则、真实 WAV/ZIP/manifest、来源关联与质量统计；不扩展为模型训练 | 待迁移 |
 | 5 | 生图 | `image_generation.py` 的 provider/service、Engine 绑定、模型服务配置 | 生成及参考图编辑、多图、输入大小/质量/格式参数、现有实际 provider；密钥不进入模型参数或产物 | 待迁移 |
 | 6 | 翻唱 | `cover_song.py`、`LocalRvcExecutorProvider`、Engine 绑定 | RVC WebUI 与本机服务、模型选择、分轨/推理/混音、现有缓存与交付语义；复用已迁移分轨权威 | 待迁移 |
 | 7 | 文档生成 | `GeneratedFileService`、`generated_files_io.py`、`generated_files_delivery.py` 及 compose/revise/style 调用链 | 创建、修订、已有 docx/xlsx 格式处理必须共同审计；txt/md/html/json/csv/xlsx/docx/pdf；不能只移 compose 而留下第二套渲染实现 | 待迁移 |
 
-审计起点市场仅有媒体转换。净化 B/C 后 `plugins/market.toml` 有转换、分轨、净化三个条目；其余五项仍是内置能力，不能把插件基础算成它们已经迁移。
+审计起点市场仅有媒体转换。转写 B/C 后 `plugins/market.toml` 有转换、分轨、净化、文件转写四个条目；其余四项仍是内置能力，不能把插件基础算成它们已经迁移。
 
 ## 宿主与插件职责
 
@@ -215,6 +215,35 @@
   HTTP 测试使用明确 fixture 文本，不计作真实远端语音识别。实时语音产品入口不迁移。
 - 本切片 12 项全部通过（48.908 秒，无跳过），包括实际 CPU 推理/取消与真实本地 HTTP
   传输；新包 ruff、格式和 diff 检查通过。尚不能把这组业务测试称为完成插件迁移。
+
+### 转写 B/C：唯一识别实现、共享入口与真实字幕交付
+
+- 关闭从 `a9a31b6` 开始的文件转写迁移窗口。删除旧文件转写函数、批量来源解析、
+  模型/预处理/识别实现、五格式渲染、handler/spec/固定提示与专属卡片；历史稿件仍可读取。
+  新 SDK descriptor/entry point 和市场条目只在显式安装启用后可见。
+- `inference.py` 唯一拥有离线模型加载、PCM 读取和识别；实时语音原产品入口不迁移，
+  原六个 helper 仅薄绑定公开 compatibility API。本机媒体服务也只绑定 LocalTranscriber，
+  保留同步完成响应。源代码 release 须附带该共享业务库，缺库结构化失败；源代码库解析
+  不是文件插件自动启用，也不改变宿主实时语音配置。
+- 歌词时间轴只向实际安装工具传当前会话句柄，经普通权限入口执行；没有 ASR 插件则
+  报不可用，不暗中加载 ML。可选分轨不可用仍用混合音频，伴奏跳过、人声直转保留。
+  JSON 稿按实际来源句柄复用，不把多来源全文错用为任意歌曲字幕。
+- 实际市场 wheel 校验、暂存、权限确认和隔离激活后完成真实 tiny CPU 识别；附件和
+  生成音频交替输入，五格式均核对 hello world 与字幕时间，批量部分失败如实报告，
+  合并/独立产物和来源隔离均验收。Windows 系统 .srt 关联可能返回 text/plain，公共
+  产物校验现明确允许规范 application/x-subrip，VTT 同理；没有关闭 MIME 校验。
+- 真实 Job 快速返回且重复提交幂等；长语音完成预处理进入推理后重复取消、运行中停用，
+  实际进程退出、没有迟到产物、再启用正常。缺缓存的坏候选保留 last-good；卸载撤掉
+  native/兼容发现。成功/失败/取消终态经 MemCore 幂等，实际 JSON 经既有 send_file、
+  桌面交付模块 smoke 和 OneBot 上传边界；QQ 响应是测试替身，非实际网络投递。
+- 最终真实市场完整用例通过（242.023 秒）；字幕 MIME 与托管产物 16 项通过。
+  切换后的包内 12 项再次全部通过（62.590 秒，无跳过，含真实推理/取消）。
+  旧入口/工具/schema/生成文件组合 233 项通过，路由/generation/Engine/Host Job 163 项
+  通过；共享实时语音与本机媒体服务 8 项通过（含真实 ASGI 识别和现有真实 Demucs），
+  实时语音不受无效文件插件配置影响的额外用例通过。各组有重叠，不累加为独立总数。
+- 桌面/语音/Skill 组合 55 项中 54 通过；唯一失败仍是前述旧播放提示文字断言，
+  不属于本项变化，未为其恢复无关提示。未声称 GPU、多语言质量或真实远端 ASR 验收；
+  未启用用户实例插件、未修改持久设置、未公网发布。
 
 ## 最终交付与授权边界
 

@@ -1,6 +1,14 @@
 schema_version = 1
 
 [[plugins]]
+source = "akane_file_transcription"
+plugin_id = "akane.file-transcription"
+display_name = "文件转写与字幕"
+summary = "现有 Whisper 离线模型或本机媒体服务转写音频/视频，支持批量、五种文字/字幕格式和明确的部分失败。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "network.read"]
+requirements = ["Python 3.11+；宿主提供 CapCore 与 Akane 公共 SDK。", "本地需 FFmpeg/FFprobe 与可运行 faster-whisper 的 AKANE_ASR_PYTHON；默认当前解释器。", "AKANE_ASR_MODEL=small 默认，也支持已缓存 tiny/base/medium/large-v2/large-v3；AKANE_ASR_CACHE_DIR 可指向现有 Hugging Face cache。必须包含模型和 tokenizer，不会自动下载。", "AKANE_ASR_DEVICE=auto|cpu|cuda，AKANE_ASR_COMPUTE_TYPE=auto|float16|float32|int8|int8_float16。", "已有本机媒体服务须显式配置 AKANE_ASR_REMOTE_URL，可设 AKANE_ASR_BACKEND=auto|local|remote；旧实时 ASR 连接不会自动导入。", "同步远端协议不支持取消推理；取消会等待真实完成响应，连接丢失不冒充已停止。远端 device/compute 请在服务端设置。", "默认仅登记产物；自动识别可能有误，字幕时间为音轨时钟。多来源合并字幕按各来源时长顺序拼接。"]
+
+[[plugins]]
 source = "akane_voice_clean"
 plugin_id = "akane.voice-clean"
 display_name = "人声降噪与净化"

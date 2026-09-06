@@ -58,6 +58,10 @@ Windows 子进程无控制台窗口。它不提供任务队列、权限审批、
 转换插件已直接使用此模块，分轨包的 `process` 模块仅兼容重导出，不再拥有第二套实现。
 独立 ML 子进程本身不依赖此 SDK；启动它的父进程需要当前 release 提供该公开模块。
 
+同模块的 `run_completed(async_factory)` 仅供既有同步服务/兼容入口等待异步业务完成。
+没有运行中 event loop 时直接运行；已有 loop 时在一个线程内运行并同步等到结束。
+它不创建后台 Job、不提前返回、不提供同步调用方取消协议；新异步插件直接 await。
+
 ## 真实闭环验收
 
 单个组件通过不代表插件可用。回归必须覆盖全新源码项目从 stage 到 install、active 和真实 capability/command/event/background 行为。运行时未尝试某个插件时不能将其报告为 activation_failed，目标插件没有进入候选 generation 时也不能报告安装成功。

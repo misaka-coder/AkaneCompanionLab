@@ -4,7 +4,7 @@ Covers the QQ video understanding closure slice:
   1. video-understanding is visible in the bundled Skill catalog.
   2. Skill body is a real workflow (ffprobe probe, contact-sheet overview,
      timestamped deep-read frames, output_globs -> gen_*, load_material,
-     transcribe_media, honest fallbacks)
+     installed transcription, honest fallbacks)
      and leaks no absolute path.
   3. Real ffmpeg E2E: a QQ-style video attachment (kind=file, file_* handle)
      is probed with ffprobe through exec_run.
@@ -123,7 +123,8 @@ class VideoUnderstandingCatalogTests(unittest.TestCase):
         self.assertIn("output_globs", body)
         self.assertIn("generated_resources", body)
         self.assertIn("load_material", body)
-        self.assertIn("transcribe_media", body)
+        self.assertIn("actually available transcription capability", body)
+        self.assertNotIn("transcribe_media", body)
         self.assertIn("open_memory", body)
         self.assertIn("When NOT to load", body)
         self.assertIn("exec_run", body)

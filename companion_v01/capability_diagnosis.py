@@ -25,7 +25,7 @@ _SHELL_MODE_LABELS = {
     "ask_each_time": "每次询问",
     "disabled": "已关闭",
 }
-_MEDIA_TOOL_NAMES = ("load_material", "transcribe_media", "send_file", "exec_run")
+_MEDIA_TOOL_NAMES = ("load_material", "send_file", "exec_run")
 _SKILL_LIST_LIMIT = 20
 
 

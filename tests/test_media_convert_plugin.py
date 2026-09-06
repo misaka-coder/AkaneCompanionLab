@@ -57,7 +57,7 @@ CAPABILITY_ID = f"{PLUGIN_ID}.run.v1"
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and FFprobe required")
 class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
-    def verify_job_memory_and_delivery(self, *, root, files, completed, artifact_index=0):
+    def verify_job_memory_and_delivery(self, *, root, files, completed, artifact_index=0, expected_extension="mp3"):
         manager = MemcoreManager(
             backend="memcore",
             storage_path=root / "memory.sqlite3",
@@ -116,7 +116,11 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("path", event["desktop_delivery"])
         if shutil.which("node"):
             smoke = subprocess.run(
-                ["node", str(PROJECT_ROOT / "desktop_pet_next/scripts/media-plugin-delivery-smoke.mjs")],
+                [
+                    "node",
+                    str(PROJECT_ROOT / "desktop_pet_next/scripts/media-plugin-delivery-smoke.mjs"),
+                    expected_extension,
+                ],
                 input=json.dumps(event),
                 text=True,
                 capture_output=True,
@@ -155,7 +159,7 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(transport.call_args.args[1].endswith("/upload_private_file"))
         uploaded = transport.call_args.kwargs["json"]
         self.assertTrue(Path(uploaded["file"]).is_file())
-        self.assertTrue(uploaded["name"].endswith(".mp3"))
+        self.assertTrue(uploaded["name"].endswith("." + expected_extension))
 
     async def exercise_host_jobs(self, *, root, engine, files, attachments, source_id):
         engine.executor_broker = ExecutorBroker(None)

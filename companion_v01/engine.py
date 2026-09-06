@@ -135,7 +135,6 @@ from .tool_runtime import (
     SendStickerToolHandler,
     ToolExecutionContext,
     ToolExecutionResult,
-    TranscribeMediaToolHandler,
     WebSearchToolHandler,
 )
 from . import visual_context_engine
@@ -280,8 +279,6 @@ MEMORY_METADATA_PRESENT_FIELD = "_memory_metadata_present"
 
 MEDIA_PRESET_ROUTING = [
     "【媒体任务预设路由】",
-    "- 生成字幕 → transcribe_media output_format=srt/vtt",
-    "- 转写文字稿/会议纪要前置 → transcribe_media output_format=md/txt",
     "- 固定角色音色翻唱整首歌 → cover_song",
     "- 训练素材切片打包 → prepare_voice_dataset",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
@@ -465,7 +462,6 @@ class AkaneMemoryEngine:
             legacy_base_dirs=[self.base_dir / "generated_files"],
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             work_dir=self.base_dir / "generated_work",
-            asr_executor=self.local_media_executor,
             voice_preparer=self._prepare_dataset_voice,
         )
         self.cover_song_service: CoverSongService | None = None
@@ -474,6 +470,7 @@ class AkaneMemoryEngine:
             generated_file_service=self.generated_file_service,
             background_tasks=self.background_tasks,
             vocal_preparer=self._prepare_timeline_vocals,
+            transcriber=self._prepare_timeline_transcript,
         )
         self.gift_assets = self.gift_service
         sticker_assets_dir = (
@@ -2444,11 +2441,15 @@ class AkaneMemoryEngine:
             legacy_base_dirs=[self.base_dir / "generated_files"],
             ensure_storage_ready=workspace_service.ensure_layout if workspace_service is not None else None,
             work_dir=self.base_dir / "generated_work",
-            asr_executor=self._get_local_media_executor(),
             voice_preparer=self._prepare_dataset_voice,
         )
         self.generated_file_service = service
         return service
+
+    def _prepare_timeline_transcript(self, **kwargs):
+        from .optional_media_binding import prepare_timeline_transcript
+
+        return prepare_timeline_transcript(self, **kwargs)
 
     def _prepare_dataset_voice(self, **kwargs):
         from .optional_media_binding import prepare_dataset_voice
@@ -2582,6 +2583,7 @@ class AkaneMemoryEngine:
             generated_file_service=generated_file_service,
             background_tasks=getattr(self, "background_tasks", None),
             vocal_preparer=self._prepare_timeline_vocals,
+            transcriber=self._prepare_timeline_transcript,
         )
         self.desktop_music_timeline_service = service
         return service

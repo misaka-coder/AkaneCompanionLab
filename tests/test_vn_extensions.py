@@ -820,7 +820,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertNotIn("transcribe_media", scene_tools)
         self.assertNotIn("send_sticker", scene_tools)
 
-        self.assertIn("transcribe_media", qq_tools)
+        self.assertNotIn("transcribe_media", qq_tools)
         self.assertIn("send_file", qq_tools)
         self.assertIn("send_sticker", qq_tools)
         self.assertIn("web_search", qq_tools)
@@ -829,7 +829,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertNotIn("open_music_search", qq_tools)
         self.assertNotIn("manage_gift", qq_tools)
 
-        self.assertIn("transcribe_media", desktop_tools)
+        self.assertNotIn("transcribe_media", desktop_tools)
         self.assertIn("send_file", desktop_tools)
         self.assertIn("web_search", desktop_tools)
         self.assertNotIn("open_browser", desktop_tools)
@@ -924,7 +924,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "clear_attachment_focus",
                     "compose_file",
                     "inspect_media_info",
-                    "transcribe_media",
                     "send_file",
                     "send_sticker",
                     "manage_gift",
@@ -966,7 +965,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- sync_attachment_workspace", prompt_with_media)
             self.assertIn("\n- inspect_media_info", prompt_with_media)
             self.assertNotIn("convert_media_file", prompt_with_media)
-            self.assertIn("\n- transcribe_media", prompt_with_media)
+            self.assertNotIn("\n- transcribe_media", prompt_with_media)
             self.assertIn("\n- send_file", prompt_with_media)
             self.assertIn("【桌宠文件交付】", prompt_with_media)
             self.assertIn("delivery_action", prompt_with_media)
@@ -1026,7 +1025,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "read_attachment_section",
                     "apply_style_to_existing_file",
                     "inspect_media_info",
-                    "transcribe_media",
                     "prepare_voice_dataset",
                     "inspect_generated_file",
                     "send_file",
@@ -1097,7 +1095,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "register_workspace_items",
                     "read_attachment_section",
                     "inspect_media_info",
-                    "transcribe_media",
                 ]
             }
             desktop_context = ModeProfileRegistry().resolve_from_payload({"client_mode": "desktop_pet"})
@@ -1111,7 +1108,7 @@ class EngineExtensionTests(unittest.TestCase):
 
             self.assertIn("\n- read_attachment_section", prompt)
             self.assertIn("\n- inspect_media_info", prompt)
-            self.assertIn("\n- transcribe_media", prompt)
+            self.assertNotIn("\n- transcribe_media", prompt)
             self.assertNotIn("还没有可处理的文档材料", prompt)
             self.assertNotIn("还没有可处理的音频或视频", prompt)
             self.assertIn("已有材料按 handle、名称或“最近”读取，无需让用户重复上传", TOOL_CONTEXT_STABLE_RULES)
@@ -1206,7 +1203,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "revise_generated_file",
                     "apply_style_to_existing_file",
                     "inspect_media_info",
-                    "transcribe_media",
                     "prepare_voice_dataset",
                     "inspect_generated_file",
                     "send_file",
@@ -1257,7 +1253,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- read_attachment_section", prompt)
             self.assertNotIn("\n- separate_audio_stems", prompt)
             self.assertNotIn("\n- clean_voice_track", prompt)
-            self.assertIn("\n- transcribe_media", prompt)
+            self.assertNotIn("\n- transcribe_media", prompt)
             self.assertIn("\n- prepare_voice_dataset", prompt)
             self.assertIn("\n- inspect_media_info", prompt)
             self.assertIn("\n- inspect_generated_file", prompt)
@@ -1272,15 +1268,6 @@ class EngineExtensionTests(unittest.TestCase):
                     session_id="qq_pri_1",
                 ),
                 {"type": "inspect_media_info"},
-            )
-            self.assertEqual(
-                self.engine._normalize_tool_call(
-                    {"type": "transcribe_media", "source_ids": [media["attachment_handle"]]},
-                    client_context=qq_context,
-                    profile_user_id="master",
-                    session_id="qq_pri_1",
-                ),
-                {"type": "transcribe_media"},
             )
             self.assertEqual(
                 self.engine._normalize_tool_call(
@@ -1355,7 +1342,6 @@ class EngineExtensionTests(unittest.TestCase):
             self.engine.capability_registry = CapabilityRegistry()
             media_tools = (
                 "inspect_media_info",
-                "transcribe_media",
                 "prepare_voice_dataset",
             )
             self.engine.tool_handlers = {name: StubMediaTool(name) for name in media_tools}
@@ -1389,8 +1375,8 @@ class EngineExtensionTests(unittest.TestCase):
             )
 
             self.assertIn("媒体任务预设路由", prompt)
-            self.assertIn("生成字幕", prompt)
-            self.assertIn("transcribe_media output_format=srt", prompt)
+            self.assertNotIn("生成字幕 →", prompt)
+            self.assertNotIn("transcribe_media output_format=srt", prompt)
             self.assertNotIn("convert_media_file", prompt)
             self.assertNotIn("提取视频音频 →", prompt)
             self.assertNotIn("人声降噪 →", prompt)
@@ -1418,7 +1404,6 @@ class EngineExtensionTests(unittest.TestCase):
         for tool in {
             "inspect_media_info",
             "separate_audio_stems",
-            "transcribe_media",
             "prepare_voice_dataset",
         }:
             self.assertNotIn(tool, scene_tools, f"{tool} should not be available in web scene mode")

@@ -1,8 +1,11 @@
-# File transcription business runtime (migration A)
+# File transcription plugin
 
-This migration slice is not a discoverable plugin or market entry yet. The old
-product entry remains until the SDK/Job/market/shared-call cutover is verified.
-Do not add new product callers to both implementations.
+The public SDK entry point and `plugins/market.toml` expose this optional plugin
+only after explicit installation and enablement. The old built-in file tool,
+ASR business helpers and transcript rendering implementation have been removed.
+Inputs are current-session attachment/generated-file handles, never raw paths.
+Batch partial failures are reported; md/txt/json/srt/vtt outputs may be merged
+or separate. Outputs are registered, not automatically sent or played.
 
 The isolated worker runs faster-whisper using already cached models only.
 No implicit model download, global environment change or second job queue.
@@ -34,3 +37,28 @@ child process creation. System speech synthesis in tests supplies a known
 English recording; recognition is performed by the actual cached tiny model,
 not a stub transcript. This tests intelligibility/timestamps, not multilingual
 quality or GPU performance.
+
+The unchanged realtime voice API uses this package's public `compatibility`
+library through `services/asr_business.py`. Source releases must ship the bundled
+library, or install its distribution; this does not activate the optional file
+tool. `inference.py` is the sole model/PCM/recognition implementation shared by
+the file worker and realtime consumer. The local media service also binds to
+the public `LocalTranscriber`, retaining its synchronous HTTP response shape.
+Missing library/model/runtime returns unavailable, never a fake transcript.
+
+Desktop lyric timelines call the actually installed transcription capability
+through normal permissions; missing/disabled plugins produce an unavailable
+timeline. Original audio is unchanged. Successful JSON can be reused only for
+its recorded source handle; mixed-source transcripts are not reused wholesale.
+
+Legacy `LOCAL_MEDIA_EXECUTOR_BASE_URL` still serves realtime ASR/RVC. Optional
+file transcription requires explicitly setting `AKANE_ASR_REMOTE_URL` to reuse
+that endpoint. Plugin workers do not import host settings or mutate them.
+
+Validation: `python -m unittest discover -s plugins/akane_file_transcription/tests -v`
+and `python -m unittest tests.test_file_transcription_plugin tests.test_file_asr_consumers -v`.
+The installation test builds a real market wheel and exercises isolated
+activation, formats/batch, Job cancellation and disable/enable/uninstall, source
+scope, real CPU recognition, lyric reuse, and existing delivery boundaries.
+QQ transport is a test double, not a real network delivery; GPU and real remote
+ASR service inference are not claimed.

@@ -27,7 +27,6 @@ from companion_v01.tool_runtime import (
     SendFileToolHandler,
     TOOL_METADATA_BY_TYPE,
     TOOL_SPEC_BY_TYPE,
-    TranscribeMediaToolHandler,
 )
 from companion_v01.tool_handlers.catalog import build_builtin_tool_handlers
 
@@ -132,7 +131,7 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 48)
+        self.assertEqual(len(handlers), 47)
         self.assertNotIn("convert_media_file", handlers)
         self.assertNotIn("separate_audio_stems", handlers)
         self.assertEqual(missing, [])
@@ -440,26 +439,7 @@ class NativeToolSchemaTests(unittest.TestCase):
             self.assertNotIn("tool_call", native["description"])
 
     def test_media_native_specs_match_handlers_and_do_not_silently_drop_primary_options(self) -> None:
-        transcribe = TranscribeMediaToolHandler(generated_file_service=None)
         dataset = PrepareVoiceDatasetToolHandler(generated_file_service=None)
-
-        transcribe_call = transcribe.normalize_call(
-            {
-                "type": "transcribe_media",
-                "source_ids": ["audio_001", "file_002"],
-                "output_format": "srt",
-                "output_title": "字幕",
-                "language": "auto",
-                "with_timestamps": True,
-                "merge_outputs": False,
-                "model_size": "medium",
-                "vad_filter": True,
-            }
-        )
-        self.assertEqual(transcribe_call["source_ids"], ["audio_001", "file_002"])
-        self.assertEqual(transcribe_call["output_format"], "srt")
-        self.assertFalse(transcribe_call["merge_outputs"])
-        self.assertEqual(transcribe_call["model_size"], "medium")
 
         dataset_call = dataset.normalize_call(
             {
@@ -484,16 +464,6 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertTrue(dataset_call["clean_first"])
 
         expected_properties = {
-            "transcribe_media": {
-                "source_ids",
-                "output_format",
-                "output_title",
-                "language",
-                "with_timestamps",
-                "merge_outputs",
-                "model_size",
-                "vad_filter",
-            },
             "prepare_voice_dataset": {
                 "source_ids",
                 "profile",
@@ -510,7 +480,6 @@ class NativeToolSchemaTests(unittest.TestCase):
             },
         }
         handlers = {
-            "transcribe_media": transcribe,
             "prepare_voice_dataset": dataset,
         }
         for tool_name, expected in expected_properties.items():

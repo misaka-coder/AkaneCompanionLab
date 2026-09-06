@@ -38,7 +38,7 @@ assert.equal(calls[0][1].item_type, "generated");
 assert.equal(calls[0][1].real_user_id, "owner");
 assert.equal(calls[0][1].session_id, "session");
 assert(!Object.hasOwn(calls[0][1], "path"));
-assert.match(calls[0][1].file_name, /\.mp3$/);
+assert(calls[0][1].file_name.endsWith("." + (process.argv[2] || "mp3")));
 assert.equal(bubbles.at(-1)[1].kind, "status");
 await scope.handleDesktopFileDeliveryEvent(event);
 assert.equal(calls.length, 1, "duplicate completion must not open twice");

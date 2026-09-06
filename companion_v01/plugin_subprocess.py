@@ -4,6 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+
+
+def run_completed(factory):
+    """Drain an async operation from a legacy synchronous call, never queue it."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(lambda: asyncio.run(factory())).result()
 
 
 async def drain(task):

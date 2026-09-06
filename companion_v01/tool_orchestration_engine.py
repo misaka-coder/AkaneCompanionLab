@@ -50,7 +50,6 @@ _EXPLICIT_DELIVERY_TOOL_TYPES = frozenset(
         "revise_generated_file",
         "apply_style_to_existing_file",
         "cover_song",
-        "transcribe_media",
         "prepare_voice_dataset",
     }
 )
@@ -58,7 +57,6 @@ _EXPLICIT_DELIVERY_TOOL_TYPES = frozenset(
 _DIRECT_MEDIA_TOOL_TYPES = frozenset(
     {
         "cover_song",
-        "transcribe_media",
         "prepare_voice_dataset",
     }
 )

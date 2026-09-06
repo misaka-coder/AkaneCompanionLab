@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
-import shutil
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -31,11 +28,13 @@ class DesktopMusicTimelineService:
         generated_file_service: Any,
         background_tasks: Any | None = None,
         vocal_preparer: Any | None = None,
+        transcriber: Any | None = None,
     ) -> None:
         self.store = store
         self.generated_file_service = generated_file_service
         self.background_tasks = background_tasks
         self.vocal_preparer = vocal_preparer
+        self.transcriber = transcriber
 
     def prepare_timeline(
         self,
@@ -248,158 +247,42 @@ class DesktopMusicTimelineService:
                 error_message=str(exc)[:240],
             )
 
-    def _transcribe_source(
-        self, source: dict[str, Any], *, profile_user_id: str = "", session_id: str = ""
-    ) -> dict[str, Any]:
-        if importlib.util.find_spec("faster_whisper") is None:
-            return {"status": "failed", "error": "faster_whisper_not_found"}
-        ffmpeg_path = shutil.which("ffmpeg")
-        if not ffmpeg_path:
-            return {"status": "failed", "error": "ffmpeg_not_found"}
+    def _transcribe_source(self, source, *, profile_user_id="", session_id=""):
+        if self._source_is_instrumental_stem(source):
+            return {"status": "failed", "error": "instrumental_has_no_lyrics", "segments": []}
+        if not callable(self.transcriber):
+            return {"status": "failed", "error": "transcription_plugin_unavailable"}
+        source_id = str(source.get("source_id") or source.get("handle") or "")
+        scope = {"profile_user_id": profile_user_id, "session_id": session_id}
+        options = {
+            "model_size": str(getattr(config, "DESKTOP_TIMELINE_WHISPER_MODEL_SIZE", "auto")),
+            "device": str(getattr(config, "DESKTOP_TIMELINE_WHISPER_DEVICE", "auto")),
+            "compute_type": str(getattr(config, "DESKTOP_TIMELINE_WHISPER_COMPUTE_TYPE", "auto")),
+            "language": str(getattr(config, "DESKTOP_TIMELINE_LANGUAGE", "zh")),
+            "vad_filter": bool(getattr(config, "DESKTOP_TIMELINE_VAD_FILTER", False)),
+        }
 
-        source_path = Path(source.get("absolute_path") or "")
-        with tempfile.TemporaryDirectory(prefix="akane_desktop_timeline_") as tmp:
-            work_dir = Path(tmp)
-            if self._source_is_instrumental_stem(source):
-                return {"status": "failed", "error": "instrumental_has_no_lyrics", "segments": []}
+        def transcribe(handle, quality):
+            try:
+                result = self.transcriber(**scope, source_id=handle, options=options)
+                return {**result, "quality": quality}
+            except Exception:
+                return {"status": "failed", "error": "transcription_binding_failed", "quality": quality}
 
-            # ASR prepares a sibling file; never write beside a managed original.
-            cached_source = work_dir / source_path.name
-            shutil.copy2(source_path, cached_source)
-            source_path = cached_source
-
-            if self._source_is_vocal_stem(source):
-                return self._transcribe_audio_path(
-                    audio_path=source_path,
-                    source=source,
-                    ffmpeg_path=str(ffmpeg_path),
-                    quality=TIMELINE_QUALITY_VOCAL,
-                )
-
-            prepared = self._separate_vocals_to_cache(
-                work_dir=work_dir,
-                source_id=source.get("source_id", ""),
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-            )
-            vocals_path = prepared.get("path")
-            if vocals_path is not None:
-                transcript = self._transcribe_audio_path(
-                    audio_path=vocals_path,
-                    source=source,
-                    ffmpeg_path=str(ffmpeg_path),
-                    quality=TIMELINE_QUALITY_VOCAL,
-                )
-                if transcript.get("status") == "ready" and self._transcript_has_segments(transcript):
-                    return transcript
-
-            transcript = self._transcribe_audio_path(
-                audio_path=source_path,
-                source=source,
-                ffmpeg_path=str(ffmpeg_path),
-                quality=TIMELINE_QUALITY_MIXED,
-            )
-            return {**transcript, "separation_reason": prepared.get("reason", "vocal_asr_empty")}
-
-    def _separate_vocals_to_cache(
-        self, *, work_dir: Path, source_id: str = "", profile_user_id: str = "", session_id: str = ""
-    ) -> dict[str, Any]:
-        if not callable(self.vocal_preparer):
-            return {"status": "unavailable", "reason": "separation_plugin_unavailable"}
-        try:
-            result = self.vocal_preparer(
-                profile_user_id=profile_user_id, session_id=session_id, source_id=source_id
-            )
-            if result.get("status") != "ready":
-                return {
-                    "status": result.get("status", "failed"),
-                    "reason": result.get("reason", "separation_failed"),
-                }
-            path = Path(result["absolute_path"])
-            cached = work_dir / "vocals.wav"
-            shutil.copy2(path, cached)
-            return {"status": "ready", "path": cached}
-        except Exception:
-            return {"status": "failed", "reason": "separation_vocal_cache_failed"}
-
-    def _transcribe_audio_path(
-        self,
-        *,
-        audio_path: Path,
-        source: dict[str, Any],
-        ffmpeg_path: str,
-        quality: str,
-    ) -> dict[str, Any]:
-        prepared_path = audio_path.parent / f"prepared_{quality}.wav"
-        prepared = self.generated_file_service._prepare_transcription_input(
-            ffmpeg_path=str(ffmpeg_path),
-            source_path=audio_path,
-            prepared_path=prepared_path,
-        )
-        if not prepared.get("ok"):
-            return {"status": "failed", "error": str(prepared.get("error") or "audio_prepare_failed")[:300], "quality": quality}
-
-        model_size = self.generated_file_service._normalize_whisper_model_size(
-            getattr(config, "DESKTOP_TIMELINE_WHISPER_MODEL_SIZE", getattr(config, "WHISPER_MODEL_SIZE", "small"))
-        )
-        device = self.generated_file_service._normalize_whisper_device(
-            getattr(config, "DESKTOP_TIMELINE_WHISPER_DEVICE", getattr(config, "WHISPER_DEVICE", "auto"))
-        )
-        compute_type = self.generated_file_service._normalize_whisper_compute_type(
-            getattr(config, "DESKTOP_TIMELINE_WHISPER_COMPUTE_TYPE", getattr(config, "WHISPER_COMPUTE_TYPE", "auto"))
-        )
-        language = self.generated_file_service._normalize_transcript_language(
-            getattr(config, "DESKTOP_TIMELINE_LANGUAGE", getattr(config, "ASR_LANGUAGE", "zh"))
-        )
-        whisper_cache_dir = getattr(config, "WHISPER_CACHE_DIR", None) or None
-        model = self.generated_file_service._load_faster_whisper_model(
-            model_size=model_size,
-            device=device,
-            compute_type=compute_type,
-            download_root=whisper_cache_dir,
-        )
-        transcript = self.generated_file_service._transcribe_prepared_audio(
-            model=model,
-            audio_path=prepared_path,
-            source=source,
-            source_index=1,
-            language=language,
-            vad_filter=bool(getattr(config, "DESKTOP_TIMELINE_VAD_FILTER", False)),
-        )
-        transcript["quality"] = quality
-        return transcript
-
-    def _store_full_transcript(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        source: dict[str, Any],
-        transcript: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        segments = self._normalize_segments(transcript.get("segments"))
-        if not segments:
-            return None
-        title = Path(str(source.get("title") or source.get("handle") or "桌宠音频")).stem
-        try:
-            return self.generated_file_service._store_transcript_output(
-                profile_user_id=profile_user_id,
-                session_id=session_id,
-                title=f"{title}_桌宠时间轴转写",
-                output_format="json",
-                transcripts=[dict(transcript, segments=segments)],
-                all_transcripts=[dict(transcript, segments=segments)],
-                language=str(transcript.get("language") or ""),
-                with_timestamps=True,
-                merge_outputs=True,
-                model_size=str(getattr(config, "DESKTOP_TIMELINE_WHISPER_MODEL_SIZE", "small")),
-                device=str(getattr(config, "DESKTOP_TIMELINE_WHISPER_DEVICE", "auto")),
-                compute_type=str(getattr(config, "DESKTOP_TIMELINE_WHISPER_COMPUTE_TYPE", "auto")),
-                send_to_user=False,
-                timestamp=int(time.time()),
-            )
-        except Exception:
-            return None
+        if self._source_is_vocal_stem(source):
+            return transcribe(source_id, TIMELINE_QUALITY_VOCAL)
+        prepared = {"status": "unavailable", "reason": "separation_plugin_unavailable"}
+        if callable(self.vocal_preparer):
+            try:
+                prepared = self.vocal_preparer(**scope, source_id=source_id)
+            except Exception:
+                prepared = {"status": "failed", "reason": "separation_binding_failed"}
+        if prepared.get("status") == "ready" and prepared.get("handle"):
+            transcript = transcribe(prepared["handle"], TIMELINE_QUALITY_VOCAL)
+            if transcript.get("status") == "ready" and self._transcript_has_segments(transcript):
+                return transcript
+        result = transcribe(source_id, TIMELINE_QUALITY_MIXED)
+        return {**result, "separation_reason": prepared.get("reason") or "vocal_asr_empty"}
 
     def _mark_timeline_ready(
         self,
@@ -469,19 +352,24 @@ class DesktopMusicTimelineService:
             return {}
 
         for item in generated_files:
-            if str(item.get("created_by_tool") or "") != "transcribe_media":
+            producer = str(item.get("created_by_tool") or "")
+            is_plugin_json = producer == "akane.file-transcription.run.v1" and item.get("output_format") == "json"
+            if producer != "transcribe_media" and not is_plugin_json:
                 continue
             item_source_ids = {str(value or "").strip() for value in list(item.get("source_ids") or [])}
-            if item_source_ids and not (item_source_ids & source_keys):
+            if not is_plugin_json and not (item_source_ids & source_keys):
                 continue
             path = self.generated_file_service.absolute_path(item)
-            segments = self._parse_transcript_file(path, output_format=str(item.get("output_format") or ""))
+            segments = self._parse_transcript_file(
+                path, output_format=str(item.get("output_format") or ""),
+                source_keys=source_keys if is_plugin_json else None,
+            )
             if segments:
                 return {"segments": segments, "generated": item}
         return {}
 
-    def _parse_transcript_file(self, path: Path, *, output_format: str) -> list[dict[str, Any]]:
-        if not path.exists() or not path.is_file():
+    def _parse_transcript_file(self, path: Path, *, output_format: str, source_keys=None) -> list[dict[str, Any]]:
+        if not path.exists() or not path.is_file() or path.stat().st_size > 8 * 1024 * 1024:
             return []
         text = path.read_text(encoding="utf-8", errors="replace")
         if str(output_format or "").lower() == "json":
@@ -492,6 +380,12 @@ class DesktopMusicTimelineService:
             transcripts = payload.get("transcripts") if isinstance(payload, dict) else []
             segments: list[dict[str, Any]] = []
             for transcript in (transcripts if isinstance(transcripts, list) else []):
+                if not isinstance(transcript, dict):
+                    continue
+                if source_keys is not None:
+                    origin = transcript.get("source")
+                    if not isinstance(origin, dict) or str(origin.get("handle") or "") not in source_keys:
+                        continue
                 segments.extend(self._normalize_segments((transcript or {}).get("segments")))
             return segments
         return self._parse_timestamped_text(text)

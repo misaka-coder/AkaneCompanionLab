@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+import json
+from pathlib import Path
 from uuid import uuid4
 
 from .capability_registry import ExecutorBroker
@@ -45,6 +47,39 @@ def prepare_dataset_voice(engine, *, profile_user_id, session_id, source_id, cli
     )
 
 
+def prepare_timeline_transcript(engine, *, profile_user_id, session_id, source_id, options):
+    prepared = _prepare_media(
+        engine,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        source_id=source_id,
+        capability_id="akane.file-transcription.run.v1",
+        reason_prefix="transcription",
+        artifact_name="text",
+        client_mode="desktop_pet",
+        source_argument="source_ids",
+        arguments={**options, "output_format": "json", "merge_outputs": True, "with_timestamps": True},
+    )
+    if prepared.get("status") != "ready":
+        return {"status": "failed", "error": prepared.get("reason", "transcription_failed")}
+    try:
+        path = Path(prepared["absolute_path"])
+        if path.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        transcripts = payload["transcripts"]
+        if (
+            not isinstance(transcripts, list)
+            or len(transcripts) != 1
+            or not isinstance(transcripts[0], dict)
+            or not transcripts[0].get("segments")
+        ):
+            raise ValueError
+        return {**transcripts[0], "status": "ready"}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {"status": "failed", "error": "transcription_artifact_invalid"}
+
+
 def _prepare_media(
     engine,
     *,
@@ -56,6 +91,7 @@ def _prepare_media(
     artifact_name,
     client_mode,
     arguments,
+    source_argument="source_id",
 ):
     if not profile_user_id or not session_id or not source_id:
         return {"status": "unavailable", "reason": f"{reason_prefix}_source_scope_missing"}
@@ -70,7 +106,7 @@ def _prepare_media(
         call = handler.normalize_call(
             {
                 "type": capability_id,
-                "source_id": source_id,
+                source_argument: [source_id] if source_argument == "source_ids" else source_id,
                 "output_format": "wav",
                 "send_to_user": False,
                 **arguments,

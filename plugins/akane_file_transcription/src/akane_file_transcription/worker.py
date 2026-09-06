@@ -5,15 +5,14 @@ from __future__ import annotations
 import argparse
 from contextlib import redirect_stdout
 import json
-import math
 import os
-from pathlib import Path
 import sys
-import wave
 
-
-class AsrError(RuntimeError):
-    pass
+# Direct script invocation from a prepared interpreter does not need Akane SDK.
+if __package__:
+    from .inference import AsrError, load_model, read_pcm, recognize
+else:
+    from inference import AsrError, load_model, read_pcm, recognize
 
 
 def deny_child(event, args):
@@ -22,43 +21,13 @@ def deny_child(event, args):
         raise PermissionError("asr_descendant_process_forbidden")
 
 
-def finite(value, default=None):
-    try:
-        number = float(value)
-        return number if math.isfinite(number) else default
-    except (TypeError, ValueError):
-        return default
-
-
 def execute(args):
     try:
         import ctranslate2
         import numpy as np
-        from faster_whisper import WhisperModel
-        from faster_whisper.utils import download_model
     except Exception:
         raise AsrError("asr_runtime_incompatible") from None
-    try:
-        model_path = download_model(args.model, cache_dir=args.cache_dir or None, local_files_only=True)
-    except Exception:
-        raise AsrError("asr_model_missing") from None
-    # faster-whisper otherwise asks tokenizers to fetch a fallback tokenizer,
-    # even when the model path itself came from a local-only lookup.
-    if not all((Path(model_path) / name).is_file() for name in ("model.bin", "config.json", "tokenizer.json")):
-        raise AsrError("asr_model_missing")
-    if args.source:
-        try:
-            with wave.open(args.source, "rb") as audio:
-                if (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()) != (1, 2, 16000):
-                    raise ValueError
-                pcm = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
-            if not len(pcm) or not np.isfinite(pcm).all():
-                raise ValueError
-        except Exception:
-            raise AsrError("asr_input_pcm_invalid") from None
-    else:
-        pcm = np.zeros(16000, dtype=np.float32)
-    duration = len(pcm) / 16000
+    pcm = read_pcm(args.source) if args.source else np.zeros(16000, dtype=np.float32)
     try:
         cuda = ctranslate2.get_cuda_device_count() > 0
     except Exception:
@@ -68,60 +37,25 @@ def execute(args):
     for index, selected in enumerate(attempts):
         compute = ("float16" if selected == "cuda" else "int8") if args.compute_type == "auto" else args.compute_type
         try:
-            model = WhisperModel(model_path, device=selected, compute_type=compute, cpu_threads=4, num_workers=1)
-        except Exception:
-            if index + 1 < len(attempts):
-                continue
-            raise AsrError("asr_model_unavailable") from None
-        try:
-            raw, info = model.transcribe(
+            model = load_model(model_size=args.model, device=selected, compute_type=compute, cache_dir=args.cache_dir)
+            result = recognize(
+                model,
                 pcm,
-                beam_size=5,
-                language=None if args.language == "auto" else args.language,
+                language=args.language,
                 vad_filter=args.vad_filter if args.source else False,
+                allow_empty=not args.source,
             )
-            segments = []
-            for segment in raw:
-                text = str(segment.text).strip()
-                if not text:
-                    continue
-                start, end = finite(segment.start), finite(segment.end)
-                if start is None or end is None or start < 0 or start > duration or end < start or end > duration + 1:
-                    raise ValueError
-                if len(segments) >= 20000 or len(text) > 50000:
-                    raise AsrError("asr_output_too_large")
-                segments.append(
-                    {
-                        "index": len(segments) + 1,
-                        "start": round(start, 3),
-                        "end": round(min(duration, end), 3),
-                        "text": text,
-                        "avg_logprob": finite(segment.avg_logprob),
-                        "no_speech_prob": finite(segment.no_speech_prob),
-                    }
-                )
-            if args.source and not segments:
-                raise AsrError("asr_no_speech")
             return {
-                "ok": True,
-                "status": "ready",
-                "provider": "faster_whisper",
+                **result,
                 "model": args.model,
                 "device": selected,
                 "compute_type": compute,
                 "fallback_reason": "asr_cuda_failed" if index else "",
-                "duration_seconds": round(duration, 3),
-                "language": info.language,
-                "segments": segments,
-                "segment_count": len(segments),
-                "text": "\n".join(s["text"] for s in segments),
             }
-        except AsrError:
-            raise
-        except Exception:
-            if index + 1 < len(attempts):
+        except AsrError as exc:
+            if index + 1 < len(attempts) and str(exc) in ("asr_model_unavailable", "asr_inference_failed"):
                 continue
-            raise AsrError("asr_inference_failed") from None
+            raise
 
 
 def main():

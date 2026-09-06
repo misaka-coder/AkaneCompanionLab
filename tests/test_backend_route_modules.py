@@ -3953,7 +3953,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             tool_handlers={
                 "retrieve_memory": CatalogMetadataHandler(risk="low"),
                 "compose_file": CatalogMetadataHandler(risk="medium"),
-                "transcribe_media": CatalogMetadataHandler(risk="medium"),
+                "prepare_voice_dataset": CatalogMetadataHandler(risk="medium"),
                 "web_search": CatalogMetadataHandler(risk="low"),
                 "open_browser": CatalogMetadataHandler(risk="medium"),
                 "browser_page": CatalogMetadataHandler(risk="medium"),
@@ -4002,7 +4002,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         by_id = {item["id"]: item for item in capabilities}
         self.assertIn("tool.retrieve_memory", by_id)
         self.assertIn("tool.compose_file", by_id)
-        self.assertIn("tool.transcribe_media", by_id)
+        self.assertIn("tool.prepare_voice_dataset", by_id)
         self.assertIn("tool.web_search", by_id)
         self.assertIn("tool.open_browser", by_id)
         self.assertIn("tool.browser_page", by_id)
@@ -4015,7 +4015,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(by_id["tool.compose_file"]["source"], "backend_tool")
         self.assertEqual(by_id["tool.compose_file"]["adapter"], "tool_runtime")
         self.assertEqual(by_id["tool.compose_file"]["status"], "ready")
-        self.assertEqual(by_id["tool.transcribe_media"]["risk"], "medium")
+        self.assertEqual(by_id["tool.prepare_voice_dataset"]["risk"], "medium")
         self.assertEqual(by_id["tool.web_search"]["group"], "web")
         self.assertEqual(by_id["tool.web_search"]["risk"], "low")
         self.assertFalse(by_id["tool.web_search"]["requiresConfirmation"])

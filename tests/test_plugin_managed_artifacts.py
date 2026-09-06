@@ -553,6 +553,16 @@ class PluginManagedArtifactTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await host.stop()
 
+    async def test_subtitle_mime_is_independent_of_windows_file_associations(self):
+        from companion_v01.plugin_managed_artifacts import validate_managed_artifact_draft
+
+        with patch("companion_v01.plugin_managed_artifacts.mimetypes.guess_type", return_value=("text/plain", None)):
+            for fmt, mime in (("srt", "application/x-subrip"), ("vtt", "text/vtt")):
+                result = validate_managed_artifact_draft(
+                    ManagedArtifactDraft(data=b"fixture subtitle", title="test", output_format=fmt, mime_type=mime)
+                )
+                self.assertEqual(result.mime_type, mime)
+
     async def test_sink_rejects_path_title_and_mime_mismatch_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

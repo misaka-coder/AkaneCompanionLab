@@ -583,7 +583,7 @@ class WorkspaceToolHandlerTests(unittest.TestCase):
                 has_media_attachment=True,
             )
         )
-        self.assertIn("transcribe_media", with_media.tool_names)
+        self.assertNotIn("transcribe_media", with_media.tool_names)
         self.assertIn("inspect_media_info", with_media.tool_names)
 
 

@@ -199,7 +199,6 @@ DOCUMENT_WORKBENCH_TOOL_NAMES = (
 
 MEDIA_WORKBENCH_TOOL_NAMES = (
     "inspect_media_info",
-    "transcribe_media",
     "prepare_voice_dataset",
 )
 
@@ -1315,59 +1314,6 @@ INSPECT_MEDIA_INFO_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=4096,
 )
 
-TRANSCRIBE_MEDIA_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="transcribe_media",
-    display_name="Transcribe media",
-    description=(
-        "把一个或多个现有音频/视频转写成文字稿或字幕文件。它只负责转写，不替代后续总结；"
-        "需要总结时先取得真实转写结果，再基于结果继续处理。成功后返回一个或多个 gen_* 句柄。"
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "source_ids": {
-                "type": "array",
-                "items": {"type": "string", "maxLength": 120},
-                "minItems": 1,
-                "maxItems": 20,
-                "description": "来源句柄列表，如 audio_*、file_*、gen_*；单个来源也放入列表。",
-            },
-            "output_format": {
-                "type": "string",
-                "enum": ["md", "txt", "srt", "vtt", "json"],
-                "description": "文字稿默认 md；字幕选 srt/vtt。",
-            },
-            "output_title": {"type": "string", "maxLength": 80, "description": "可选输出标题。"},
-            "language": {
-                "type": "string",
-                "enum": ["zh", "en", "ja", "ko", "auto"],
-                "description": "语音语言；不确定时用 auto。",
-            },
-            "with_timestamps": {"type": "boolean", "description": "是否保留时间戳；默认 true。"},
-            "merge_outputs": {
-                "type": "boolean",
-                "description": "多个来源是否合并成一份转写稿；默认 true。",
-            },
-            "model_size": {
-                "type": "string",
-                "enum": ["auto", "tiny", "base", "small", "medium", "large-v2", "large-v3"],
-                "description": "可选识别模型；未明确要求时用 auto，沿用当前执行器配置。",
-            },
-            "vad_filter": {"type": "boolean", "description": "是否过滤静音段；默认 true。"},
-        },
-        "required": ["source_ids"],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_create",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
-    execution_class="long_task",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
 PREPARE_VOICE_DATASET_TOOL_SPEC = CapabilityToolSpec(
     capability_id="prepare_voice_dataset",
     display_name="Prepare voice dataset",
