@@ -69,6 +69,16 @@ def send_file(
             continue
         if source_id:
             seen_file_ids.add(file_identity)
+        if source_type == "generated":
+            updated = service.store.update_generated_file(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                generated_id=source_id,
+                delivery_status="pending",
+                updated_at=timestamp,
+            )
+            if updated:
+                file_ref["generated_file"] = {**updated, "absolute_path": file_ref["absolute_path"]}
         files.append(file_ref)
 
     if not files:
@@ -834,13 +844,9 @@ def generated_item_to_sendable_file(
     absolute_path = service.absolute_path(generated)
     if not absolute_path.exists() or not absolute_path.is_file():
         return None, "missing_on_disk"
-    updated = service.store.update_generated_file(
-        profile_user_id=str(generated.get("profile_user_id") or ""),
-        session_id=str(generated.get("session_id") or ""),
-        generated_id=str(generated.get("generated_id") or ""),
-        delivery_status="pending",
-        updated_at=timestamp,
-    ) or generated
+    # This resolver also serves read-only resource consumers. Delivery state
+    # changes belong to send_file, never lookup, parsing or lineage validation.
+    updated = dict(generated)
     updated["absolute_path"] = str(absolute_path)
     output_format = str(updated.get("output_format") or absolute_path.suffix.lstrip(".")).strip().lower()
     title = str(updated.get("output_title") or updated.get("generated_handle") or absolute_path.stem).strip()

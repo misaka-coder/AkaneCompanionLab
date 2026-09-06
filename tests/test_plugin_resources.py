@@ -137,6 +137,33 @@ def add_attachment(root, attachments):
 
 
 class ResourcePortTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reading_generated_source_does_not_request_delivery_or_change_recency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, service = services(root)
+            context = InvocationContext("owner", "session", "web")
+            reference = await GeneratedFileManagedArtifactSink(service).materialize(
+                ManagedArtifactDraft(data=b"original", title="source", output_format="txt", mime_type="text/plain", send_to_user=False),
+                context=context, capability_id="test.source",
+            )
+            def resolve():
+                return service.resolve_generated_artifact(profile_user_id="owner", session_id="session", target=reference["generated_handle"])
+            before = resolve()
+            self.assertEqual(before["delivery_status"], "not_requested")
+            provider = GeneratedFileResourceProvider(service, work_root=root / "copies")
+            scope = ResourceInvocation(PLUGIN_ID, context)
+            try:
+                for target in (reference["generated_handle"], reference["generated_id"], "latest_generated", "latest"):
+                    result = await provider.open(target, invocation=scope)
+                    self.assertTrue(result.ok, result.reason)
+                    self.assertEqual(resolve(), before)
+            finally:
+                await scope.aclose()
+            sent = service.send_file(profile_user_id="owner", session_id="session", target=reference["generated_handle"])
+            self.assertTrue(sent["ok"], sent)
+            self.assertEqual(resolve()["delivery_status"], "pending")
+            self.assertEqual(sent["files"][0]["generated_file"]["delivery_status"], "pending")
+
     async def test_document_parser_cancellation_drains_real_child_and_partial_file(self):
         runners = []
 
