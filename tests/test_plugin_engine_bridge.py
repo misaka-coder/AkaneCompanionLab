@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -174,6 +175,42 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         await self.host.stop()
         self.temp_dir.cleanup()
 
+    async def test_in_process_cross_loop_cancel_waits_for_actual_cleanup(self):
+        for suppress in (False, True):
+            with self.subTest(suppress=suppress):
+                entered, cleaning, release, cancel = (threading.Event() for _ in range(4))
+
+                async def invoke(_capability, _args, _context):
+                    entered.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        cleaning.set()
+                        while not release.is_set():
+                            await asyncio.sleep(0.01)
+                        if suppress:
+                            return CapabilityResult(is_error=False, status="ok", content={"finished": True})
+                        raise
+
+                self.adapter.invoke = invoke
+                handler = self.engine._resolve_tool_handlers()[CAPABILITY_ID]
+                execution = asyncio.create_task(asyncio.to_thread(
+                    handler.execute, call={"type": CAPABILITY_ID, "arguments": {"query": "test"}},
+                    context=ToolExecutionContext("user-42", "session-7", 1, {}, client_mode="qq_text", cancel_requested=cancel.is_set),
+                ))
+                try:
+                    self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                    cancel.set()
+                    self.assertTrue(await asyncio.to_thread(cleaning.wait, 2))
+                    await asyncio.sleep(0.05)
+                    self.assertFalse(execution.done(), "cross-loop Future acknowledged before cleanup")
+                    release.set()
+                    result = await asyncio.wait_for(execution, 3)
+                    self.assertEqual(result.state_updates["adapter_capability_status"], "ok" if suppress else "cancelled")
+                finally:
+                    release.set()
+                    await execution
+
     async def test_active_plugin_enters_prompt_native_schema_and_real_execution_once(self) -> None:
         handlers = self.engine._resolve_tool_handlers(
             profile_user_id="user-42",
@@ -271,6 +308,7 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stream_events[0]["reason"], "provider_rate_limited")
         self.assertEqual(result.state_updates["adapter_capability_status"], "rate_limited")
         self.assertIn("rate_limited/provider_rate_limited", result.followup_context)
+        self.assertEqual(AkaneMemoryEngine._tool_hook_result_status(result), ("failed", "provider_rate_limited"))
 
     async def test_native_plugin_followup_replays_provider_call_and_returns_failure_to_model(self) -> None:
         self.adapter.result = CapabilityResult(

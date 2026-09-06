@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import subprocess
 import sys
@@ -88,6 +89,71 @@ def _context() -> ToolExecutionContext:
 
 
 class HostToolJobRuntimeTests(unittest.TestCase):
+    def test_plugin_job_cancel_waits_for_cleanup_and_preserves_suppressed_cancel_result(self):
+        from companion_v01.capability_registry import ExecutorBroker
+        from companion_v01.engine import AkaneMemoryEngine
+
+        for suppress in (False, True):
+            with self.subTest(suppress=suppress), tempfile.TemporaryDirectory() as directory:
+                entered, cleaning, release = threading.Event(), threading.Event(), threading.Event()
+
+                class Adapter:
+                    async def invoke(self, _capability_id, _args, _context):
+                        entered.set()
+                        try:
+                            await asyncio.Event().wait()
+                        except asyncio.CancelledError:
+                            cleaning.set()
+                            while not release.is_set():
+                                await asyncio.sleep(0.01)
+                            if suppress:
+                                return CapabilityResult(is_error=False, status="ok", content={"actually_finished": True})
+                            raise
+
+                descriptor = CapabilityDescriptor(
+                    id="test.cancellable.run", display_name="Cancellable", short_hint="Test cleanup",
+                    visible_in=("qq",), prompt_exposed=True, risk="low", confirm="never",
+                    effects=(), trigger=None, inputs=(), outputs=(),
+                    raw={"execution_class": "long_task", "completion_mode": "agent", "memory_mode": "timeline"},
+                )
+                handler = PluginCapabilityToolHandler(
+                    capability_id=descriptor.id, adapter=Adapter(), descriptor=descriptor, config_base_dir=Path(directory),
+                )
+                engine = _Engine(handler)
+                engine.executor_broker = ExecutorBroker(None)
+                engine._tool_hook_result_status = AkaneMemoryEngine._tool_hook_result_status
+                store = HostJobStore(Path(directory) / "jobs.db")
+                runner = BackgroundTaskRunner({"host-jobs": 1})
+                completed = []
+                runtime = HostToolJobRuntime(
+                    engine=engine, store=store, background_tasks=runner,
+                    conversation_ref_issuer=lambda _context: "conversation-ref",
+                    terminal_callback=lambda job: completed.append(job) or True,
+                )
+                try:
+                    result = runtime.submit(capability_id=descriptor.id, invocation_id="cancel-me",
+                                            call={"type": descriptor.id, "arguments": {}}, context=_context())
+                    self.assertEqual(result.stream_events[0]["type"], "background_job_accepted", result)
+                    job_id = result.stream_events[0]["job_id"]
+                    owner = HostJobOwner("profile-a", "session-a")
+                    self.assertTrue(entered.wait(2))
+                    self.assertEqual(store.request_cancel(job_id, owner=owner)["status"], "cancelling")
+                    self.assertTrue(cleaning.wait(2))
+                    self.assertEqual(store.get(job_id, owner=owner).status, "running")
+                    self.assertEqual(completed, [])
+                    self.assertNotIn("cancel_requested", str(store.get(job_id, owner=owner).payload))
+                    release.set()
+                    self.assertTrue(runner.wait_idle(lane="host-jobs", timeout=3))
+                    self.assertTrue(runner.wait_idle(lane="host-job-completions", timeout=3))
+                    terminal = store.get(job_id, owner=owner)
+                    self.assertEqual(terminal.status, "succeeded" if suppress else "cancelled")
+                    self.assertEqual(len(completed), 1)
+                    self.assertEqual(terminal.artifacts, ())
+                    self.assertEqual(runtime.recover(), 0)
+                finally:
+                    release.set()
+                    runner.close(timeout=3)
+
     def test_queued_child_job_is_not_replayed_after_task_owner_disappears(self):
         from companion_v01.task_work import TaskWork
         from companion_v01.tool_handlers.core import TaskExecutionScope

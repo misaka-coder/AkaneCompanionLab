@@ -9193,6 +9193,9 @@ class AkaneMemoryEngine:
             if not isinstance(event, dict):
                 continue
             status = str(event.get("status") or "").strip().lower()
+            if event.get("is_error") is True:
+                reason = str(event.get("reason") or status or "adapter_business_error").strip()
+                return ("cancelled" if status == "cancelled" else "failed"), reason
             if status in {"failed", "error", "rejected", "unavailable", "cancelled"}:
                 reason = str(event.get("reason") or status).strip()
                 return status, reason

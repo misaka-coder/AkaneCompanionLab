@@ -288,7 +288,14 @@ class HostToolJobRuntime:
                 return
             result = self._execute(job)
             status, reason = self.engine._tool_hook_result_status(result)
-            if status == "succeeded":
+            if status == "cancelled":
+                self.store.confirm_cancelled(
+                    job_id,
+                    claim_token=claim_token,
+                    result_summary=str(result.followup_context or ""),
+                    artifacts=_artifact_references(result),
+                )
+            elif status == "succeeded":
                 self.store.succeed(
                     job_id,
                     claim_token=claim_token,
@@ -356,6 +363,7 @@ class HostToolJobRuntime:
             client_mode=str(payload.get("client_mode") or job.channel),
             request_context=dict(payload.get("request_context") or {}),
             execution_scope=self._restored_task_scope(payload),
+            cancel_requested=lambda: self._cancel_requested(job),
         )
         execute = getattr(handler, "execute_admitted", None)
         if not callable(execute):
@@ -371,6 +379,10 @@ class HostToolJobRuntime:
         if broker_result.status != "succeeded" or not isinstance(broker_result.result, ToolExecutionResult):
             raise RuntimeError(str(broker_result.reason or "long_tool_execution_failed"))
         return broker_result.result
+
+    def _cancel_requested(self, job: HostJob) -> bool:
+        current = self.store.get(job.job_id, owner=job.owner)
+        return bool(current is not None and current.cancel_requested)
 
     @staticmethod
     def _restored_task_scope(payload):

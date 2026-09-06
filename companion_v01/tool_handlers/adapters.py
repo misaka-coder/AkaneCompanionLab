@@ -304,13 +304,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         context: ToolExecutionContext,
     ) -> ToolExecutionResult:
         try:
-            result = self._run_coro_blocking(
-                self.adapter.invoke(
-                    self.tool_type,
-                    normalized_args,
-                    self._invocation_context(context),
-                )
-            )
+            result = self._run_coro_blocking(self._invoke_adapter(normalized_args=normalized_args, context=context))
         except CapabilityProtocolError as exc:
             return self._failure_from_exception(exc, fallback="adapter_protocol_error")
         except Exception as exc:
@@ -324,6 +318,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             "type": "adapter_capability_completed",
             "capabilityId": self.tool_type,
             "status": status,
+            "is_error": is_error,
         }
         provider = self._capability_result_provider(result)
         if provider:
@@ -352,6 +347,9 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             capability_result=result,
             context=context,
         )
+
+    def _invoke_adapter(self, *, normalized_args: dict[str, Any], context: ToolExecutionContext) -> Any:
+        return self.adapter.invoke(self.tool_type, normalized_args, self._invocation_context(context))
 
     def _invocation_context(self, context: ToolExecutionContext) -> InvocationContext:
         return InvocationContext(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -98,6 +99,40 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
             client_mode=context.client_mode,
             conversation_ref=str(reference or ""),
         )
+
+    async def _invoke_adapter(self, *, normalized_args: dict[str, Any], context: ToolExecutionContext) -> Any:
+        requested = context.cancel_requested
+        if requested is None:
+            return await super()._invoke_adapter(normalized_args=normalized_args, context=context)
+        cancelled = CapabilityResult(is_error=True, status="cancelled", reason="invocation_cancelled")
+        if requested():
+            return cancelled
+        task = asyncio.ensure_future(super()._invoke_adapter(normalized_args=normalized_args, context=context))
+        try:
+            while not task.done():
+                done, _ = await asyncio.wait((task,), timeout=0.1)
+                if done:
+                    break
+                if requested():
+                    await self._cancel_and_drain(task)
+                    # An adapter may suppress cancellation and finish. Keep that
+                    # real outcome instead of declaring an unconfirmed stop.
+                    return cancelled if task.cancelled() else task.result()
+            return task.result()
+        finally:
+            if not task.done():
+                await self._cancel_and_drain(task)
+
+    @staticmethod
+    async def _cancel_and_drain(task: asyncio.Future) -> None:
+        task.cancel()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        # Generation invocation cancellation waits for the worker's terminal
+        # response and resource cleanup. No terminal Job is emitted before it.
 
     def tool_spec(self):
         base = super().tool_spec()

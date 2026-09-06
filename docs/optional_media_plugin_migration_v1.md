@@ -1,6 +1,6 @@
 # 可选媒体能力插件迁移 V1
 
-日期：2026-09-06。状态：实施中。第一条完整闭环是媒体格式转换；其余音频、翻唱、训练素材、转写、生图和文档能力后续逐组迁移。
+日期：2026-09-06。状态：首个本地迁移闭环已完成。第一条完整闭环是媒体格式转换；其余音频、翻唱、训练素材、转写、生图和文档能力后续逐组迁移。
 
 ## 目标与边界
 
@@ -82,7 +82,7 @@
 
 ## 当前迁移窗口
 
-起点：宿主 `7669585`。A/B 阶段旧内置转换仍是唯一已可用业务实现；只增加真实公共能力，不新增第二套转换入口。C/D 完成切换后旧实现必须删除。不得以测试通过的新 helper 代替市场安装和业务交付验收。
+起点：宿主 `7669585`。A/B 阶段暂留旧内置转换，C/D 在 `8377256` 完成替换并删除旧业务实现，迁移窗口已关闭。新插件不导入宿主私有转换实现；通用 Shell 保留，但 Skill 优先使用已安装的合适能力。
 
 ## 实施记录
 
@@ -144,3 +144,34 @@ async def invoke(self, capability_id, args, context):
 - 默认只登记转换产物，`send_to_user=false`，避免与后续精确交付重复。宿主运行时代码不含旧转换名称或插件 ID 硬编码；新增删除边界守卫测试。
 - 旧业务测试迁到独立插件真实 FFmpeg 用例；模式/原生 schema/Shell 回归 132 项通过，真实市场发现与转换回归 2 项通过。最终 Job 取消与渠道/MemCore 验收仍待完成。
 - 验收发现现有 HostToolJobRuntime 只记录运行中取消请求，未传递给 async 插件调用。下一 repair pass 复用此 Job 的取消标志，等隔离 worker 确认退出和资源清理后再确认 cancelled；不另建媒体队列。
+
+### E — Job repair pass 与真实交付边界
+
+- 现有 Job 的 `cancel_requested` 通过仅本次调用可见的回调进入插件工具桥，不进入序列化参数/持久任务 payload。请求后取消原调用并等待 generation worker 的终态与资源清理，再确认 Job 为 cancelled；不新增队列或媒体执行服务。
+- 插件若抑制取消并实际完成，保留真实结果。通用测试在清理尚未释放时确认 Job 仍为 running、未发布完成，再验证 cancelled/实际 succeeded 两种结果及仅一次通知。
+- 兼容的进程内 PluginHost 跨线程桥也改为等待生命周期循环上的实际任务结束，而非等待会提前确认取消的 concurrent Future；覆盖跨循环清理等待与抑制取消后的真实成功结果。
+- 修复原通用 adapter 业务错误丢失问题：将 CapCore `is_error` 传入宿主完成判定，保留原具体 status/reason。原先 `not_found/resource_not_found` 会被 Job 误判成功，现在正确为 failed。
+- 真实市场安装的转换插件经 Engine handler、ExecutorBroker、HostToolJobRuntime 执行：成功返回 MP3 句柄；20 分钟真实 WAV 的 FFmpeg 创建输出后再取消，临时目录清空且不新增产物；未知来源任务失败，无假成功/重复通知。Job ID 幂等重放不重新转换。
+- 成功/取消/失败完成事实通过既有类型化事件进入真实 MemCore，重复记录仍幂等，并可进入 OpenAI 上下文投影；不编造助手历史。原生/兼容投影测试使用真实工具描述与执行，不调用付费外部 LLM。
+- 真实 MP3 经 `SendFileToolHandler` 进入原 QQ gateway，验证 OneBot 上传请求确实引用已存在的结果文件；网络传输被替换，未向实际 QQ 发送。
+- 同一真实后端文件事件交给从当前 `main.js` 提取的生产桌面交付函数，验证只登记时不自动打开、工作区刷新、显式打开、重复完成去重与失败气泡；Tauri 系统打开边界为替身，不宣称原生播放器或实际出声已验收。不修改 main/settings/CSS/布局。
+- 相关核心测试 28 项通过；控制中心 V2/动作、气泡/语音 smoke 和 Vite build 通过。完整回归结果见下方最终验收。
+
+### 扩展回归中的既有问题
+
+`tests.test_capability_adapter_python_orchestration tests.test_capability_adapter_mcp_orchestration tests.test_capability_fabric_m66 tests.test_capability_fabric_m66_repair tests.test_memcore_integration` 共 191 项，189 通过、2 项失败：
+
+- `test_disabled_mcp_family_cannot_use_historical_native_alias`
+- `test_mcp_family_off_removes_tools_from_model_selection`
+
+两项均已在迁移前 `7669585` 的独立源码归档实例上复现相同失败（2026-09-06）。对应 MCP 测试、`engine_services/tool_rounds.py` 与 `local_capability_config.py` 本轮未改；本轮不扩大到 MCP 家族禁用策略修复，不将这组报告为全绿。
+
+### 最终验收（2026-09-06）
+
+- 主迁移回归 **560 项通过**：插件资源/产物/generation/安装/市场/生命周期、Engine bridge、Host Job、QQ gateway、后端路由、原生工具 schema、旧媒体与模式选择及 Shell 路径。
+- 最后跨循环兼容修复后的补充回归 **114 项通过**：`tests.test_plugin_host tests.test_plugin_engine_bridge tests.test_host_tool_jobs tests.test_media_convert_plugin tests.test_plugin_generation tests.test_plugin_resources tests.test_bot_runtime`。这是重叠回归，不与 560 相加宣称独立用例总数。
+- 独立转换包真实 FFmpeg 测试 **10 项通过**；包括七种输出、视频提取、音频信号/时间规格及进程取消/重复取消。
+- 控制中心 V2/动作、气泡/语音 smoke、Vite build、修改文件 ruff 与 `git diff --check` 通过。真实后端产物驱动的桌面交付 smoke 随 `tests.test_media_convert_plugin` 运行。
+- `.plugin-market/index.json` 及其真实 wheel 已按最终插件源码重建；发行产物被 Git 忽略，用户实例未被自动安装。使用方法见 [最小静态插件市场 V1](plugin_market_v1.md)。
+- **未实施/未声称验收**：公网市场发布、云端部署、真实 QQ 发送、真实付费模型调用、打包 Tauri 下系统播放器实际打开/出声。QQ HTTP 与 Tauri 系统打开是本地测试替身；浏览器市场 UI、实际文件/FFmpeg/隔离 worker、Job 和 MemCore 是真实本地路径。
+- 用户已有角色文档和角色资源测试改动及 `work/` 保持原样，未纳入本轮提交。已有 MCP 禁用策略的两项失败按上节记录，不混入本轮修复。

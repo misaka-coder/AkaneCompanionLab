@@ -8,11 +8,14 @@ import json
 import math
 import os
 import shutil
+import subprocess
 import tempfile
+import time
 import unittest
 import wave
 from array import array
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from capcore import InvocationContext
@@ -20,6 +23,15 @@ from capcore import InvocationContext
 import config
 from companion_v01.mode_profiles import ModeProfileRegistry
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.background_tasks import BackgroundTaskRunner
+from companion_v01.bot_runtime import _host_job_completion_request
+from companion_v01.capability_registry import ExecutorBroker
+from companion_v01.host_jobs import HostJobOwner, HostJobStore
+from companion_v01.host_tool_jobs import HostToolJobRuntime
+from companion_v01.deployment_security import QQChannelRuntimeConfig
+from companion_v01.memcore_integration.manager import MemcoreManager
+from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.tool_handlers.generated_media import SendFileToolHandler
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.legacy_tool_prompt import render_legacy_json_tool_instruction
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
@@ -35,6 +47,7 @@ from companion_v01.tool_runtime import ToolExecutionContext
 from scripts.build_plugin_market import build_market
 from tests.test_plugin_engine_bridge import EngineFacade
 from tests.test_plugin_resources import services
+from tests.test_media_skill_shell_profile_m68 import _FakeEmbeddingProvider, _FakeLLM
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +57,222 @@ CAPABILITY_ID = f"{PLUGIN_ID}.run.v1"
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and FFprobe required")
 class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
+    def verify_job_memory_and_delivery(self, *, root, files, completed):
+        manager = MemcoreManager(
+            backend="memcore",
+            storage_path=root / "memory.sqlite3",
+            visible_scope="conversation",
+            enable_flavor=False,
+            shadow_compare=False,
+            llm=_FakeLLM(),
+            embedding_provider=_FakeEmbeddingProvider(),
+        )
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.memcore_manager = manager
+        engine._resolve_payload_character_pack_id = lambda _payload: "test-character"
+        engine._memcore_owns_compaction = lambda: False
+        try:
+            for job in completed:
+                request = _host_job_completion_request(job)
+                payload = {
+                    "source_id": request.memory_idempotency_key,
+                    "user_id": "session",
+                    "real_user_id": "owner",
+                    "timestamp": int(job.finished_at),
+                    "event": {
+                        "event_type": request.event.event_type,
+                        "source": request.event.source,
+                        "fields": dict(request.event.fields),
+                    },
+                }
+                for _ in range(2):
+                    recorded = engine.record_plugin_timeline_event(payload)
+                    self.assertTrue(recorded["ok"], recorded)
+                stored = manager._store.get_record_by_source_id(job.completion_event_id)
+                self.assertEqual(stored["kind"], f"event.job.{job.status}")
+                self.assertEqual(stored["payload"]["status"], job.status)
+                self.assertNotIn(str(root), str(stored["payload"]))
+                projection = manager.build_context_projection(
+                    provider_profile="openai",
+                    profile_user_id="owner",
+                    session_id="session",
+                    character_pack_id="test-character",
+                )
+                self.assertNotIn("absolute_path", str(projection.get("payloads")))
+                self.assertIn(job.job_id, str(projection.get("payloads")))
+        finally:
+            manager.close()
+
+        success = completed[0]
+        handler = SendFileToolHandler(generated_file_service=files)
+        call = handler.normalize_call(
+            {"type": "send_file", "target": success.artifacts[0]["handle"], "delivery_action": "open"}
+        )
+        desktop = handler.execute(
+            call=call, context=ToolExecutionContext("owner", "session", 1, {}, client_mode="desktop_pet")
+        )
+        event = desktop.stream_events[0]
+        self.assertEqual(event["desktop_delivery"]["action"], "open")
+        self.assertNotIn("path", event["desktop_delivery"])
+        if shutil.which("node"):
+            smoke = subprocess.run(
+                ["node", str(PROJECT_ROOT / "desktop_pet_next/scripts/media-plugin-delivery-smoke.mjs")],
+                input=json.dumps(event),
+                text=True,
+                capture_output=True,
+                timeout=20,
+            )
+            self.assertEqual(smoke.returncode, 0, smoke.stderr)
+        qq = handler.execute(call=call, context=ToolExecutionContext("owner", "session", 1, {}, client_mode="qq_text"))
+        self.assertNotIn("desktop_delivery", qq.stream_events[0])
+        gateway = NapCatQQGateway(
+            channel_config=QQChannelRuntimeConfig(
+                enabled=True,
+                profile_ref="test",
+                bot_id="10001",
+                onebot_http_url="http://127.0.0.1:9",
+                webhook_secret="",
+                onebot_access_token="",
+                require_webhook_auth=False,
+                require_self_id=True,
+            )
+        )
+        qq_context = gateway.build_message_context(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 10001,
+                "user_id": 10002,
+                "message_id": "test-delivery",
+                "raw_message": "发送转换结果",
+            }
+        )
+        response = SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"status": "ok", "retcode": 0})
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=response) as transport:
+            sent = gateway.send_generated_files(qq_context, qq.stream_events)
+        self.assertTrue(sent["ok"], sent)
+        transport.assert_called_once()
+        self.assertTrue(transport.call_args.args[1].endswith("/upload_private_file"))
+        uploaded = transport.call_args.kwargs["json"]
+        self.assertTrue(Path(uploaded["file"]).is_file())
+        self.assertTrue(uploaded["name"].endswith(".mp3"))
+
+    async def exercise_host_jobs(self, *, root, engine, files, attachments, source_id):
+        engine.executor_broker = ExecutorBroker(None)
+        engine._tool_hook_result_status = AkaneMemoryEngine._tool_hook_result_status
+        engine._resolve_client_protocol_context = ModeProfileRegistry().resolve_from_payload
+        jobs = HostJobStore(root / "jobs.db")
+        runner = BackgroundTaskRunner({"host-jobs": 1})
+        completed = []
+        job_runtime = HostToolJobRuntime(
+            engine=engine,
+            store=jobs,
+            background_tasks=runner,
+            conversation_ref_issuer=lambda _context: "test-conversation",
+            terminal_callback=lambda job: completed.append(job) or True,
+        )
+        context = ToolExecutionContext("owner", "session", 1, {}, client_mode="qq_text")
+        owner = HostJobOwner("owner", "session")
+        call = {"type": CAPABILITY_ID, "arguments": {"source_id": source_id, "output_format": "mp3"}}
+        job_id = ""
+        try:
+            started = time.monotonic()
+            accepted = job_runtime.submit(
+                capability_id=CAPABILITY_ID, invocation_id="convert-job", call=call, context=context
+            )
+            self.assertLess(time.monotonic() - started, 1)
+            self.assertEqual(accepted.stream_events[0]["type"], "background_job_accepted", accepted)
+            self.assertTrue(await asyncio.to_thread(runner.wait_idle, lane="host-jobs", timeout=10))
+            self.assertTrue(await asyncio.to_thread(runner.wait_idle, lane="host-job-completions", timeout=5))
+            success = jobs.get(accepted.stream_events[0]["job_id"], owner=owner)
+            self.assertEqual(success.status, "succeeded", success)
+            self.assertEqual(len(success.artifacts), 1)
+            request = _host_job_completion_request(success)
+            self.assertEqual(dict(request.event.fields)["artifact_delivery_status"], "available_not_delivered")
+            self.assertIn(success.artifacts[0]["handle"], request.message)
+            self.assertNotIn(str(root), request.message)
+            again = job_runtime.submit(
+                capability_id=CAPABILITY_ID, invocation_id="convert-job", call=call, context=context
+            )
+            self.assertEqual(again.stream_events[0]["job_id"], success.job_id)
+            self.assertEqual(len(completed), 1)
+
+            # Long real audio + real FFmpeg, no delayed adapter or fake result.
+            audio = root / "attachments" / "long.wav"
+            with wave.open(str(audio), "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(8000)
+                chunk = array("h", (int(8000 * math.sin(2 * math.pi * 440 * i / 8000)) for i in range(8000))).tobytes()
+                for _ in range(1200):
+                    output.writeframesraw(chunk)
+            item = attachments.create_pending(
+                profile_user_id="owner",
+                session_id="session",
+                source="test",
+                kind="audio",
+                origin_name="long.wav",
+                file_ext="wav",
+                mime_type="audio/wav",
+                storage_relpath="long.wav",
+                file_size=audio.stat().st_size,
+            )
+            attachments.mark_ready(profile_user_id="owner", session_id="session", attachment_id=item["attachment_id"])
+            baseline = files.store.list_generated_files(profile_user_id="owner", session_id="session", limit=100)
+            cancel_call = {
+                "type": CAPABILITY_ID,
+                "arguments": {
+                    "source_id": item["attachment_id"],
+                    "output_format": "wav",
+                    "normalize_volume": True,
+                    "speed_ratio": 0.25,
+                },
+            }
+            accepted = job_runtime.submit(
+                capability_id=CAPABILITY_ID, invocation_id="cancel-convert", call=cancel_call, context=context
+            )
+            job_id = accepted.stream_events[0]["job_id"]
+            deadline = time.monotonic() + 15
+            while not list((root / "copies").rglob("converted-*")) and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+            self.assertTrue(list((root / "copies").rglob("converted-*")), "FFmpeg never opened its output")
+            self.assertEqual(jobs.get(job_id, owner=owner).status, "running")
+            self.assertFalse(jobs.request_cancel(job_id, owner=HostJobOwner("other", "session"))["ok"])
+            self.assertEqual(jobs.request_cancel(job_id, owner=owner)["status"], "cancelling")
+            self.assertTrue(jobs.request_cancel(job_id, owner=owner)["ok"])
+            self.assertTrue(await asyncio.to_thread(runner.wait_idle, lane="host-jobs", timeout=10))
+            self.assertTrue(await asyncio.to_thread(runner.wait_idle, lane="host-job-completions", timeout=5))
+            cancelled = jobs.get(job_id, owner=owner)
+            self.assertEqual(cancelled.status, "cancelled", cancelled)
+            self.assertEqual(cancelled.artifacts, ())
+            self.assertEqual(list((root / "copies").iterdir()), [])
+            self.assertEqual(
+                files.store.list_generated_files(profile_user_id="owner", session_id="session", limit=100), baseline
+            )
+            self.assertEqual([job.job_id for job in completed], [success.job_id, job_id])
+            self.assertEqual(job_runtime.recover(), 0)
+            request = _host_job_completion_request(cancelled)
+            self.assertEqual(request.event.event_type, "job.cancelled")
+            self.assertNotIn("artifact_handles", dict(request.event.fields))
+            bad = job_runtime.submit(
+                capability_id=CAPABILITY_ID,
+                invocation_id="missing-source-job",
+                call={"type": CAPABILITY_ID, "arguments": {"source_id": "gen_9999", "output_format": "mp3"}},
+                context=context,
+            )
+            self.assertTrue(await asyncio.to_thread(runner.wait_idle, lane="host-jobs", timeout=10))
+            self.assertTrue(await asyncio.to_thread(runner.wait_idle, lane="host-job-completions", timeout=5))
+            failed = jobs.get(bad.stream_events[0]["job_id"], owner=owner)
+            self.assertEqual(failed.status, "failed", failed)
+            self.assertEqual(failed.artifacts, ())
+            self.assertEqual(len(completed), 3)
+            self.assertEqual(job_runtime.recover(), 0)
+            self.verify_job_memory_and_delivery(root=root, files=files, completed=completed)
+        finally:
+            if job_id:
+                jobs.request_cancel(job_id, owner=owner)
+            await asyncio.to_thread(runner.close, timeout=10)
+
     def discovery_snapshot(self, engine, *, installed):
         snapshots = []
         for mode in ("desktop_pet", "qq_text"):
@@ -219,6 +448,9 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                     CAPABILITY_ID, dict(source_id=item["attachment_id"], output_format="flac"), context=context
                 )
                 self.assertFalse(good.is_error, good)
+                await self.exercise_host_jobs(
+                    root=root, engine=engine, files=files, attachments=attachments, source_id=item["attachment_id"]
+                )
                 disabled = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=False)
                 self.assertTrue(disabled["ok"], disabled)
                 self.assertNotIn(CAPABILITY_ID, runtime.capability_ids)

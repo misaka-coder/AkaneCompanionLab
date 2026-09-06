@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import re
+import threading
 import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -1065,30 +1066,62 @@ class PluginHost:
         current_loop = asyncio.get_running_loop()
         if current_loop is runtime_loop:
             return await self.invoke(capability_id, args, context=context)
+        cancel_requested = threading.Event()
+        invocation_tasks: list[asyncio.Task] = []
+
+        async def invoke_on_runtime() -> CapabilityResult:
+            invocation_tasks.append(asyncio.current_task())
+            if cancel_requested.is_set():
+                raise asyncio.CancelledError()
+            return await self.invoke(capability_id, args, context=context)
+
+        invocation = invoke_on_runtime()
         try:
             concurrent_future = asyncio.run_coroutine_threadsafe(
-                self.invoke(capability_id, args, context=context),
+                invocation,
                 runtime_loop,
             )
         except RuntimeError:
+            invocation.close()
             return CapabilityResult(
                 is_error=True,
                 status="host_unavailable",
                 reason="host_unavailable",
             )
+        consumer_future = asyncio.wrap_future(concurrent_future)
+
+        async def cancel_and_drain() -> None:
+            # Cancelling the concurrent Future itself acknowledges immediately,
+            # before the lifecycle-loop task has released resources. Cancel the
+            # actual task and retain its Future until that task really finishes.
+            cancel_requested.set()
+
+            def cancel_task() -> None:
+                if invocation_tasks:
+                    invocation_tasks[0].cancel()
+
+            runtime_loop.call_soon_threadsafe(cancel_task)
+            while not consumer_future.done():
+                try:
+                    await asyncio.shield(consumer_future)
+                except asyncio.CancelledError:
+                    continue
+
         try:
             return await _await_with_optional_timeout(
-                asyncio.wrap_future(concurrent_future),
+                asyncio.shield(consumer_future),
                 timeout_seconds=_combined_invocation_timeout(
                     self._invoke_timeout_seconds,
                     self._managed_artifact_timeout_seconds,
                 ),
             )
         except asyncio.CancelledError:
-            concurrent_future.cancel()
-            raise
+            await cancel_and_drain()
+            return consumer_future.result()
         except (TimeoutError, asyncio.TimeoutError):
-            concurrent_future.cancel()
+            await cancel_and_drain()
+            if not consumer_future.cancelled():
+                return consumer_future.result()
             return CapabilityResult(
                 is_error=True,
                 status="error",

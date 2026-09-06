@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from ..capability_registry import (
     APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
@@ -81,6 +81,8 @@ class ToolExecutionContext:
     execution_scope: TaskExecutionScope | None = None
     invocation_id: str = ""
     capability_selection: Any = None
+    # Invocation-local host control; never persisted or sent in plugin arguments.
+    cancel_requested: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
