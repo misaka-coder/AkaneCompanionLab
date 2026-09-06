@@ -67,6 +67,7 @@ from .plugin_managed_artifacts import (
     normalize_managed_artifact_reference,
 )
 from .plugin_qq_commands import COMMAND_FAILURE_REPLY, PluginQQCommandBroker
+from .plugin_subprocess import drain
 from .skill_runtime import ContributedSkillRoot
 
 
@@ -665,10 +666,12 @@ class PluginGenerationProcess:
             await self._callback_router.finish_invocation(request_id)
             raise
         response_task = asyncio.create_task(asyncio.to_thread(self._next_response, response_queue, None))
+        cancellation_observed = False
         try:
             try:
                 response = await asyncio.shield(response_task)
             except asyncio.CancelledError:
+                cancellation_observed = True
                 self._send_cancel(request_id)
                 # Wait for the worker's actual terminal response before
                 # deleting input copies that a converter may still have open.
@@ -679,13 +682,11 @@ class PluginGenerationProcess:
                         continue
                     except Exception:
                         break
-                if not response_task.cancelled() and response_task.exception() is None:
-                    cancelled_response = response_task.result()
-                    wire_result = cancelled_response.get("result", {})
-                    content = wire_result.get("content", {}) if isinstance(wire_result, Mapping) else {}
-                    if isinstance(content, Mapping):
-                        discard_generation_artifacts(self._artifact_outbox_dir, content.get("managed_artifacts"))
-                raise
+                # The worker may suppress cancellation and return an actual
+                # success, or an error such as unconfirmed remote completion.
+                # A cancellation request is not proof that either became a
+                # cancelled operation. Validate its real terminal below.
+                response = response_task.result()
             finally:
                 self._discard_pending(request_id, response_queue)
             self._validate_response(response, expected_type="response")
@@ -699,11 +700,19 @@ class PluginGenerationProcess:
                 result = capability_result_from_wire(response.get("result"))
             except PluginGenerationCodecError as exc:
                 raise PluginGenerationError("plugin_generation_protocol_invalid") from exc
-            return await self._materialize_generation_artifact(
-                result,
-                capability_id=str(capability_id or ""),
-                context=context,
+            if cancellation_observed and result.is_error and result.status == "cancelled":
+                if isinstance(result.content, Mapping):
+                    discard_generation_artifacts(self._artifact_outbox_dir, result.content.get("managed_artifacts"))
+                raise asyncio.CancelledError()
+            materialize = self._materialize_generation_artifact(
+                result, capability_id=str(capability_id or ""), context=context,
             )
+            if cancellation_observed:
+                # Complete the confirmed outcome once, including its artifact
+                # handoff, even if the caller repeats the cancellation signal.
+                finalized, _ = await drain(asyncio.create_task(materialize))
+                return finalized
+            return await materialize
         finally:
             await self._callback_router.finish_invocation(request_id)
             self._finish_invocation()
