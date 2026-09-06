@@ -101,22 +101,46 @@ class PluginResultPayload:
 
 @dataclass(frozen=True, slots=True)
 class ManagedArtifactDraft:
-    """Path-free bytes proposed by a trusted plugin for host-owned storage."""
+    """One artifact for host storage: small bytes or a plugin-local file.
 
-    data: bytes
-    title: str
-    output_format: str
-    mime_type: str
+    Provide exactly one of ``data`` or ``path``. A path is a private worker
+    input, never a public result or host storage locator. Files are copied in
+    chunks; the producer keeps them available until its invocation completes.
+    """
+
+    data: bytes = b""
+    title: str = ""
+    output_format: str = ""
+    mime_type: str = ""
     summary: str = ""
     send_to_user: bool = True
+    path: Path | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class ManagedArtifactPayload:
-    """Capability content plus at most one artifact committed by PluginHost."""
+    """Capability content plus ordered artifacts committed by PluginHost.
+
+    The generated-file output slot's max_bytes budgets their combined size.
+    """
 
     content: Any
-    artifact: ManagedArtifactDraft
+    artifacts: tuple[ManagedArtifactDraft, ...]
+
+    def __init__(
+        self, content: Any, artifacts: tuple[ManagedArtifactDraft, ...] | ManagedArtifactDraft | None = None,
+        *, artifact: ManagedArtifactDraft | None = None,
+    ) -> None:
+        # API v1 wheels may still use the original singular constructor.
+        # Normalize at this boundary; the runtime only owns the tuple path.
+        if artifact is not None:
+            if artifacts is not None:
+                raise TypeError("managed_artifact_payload_ambiguous")
+            artifacts = (artifact,)
+        elif isinstance(artifacts, ManagedArtifactDraft):
+            artifacts = (artifacts,)
+        object.__setattr__(self, "content", content)
+        object.__setattr__(self, "artifacts", artifacts if artifacts is not None else ())
 
 
 # ---------------------------------------------------------------------------

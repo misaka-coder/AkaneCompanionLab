@@ -34,7 +34,6 @@ from .plugin_api import (
     EVENT_SUBSCRIBE_PERMISSION,
     HOOK_SUBSCRIBE_PERMISSION,
     MANAGED_ARTIFACT_WRITE_PERMISSION,
-    MAX_MANAGED_ARTIFACT_BYTES,
     NOTIFICATION_SEND_PERMISSION,
     PLUGIN_QQ_COMMAND_PERMISSION,
     PLUGIN_STORAGE_WRITE_PERMISSION,
@@ -67,6 +66,7 @@ from .plugin_managed_artifacts import (
     ManagedArtifactError,
     ManagedArtifactSink,
     normalize_managed_artifact_reference,
+    validate_managed_artifact_draft,
 )
 from .plugin_notifications import _NotificationDeliveryLedger, _PluginScopedNotificationPort
 from .plugin_agent_events import _PluginScopedAgentEventPort
@@ -486,7 +486,7 @@ class PluginHost:
         entry_points_provider: Callable[[], Iterable[Any]] | None = None,
         activation_timeout_seconds: float = 5.0,
         invoke_timeout_seconds: float | None = None,
-        managed_artifact_timeout_seconds: float = 5.0,
+        managed_artifact_timeout_seconds: float = 0.0,
         close_timeout_seconds: float = 2.0,
         event_handler_timeout_seconds: float = DEFAULT_EVENT_HANDLER_TIMEOUT_SECONDS,
         hook_handler_timeout_seconds: float = DEFAULT_HOOK_HANDLER_TIMEOUT_SECONDS,
@@ -510,7 +510,7 @@ class PluginHost:
         self._invoke_timeout_seconds = (
             None if invoke_timeout_seconds is None else max(0.1, float(invoke_timeout_seconds))
         )
-        self._managed_artifact_timeout_seconds = max(0.1, float(managed_artifact_timeout_seconds))
+        self._managed_artifact_timeout_seconds = max(0.0, float(managed_artifact_timeout_seconds))
         self._close_timeout_seconds = max(0.1, float(close_timeout_seconds))
         self._event_handler_timeout_seconds = max(0.01, float(event_handler_timeout_seconds))
         self._hook_handler_timeout_seconds = max(0.01, float(hook_handler_timeout_seconds))
@@ -1197,42 +1197,46 @@ class PluginHost:
         if public_result.is_error:
             return public_result
 
-        data = getattr(payload.artifact, "data", None)
+        if not isinstance(payload.artifacts, tuple) or not payload.artifacts:
+            return _managed_artifact_failure("managed_artifacts_required")
         declared_max_bytes = int(artifact_output.max_bytes or 0)
-        if not isinstance(data, bytes) or len(data) > declared_max_bytes:
-            return _managed_artifact_failure("managed_artifact_too_large")
         try:
-            artifact_ref = await asyncio.wait_for(
-                self._managed_artifact_sink.materialize(
-                    payload.artifact,
-                    context=context,
-                    capability_id=registration.descriptor.id,
-                ),
-                timeout=self._managed_artifact_timeout_seconds,
-            )
-        except asyncio.CancelledError:
-            if _current_task_is_cancelling():
-                raise
-            return _managed_artifact_failure("managed_artifact_write_failed")
-        except (TimeoutError, asyncio.TimeoutError):
-            return _managed_artifact_failure("managed_artifact_write_timeout")
+            total_bytes = sum(validate_managed_artifact_draft(draft).file_size for draft in payload.artifacts)
         except ManagedArtifactError as exc:
             return _managed_artifact_failure(exc.reason)
-        except Exception:
-            return _managed_artifact_failure("managed_artifact_write_failed")
-        normalized_artifact_ref = normalize_managed_artifact_reference(
-            artifact_ref,
-            draft=payload.artifact,
-            capability_id=registration.descriptor.id,
-        )
-        if normalized_artifact_ref is None:
-            return _managed_artifact_failure("managed_artifact_invalid_reference")
+        if total_bytes > declared_max_bytes:
+            return _managed_artifact_failure("managed_artifact_too_large")
+        artifact_refs = []
+        for draft in payload.artifacts:
+            try:
+                artifact_ref = await _await_with_optional_timeout(
+                    self._managed_artifact_sink.materialize(
+                        draft, context=context, capability_id=registration.descriptor.id,
+                    ),
+                    timeout_seconds=self._managed_artifact_timeout_seconds or None,
+                )
+                normalized = normalize_managed_artifact_reference(
+                    artifact_ref, draft=draft, capability_id=registration.descriptor.id,
+                )
+                if normalized is None:
+                    raise ManagedArtifactError("managed_artifact_invalid_reference")
+                artifact_refs.append(normalized)
+            except asyncio.CancelledError:
+                if _current_task_is_cancelling():
+                    raise
+                return _managed_artifact_failure("managed_artifact_write_failed", artifacts=artifact_refs)
+            except (TimeoutError, asyncio.TimeoutError):
+                return _managed_artifact_failure("managed_artifact_write_timeout", artifacts=artifact_refs)
+            except ManagedArtifactError as exc:
+                return _managed_artifact_failure(exc.reason, artifacts=artifact_refs)
+            except Exception:
+                return _managed_artifact_failure("managed_artifact_write_failed", artifacts=artifact_refs)
 
         if isinstance(public_result.content, Mapping):
             combined_content: dict[str, Any] = dict(public_result.content)
         else:
             combined_content = {"result": public_result.content}
-        combined_content["managed_artifacts"] = [normalized_artifact_ref]
+        combined_content["managed_artifacts"] = artifact_refs
         return sanitize_capability_result(
             CapabilityResult(
                 is_error=False,
@@ -1724,7 +1728,6 @@ def _validate_managed_artifact_descriptor_contract(
         isinstance(output.max_bytes, bool)
         or not isinstance(output.max_bytes, int)
         or output.max_bytes <= 0
-        or output.max_bytes > MAX_MANAGED_ARTIFACT_BYTES
     ):
         raise _ActivationFailure("managed_artifact_size_limit_invalid")
     if "filesystem" not in descriptor.effects:
@@ -1736,11 +1739,12 @@ def _managed_artifact_output(descriptor: CapabilityDescriptor) -> Any | None:
     return outputs[0] if len(outputs) == 1 else None
 
 
-def _managed_artifact_failure(reason: str) -> CapabilityResult:
+def _managed_artifact_failure(reason: str, *, artifacts: list | tuple = ()) -> CapabilityResult:
     return CapabilityResult(
         is_error=True,
-        status="error",
+        status="partial" if artifacts else "error",
         reason=str(reason or "managed_artifact_failed"),
+        content={"managed_artifacts": list(artifacts)} if artifacts else None,
     )
 
 
@@ -1818,7 +1822,7 @@ def _combined_invocation_timeout(
     invoke_timeout_seconds: float | None,
     managed_artifact_timeout_seconds: float,
 ) -> float | None:
-    if invoke_timeout_seconds is None:
+    if invoke_timeout_seconds is None or managed_artifact_timeout_seconds <= 0:
         return None
     return invoke_timeout_seconds + managed_artifact_timeout_seconds + 0.5
 

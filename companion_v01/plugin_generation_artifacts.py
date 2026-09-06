@@ -7,7 +7,6 @@ token. The parent consumes that token through the existing host-owned sink.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import uuid
@@ -17,7 +16,7 @@ from typing import Any, Mapping
 
 from capcore import InvocationContext
 
-from .plugin_api import MAX_MANAGED_ARTIFACT_BYTES, ManagedArtifactDraft
+from .plugin_api import ManagedArtifactDraft
 from .plugin_managed_artifacts import (
     ManagedArtifactError,
     validate_managed_artifact_draft,
@@ -58,19 +57,13 @@ class GenerationArtifactOutboxSink:
         capability_id: str,
     ) -> Mapping[str, Any]:
         del context
-        return await asyncio.to_thread(
-            self._stage,
-            draft,
-            capability_id=str(capability_id or ""),
+        artifact = validate_managed_artifact_draft(draft)
+        title, output_format, mime_type, summary = (
+            artifact.title,
+            artifact.output_format,
+            artifact.mime_type,
+            artifact.summary,
         )
-
-    def _stage(
-        self,
-        draft: ManagedArtifactDraft,
-        *,
-        capability_id: str,
-    ) -> Mapping[str, Any]:
-        data, title, output_format, mime_type, summary = validate_managed_artifact_draft(draft)
         token = uuid.uuid4().hex
         data_path, metadata_path = _artifact_paths(self._outbox_dir, token)
         data_temp = data_path.with_suffix(".bin.tmp")
@@ -82,28 +75,32 @@ class GenerationArtifactOutboxSink:
             "mime_type": mime_type,
             "summary": summary,
             "send_to_user": draft.send_to_user,
-            "file_size": len(data),
+            "file_size": artifact.file_size,
             "capability_id": capability_id,
         }
+        staged = False
         try:
             self._outbox_dir.mkdir(parents=True, exist_ok=True)
-            data_temp.write_bytes(data)
+            await artifact.copy_to_async(data_temp)
             data_temp.replace(data_path)
             metadata_temp.write_text(
                 json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
                 encoding="utf-8",
             )
             metadata_temp.replace(metadata_path)
+            staged = True
         except Exception:
-            _cleanup_paths(metadata_temp, data_temp, metadata_path, data_path)
             raise ManagedArtifactError("managed_artifact_handoff_failed") from None
+        finally:
+            if not staged:
+                _cleanup_paths(metadata_temp, data_temp, metadata_path, data_path)
         return {
             "generated_id": f"{_PENDING_ID_PREFIX}{token}",
             "generated_handle": f"{_PENDING_HANDLE_PREFIX}{token}",
             "output_title": title,
             "output_format": output_format,
             "mime_type": mime_type,
-            "file_size": len(data),
+            "file_size": artifact.file_size,
             "created_by_tool": capability_id,
             "send_to_user": draft.send_to_user,
         }
@@ -117,6 +114,21 @@ def is_generation_artifact_reference(value: object) -> bool:
     return generated_id.startswith(_PENDING_ID_PREFIX) and bool(_TOKEN_RE.fullmatch(token))
 
 
+def discard_generation_artifacts(outbox_dir: Path, references: object) -> None:
+    """Remove this result's outbox entries, including unconsumed trailing files."""
+    if not isinstance(references, list):
+        return
+    for reference in references:
+        if not is_generation_artifact_reference(reference):
+            continue
+        token = reference["generated_id"].removeprefix(_PENDING_ID_PREFIX)
+        try:
+            data_path, metadata_path = _artifact_paths(Path(outbox_dir).resolve(), token)
+        except ManagedArtifactError:
+            continue
+        _cleanup_paths(metadata_path, data_path)
+
+
 def consume_generation_artifact(
     outbox_dir: Path,
     reference: Mapping[str, Any],
@@ -128,18 +140,17 @@ def consume_generation_artifact(
     if (
         not generated_id.startswith(_PENDING_ID_PREFIX)
         or not _TOKEN_RE.fullmatch(token)
-        or str(reference.get("generated_handle") or "")
-        != f"{_PENDING_HANDLE_PREFIX}{token}"
+        or str(reference.get("generated_handle") or "") != f"{_PENDING_HANDLE_PREFIX}{token}"
     ):
         raise ManagedArtifactError("managed_artifact_handoff_invalid")
     data_path, metadata_path = _artifact_paths(Path(outbox_dir).resolve(), token)
     try:
-        metadata = json.loads(
-            _read_bounded(metadata_path, max_bytes=_MAX_METADATA_BYTES).decode("utf-8")
-        )
+        metadata = json.loads(_read_bounded(metadata_path, max_bytes=_MAX_METADATA_BYTES).decode("utf-8"))
         if not isinstance(metadata, Mapping):
             raise ValueError
-        data = _read_bounded(data_path, max_bytes=MAX_MANAGED_ARTIFACT_BYTES)
+        if not data_path.is_file():
+            raise ValueError
+        file_size = data_path.stat().st_size
     except ManagedArtifactError:
         _cleanup_paths(metadata_path, data_path)
         raise
@@ -152,20 +163,20 @@ def consume_generation_artifact(
         "output_format": str(reference.get("output_format") or ""),
         "mime_type": str(reference.get("mime_type") or ""),
         "send_to_user": reference.get("send_to_user"),
-        "file_size": len(data),
+        "file_size": file_size,
         "capability_id": capability_id,
     }
     reference_file_size = reference.get("file_size")
     if (
         isinstance(reference_file_size, bool)
-        or reference_file_size != len(data)
+        or reference_file_size != file_size
         or str(reference.get("created_by_tool") or "") != capability_id
         or any(metadata.get(key) != value for key, value in expected.items())
     ):
         _cleanup_paths(metadata_path, data_path)
         raise ManagedArtifactError("managed_artifact_handoff_invalid")
     draft = ManagedArtifactDraft(
-        data=data,
+        path=data_path,
         title=expected["title"],
         output_format=expected["output_format"],
         mime_type=expected["mime_type"],
@@ -209,12 +220,7 @@ def _read_bounded(path: Path, *, max_bytes: int) -> bytes:
     with path.open("rb") as stream:
         data = stream.read(max_bytes + 1)
     if len(data) > max_bytes:
-        reason = (
-            "managed_artifact_too_large"
-            if max_bytes == MAX_MANAGED_ARTIFACT_BYTES
-            else "managed_artifact_handoff_invalid"
-        )
-        raise ManagedArtifactError(reason)
+        raise ManagedArtifactError("managed_artifact_handoff_invalid")
     return data
 
 
@@ -222,5 +228,6 @@ __all__ = [
     "GenerationArtifactOutboxSink",
     "StagedGenerationArtifact",
     "consume_generation_artifact",
+    "discard_generation_artifacts",
     "is_generation_artifact_reference",
 ]

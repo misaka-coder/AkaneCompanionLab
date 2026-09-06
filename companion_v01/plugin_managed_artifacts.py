@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import mimetypes
+import re
+import stat
+import threading
 import time
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -15,18 +21,75 @@ from .plugin_api import MAX_MANAGED_ARTIFACT_BYTES, ManagedArtifactDraft
 from .plugin_result_projection import project_capability_result
 
 
-_ALLOWED_FORMAT_MIME_TYPES: dict[str, frozenset[str]] = {
+_KNOWN_FORMAT_MIME_TYPES: dict[str, frozenset[str]] = {
     "png": frozenset({"image/png"}),
     "md": frozenset({"text/markdown", "text/markdown; charset=utf-8"}),
     "pdf": frozenset({"application/pdf"}),
     "xlsx": frozenset({"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}),
+    "wav": frozenset({"audio/wav", "audio/x-wav", "audio/wave"}),
+    "mp3": frozenset({"audio/mpeg", "audio/mp3"}),
+    "mp4": frozenset({"video/mp4", "audio/mp4"}),
+    "m4a": frozenset({"audio/mp4", "audio/x-m4a"}),
+    "flac": frozenset({"audio/flac", "audio/x-flac"}),
+    "ogg": frozenset({"audio/ogg", "video/ogg", "application/ogg"}),
+    "opus": frozenset({"audio/ogg", "audio/opus"}),
 }
+_FORMAT_RE = re.compile(r"^[a-z0-9]{1,16}$")
+_MIME_RE = re.compile(r"^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+(?:;[^\r\n]*)?$")
+_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 class ManagedArtifactError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = str(reason or "managed_artifact_invalid")
         super().__init__(self.reason)
+
+
+@dataclass(frozen=True)
+class ValidatedArtifact:
+    data: bytes
+    path: Path | None
+    file_size: int
+    title: str
+    output_format: str
+    mime_type: str
+    summary: str
+
+    def copy_to(self, target: Path, *, cancelled: threading.Event | None = None) -> None:
+        """Copy without loading a file into RAM; detect size changes during IO."""
+        if self.path is None:
+            target.write_bytes(self.data)
+            return
+        copied = 0
+        with self.path.open("rb") as source, target.open("wb") as destination:
+            while chunk := source.read(_COPY_CHUNK_BYTES):
+                if cancelled is not None and cancelled.is_set():
+                    raise ManagedArtifactError("managed_artifact_copy_cancelled")
+                copied += len(chunk)
+                if copied > self.file_size:
+                    raise ManagedArtifactError("managed_artifact_source_changed")
+                destination.write(chunk)
+        if copied != self.file_size:
+            raise ManagedArtifactError("managed_artifact_source_changed")
+
+    async def copy_to_async(self, target: Path) -> None:
+        """Drain cancelled IO before callers remove its temporary files."""
+        cancelled = threading.Event()
+        task = asyncio.create_task(asyncio.to_thread(self.copy_to, target, cancelled=cancelled))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled.set()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not task.cancelled():
+                task.exception()
+            raise
 
 
 class ManagedArtifactSink(Protocol):
@@ -54,21 +117,13 @@ class GeneratedFileManagedArtifactSink:
         context: InvocationContext,
         capability_id: str,
     ) -> Mapping[str, Any]:
-        return await asyncio.to_thread(
-            self._materialize_sync,
-            draft,
-            context=context,
-            capability_id=capability_id,
+        artifact = validate_managed_artifact_draft(draft)
+        title, output_format, mime_type, summary = (
+            artifact.title,
+            artifact.output_format,
+            artifact.mime_type,
+            artifact.summary,
         )
-
-    def _materialize_sync(
-        self,
-        draft: ManagedArtifactDraft,
-        *,
-        context: InvocationContext,
-        capability_id: str,
-    ) -> Mapping[str, Any]:
-        data, title, output_format, mime_type, summary = validate_managed_artifact_draft(draft)
         if not isinstance(context, InvocationContext):
             raise ManagedArtifactError("managed_artifact_context_required")
         profile_user_id = str(context.profile_user_id or "").strip()
@@ -82,6 +137,7 @@ class GeneratedFileManagedArtifactSink:
             title=title,
             output_format=output_format,
             timestamp=int(time.time()),
+            allow_generic_format=True,
         )
         temp_target = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         if not self._service.is_managed_storage_path(target) or not self._service.is_managed_storage_path(temp_target):
@@ -92,7 +148,7 @@ class GeneratedFileManagedArtifactSink:
         effective_ts = int(time.time())
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            temp_target.write_bytes(data)
+            await artifact.copy_to_async(temp_target)
             temp_target.replace(target)
             generated = self._service.register_generated_artifact(
                 profile_user_id=profile_user_id,
@@ -112,6 +168,7 @@ class GeneratedFileManagedArtifactSink:
                 source_ids=(),
                 send_to_user=bool(draft.send_to_user),
                 timestamp=effective_ts,
+                allow_generic_format=True,
             )
             registered = True
         except ManagedArtifactError:
@@ -135,7 +192,7 @@ class GeneratedFileManagedArtifactSink:
             "output_title": str(generated.get("output_title") or title),
             "output_format": output_format,
             "mime_type": mime_type,
-            "file_size": int(generated.get("file_size") or len(data)),
+            "file_size": int(generated.get("file_size") or artifact.file_size),
             "created_by_tool": capability_id,
             "send_to_user": bool(draft.send_to_user),
         }
@@ -150,6 +207,10 @@ def normalize_managed_artifact_reference(
     """Validate the one public, path-free reference returned by a host sink."""
 
     if not isinstance(value, Mapping):
+        return None
+    try:
+        expected_size = validate_managed_artifact_draft(draft).file_size
+    except ManagedArtifactError:
         return None
     generated_id = str(value.get("generated_id") or "").strip()
     generated_handle = str(value.get("generated_handle") or "").strip()
@@ -170,7 +231,7 @@ def normalize_managed_artifact_reference(
         or created_by_tool != capability_id
         or isinstance(file_size, bool)
         or not isinstance(file_size, int)
-        or file_size != len(draft.data)
+        or file_size != expected_size
         or not isinstance(send_to_user, bool)
         or send_to_user is not draft.send_to_user
     ):
@@ -189,13 +250,29 @@ def normalize_managed_artifact_reference(
 
 def validate_managed_artifact_draft(
     draft: ManagedArtifactDraft,
-) -> tuple[bytes, str, str, str, str]:
+) -> ValidatedArtifact:
     if not isinstance(draft, ManagedArtifactDraft):
         raise ManagedArtifactError("managed_artifact_draft_required")
-    if not isinstance(draft.data, bytes) or not draft.data:
+    if not isinstance(draft.data, bytes) or (draft.path is not None and draft.data):
         raise ManagedArtifactError("managed_artifact_bytes_required")
-    if len(draft.data) > MAX_MANAGED_ARTIFACT_BYTES:
-        raise ManagedArtifactError("managed_artifact_too_large")
+    source_path = None
+    if draft.path is None:
+        if not draft.data:
+            raise ManagedArtifactError("managed_artifact_bytes_required")
+        if len(draft.data) > MAX_MANAGED_ARTIFACT_BYTES:
+            raise ManagedArtifactError("managed_artifact_too_large")
+        file_size = len(draft.data)
+    else:
+        try:
+            if not isinstance(draft.path, Path):
+                raise ValueError
+            source_path = draft.path.resolve(strict=True)
+            source_stat = source_path.stat()
+            if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_size <= 0:
+                raise ValueError
+            file_size = source_stat.st_size
+        except (OSError, ValueError):
+            raise ManagedArtifactError("managed_artifact_source_unavailable") from None
     if not isinstance(draft.send_to_user, bool):
         raise ManagedArtifactError("managed_artifact_delivery_invalid")
 
@@ -204,9 +281,15 @@ def validate_managed_artifact_draft(
         raise ManagedArtifactError("managed_artifact_title_invalid")
     output_format = str(draft.output_format or "").strip().lower().lstrip(".")
     mime_type = str(draft.mime_type or "").strip().lower()
-    if output_format not in _ALLOWED_FORMAT_MIME_TYPES:
+    if not _FORMAT_RE.fullmatch(output_format):
         raise ManagedArtifactError("managed_artifact_format_unsupported")
-    if mime_type not in _ALLOWED_FORMAT_MIME_TYPES[output_format]:
+    if not _MIME_RE.fullmatch(mime_type):
+        raise ManagedArtifactError("managed_artifact_mime_mismatch")
+    expected_mimes = _KNOWN_FORMAT_MIME_TYPES.get(output_format)
+    if expected_mimes is None:
+        guessed, _encoding = mimetypes.guess_type(f"artifact.{output_format}")
+        expected_mimes = frozenset({guessed}) if guessed else frozenset()
+    if expected_mimes and mime_type not in expected_mimes and mime_type.partition(";")[0] not in expected_mimes:
         raise ManagedArtifactError("managed_artifact_mime_mismatch")
     summary = str(draft.summary or "").strip()
     if len(summary) > 1000:
@@ -220,7 +303,7 @@ def validate_managed_artifact_draft(
     )
     if not bool(safe_metadata.get("ok")):
         raise ManagedArtifactError("managed_artifact_metadata_not_safe")
-    return draft.data, title, output_format, mime_type, summary
+    return ValidatedArtifact(draft.data, source_path, file_size, title, output_format, mime_type, summary)
 
 
 __all__ = [

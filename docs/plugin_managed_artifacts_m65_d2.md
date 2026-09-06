@@ -2,19 +2,23 @@
 
 Status: generic host port implemented; finance chart/report migration completed by the private artifact.
 
+Current contract update (2026-09-06): ordered file/multi-artifact handoff replaces
+the original single in-memory format-limited path. The isolated generation
+outbox transports files without JSON bytes. See `optional_media_plugin_migration_v1.md`.
+
 Model-facing interpretation of artifact results is owned by the later M65-D3
 experience projection; see `plugin_result_experience_m65_d3.md`.
 
 ## Outcome
 
-An allowlisted trusted plugin can now return one bounded, path-free artifact
-draft from a capability invocation. Akane—not the plugin—chooses the output
+An allowlisted trusted plugin can return ordered artifact drafts from a
+capability invocation. Akane—not the plugin—chooses the destination
 path, writes the file, registers it in the current user's GeneratedFileStore,
 and projects only a safe generated id/handle back into Engine events.
 
 ```text
 plugin capability
-  -> ManagedArtifactPayload(public content + bytes draft)
+  -> ManagedArtifactPayload(public content + ordered bytes/file drafts)
   -> PluginHost contract and result validation
   -> host-owned GeneratedFileManagedArtifactSink
   -> atomic temp write + rename + GeneratedFileStore registration
@@ -31,29 +35,39 @@ An artifact-producing descriptor must declare exactly one output with:
 
 - `delivery="generated_file"`;
 - `kind="file"` and `required=true`;
-- an explicit positive `max_bytes` no larger than the host-wide 16 MiB limit;
+- an explicit positive `max_bytes` for the total size of all invocation artifacts;
 - declared effects `("network", "filesystem")` under the current trusted-read policy.
 
 Its plugin manifest must add `artifact.write` to the existing
 `capability.prompt.invoke` and `network.read` permissions. The capability may
 return `ManagedArtifactPayload` containing ordinary public result content plus
-one `ManagedArtifactDraft`. The draft contains bytes, title, output format,
-MIME type, summary, and delivery intent; it never contains a path.
+an `artifacts` tuple of `ManagedArtifactDraft` values. Each draft contains exactly
+one of small `data` bytes or a plugin-local source `path`, plus title, output
+format, MIME type, summary, and delivery intent. The path stays private to the
+worker/outbox/sink chain and never appears in public results. Keep the source
+available until invocation finalization. In-memory bytes remain capped at
+16 MiB per draft; files stream in 1 MiB chunks under the declared total budget.
 
-M65-D2 initially accepts PNG, Markdown, PDF, and XLSX with exact MIME matching.
-This format allowlist is a versioned host policy, not a claim that the plugin
-architecture is limited to finance files. New formats can be added at the
-single materialization boundary after their storage and delivery behavior is
-tested.
+The API v1 `artifact=` constructor is a thin normalization adapter to a one-item
+tuple for existing installed wheels; there is no singular runtime field or
+second materialization path. Repository producers use `artifacts=`.
+
+Safe alphanumeric extensions and MIME syntax are validated, with MIME matching
+for recognized formats (including audio/video). There is no four-format business
+allowlist. Client delivery support remains independent of storage support.
 
 ## Safety and Failure Semantics
 
 - public result content is sanitized before any file is written;
 - ordinary plugin results cannot forge the reserved `managed_artifacts` key;
-- artifact bytes must fit both the descriptor limit and the host-wide limit;
+- all artifact sizes must fit the descriptor's combined budget;
 - title, summary, format, MIME type, context, and returned reference are validated;
 - a temporary file is renamed into host-managed storage before registration;
 - registration failure removes the unregistered file best-effort;
+- cancelled copies stop and drain before temporary files are removed; no late
+  background registration occurs after cancellation;
+- a later artifact failure returns `partial` with earlier real references, not
+  batch success; partial errors do not automatically deliver those files;
 - the result exposed to diagnostics, prompts, frames, and logs has no
   `absolute_path`, `storage_relpath`, plugin module path, or distribution path;
 - missing sink, invalid contract, unsafe content, write failure, timeout, or
@@ -80,19 +94,15 @@ failure; a field existing in a frame is not treated as successful delivery.
 Other clients can adopt the same handle-resolution rule without giving a
 plugin access to their concrete transport implementation.
 
-## Deliberate V1 Limits
+## Remaining Boundaries
 
-- one artifact per invocation;
-- in-process trusted plugins only;
 - no plugin-supplied absolute or relative destination;
-- no hot install, hot enable/disable, or capability-map mutation;
 - no direct plugin access to QQ, desktop, web, or GeneratedFileStore internals.
 
 These limits keep the stable boundary small. They do not require separate
 Akane and finance projects: Akane remains the only host, while private finance
-capabilities can opt into this port. Multiple artifacts, background jobs, or
-new delivery channels should be added as new generic contracts only when a
-real capability needs them.
+capabilities can opt into this port. Managed generations now support market
+installation and lifecycle updates; transport continues to use the same port.
 
 ## Finance Migration State
 

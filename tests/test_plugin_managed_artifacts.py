@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, HealthStatus, InvocationContext
 
@@ -24,7 +27,13 @@ from companion_v01.plugin_api import (
 )
 from companion_v01.plugin_contribution_policy import TrustedReadNetworkContributionPolicy
 from companion_v01.plugin_host import PluginHost
-from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink, ManagedArtifactError
+from companion_v01.plugin_managed_artifacts import (
+    GeneratedFileManagedArtifactSink,
+    ManagedArtifactError,
+    ValidatedArtifact,
+)
+from companion_v01.plugin_generation_artifacts import GenerationArtifactOutboxSink, consume_generation_artifact
+from companion_v01.plugin_generation import PluginGenerationProcess
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
 from companion_v01.routes.qq import _hydrate_plugin_managed_artifact_events
 from companion_v01.store import MemoryStore
@@ -141,13 +150,15 @@ def _artifact_result(
         status="ok",
         content=ManagedArtifactPayload(
             content={"chart": "ready"} if content is None else content,
-            artifact=ManagedArtifactDraft(
-                data=data,
-                title="market-chart",
-                output_format="png",
-                mime_type="image/png",
-                summary="A bounded test chart.",
-                send_to_user=True,
+            artifacts=(
+                ManagedArtifactDraft(
+                    data=data,
+                    title="market-chart",
+                    output_format="png",
+                    mime_type="image/png",
+                    summary="A bounded test chart.",
+                    send_to_user=True,
+                ),
             ),
         ),
     )
@@ -170,6 +181,216 @@ def _host_for(
 
 
 class PluginManagedArtifactTests(unittest.IsolatedAsyncioTestCase):
+    async def test_api_v1_singular_constructor_is_only_a_tuple_adapter(self) -> None:
+        draft = ManagedArtifactDraft(data=b"data", title="report", output_format="md", mime_type="text/markdown")
+        payload = ManagedArtifactPayload(content={}, artifact=draft)
+        self.assertEqual(payload.artifacts, (draft,))
+        self.assertEqual(ManagedArtifactPayload({}, draft).artifacts, (draft,))
+        self.assertEqual(ManagedArtifactDraft(b"data", "report", "md", "text/markdown"), draft)
+        self.assertFalse(hasattr(payload, "artifact"))
+        with self.assertRaisesRegex(TypeError, "ambiguous"):
+            ManagedArtifactPayload(content={}, artifacts=(draft,), artifact=draft)
+
+    async def test_file_and_multiple_artifacts_use_total_budget_and_emit_all_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.wav"
+            with source.open("wb") as stream:
+                for _ in range(17):
+                    stream.write(b"x" * 1024 * 1024)
+            size = source.stat().st_size
+            store = MemoryStore(root / "store")
+            service = GeneratedFileService(
+                base_dir=root / "outputs", store=store, attachment_service=AttachmentInboxService(store=store)
+            )
+            drafts = (
+                ManagedArtifactDraft(path=source, title="large-audio", output_format="wav", mime_type="audio/wav"),
+                ManagedArtifactDraft(data=b"report", title="notes", output_format="md", mime_type="text/markdown"),
+            )
+            adapter = ArtifactAdapter(
+                descriptor=_descriptor(max_bytes=size + 6),
+                result=CapabilityResult(
+                    is_error=False, status="ok", content=ManagedArtifactPayload(content={}, artifacts=drafts)
+                ),
+            )
+            host = _host_for(ArtifactPlugin(adapter), managed_artifact_timeout_seconds=0)
+            host.bind_managed_artifact_sink(GeneratedFileManagedArtifactSink(service))
+            await host.start()
+            try:
+                with patch.object(Path, "read_bytes", side_effect=AssertionError("whole-file read forbidden")):
+                    result = await host.invoke(CAPABILITY_ID, {}, context=InvocationContext("user", "session", "web"))
+                self.assertFalse(result.is_error, result.reason)
+                refs = result.content["managed_artifacts"]
+                self.assertEqual([r["file_size"] for r in refs], [size, 6])
+                handler = PluginCapabilityToolBridge(host).build_tool_handlers()[CAPABILITY_ID]
+                projected = handler._finalize_execution_result(
+                    ToolExecutionResult(tool_type=CAPABILITY_ID),
+                    capability_result=result,
+                    context=ToolExecutionContext(
+                        profile_user_id="user", session_id="session", now_ts=1, visual_payload={}
+                    ),
+                )
+                self.assertEqual(len(projected.stream_events), 2)
+                self.assertEqual(
+                    [e["generated_file"]["generated_id"] for e in projected.stream_events],
+                    [r["generated_id"] for r in refs],
+                )
+                self.assertEqual(source.stat().st_size, size)
+                with source.open("rb") as stream:
+                    self.assertEqual(stream.read(1024), b"x" * 1024)
+            finally:
+                await host.stop()
+
+    async def test_multi_artifact_budget_and_partial_failure(self) -> None:
+        class FailingSecondSink:
+            calls = 0
+
+            async def materialize(self, draft, *, context, capability_id):
+                self.calls += 1
+                if self.calls == 2:
+                    raise ManagedArtifactError("managed_artifact_write_failed")
+                return dict(
+                    generated_id="generated::first",
+                    generated_handle="gen_001",
+                    output_title=draft.title,
+                    output_format=draft.output_format,
+                    mime_type=draft.mime_type,
+                    file_size=len(draft.data),
+                    created_by_tool=capability_id,
+                    send_to_user=draft.send_to_user,
+                )
+
+        draft = ManagedArtifactDraft(data=b"123", title="report", output_format="md", mime_type="text/markdown")
+        for budget, expected_calls, expected_status in ((5, 0, "error"), (6, 2, "partial")):
+            with self.subTest(budget=budget):
+                adapter = ArtifactAdapter(
+                    descriptor=_descriptor(max_bytes=budget),
+                    result=CapabilityResult(
+                        is_error=False,
+                        status="ok",
+                        content=ManagedArtifactPayload(content={}, artifacts=(draft, draft)),
+                    ),
+                )
+                sink = FailingSecondSink()
+                host = _host_for(ArtifactPlugin(adapter))
+                host.bind_managed_artifact_sink(sink)
+                await host.start()
+                try:
+                    result = await host.invoke(CAPABILITY_ID, {}, context=InvocationContext("user", "session", "web"))
+                    self.assertTrue(result.is_error)
+                    self.assertEqual(result.status, expected_status)
+                    self.assertEqual(sink.calls, expected_calls)
+                    if expected_status == "partial":
+                        self.assertEqual(result.content["managed_artifacts"][0]["generated_id"], "generated::first")
+                finally:
+                    await host.stop()
+
+    async def test_cancelled_copy_is_drained_before_cleanup_and_never_registers(self) -> None:
+        for outbox in (False, True):
+            with self.subTest(outbox=outbox), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                store = MemoryStore(root / "store")
+                service = GeneratedFileService(
+                    base_dir=root / "outputs", store=store, attachment_service=AttachmentInboxService(store=store)
+                )
+                sink = (
+                    GenerationArtifactOutboxSink(root / "outputs")
+                    if outbox
+                    else GeneratedFileManagedArtifactSink(service)
+                )
+                started, finished = threading.Event(), threading.Event()
+
+                def slow_copy(artifact, target, *, cancelled):
+                    target.write_bytes(b"partial")
+                    started.set()
+                    if not cancelled.wait(5):
+                        raise AssertionError("copy cancellation was not signalled")
+                    target.write_bytes(b"late write")
+                    finished.set()
+                    raise ManagedArtifactError("managed_artifact_copy_cancelled")
+
+                with (
+                    patch.object(ValidatedArtifact, "copy_to", slow_copy),
+                    patch.object(
+                        service, "register_generated_artifact", side_effect=AssertionError("cancelled file registered")
+                    ),
+                ):
+                    task = asyncio.create_task(
+                        sink.materialize(
+                            ManagedArtifactDraft(
+                                data=b"data", title="report", output_format="md", mime_type="text/markdown"
+                            ),
+                            context=InvocationContext("user", "session", "web"),
+                            capability_id=CAPABILITY_ID,
+                        )
+                    )
+                    self.assertTrue(await asyncio.to_thread(started.wait, 5))
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                    self.assertTrue(finished.is_set())
+                self.assertEqual([p for p in (root / "outputs").rglob("*") if p.is_file()], [])
+
+    async def test_outbox_rejects_forged_size_and_unsafe_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sink = GenerationArtifactOutboxSink(root)
+            ref = await sink.materialize(
+                ManagedArtifactDraft(data=b"data", title="report", output_format="md", mime_type="text/markdown"),
+                context=InvocationContext("user", "session", "web"),
+                capability_id=CAPABILITY_ID,
+            )
+            ref["file_size"] += 1
+            with self.assertRaisesRegex(ManagedArtifactError, "handoff_invalid"):
+                consume_generation_artifact(root, ref, capability_id=CAPABILITY_ID)
+            self.assertEqual(list(root.iterdir()), [])
+            with self.assertRaisesRegex(ManagedArtifactError, "handoff_invalid"):
+                consume_generation_artifact(
+                    root, {"generated_id": "generated::generation-artifact:../escape"}, capability_id=CAPABILITY_ID
+                )
+
+    async def test_parent_rejects_duplicate_total_budget_and_cleans_trailing_outbox(self) -> None:
+        for failure in ("duplicate", "budget", "unavailable"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                generation = PluginGenerationProcess(
+                    project_root=root, site_dir=root, plugin_id=PLUGIN_ID, work_dir=root
+                )
+                generation._capability_descriptors = {
+                    CAPABILITY_ID: _descriptor(max_bytes=3 if failure == "budget" else 1024)
+                }
+                sink = GenerationArtifactOutboxSink(generation._artifact_outbox_dir)
+                references = []
+                for _ in range(3):
+                    references.append(
+                        await sink.materialize(
+                            ManagedArtifactDraft(
+                                data=b"data", title="report", output_format="md", mime_type="text/markdown"
+                            ),
+                            context=InvocationContext("user", "session", "web"),
+                            capability_id=CAPABILITY_ID,
+                        )
+                    )
+                if failure == "duplicate":
+                    references.append(references[0])
+                if failure == "unavailable":
+                    (generation._artifact_outbox_dir / (references[1]["generated_id"].split(":")[-1] + ".bin")).unlink()
+                result = await generation._materialize_generation_artifact(
+                    CapabilityResult(is_error=False, status="ok", content={"managed_artifacts": references}),
+                    capability_id=CAPABILITY_ID,
+                    context=InvocationContext("user", "session", "web"),
+                )
+                self.assertTrue(result.is_error)
+                self.assertEqual(
+                    result.reason,
+                    {
+                        "duplicate": "managed_artifact_handoff_invalid",
+                        "budget": "managed_artifact_too_large",
+                        "unavailable": "managed_artifact_handoff_unavailable",
+                    }[failure],
+                )
+                self.assertEqual(list(generation._artifact_outbox_dir.iterdir()), [])
+
     async def test_host_materializes_path_free_payload_and_bridge_emits_safe_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -241,7 +462,6 @@ class PluginManagedArtifactTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("absolute_path", event["generated_file"])
                 self.assertIn("Akane 已登记", model_feedback)
                 self.assertIn("此工具结果尚不代表投递成功", model_feedback)
-                self.assertIn("不要把产物已登记说成已发送成功", model_feedback)
                 self.assertEqual(metadata.family, "plugin_artifact")
                 self.assertEqual(metadata.operation, "mixed")
                 self.assertFalse(metadata.is_read_only)

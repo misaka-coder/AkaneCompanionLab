@@ -219,14 +219,14 @@ def fetch_hacker_news_report(feed: str = "top", max_items: int = 5) -> Capabilit
                     suggested_next_actions=("打开报告查看链接", "选择其中一个话题继续检索"),
                 ),
             ),
-            artifact=ManagedArtifactDraft(
+            artifacts=(ManagedArtifactDraft(
                 data=report,
                 title=f"hacker-news-{clean_feed}-report",
                 output_format="md",
                 mime_type="text/markdown",
                 summary=f"Hacker News {clean_feed} feed report with {len(stories)} items.",
                 send_to_user=True,
-            ),
+            ),),
         ),
     )
 

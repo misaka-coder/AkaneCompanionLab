@@ -276,11 +276,15 @@ def _write_capability_plugin_site(root: Path) -> Path:
         ARTIFACT_CAPABILITY_ID = "test.generation.artifact.v1"
         NOTIFICATION_CAPABILITY_ID = "test.generation.notification.v1"
 
+        import tempfile
+        from pathlib import Path
+
         class Adapter:
             provider_id = "provider.test.generation"
 
             def __init__(self, notification_port):
                 self._notification_port = notification_port
+                self._work = tempfile.TemporaryDirectory()
 
             async def health(self):
                 return HealthStatus(ok=True, status="ready")
@@ -316,13 +320,14 @@ def _write_capability_plugin_site(root: Path) -> Path:
                         trigger=None,
                         inputs=(
                             CapabilityIOSlot(name="size", kind="integer", required=False),
+                            CapabilityIOSlot(name="count", kind="integer", required=False),
                         ),
                         outputs=(
                             CapabilityIOSlot(
                                 name="report",
                                 kind="file",
                                 required=True,
-                                max_bytes=2 * 1024 * 1024,
+                                max_bytes=40 * 1024 * 1024,
                                 delivery="generated_file",
                             ),
                         ),
@@ -351,19 +356,26 @@ def _write_capability_plugin_site(root: Path) -> Path:
             async def invoke(self, capability_id, args, context):
                 if capability_id == ARTIFACT_CAPABILITY_ID:
                     size = max(1, int(args.get("size", 24)))
+                    drafts = []
+                    for index in range(int(args.get("count", 1))):
+                        source = Path(self._work.name) / f"report-{index}.md"
+                        with source.open("wb") as stream:
+                            remaining = size
+                            while remaining:
+                                chunk_size = min(remaining, 1024 * 1024)
+                                stream.write(b"x" * chunk_size)
+                                remaining -= chunk_size
+                        drafts.append(ManagedArtifactDraft(
+                            path=source, title=f"generation-report-{index}",
+                            output_format="md", mime_type="text/markdown",
+                            summary="A generation handoff test report.", send_to_user=True,
+                        ))
                     return CapabilityResult(
                         is_error=False,
                         status="ok",
                         content=ManagedArtifactPayload(
                             content={"report": "ready"},
-                            artifact=ManagedArtifactDraft(
-                                data=b"generation-report\\n".ljust(size, b"x"),
-                                title="generation-report",
-                                output_format="md",
-                                mime_type="text/markdown",
-                                summary="A generation handoff test report.",
-                                send_to_user=True,
-                            ),
+                            artifacts=tuple(drafts),
                         ),
                     )
                 if capability_id == NOTIFICATION_CAPABILITY_ID:
@@ -1567,7 +1579,7 @@ class PluginGenerationProcessTests(unittest.TestCase):
                 try:
                     result = await generation.invoke(
                         "test.generation.artifact.v1",
-                        {"size": 1024 * 1024},
+                        {"size": 17 * 1024 * 1024, "count": 2},
                         context=InvocationContext(
                             profile_user_id="owner",
                             session_id="artifact-session",
@@ -1575,6 +1587,7 @@ class PluginGenerationProcessTests(unittest.TestCase):
                         ),
                     )
                     self.assertFalse(result.is_error, result.reason)
+                    self.assertEqual(len(result.content["managed_artifacts"]), 2)
                     artifact = result.content["managed_artifacts"][0]
                     resolved = service.resolve_generated_artifact(
                         profile_user_id="owner",
@@ -1587,11 +1600,11 @@ class PluginGenerationProcessTests(unittest.TestCase):
                     self.assertNotIn("generation-artifact", artifact["generated_id"])
                     self.assertNotIn("absolute_path", artifact)
                     self.assertNotIn("storage_relpath", artifact)
-                    self.assertEqual(artifact["file_size"], 1024 * 1024)
+                    self.assertEqual(artifact["file_size"], 17 * 1024 * 1024)
                     self.assertIsNotNone(resolved)
                     self.assertEqual(
                         Path(resolved["absolute_path"]).stat().st_size,
-                        1024 * 1024,
+                        17 * 1024 * 1024,
                     )
                     self.assertEqual(
                         list((work_dir / "outbox").rglob("*.bin")),

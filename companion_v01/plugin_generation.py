@@ -34,6 +34,7 @@ from .plugin_events import PluginEventDispatchResult
 from .plugin_hooks import PluginHookDispatchResult
 from .plugin_generation_artifacts import (
     consume_generation_artifact,
+    discard_generation_artifacts,
     is_generation_artifact_reference,
 )
 from .plugin_generation_callbacks import GenerationHostCallbackRouter
@@ -133,7 +134,7 @@ class PluginGenerationProcess:
         python_executable: str = sys.executable,
         start_timeout_seconds: float = PLUGIN_GENERATION_START_TIMEOUT_SECONDS,
         stop_timeout_seconds: float | None = PLUGIN_GENERATION_STOP_TIMEOUT_SECONDS,
-        managed_artifact_timeout_seconds: float = 5.0,
+        managed_artifact_timeout_seconds: float = 0.0,
         plugin_storage_data_root: Path | None = None,
         plugin_storage_instance_id: str = "",
     ) -> None:
@@ -149,7 +150,7 @@ class PluginGenerationProcess:
             else max(0.1, float(stop_timeout_seconds))
         )
         self.managed_artifact_timeout_seconds = max(
-            0.1,
+            0.0,
             float(managed_artifact_timeout_seconds),
         )
         storage_instance_id = str(plugin_storage_instance_id or "").strip()
@@ -699,58 +700,58 @@ class PluginGenerationProcess:
             return result
         references = content.get("managed_artifacts")
         if (
-            not isinstance(references, list)
-            or len(references) != 1
-            or not is_generation_artifact_reference(references[0])
+            not isinstance(references, list) or not references
+            or not all(is_generation_artifact_reference(ref) for ref in references)
+            or len({ref["generated_id"] for ref in references}) != len(references)
         ):
+            discard_generation_artifacts(self._artifact_outbox_dir, references)
             return _generation_artifact_failure("managed_artifact_handoff_invalid")
-        reference = references[0]
+        descriptor = self._capability_descriptors.get(capability_id)
+        outputs = tuple(output for output in descriptor.outputs if output.delivery == "generated_file") if descriptor else ()
+        if len(outputs) != 1:
+            discard_generation_artifacts(self._artifact_outbox_dir, references)
+            return _generation_artifact_failure("managed_artifact_not_declared")
+        staged_artifacts = []
+        materialized_refs = []
         try:
-            staged = await asyncio.to_thread(
-                consume_generation_artifact,
-                self._artifact_outbox_dir,
-                reference,
-                capability_id=capability_id,
-            )
-        except ManagedArtifactError as exc:
-            return _generation_artifact_failure(exc.reason)
-        try:
+            for reference in references:
+                staged_artifacts.append(consume_generation_artifact(
+                    self._artifact_outbox_dir,
+                    reference, capability_id=capability_id,
+                ))
+            if sum(item.data_path.stat().st_size for item in staged_artifacts) > outputs[0].max_bytes:
+                return _generation_artifact_failure("managed_artifact_too_large")
             if self._managed_artifact_sink is None:
                 return _generation_artifact_failure("managed_artifact_sink_unavailable")
-            try:
+            for staged in staged_artifacts:
                 materialized = await asyncio.wait_for(
                     self._managed_artifact_sink.materialize(
-                        staged.draft,
-                        context=context,
-                        capability_id=capability_id,
+                        staged.draft, context=context, capability_id=capability_id,
                     ),
-                    timeout=self.managed_artifact_timeout_seconds,
+                    timeout=self.managed_artifact_timeout_seconds or None,
                 )
-            except asyncio.CancelledError:
-                raise
-            except (TimeoutError, asyncio.TimeoutError):
-                return _generation_artifact_failure("managed_artifact_write_timeout")
-            except ManagedArtifactError as exc:
-                return _generation_artifact_failure(exc.reason)
-            except Exception:
-                return _generation_artifact_failure("managed_artifact_write_failed")
-            normalized = normalize_managed_artifact_reference(
-                materialized,
-                draft=staged.draft,
-                capability_id=capability_id,
-            )
-            if normalized is None or is_generation_artifact_reference(normalized):
-                return _generation_artifact_failure("managed_artifact_invalid_reference")
+                normalized = normalize_managed_artifact_reference(
+                    materialized, draft=staged.draft, capability_id=capability_id,
+                )
+                if normalized is None or is_generation_artifact_reference(normalized):
+                    raise ManagedArtifactError("managed_artifact_invalid_reference")
+                materialized_refs.append(normalized)
             projected_content = dict(content)
-            projected_content["managed_artifacts"] = [normalized]
+            projected_content["managed_artifacts"] = materialized_refs
             return CapabilityResult(
-                is_error=result.is_error,
-                status=result.status,
-                reason=result.reason,
+                is_error=result.is_error, status=result.status, reason=result.reason,
                 content=projected_content,
             )
+        except asyncio.CancelledError:
+            raise
+        except (TimeoutError, asyncio.TimeoutError):
+            return _generation_artifact_failure("managed_artifact_write_timeout", artifacts=materialized_refs)
+        except ManagedArtifactError as exc:
+            return _generation_artifact_failure(exc.reason, artifacts=materialized_refs)
+        except Exception:
+            return _generation_artifact_failure("managed_artifact_write_failed", artifacts=materialized_refs)
         finally:
-            await asyncio.to_thread(staged.cleanup)
+            discard_generation_artifacts(self._artifact_outbox_dir, references)
 
     def stop(self) -> dict[str, Any]:
         with self._stop_lock:
@@ -1110,11 +1111,12 @@ def _generation_qq_command_failure(reason: object) -> PluginQQCommandResult:
     )
 
 
-def _generation_artifact_failure(reason: str) -> CapabilityResult:
+def _generation_artifact_failure(reason: str, *, artifacts: list | tuple = ()) -> CapabilityResult:
     return CapabilityResult(
         is_error=True,
-        status="error",
+        status="partial" if artifacts else "error",
         reason=str(reason or "managed_artifact_write_failed"),
+        content={"managed_artifacts": list(artifacts)} if artifacts else None,
     )
 
 

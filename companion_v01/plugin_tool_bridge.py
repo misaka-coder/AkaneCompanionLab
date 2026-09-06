@@ -284,42 +284,44 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
         if isinstance(content.get(PLUGIN_RESULT_EXPERIENCE_KEY), Mapping):
             execution_result.state_updates["plugin_result_experience"] = "projected"
         artifacts = content.get("managed_artifacts")
-        if not isinstance(artifacts, list) or len(artifacts) != 1:
+        if not isinstance(artifacts, list) or not artifacts:
             return execution_result
-        artifact = artifacts[0]
-        if not isinstance(artifact, Mapping):
-            return execution_result
-        generated_id = str(artifact.get("generated_id") or "").strip()
-        generated_handle = str(artifact.get("generated_handle") or "").strip()
-        if (
-            not generated_id.startswith("generated::")
-            or not generated_handle
-            or str(artifact.get("created_by_tool") or "").strip() != self.tool_type
-            or not isinstance(artifact.get("send_to_user"), bool)
-        ):
-            return execution_result
-        generated_file = {
-            key: artifact[key]
-            for key in (
-                "generated_id",
-                "generated_handle",
-                "output_title",
-                "output_format",
-                "mime_type",
-                "file_size",
-                "created_by_tool",
-            )
-            if key in artifact
-        }
-        execution_result.stream_events.append(
-            {
-                "type": "generated_file_ready",
-                "generated_file": generated_file,
-                "send_to_user": bool(artifact.get("send_to_user")),
-                "delivery_scope": "plugin_managed_artifact",
+        emitted = 0
+        for artifact in artifacts:
+            if not isinstance(artifact, Mapping):
+                continue
+            generated_id = str(artifact.get("generated_id") or "").strip()
+            generated_handle = str(artifact.get("generated_handle") or "").strip()
+            if (
+                not generated_id.startswith("generated::")
+                or not generated_handle
+                or str(artifact.get("created_by_tool") or "").strip() != self.tool_type
+                or not isinstance(artifact.get("send_to_user"), bool)
+            ):
+                return execution_result
+            generated_file = {
+                key: artifact[key]
+                for key in (
+                    "generated_id",
+                    "generated_handle",
+                    "output_title",
+                    "output_format",
+                    "mime_type",
+                    "file_size",
+                    "created_by_tool",
+                )
+                if key in artifact
             }
-        )
-        execution_result.state_updates["plugin_managed_artifact_count"] = 1
+            execution_result.stream_events.append(
+                {
+                    "type": "generated_file_ready",
+                    "generated_file": generated_file,
+                    "send_to_user": bool(artifact.get("send_to_user")),
+                    "delivery_scope": "plugin_managed_artifact",
+                }
+            )
+            emitted += 1
+        execution_result.state_updates["plugin_managed_artifact_count"] = emitted
         return execution_result
 
 
