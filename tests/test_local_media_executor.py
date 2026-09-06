@@ -26,6 +26,10 @@ class _Response:
         self._payload = payload
         self.content = content
         self.headers = headers or {}
+        self.raw = _Raw(content if content else json.dumps(payload).encode())
+
+    def close(self):
+        pass
 
     @property
     def ok(self) -> bool:
@@ -51,6 +55,11 @@ class _Session:
     def post(self, url, **kwargs):
         self.posts.append({"url": url, **kwargs})
         return self.post_responses.pop(0)
+
+
+class _Raw(io.BytesIO):
+    def read1(self, count, decode_content=False):
+        return super().read1(count)
 
 
 class LocalMediaExecutorTests(unittest.TestCase):
@@ -87,7 +96,6 @@ class LocalMediaExecutorTests(unittest.TestCase):
         self.assertEqual(len(result["segments"]), 2)
         self.assertEqual(session.posts[0]["url"], "http://127.0.0.1:19879/v1/audio/transcriptions")
         self.assertEqual(session.posts[0]["files"]["file"][0], "voice.wav")
-
 
     def test_cover_song_runs_as_one_local_request_and_returns_final_audio(self) -> None:
         session = _Session()

@@ -5,6 +5,7 @@ from .cache import CoverCache
 from .media import CoverMedia
 from .pipeline import CoverOptions, CoverPipeline, ProviderCalls
 from .rvc import RvcWebUiProvider
+from .remote import RemoteRvcClient, RemoteRvcProvider
 
 __all__ = [
     "CoverSongError",
@@ -14,4 +15,6 @@ __all__ = [
     "CoverPipeline",
     "ProviderCalls",
     "RvcWebUiProvider",
+    "RemoteRvcClient",
+    "RemoteRvcProvider",
 ]

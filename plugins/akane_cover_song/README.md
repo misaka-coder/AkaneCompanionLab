@@ -25,7 +25,21 @@ No gain or mixing code remains in the legacy host or local-service wrapper.
 keys, stem reuse, conversion, mixing and completed-result restoration. The old
 host service is now resource/publication glue over this pipeline. The existing
 local-service full-render backend is retained through the provider interface;
-its transport and server-side Demucs orchestration still await the next slice.
+its server-side Demucs orchestration still awaits the next slice.
+
+`RemoteRvcClient` and `RemoteRvcProvider` own the byte-only loopback media-host
+protocol, including model discovery, UVR ZIP transfer, conversion and complete
+Demucs covers. The old `LocalMediaExecutorClient` inherits this implementation;
+its old RVC methods/provider have been removed. ASR compatibility is unchanged.
+Requests disable ambient proxy/credentials and redirects, bound response/ZIP
+sizes, filter timing keys and reject server model/index paths. Cancellation
+drains the active HTTP request. Disconnect, incomplete response, timeout or
+non-200 status retains the same durable endpoint fence used by the WebUI client.
+This conservative policy also fences completed HTTP errors: a proxy error does
+not prove its upstream stopped. Restart the dedicated media service **and** its
+WebUI before operator acknowledgement for the media-service URL. The two endpoint
+ports have separate fences; clear each affected one only after restart. Health
+and model discovery do not clear either fence. No cancellation API is invented.
 
 `CoverCache(root, scope=...)` hashes the complete caller identity. Akane's SDK
 storage root is instance/plugin-scoped, so the future adapter must also pass the
@@ -137,4 +151,7 @@ reuse and title-only restoration returned byte-identical audio without another
 inference. The endpoint fence was clear and the owned server was stopped.
 The rebuilt wheel imported `CoverPipeline`, `CoverCache` and `CoverMedia` under
 `python -I` without importing any Akane host module. Plugin market installation,
-Jobs, lifecycle and channel acceptance are still pending.
+Jobs, lifecycle and channel acceptance are still pending. Six additional real
+loopback HTTP tests cover remote parameter/byte transfer, model path rejection,
+ZIP bounds, repeated cancellation/drain, disconnect/502 fencing and endpoint
+validation. Their audio payloads are explicit transport fixtures, not inference.
