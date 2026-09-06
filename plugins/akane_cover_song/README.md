@@ -1,8 +1,31 @@
 # Akane cover-song business runtime
 
-Current slice: reusable RVC protocol, process safety, media policy, two-layer
-cache and cover pipeline. This package does **not yet** expose a marketplace plugin.
-No SDK, Akane host, UI, Job, resource store, or channel imports are required.
+Reusable RVC protocol, process safety, media policy, two-layer cache and cover
+pipeline, with an optional public-SDK marketplace entry `akane.cover-song.run.v1`.
+Importing the library requires no SDK, Akane host, UI, Job, resource store or
+channel. Only the separate `plugin` module imports the public host SDK.
+
+The plugin captures resource, named `rvc` connection and scoped storage ports.
+It resolves the existing RVC/COVER_SONG configuration only during invocation;
+registration and health do not read private connections or contact RVC. Health
+checks actual FFmpeg/FFprobe execution, not model-service availability. It neither
+starts services nor downloads weights. Each invocation owns a process runner and
+blocking-call drain; generated artifacts, Jobs, cancellation, channel delivery
+and memory stay in the existing host paths. Default `delivery=auto` requests QQ
+voice or another client's file delivery; `none` only registers, `both` uses one
+artifact with a dual-delivery intent. No success claim precedes a channel receipt.
+Medium-risk plugin invocation requires first-time approval; installation does
+not modify approval settings. Cache restores re-probe actual audio format.
+
+Slice B acceptance used a real built wheel installed into an isolated worker,
+the existing offline Demucs/RVC models and a six-second synthetic input. The
+HostJob completed in 30.218 s and registered a 1,587,702-byte 44.1 kHz stereo WAV;
+source and title restores were byte-identical. This is one observed run, not a
+general performance guarantee. Two installed integration tests separately prove
+context/cache isolation, delivery intent, lifecycle, repeated cancellation,
+unconfirmed-disconnect failure, MemCore projection and desktop/QQ delivery
+adapters. Their HTTP audio replies and QQ transport are explicit test fixtures,
+not additional ML or real-message acceptance. No user account was messaged.
 
 `RvcWebUiProvider` owns discovery, parameter mapping, UVR separation and RVC
 conversion. The temporary compatibility import in `companion_v01/cover_song.py`
@@ -52,7 +75,7 @@ ports have separate fences; clear each affected one only after restart. Health
 and model discovery do not clear either fence. No cancellation API is invented.
 
 `CoverCache(root, scope=...)` hashes the complete caller identity. Akane's SDK
-storage root is instance/plugin-scoped, so the future adapter must also pass the
+storage root is instance/plugin-scoped; the adapter additionally passes the
 trusted invocation's profile identity, never a model argument. Cache v3 uses
 copied content-addressed audio objects and atomic completed manifests. A reader
 verifies size and SHA-256 before restoration. Availability hints only check a

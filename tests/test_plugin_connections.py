@@ -15,12 +15,17 @@ import unittest
 from unittest.mock import AsyncMock
 
 from capcore import InvocationContext
-from companion_v01.plugin_api import IMAGE_CONNECTION_READ_PERMISSION, PluginConnectionResult
+from companion_v01.plugin_api import (
+    IMAGE_CONNECTION_READ_PERMISSION,
+    RVC_CONNECTION_READ_PERMISSION,
+    PluginConnectionResult,
+)
 from companion_v01.plugin_connections import (
     ModelServicePluginConnectionProvider,
     ScopedPluginConnectionPort,
     connection_result_from_wire,
     connection_result_to_wire,
+    permitted_connections,
 )
 from companion_v01.plugin_generation import PluginGenerationProcess, PluginGenerationError
 from companion_v01.engine import AkaneMemoryEngine
@@ -108,6 +113,44 @@ def fixture(root, *, permission=True, confirm="never"):
 
 
 class ConnectionPortTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rvc_connection_projects_existing_live_config_without_other_credentials(self):
+        config = SimpleNamespace(
+            COVER_SONG_ENABLED=True,
+            RVC_ROOT_DIR="private-runtime-root",
+            RVC_DEFAULT_MODEL="Voice.pth",
+            RVC_WEBUI_BASE_URL="http://127.0.0.1:7899",
+            LOCAL_MEDIA_EXECUTOR_BASE_URL="",
+        )
+        provider = ModelServicePluginConnectionProvider(SimpleNamespace(settings=settings()), config)
+        port = ScopedPluginConnectionPort(PLUGIN, provider)
+        self.assertEqual(permitted_connections((RVC_CONNECTION_READ_PERMISSION,)), ("rvc",))
+        scope = ResourceInvocation(PLUGIN, InvocationContext("owner", "session", "desktop"), connection_names=("rvc",))
+        token = current_resource_invocation.set(scope)
+        try:
+            first = await port.resolve("rvc")
+            self.assertTrue(first.ok)
+            self.assertEqual(first.options["backend"], "webui")
+            self.assertEqual(first.options["root_dir"], "private-runtime-root")
+            self.assertEqual(first.api_key, "")
+            self.assertNotIn("private-runtime-root", repr(first))
+            self.assertNotIn("secret", json.dumps(connection_result_to_wire(first)))
+            self.assertEqual((await port.resolve("image_generation")).reason, "connection_permission_required")
+            config.LOCAL_MEDIA_EXECUTOR_BASE_URL = "http://127.0.0.1:9879"
+            second = await port.resolve("rvc")
+            self.assertEqual(second.options["backend"], "remote")
+            self.assertEqual(second.options["root_dir"], "")
+            self.assertEqual(second.base_url, config.LOCAL_MEDIA_EXECUTOR_BASE_URL)
+            config.COVER_SONG_ENABLED = False
+            disabled = await port.resolve("rvc")
+            self.assertFalse(disabled.ok)
+            self.assertEqual(disabled.reason, "rvc_provider_disabled")
+            self.assertEqual(disabled.options, {})
+            self.assertEqual(disabled.base_url, "")
+            scope.active = False
+            self.assertEqual((await port.resolve("rvc")).reason, "connection_invocation_required")
+        finally:
+            current_resource_invocation.reset(token)
+
     async def test_existing_model_reload_is_the_live_authority_and_bot_isolation(self):
         first = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         first.settings = BotSettingsView(**vars(settings()))

@@ -27,6 +27,9 @@ CAPABILITY_ID = PLUGIN_ID + ".run.v1"
 
 
 class ImageHarness:
+    plugin_id = PLUGIN_ID
+    capability_id = CAPABILITY_ID
+
     def __init__(self, root, connection_provider):
         self.root = Path(root)
         self.connection_provider = connection_provider
@@ -65,8 +68,8 @@ class ImageHarness:
 
     async def install(self):
         catalog = await self.service.browse_market()
-        entry = next(item for item in catalog["plugins"] if item["plugin_id"] == PLUGIN_ID)
-        staged = await self.service.stage_market(plugin_id=PLUGIN_ID, digest=entry["sha256"])
+        entry = next(item for item in catalog["plugins"] if item["plugin_id"] == self.plugin_id)
+        staged = await self.service.stage_market(plugin_id=self.plugin_id, digest=entry["sha256"])
         if not staged["ok"]:
             raise AssertionError(json.dumps(staged, ensure_ascii=False))
         installed = await self.service.install_stage(
@@ -77,10 +80,10 @@ class ImageHarness:
         return installed
 
     async def invoke(self, **options):
-        handler = self.handlers()[CAPABILITY_ID]
+        handler = self.handlers()[self.capability_id]
         return await asyncio.to_thread(
             handler.execute,
-            call=handler.normalize_call({"type": CAPABILITY_ID, **options}),
+            call=handler.normalize_call({"type": self.capability_id, **options}),
             context=ToolExecutionContext("owner", "session", 1, {}, client_mode="desktop_pet"),
         )
 
@@ -94,7 +97,7 @@ class ImageHarness:
     def approve_test_profile(self, profile="owner"):
         # This harness has its own temporary config root, never user settings.
         return save_capability_approval_mode(
-            base_dir=self.root, profile_user_id=profile, capability_id=CAPABILITY_ID, mode="trusted_auto_allow"
+            base_dir=self.root, profile_user_id=profile, capability_id=self.capability_id, mode="trusted_auto_allow"
         )
 
     def resolve(self, handle):

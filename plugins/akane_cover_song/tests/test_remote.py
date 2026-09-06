@@ -19,7 +19,7 @@ from akane_cover_song import CoverSongError, ProviderCalls, RemoteRvcClient, Rem
 
 
 @contextmanager
-def endpoint():
+def endpoint(*, wait_seconds=5):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -38,7 +38,7 @@ def endpoint():
         def do_POST(self):
             server.requests.append((self.path, self.rfile.read(int(self.headers["Content-Length"]))))
             server.started.set()
-            if not server.release.wait(5):
+            if not server.release.wait(wait_seconds):
                 return
             if server.disconnect:
                 self.connection.shutdown(socket.SHUT_RDWR)

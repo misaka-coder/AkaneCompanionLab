@@ -24,6 +24,7 @@ MANAGED_ARTIFACT_WRITE_PERMISSION = "artifact.write"
 RESOURCE_READ_PERMISSION = "resource.read"
 CAPABILITY_INVOKE_PERMISSION = "capability.invoke"
 IMAGE_CONNECTION_READ_PERMISSION = "connection.image_generation.read"
+RVC_CONNECTION_READ_PERMISSION = "connection.rvc.read"
 PLUGIN_STORAGE_WRITE_PERMISSION = "storage.write"
 BACKGROUND_JOB_PERMISSION = "job.run"
 NOTIFICATION_SEND_PERMISSION = "notification.send"
@@ -810,6 +811,7 @@ __all__ = [
     "CAPABILITY_INVOKE_PERMISSION",
     "PluginCapabilityPort",
     "IMAGE_CONNECTION_READ_PERMISSION",
+    "RVC_CONNECTION_READ_PERMISSION",
     "PluginConnectionPort",
     "PluginConnectionResult",
     "NotificationIntent",

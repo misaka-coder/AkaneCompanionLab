@@ -10,10 +10,10 @@ import asyncio
 from dataclasses import asdict
 import json
 
-from .plugin_api import IMAGE_CONNECTION_READ_PERMISSION, PluginConnectionResult
+from .plugin_api import IMAGE_CONNECTION_READ_PERMISSION, RVC_CONNECTION_READ_PERMISSION, PluginConnectionResult
 from .plugin_resources import current_resource_invocation
 
-CONNECTION_PERMISSIONS = {"image_generation": IMAGE_CONNECTION_READ_PERMISSION}
+CONNECTION_PERMISSIONS = {"image_generation": IMAGE_CONNECTION_READ_PERMISSION, "rvc": RVC_CONNECTION_READ_PERMISSION}
 
 
 def permitted_connections(permissions):
@@ -85,6 +85,8 @@ class ModelServicePluginConnectionProvider:
             return rejected("connection_permission_required")
         if not invocation.context.profile_user_id or not invocation.context.session_id:
             return rejected("connection_context_required")
+        if name == "rvc":
+            return self._rvc()
         if name != "image_generation":
             return rejected("connection_not_found")
         settings = self._engine.settings
@@ -110,6 +112,34 @@ class ModelServicePluginConnectionProvider:
             model=settings.image_generation_model,
             api_key=key,
             options=options,
+        )
+        connection_result_to_wire(result)
+        return result
+
+    def _rvc(self):
+        # Product config only; no RVC probing, pipeline, resource, or filesystem
+        # operations belong in this private settings projection.
+        config = self._config
+        if not getattr(config, "COVER_SONG_ENABLED", False):
+            return rejected("rvc_provider_disabled")
+        remote = str(getattr(config, "LOCAL_MEDIA_EXECUTOR_BASE_URL", "") or "").strip()
+        result = PluginConnectionResult(
+            True,
+            "configured",
+            base_url=remote or str(getattr(config, "RVC_WEBUI_BASE_URL", "http://127.0.0.1:7899") or ""),
+            model=str(getattr(config, "RVC_DEFAULT_MODEL", "") or ""),
+            options={
+                "backend": "remote" if remote else "webui",
+                "root_dir": "" if remote else str(getattr(config, "RVC_ROOT_DIR", "") or ""),
+                "separation_model": getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal"),
+                "timeout_seconds": getattr(
+                    config, "LOCAL_MEDIA_EXECUTOR_TIMEOUT_SECONDS" if remote else "COVER_SONG_TIMEOUT_SECONDS", 1800.0
+                ),
+                "max_duration_seconds": getattr(config, "COVER_SONG_MAX_DURATION_SECONDS", 900.0),
+                "max_input_bytes": getattr(config, "COVER_SONG_MAX_INPUT_BYTES", 256 * 1024 * 1024),
+                "default_output_format": getattr(config, "COVER_SONG_DEFAULT_OUTPUT_FORMAT", "mp3"),
+                "default_delivery": getattr(config, "COVER_SONG_DEFAULT_DELIVERY", "auto"),
+            },
         )
         connection_result_to_wire(result)
         return result

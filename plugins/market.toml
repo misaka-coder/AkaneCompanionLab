@@ -1,6 +1,14 @@
 schema_version = 1
 
 [[plugins]]
+source = "akane_cover_song"
+plugin_id = "akane.cover-song"
+display_name = "角色音色翻唱"
+summary = "当前材料分轨、RVC 转声和立体声混音；按用户隔离缓存，支持重做与历史点播。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "network.read", "storage.write", "connection.rvc.read"]
+requirements = ["Python 3.11+；requests >=2.31,<3、urllib3 >=2.2,<3；宿主公共 SDK 需支持 RVC 命名连接、产物交付方式和工作目录。", "FFmpeg/FFprobe 在 PATH，或设置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE。", "沿用现有 COVER_SONG / RVC 配置和本机 WebUI 或本机媒体服务，不新建配置仓库，不下载模型或启动服务。", "QQ 默认请求语音交付，其他客户端默认请求文件交付；none 只登记，产物始终保留。登记不代表发送或播放成功。", "新混音 44100 Hz 立体声；历史缓存原样恢复并报告实测格式。音色相似度、唱腔和分轨质量依赖模型与材料。", "取消等待远端终态；断连或无法确认完成会锁住对应服务端点，需操作者重启相关推理服务后明确恢复，不自动重试。", "中风险首次确认；安装不替用户修改审批。"]
+
+[[plugins]]
 source = "akane_image_generation"
 plugin_id = "akane.image-generation"
 display_name = "图片生成与参考图编辑"
