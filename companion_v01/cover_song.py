@@ -294,27 +294,47 @@ class RvcWebUiProvider:
 
     def _post_predict(self, config: dict[str, Any], api_name: str, data: list[Any]) -> dict[str, Any]:
         dependency_index = self._dependency_index(config, api_name)
+        # Gradio retains generator iterators by session_hash + fn_index. Never
+        # use the shared None session or treat its first yielded value as final.
+        session_hash = uuid.uuid4().hex
+        deadline = time.monotonic() + self.timeout_seconds
+        last_yield = None
         try:
-            response = requests.post(
-                f"{self.base_url}/api/predict",
-                json={"fn_index": dependency_index, "data": data},
-                timeout=self.timeout_seconds,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
+            for _ in range(64):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                with requests.post(
+                    f"{self.base_url}/api/predict",
+                    json={"fn_index": dependency_index, "data": data, "session_hash": session_hash},
+                    timeout=remaining,
+                    allow_redirects=False,
+                    stream=True,
+                ) as response:
+                    if response.status_code != 200:
+                        raise ValueError
+                    raw = bytearray()
+                    for chunk in response.iter_content(8192):
+                        raw.extend(chunk)
+                        if len(raw) > 4 * 1024 * 1024 or time.monotonic() >= deadline:
+                            raise ValueError
+                    payload = json.loads(raw)
+                if (not isinstance(payload, dict) or not isinstance(payload.get("data"), list)
+                        or not isinstance(payload.get("is_generating"), bool)):
+                    raise ValueError
+                if payload["is_generating"]:
+                    last_yield = payload["data"]
+                    continue
+                # FINISHED_ITERATING produces component-update placeholders;
+                # return the last real value only after the iterator is closed.
+                return {**payload, "data": last_yield if last_yield is not None else payload["data"]}
+            raise ValueError
+        except Exception:
             raise CoverSongError(
                 stage="provider",
                 reason=f"rvc_{api_name}_request_failed",
-                public_message="本机 RVC 服务调用失败，现有输入和缓存没有被删除。",
-            ) from exc
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-            raise CoverSongError(
-                stage="provider",
-                reason=f"rvc_{api_name}_response_invalid",
-                public_message="本机 RVC 服务返回了无法识别的结果。",
-            )
-        return payload
+                public_message="未能确认本机 RVC 调用已完整结束；不能把中间输出当成完成，请先确认服务状态。",
+            ) from None
 
     def _build_api_inputs(self, config: dict[str, Any], api_name: str, values: dict[str, Any]) -> list[Any]:
         dependency = self._dependency(config, api_name)
