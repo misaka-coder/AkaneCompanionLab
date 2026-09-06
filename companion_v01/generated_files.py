@@ -140,7 +140,7 @@ class GeneratedFileService:
             "provider": "",
         }
 
-    def media_conversion_status(self) -> dict[str, Any]:
+    def voice_dataset_status(self) -> dict[str, Any]:
         ffmpeg_path = shutil.which("ffmpeg")
         return {
             "enabled": bool(ffmpeg_path),
@@ -202,10 +202,6 @@ class GeneratedFileService:
             "provider": "",
             "model": "",
         }
-
-    def voice_dataset_status(self) -> dict[str, Any]:
-        status = self.media_conversion_status()
-        return {**status, "provider": "ffmpeg" if status.get("enabled") else ""}
 
     def media_inspection_status(self) -> dict[str, Any]:
         ffprobe_path = shutil.which("ffprobe")
@@ -384,52 +380,6 @@ class GeneratedFileService:
                 send_to_user=send_to_user,
             ),
         }
-
-    def convert_media_file(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        source_target: str,
-        output_format: str,
-        output_title: str = "",
-        bitrate: str = "",
-        sample_rate: int = 0,
-        channels: int = 0,
-        start_time: Any = "",
-        end_time: Any = "",
-        normalize_volume: bool = False,
-        volume_gain_db: Any = 0,
-        trim_silence: bool = False,
-        fade_in_seconds: Any = 0,
-        fade_out_seconds: Any = 0,
-        speed_ratio: Any = 0,
-        send_to_user: bool = True,
-        timestamp: int | None = None,
-    ) -> dict[str, Any]:
-        return generated_files_media.convert_media_file(
-            self,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            source_target=source_target,
-            output_format=output_format,
-            output_title=output_title,
-            bitrate=bitrate,
-            sample_rate=sample_rate,
-            channels=channels,
-            start_time=start_time,
-            end_time=end_time,
-            normalize_volume=normalize_volume,
-            volume_gain_db=volume_gain_db,
-            trim_silence=trim_silence,
-            fade_in_seconds=fade_in_seconds,
-            fade_out_seconds=fade_out_seconds,
-            speed_ratio=speed_ratio,
-            send_to_user=send_to_user,
-            timestamp=timestamp,
-            media_output_formats=MEDIA_OUTPUT_FORMATS,
-            protected_media_extensions=PROTECTED_MEDIA_EXTENSIONS,
-        )
 
     def separate_audio_stems(
         self,
@@ -1818,22 +1768,6 @@ class GeneratedFileService:
             send_to_user=send_to_user,
         )
 
-    def _build_media_conversion_followup(
-        self,
-        *,
-        generated: dict[str, Any],
-        source: dict[str, Any],
-        output_format: str,
-        send_to_user: bool,
-    ) -> str:
-        return generated_files_cards.build_media_conversion_followup(
-            self,
-            generated=generated,
-            source=source,
-            output_format=output_format,
-            send_to_user=send_to_user,
-        )
-
     def _build_audio_separation_followup(
         self,
         *,
@@ -2347,18 +2281,8 @@ class GeneratedFileService:
         bitrate: str,
         sample_rate: int,
         channels: int,
-        media_options: dict[str, Any] | None = None,
     ) -> list[str]:
-        options = media_options if isinstance(media_options, dict) else {}
-        command = [ffmpeg_path, "-y"]
-        start_seconds = float(options.get("start_seconds") or 0)
-        if start_seconds > 0:
-            command.extend(["-ss", self._format_seconds_arg(start_seconds)])
-        command.extend(["-i", str(source_path)])
-        duration_seconds = float(options.get("duration_seconds") or 0)
-        if duration_seconds > 0:
-            command.extend(["-t", self._format_seconds_arg(duration_seconds)])
-        command.append("-vn")
+        command = [ffmpeg_path, "-y", "-i", str(source_path), "-vn"]
         codec_args = {
             "mp3": ["-codec:a", "libmp3lame"],
             "wav": ["-codec:a", "pcm_s16le"],
@@ -2369,9 +2293,6 @@ class GeneratedFileService:
             "opus": ["-codec:a", "libopus"],
         }.get(output_format, [])
         command.extend(codec_args)
-        filters = self._build_audio_filter_chain(options)
-        if filters:
-            command.extend(["-filter:a", ",".join(filters)])
         normalized_bitrate = self._normalize_bitrate(bitrate)
         if normalized_bitrate and output_format in {"mp3", "m4a", "aac", "ogg", "opus"}:
             command.extend(["-b:a", normalized_bitrate])
@@ -2545,7 +2466,6 @@ class GeneratedFileService:
             bitrate="",
             sample_rate=0,
             channels=0,
-            media_options={},
         )
         completed = subprocess.run(
             command,
@@ -2578,7 +2498,6 @@ class GeneratedFileService:
             bitrate="",
             sample_rate=0,
             channels=0,
-            media_options={},
         )
         completed = subprocess.run(
             command,
@@ -2594,182 +2513,6 @@ class GeneratedFileService:
     def _is_video_media_format(self, value: str) -> bool:
         return str(value or "").strip().lower().lstrip(".") in VIDEO_MEDIA_EXTENSIONS
 
-    def _normalize_media_edit_options(
-        self,
-        *,
-        start_time: Any,
-        end_time: Any,
-        normalize_volume: Any,
-        volume_gain_db: Any,
-        trim_silence: Any,
-        fade_in_seconds: Any,
-        fade_out_seconds: Any,
-        speed_ratio: Any,
-    ) -> dict[str, Any]:
-        start_present = self._has_value(start_time)
-        end_present = self._has_value(end_time)
-        start_seconds = self._parse_time_seconds(start_time) if start_present else None
-        end_seconds = self._parse_time_seconds(end_time) if end_present else None
-        if start_present and start_seconds is None:
-            return {
-                "error": "invalid_start_time",
-                "followup_context": "你刚刚想截取媒体片段，但开始时间格式不稳定。请自然向用户确认开始时间。",
-            }
-        if end_present and end_seconds is None:
-            return {
-                "error": "invalid_end_time",
-                "followup_context": "你刚刚想截取媒体片段，但结束时间格式不稳定。请自然向用户确认结束时间。",
-            }
-        start_value = float(start_seconds or 0)
-        end_value = float(end_seconds) if end_seconds is not None else None
-        if end_value is not None and end_value <= start_value:
-            return {
-                "error": "invalid_time_range",
-                "followup_context": "你刚刚想截取媒体片段，但结束时间不晚于开始时间。请自然向用户确认要截哪一段。",
-            }
-        duration = (end_value - start_value) if end_value is not None else 0.0
-        fade_in = self._normalize_media_seconds(fade_in_seconds, maximum=600.0)
-        fade_out = self._normalize_media_seconds(fade_out_seconds, maximum=600.0)
-        speed = self._normalize_speed_ratio(speed_ratio)
-        gain_db = self._normalize_volume_gain_db(volume_gain_db)
-        return {
-            "start_seconds": round(start_value, 3),
-            "end_seconds": round(end_value, 3) if end_value is not None else None,
-            "duration_seconds": round(duration, 3) if duration > 0 else 0.0,
-            "normalize_volume": self._coerce_bool(normalize_volume, default=False),
-            "volume_gain_db": gain_db,
-            "trim_silence": self._coerce_bool(trim_silence, default=False),
-            "fade_in_seconds": fade_in,
-            "fade_out_seconds": fade_out,
-            "speed_ratio": speed,
-        }
-
-    def _has_value(self, value: Any) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, str):
-            return bool(value.strip())
-        return True
-
-    def _parse_time_seconds(self, value: Any) -> float | None:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            seconds = float(value)
-            return seconds if seconds >= 0 else None
-        text = str(value or "").strip().lower()
-        if not text:
-            return None
-        text = text.replace("秒钟", "秒").replace("分钟", "分")
-        text = text.replace("seconds", "s").replace("second", "s").replace("secs", "s").replace("sec", "s")
-        text = text.replace("minutes", "m").replace("minute", "m").replace("mins", "m").replace("min", "m")
-
-        chinese = re.fullmatch(r"(?:(\d+(?:\.\d+)?)\s*分)?\s*(?:(\d+(?:\.\d+)?)\s*秒?)?", text)
-        if chinese and (chinese.group(1) or chinese.group(2)):
-            minutes = float(chinese.group(1) or 0)
-            seconds = float(chinese.group(2) or 0)
-            return minutes * 60 + seconds
-
-        suffix = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([sm])?", text)
-        if suffix:
-            amount = float(suffix.group(1))
-            unit = suffix.group(2) or "s"
-            return amount * 60 if unit == "m" else amount
-
-        if ":" in text:
-            parts = text.split(":")
-            if not 2 <= len(parts) <= 3:
-                return None
-            try:
-                numbers = [float(part.strip()) for part in parts]
-            except Exception:
-                return None
-            if any(number < 0 for number in numbers):
-                return None
-            if len(numbers) == 2:
-                minutes, seconds = numbers
-                return minutes * 60 + seconds
-            hours, minutes, seconds = numbers
-            return hours * 3600 + minutes * 60 + seconds
-        return None
-
-    def _normalize_media_seconds(self, value: Any, *, maximum: float) -> float:
-        if not self._has_value(value):
-            return 0.0
-        seconds = self._parse_time_seconds(value)
-        if seconds is None:
-            return 0.0
-        return round(max(0.0, min(float(seconds), maximum)), 3)
-
-    def _normalize_speed_ratio(self, value: Any) -> float:
-        if not self._has_value(value):
-            return 1.0
-        if isinstance(value, (int, float)):
-            speed = float(value)
-        else:
-            text = str(value or "").strip().lower()
-            text = text.replace("倍速", "").replace("倍", "").replace("x", "").strip()
-            try:
-                if text.endswith("%"):
-                    speed = float(text[:-1]) / 100.0
-                else:
-                    speed = float(text)
-            except Exception:
-                return 1.0
-        if speed <= 0:
-            return 1.0
-        return round(max(0.25, min(speed, 4.0)), 4)
-
-    def _normalize_volume_gain_db(self, value: Any) -> float:
-        if not self._has_value(value):
-            return 0.0
-        if isinstance(value, (int, float)):
-            amount = float(value)
-        else:
-            text = str(value or "").strip().lower().replace(" ", "")
-            text = text.replace("分贝", "db")
-            text = text[:-2] if text.endswith("db") else text
-            try:
-                amount = float(text)
-            except Exception:
-                return 0.0
-        return round(max(-24.0, min(amount, 24.0)), 2)
-
-    def _build_audio_filter_chain(self, options: dict[str, Any]) -> list[str]:
-        filters: list[str] = []
-        if bool(options.get("trim_silence")):
-            filters.extend(
-                [
-                    "silenceremove=start_periods=1:start_duration=0.12:"
-                    "start_threshold=-50dB:start_silence=0.02:detection=peak",
-                    "areverse",
-                    "silenceremove=start_periods=1:start_duration=0.12:"
-                    "start_threshold=-50dB:start_silence=0.02:detection=peak",
-                    "areverse",
-                ]
-            )
-        speed = float(options.get("speed_ratio") or 1.0)
-        if abs(speed - 1.0) > 0.001:
-            filters.extend(f"atempo={self._format_filter_number(item)}" for item in self._split_atempo_filters(speed))
-        if bool(options.get("normalize_volume")):
-            filters.append("loudnorm")
-        gain_db = float(options.get("volume_gain_db") or 0)
-        if abs(gain_db) > 0.01:
-            filters.append(f"volume={self._format_filter_number(gain_db)}dB")
-        fade_in = float(options.get("fade_in_seconds") or 0)
-        if fade_in > 0:
-            filters.append(f"afade=t=in:st=0:d={self._format_filter_number(fade_in)}")
-        fade_out = float(options.get("fade_out_seconds") or 0)
-        output_duration = float(options.get("output_duration_seconds") or 0)
-        if fade_out > 0 and output_duration > 0:
-            start = max(0.0, output_duration - fade_out)
-            filters.append(
-                "afade=t=out:"
-                f"st={self._format_filter_number(start)}:"
-                f"d={self._format_filter_number(min(fade_out, output_duration))}"
-            )
-        return filters
-
     def _build_basic_voice_clean_filter_chain(self, *, mode: str, post_filter: bool) -> list[str]:
         filters: list[str] = ["highpass=f=70", "lowpass=f=12000"]
         if mode == "denoise":
@@ -2783,18 +2526,6 @@ class GeneratedFileService:
         if post_filter:
             filters.append("afftdn=nr=24:nf=-24")
         return filters
-
-    def _split_atempo_filters(self, speed: float) -> list[float]:
-        factors: list[float] = []
-        remaining = max(0.25, min(float(speed or 1.0), 4.0))
-        while remaining > 2.0:
-            factors.append(2.0)
-            remaining /= 2.0
-        while remaining < 0.5:
-            factors.append(0.5)
-            remaining /= 0.5
-        factors.append(remaining)
-        return factors
 
     def _probe_media_duration(self, *, ffprobe_path: str, source_path: Path) -> float | None:
         return generated_files_media.probe_media_duration(ffprobe_path=ffprobe_path, source_path=source_path)
@@ -2839,13 +2570,6 @@ class GeneratedFileService:
 
     def _format_bitrate(self, value: Any) -> str:
         return generated_files_media.format_bitrate(value)
-
-    def _format_seconds_arg(self, value: float) -> str:
-        return self._format_filter_number(value)
-
-    def _format_filter_number(self, value: float) -> str:
-        text = f"{float(value):.3f}".rstrip("0").rstrip(".")
-        return text or "0"
 
     def _coerce_bool(self, value: Any, *, default: bool) -> bool:
         if value is None:

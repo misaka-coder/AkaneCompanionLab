@@ -856,7 +856,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertIn("desktop_browser", desktop_selection.layer_names)
         self.assertIn("music_request", desktop_selection.layer_names)
         self.assertNotIn("qq_delivery", desktop_selection.layer_names)
-        self.assertIn("convert_media_file", desktop_selection.tool_names)
+        self.assertIn("inspect_media_info", desktop_selection.tool_names)
         self.assertIn("send_file", desktop_selection.tool_names)
         self.assertIn("web_search", desktop_selection.tool_names)
         self.assertNotIn("open_browser", desktop_selection.tool_names)
@@ -895,7 +895,7 @@ class EngineExtensionTests(unittest.TestCase):
         self.assertNotIn("qq_delivery", scene_selection_with_files.layer_names)
         self.assertNotIn("desktop_workspace", scene_selection_with_files.layer_names)
         self.assertNotIn("send_file", scene_selection_with_files.tool_names)
-        self.assertNotIn("convert_media_file", scene_selection_with_files.tool_names)
+        self.assertNotIn("inspect_media_info", scene_selection_with_files.tool_names)
 
     def test_desktop_tool_prompt_uses_desktop_layers_without_qq_or_web_tools(self) -> None:
         class StubTool:
@@ -924,7 +924,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "clear_attachment_focus",
                     "compose_file",
                     "inspect_media_info",
-                    "convert_media_file",
                     "transcribe_media",
                     "send_file",
                     "send_sticker",
@@ -942,7 +941,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- fetch_media_from_url", prompt)
             self.assertIn("\n- compose_file", prompt)
             self.assertNotIn("\n- sync_attachment_workspace", prompt)
-            self.assertNotIn("\n- convert_media_file", prompt)
+            self.assertNotIn("\n- inspect_media_info", prompt)
             self.assertNotIn("\n- send_sticker", prompt)
             self.assertNotIn("\n- manage_gift", prompt)
 
@@ -966,7 +965,7 @@ class EngineExtensionTests(unittest.TestCase):
 
             self.assertNotIn("\n- sync_attachment_workspace", prompt_with_media)
             self.assertIn("\n- inspect_media_info", prompt_with_media)
-            self.assertIn("\n- convert_media_file", prompt_with_media)
+            self.assertNotIn("convert_media_file", prompt_with_media)
             self.assertIn("\n- transcribe_media", prompt_with_media)
             self.assertIn("\n- send_file", prompt_with_media)
             self.assertIn("【桌宠文件交付】", prompt_with_media)
@@ -985,12 +984,12 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("【桌宠文件交付】", qq_prompt_with_media)
             self.assertEqual(
                 self.engine._normalize_tool_call(
-                    {"type": "convert_media_file", "source_id": media["attachment_handle"]},
+                    {"type": "inspect_media_info", "source_id": media["attachment_handle"]},
                     client_context=desktop_context,
                     profile_user_id="master",
                     session_id="desktop_pet_test",
                 ),
-                {"type": "convert_media_file"},
+                {"type": "inspect_media_info"},
             )
             self.assertEqual(
                 self.engine._normalize_tool_call(
@@ -1032,7 +1031,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "transcribe_media",
                     "prepare_voice_dataset",
                     "inspect_generated_file",
-                    "convert_media_file",
                     "send_file",
                     "manage_generated_file",
                 ]
@@ -1057,7 +1055,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("如果用户只要原视频/原音频，下载后直接交付原文件", prompt)
             self.assertIn("\n- fetch_media_from_url", prompt)
             self.assertIn("\n- compose_file", prompt)
-            self.assertNotIn("\n- convert_media_file", prompt)
+            self.assertNotIn("\n- inspect_media_info", prompt)
             self.assertNotIn("\n- separate_audio_stems", prompt)
             self.assertNotIn("\n- clean_voice_track", prompt)
             self.assertNotIn("\n- transcribe_media", prompt)
@@ -1065,12 +1063,12 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- read_attachment_section", prompt)
             self.assertEqual(
                 self.engine._normalize_tool_call(
-                    {"type": "convert_media_file", "source_id": "audio_001"},
+                    {"type": "inspect_media_info", "source_id": "audio_001"},
                     client_context=qq_context,
                     profile_user_id="master",
                     session_id="qq_pri_1",
                 ),
-                {"type": "convert_media_file", "source_id": "audio_001"},
+                {"type": "inspect_media_info", "source_id": "audio_001"},
             )
 
     def test_desktop_workspace_materials_expand_matching_tools_without_upload(self) -> None:
@@ -1215,7 +1213,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "transcribe_media",
                     "prepare_voice_dataset",
                     "inspect_generated_file",
-                    "convert_media_file",
                     "send_file",
                     "manage_generated_file",
                 ]
@@ -1266,19 +1263,19 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("\n- clean_voice_track", prompt)
             self.assertIn("\n- transcribe_media", prompt)
             self.assertIn("\n- prepare_voice_dataset", prompt)
-            self.assertIn("\n- convert_media_file", prompt)
+            self.assertIn("\n- inspect_media_info", prompt)
             self.assertIn("\n- inspect_generated_file", prompt)
             self.assertIn("\n- send_file", prompt)
             self.assertNotIn("\n- send_generated_file", prompt)
             self.assertIn("\n- manage_generated_file", prompt)
             self.assertEqual(
                 self.engine._normalize_tool_call(
-                    {"type": "convert_media_file", "source_id": media["attachment_handle"]},
+                    {"type": "inspect_media_info", "source_id": media["attachment_handle"]},
                     client_context=qq_context,
                     profile_user_id="master",
                     session_id="qq_pri_1",
                 ),
-                {"type": "convert_media_file"},
+                {"type": "inspect_media_info"},
             )
             self.assertEqual(
                 self.engine._normalize_tool_call(
@@ -1350,7 +1347,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- clean_voice_track", prompt_after_clear)
             self.assertNotIn("\n- transcribe_media", prompt_after_clear)
             self.assertNotIn("\n- prepare_voice_dataset", prompt_after_clear)
-            self.assertNotIn("\n- convert_media_file", prompt_after_clear)
+            self.assertNotIn("\n- inspect_media_info", prompt_after_clear)
             self.assertNotIn("\n- inspect_generated_file", prompt_after_clear)
             self.assertNotIn("\n- send_file", prompt_after_clear)
             self.assertNotIn("\n- manage_generated_file", prompt_after_clear)
@@ -1375,7 +1372,6 @@ class EngineExtensionTests(unittest.TestCase):
                 "clean_voice_track",
                 "transcribe_media",
                 "prepare_voice_dataset",
-                "convert_media_file",
             )
             self.engine.tool_handlers = {name: StubMediaTool(name) for name in media_tools}
             self.engine.store.add_attachment_inbox_item(
@@ -1410,15 +1406,8 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("媒体任务预设路由", prompt)
             self.assertIn("生成字幕", prompt)
             self.assertIn("transcribe_media output_format=srt", prompt)
-            self.assertIn("提取视频音频", prompt)
-            self.assertIn("convert_media_file output_format=mp3", prompt)
-            self.assertIn("压缩音频", prompt)
-            self.assertIn("截取片段", prompt)
-            self.assertIn("start_time/end_time", prompt)
-            self.assertIn("声音忽大忽小", prompt)
-            self.assertIn("normalize_volume", prompt)
-            self.assertIn("声音太小", prompt)
-            self.assertIn("volume_gain_db", prompt)
+            self.assertNotIn("convert_media_file", prompt)
+            self.assertNotIn("提取视频音频 →", prompt)
             self.assertIn("人声降噪", prompt)
             self.assertIn("clean_voice_track", prompt)
             self.assertIn("人声伴奏分离", prompt)
@@ -1426,7 +1415,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("训练素材切片打包", prompt)
             self.assertIn("prepare_voice_dataset", prompt)
             self.assertIn("只要原文件不处理", prompt)
-            self.assertIn("先 inspect_media_info 查当前规格", prompt)
+            self.assertIn("先读取当前规格", prompt)
             self.assertIn("人声处理组合", prompt)
             self.assertIn("send_file", prompt)
 
@@ -1447,7 +1436,6 @@ class EngineExtensionTests(unittest.TestCase):
             "clean_voice_track",
             "transcribe_media",
             "prepare_voice_dataset",
-            "convert_media_file",
         }:
             self.assertNotIn(tool, scene_tools, f"{tool} should not be available in web scene mode")
 

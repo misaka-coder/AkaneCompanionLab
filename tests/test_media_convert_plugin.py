@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
 import os
 import shutil
@@ -16,6 +17,12 @@ from unittest.mock import patch
 
 from capcore import InvocationContext
 
+import config
+from companion_v01.mode_profiles import ModeProfileRegistry
+from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.generated_files import GeneratedFileService
+from companion_v01.legacy_tool_prompt import render_legacy_json_tool_instruction
+from companion_v01.native_tool_schema import build_openai_native_tool_specs
 from companion_v01.extension_management import ExtensionManagementService, PluginSelectionStore
 from companion_v01.plugin_generation_candidate import PluginGenerationCandidateBuilder
 from companion_v01.plugin_generation_runtime import PluginGenerationRuntime
@@ -23,7 +30,10 @@ from companion_v01.plugin_installation import ManagedPluginArtifactStore
 from companion_v01.plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from companion_v01.plugin_market import StaticPluginMarket
 from companion_v01.plugin_resources import GeneratedFileResourceProvider
+from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
+from companion_v01.tool_runtime import ToolExecutionContext
 from scripts.build_plugin_market import build_market
+from tests.test_plugin_engine_bridge import EngineFacade
 from tests.test_plugin_resources import services
 
 
@@ -34,6 +44,35 @@ CAPABILITY_ID = f"{PLUGIN_ID}.run.v1"
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg and FFprobe required")
 class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
+    def discovery_snapshot(self, engine, *, installed):
+        snapshots = []
+        for mode in ("desktop_pet", "qq_text"):
+            client = ModeProfileRegistry().resolve_from_payload({"client_mode": mode})
+            handlers = engine._resolve_tool_handlers(
+                client_context=client, profile_user_id="owner", session_id="session"
+            )
+            prompt = AkaneMemoryEngine._build_tool_prompt_context(
+                engine, allow_tool_call=True, client_context=client, profile_user_id="owner", session_id="session"
+            )
+            self.assertNotIn("convert_media_file", prompt)
+            self.assertEqual(CAPABILITY_ID in handlers, installed)
+            self.assertEqual(CAPABILITY_ID in prompt, installed)
+            native = build_openai_native_tool_specs(handlers)
+            if installed:
+                handler = handlers[CAPABILITY_ID]
+                spec = handler.tool_spec()
+                self.assertEqual(spec.execution_class, "long_task")
+                self.assertEqual(handler.background_job_policy(), ("agent", "timeline"))
+                self.assertEqual(native[0]["function"]["parameters"], spec.input_schema)
+                self.assertEqual(handler.build_prompt_instruction(), render_legacy_json_tool_instruction(spec))
+                args = {"source_id": "audio_001", "output_format": "mp3", "speed_ratio": 1.25}
+                self.assertEqual(
+                    handler.normalize_call({"type": CAPABILITY_ID, **args}),
+                    handler.normalize_call({"type": CAPABILITY_ID, "arguments": args}),
+                )
+            snapshots.append(json.dumps(native, ensure_ascii=False, sort_keys=True))
+        return snapshots
+
     async def test_real_wheel_activation_conversion_scope_failure_and_uninstall(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -83,8 +122,12 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
             attachments.mark_ready(profile_user_id="owner", session_id="session", attachment_id=item["attachment_id"])
             context = InvocationContext("owner", "session", "web")
             await runtime.start()
+            engine = EngineFacade(PluginCapabilityToolBridge(runtime, config_base_dir=root))
+            engine.store = files.store
+            engine.capability_config_base_dir = root
             try:
                 self.assertNotIn(CAPABILITY_ID, runtime.capability_ids)
+                self.discovery_snapshot(engine, installed=False)
                 catalog = await service.browse_market()
                 self.assertTrue(catalog["ok"], catalog)
                 entry = catalog["plugins"][0]
@@ -100,6 +143,11 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(CAPABILITY_ID, runtime.capability_ids)
                 self.assertEqual(runtime.capability_descriptors[CAPABILITY_ID].raw["execution_class"], "long_task")
                 self.assertEqual(runtime.stable_system_prompt_blocks(), ())
+                first_snapshot = self.discovery_snapshot(engine, installed=True)
+                self.assertEqual(first_snapshot, self.discovery_snapshot(engine, installed=True))
+                engine.execution_provider = object()
+                self.assertEqual(first_snapshot, self.discovery_snapshot(engine, installed=True))
+                engine.execution_provider = None
                 result = await service.invoke_capability(
                     CAPABILITY_ID,
                     dict(
@@ -127,6 +175,27 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                     CAPABILITY_ID, dict(source_id=ref["generated_handle"], output_format="mp3"), context=context
                 )
                 self.assertFalse(second.is_error, second)
+                handler = engine._resolve_tool_handlers()[CAPABILITY_ID]
+                projected = await asyncio.to_thread(
+                    handler.execute,
+                    call=handler.normalize_call(
+                        {"type": CAPABILITY_ID, "source_id": ref["generated_handle"], "output_format": "flac"}
+                    ),
+                    context=ToolExecutionContext("owner", "session", 1, {}, client_mode="qq_text"),
+                )
+                self.assertEqual(projected.state_updates["adapter_capability_status"], "ok", projected)
+                events = [event for event in projected.stream_events if event["type"] == "generated_file_ready"]
+                self.assertEqual(len(events), 1)
+                self.assertFalse(events[0]["send_to_user"])
+                self.assertEqual(events[0]["delivery_scope"], "plugin_managed_artifact")
+                delivery = files.send_file(
+                    profile_user_id="owner",
+                    session_id="session",
+                    target=events[0]["generated_file"]["generated_handle"],
+                )
+                self.assertTrue(delivery["ok"], delivery)
+                self.assertEqual(delivery["files"][0]["file_ext"], "flac")
+                self.assertEqual(first_snapshot, self.discovery_snapshot(engine, installed=True))
                 for invalid_context in (
                     InvocationContext("other", "session", "web"),
                     InvocationContext("owner", "other", "web"),
@@ -153,16 +222,30 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                 disabled = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=False)
                 self.assertTrue(disabled["ok"], disabled)
                 self.assertNotIn(CAPABILITY_ID, runtime.capability_ids)
+                self.discovery_snapshot(engine, installed=False)
                 absent = await service.invoke_capability(CAPABILITY_ID, {}, context=context)
                 self.assertTrue(absent.is_error)
                 enabled = await service.set_enabled(plugin_id=PLUGIN_ID, enabled=True)
                 self.assertTrue(enabled["ok"], enabled)
                 self.assertIn(CAPABILITY_ID, runtime.capability_ids)
+                self.assertEqual(first_snapshot, self.discovery_snapshot(engine, installed=True))
                 removed = await service.uninstall(plugin_id=PLUGIN_ID)
                 self.assertTrue(removed["ok"], removed)
                 self.assertNotIn(CAPABILITY_ID, runtime.capability_ids)
+                self.discovery_snapshot(engine, installed=False)
                 self.assertEqual(artifacts.snapshot()["plugins"], [])
                 self.assertEqual(selections.load(), ())
                 self.assertEqual((await service.browse_market())["plugins"][0]["installed_status"], "not_installed")
             finally:
                 await runtime.stop()
+
+
+class MediaConversionCutoverTests(unittest.TestCase):
+    def test_no_host_conversion_authority_or_fixed_plugin_prompt(self):
+        self.assertFalse(hasattr(GeneratedFileService, "convert_media_file"))
+        self.assertFalse(hasattr(GeneratedFileService, "media_conversion_status"))
+        self.assertNotIn("CONVERT_MEDIA_FILE", vars(config))
+        for path in (PROJECT_ROOT / "companion_v01").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("convert_media_file", source, str(path))
+            self.assertNotIn("akane.media-convert", source, str(path))

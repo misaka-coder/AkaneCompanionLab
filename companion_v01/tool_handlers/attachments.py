@@ -583,7 +583,7 @@ class FetchMediaFromUrlToolHandler(BaseToolHandler):
             "应优先调用这个工具实际获取素材；不要只凭猜测说链接打不开、需要登录或平台不稳定。"
             "如果用户说“再试一次/重新下载/继续试”，且最近对话里有明确链接，也应带上那个链接重新调用。"
             "它只负责把公开可访问的媒体链接下载成工作台材料，不会直接总结、转写或转码；"
-            "下载成功后，这些素材会像普通 audio_001/file_001 一样进入当前材料工作台，之后再继续用 inspect_attachment、inspect_media_info、transcribe_media、convert_media_file 或 send_file。"
+            "下载成功后，这些素材会像普通 audio_001/file_001 一样进入当前材料工作台，之后可交给当前实际可用的工具。"
             "如果用户只是要原视频/原音频或“把链接里的文件发我”，下载成功后直接 send_file 对应 handle，不要顺手转写、提音频或压缩。"
             "不要用它处理需要登录、付费、会员、DRM 或整条播放列表/合集的链接。"
         )

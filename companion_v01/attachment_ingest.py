@@ -1604,7 +1604,7 @@ class AttachmentIngestService:
             return (
                 f"你刚刚已经把链接里的媒体素材放进当前材料工作台了：{labels or '已下载媒体'}。"
                 "请基于这个既成事实自然回应，不要重复调用 fetch_media_from_url。"
-                "如果用户想继续处理内容，可以直接使用 inspect_attachment、inspect_media_info、transcribe_media、convert_media_file 或 send_file。"
+                "如果用户想继续处理内容，请将这些句柄交给当前实际可用的工具。"
             )
         if failures and not items:
             reasons = "；".join(

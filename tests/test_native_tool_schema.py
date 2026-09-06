@@ -24,7 +24,6 @@ from companion_v01.tool_runtime import (
     ApplyStyleToExistingFileToolHandler,
     CleanVoiceTrackToolHandler,
     ComposeFileToolHandler,
-    ConvertMediaFileToolHandler,
     PrepareVoiceDatasetToolHandler,
     ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
@@ -136,7 +135,8 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 51)
+        self.assertEqual(len(handlers), 50)
+        self.assertNotIn("convert_media_file", handlers)
         self.assertEqual(missing, [])
 
     def test_retired_tools_are_absent_and_sticker_has_one_exact_contract(self) -> None:
@@ -446,7 +446,6 @@ class NativeToolSchemaTests(unittest.TestCase):
         clean = CleanVoiceTrackToolHandler(generated_file_service=None)
         transcribe = TranscribeMediaToolHandler(generated_file_service=None)
         dataset = PrepareVoiceDatasetToolHandler(generated_file_service=None)
-        convert = ConvertMediaFileToolHandler(generated_file_service=None)
 
         default_separation = separate.normalize_call(
             {"type": "separate_audio_stems", "source_id": "audio_001"}
@@ -526,32 +525,6 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(dataset_call["target_sr"], 44100)
         self.assertTrue(dataset_call["clean_first"])
 
-        convert_call = convert.normalize_call(
-            {
-                "type": "convert_media_file",
-                "source_id": "file_001",
-                "output_format": "mp3",
-                "output_title": "片段",
-                "start_time": "00:00:35",
-                "end_time": "00:01:20",
-                "normalize_volume": True,
-                "volume_gain_db": 3,
-                "trim_silence": True,
-                "fade_in_seconds": 1,
-                "fade_out_seconds": 2,
-                "speed_ratio": 1.25,
-                "bitrate": "192k",
-                "sample_rate": 44100,
-                "channels": 2,
-            }
-        )
-        self.assertEqual(convert_call["output_title"], "片段")
-        self.assertEqual(convert_call["start_time"], "00:00:35")
-        self.assertEqual(convert_call["end_time"], "00:01:20")
-        self.assertTrue(convert_call["normalize_volume"])
-        self.assertTrue(convert_call["trim_silence"])
-        self.assertEqual(convert_call["speed_ratio"], 1.25)
-
         expected_properties = {
             "separate_audio_stems": {"source_id", "output_format", "output_title"},
             "clean_voice_track": {
@@ -586,29 +559,12 @@ class NativeToolSchemaTests(unittest.TestCase):
                 "clean_first",
                 "normalize_volume",
             },
-            "convert_media_file": {
-                "source_id",
-                "output_format",
-                "output_title",
-                "start_time",
-                "end_time",
-                "normalize_volume",
-                "volume_gain_db",
-                "trim_silence",
-                "fade_in_seconds",
-                "fade_out_seconds",
-                "speed_ratio",
-                "bitrate",
-                "sample_rate",
-                "channels",
-            },
         }
         handlers = {
             "separate_audio_stems": separate,
             "clean_voice_track": clean,
             "transcribe_media": transcribe,
             "prepare_voice_dataset": dataset,
-            "convert_media_file": convert,
         }
         for tool_name, expected in expected_properties.items():
             spec = TOOL_SPEC_BY_TYPE[tool_name]

@@ -28,7 +28,6 @@ from .generated_media import (
     ApplyStyleToExistingFileToolHandler,
     CleanVoiceTrackToolHandler,
     ComposeFileToolHandler,
-    ConvertMediaFileToolHandler,
     CoverSongToolHandler,
     GenerateImageToolHandler,
     InspectGeneratedFileToolHandler,
@@ -161,9 +160,6 @@ def build_builtin_tool_handlers(
             generated_file_service=generated_file_service
         ),
         "send_file": SendFileToolHandler(generated_file_service=generated_file_service),
-        "convert_media_file": ConvertMediaFileToolHandler(
-            generated_file_service=generated_file_service
-        ),
         "send_sticker": SendStickerToolHandler(
             sticker_service=sticker_assets,
         ),

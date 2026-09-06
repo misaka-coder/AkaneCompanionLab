@@ -203,14 +203,11 @@ MEDIA_WORKBENCH_TOOL_NAMES = (
     "clean_voice_track",
     "transcribe_media",
     "prepare_voice_dataset",
-    "convert_media_file",
 )
 
-# M68: when a host-frozen execution profile is present, plain inspect/convert is
-# handled through the media-inspect-convert Skill over exec_run. These two tools
-# stay selected only when Shell is off, so the Shell-on capability profile keeps
-# a smaller schema while Shell-off experience is unchanged.
-MEDIA_WORKBENCH_SHELL_OVERLAP_TOOL_NAMES = ("inspect_media_info", "convert_media_file")
+# M68: Shell may replace built-in inspection. Installed extension descriptors
+# remain independently discoverable; they are never hidden by this profile.
+MEDIA_WORKBENCH_SHELL_OVERLAP_TOOL_NAMES = ("inspect_media_info",)
 
 GENERATED_FILE_MANAGEMENT_TOOL_NAMES = (
     "inspect_generated_file",
@@ -1365,7 +1362,7 @@ CLEAN_VOICE_TRACK_TOOL_SPEC = CapabilityToolSpec(
     display_name="Clean voice track",
     description=(
         "净化现有语音或人声轨，可做降噪、去混响、去回声或人声聚焦。"
-        "它不负责普通转码、裁剪和音量调整；这些任务使用 convert_media_file。"
+        "它不负责普通转码、裁剪和音量调整。"
         "成功后返回一个新的 gen_* 句柄，需要交付时再调用 send_file。"
     ),
     input_schema={
@@ -1531,52 +1528,6 @@ PREPARE_VOICE_DATASET_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=8192,
 )
 
-CONVERT_MEDIA_FILE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="convert_media_file",
-    display_name="Convert media file",
-    description=(
-        "转换或重新编码一个现有音频/视频，也可截取片段、调整音量、去头尾静音、淡入淡出或调速。"
-        "它不做人声分离、语音净化或转写。成功后返回一个新的 gen_* 句柄，需要交付时再调用 send_file。"
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "source_id": {
-                "type": "string",
-                "maxLength": 120,
-                "description": "来源媒体句柄，如 audio_*、file_*、gen_*。",
-            },
-            "output_format": {
-                "type": "string",
-                "enum": ["mp3", "wav", "flac", "m4a", "aac", "ogg", "opus"],
-                "description": "目标音频格式；从视频提取音轨时也使用这里。",
-            },
-            "output_title": {"type": "string", "maxLength": 80, "description": "可选输出标题。"},
-            "start_time": {"type": "string", "maxLength": 40, "description": "可选开始时间，如 00:00:35。"},
-            "end_time": {"type": "string", "maxLength": 40, "description": "可选结束时间，如 00:01:20。"},
-            "normalize_volume": {"type": "boolean", "description": "是否做响度标准化。"},
-            "volume_gain_db": {"type": "number", "minimum": -30, "maximum": 30, "description": "整体音量增减 dB。"},
-            "trim_silence": {"type": "boolean", "description": "是否去掉头尾静音。"},
-            "fade_in_seconds": {"type": "number", "minimum": 0, "maximum": 30},
-            "fade_out_seconds": {"type": "number", "minimum": 0, "maximum": 30},
-            "speed_ratio": {"type": "number", "minimum": 0.25, "maximum": 4.0},
-            "bitrate": {"type": "string", "maxLength": 20, "description": "可选输出码率，如 192k。"},
-            "sample_rate": {"type": "integer", "minimum": 8000, "maximum": 192000},
-            "channels": {"type": "integer", "minimum": 1, "maximum": 8},
-        },
-        "required": ["source_id", "output_format"],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_create",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
-    execution_class="long_task",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
 COVER_SONG_TOOL_SPEC = CapabilityToolSpec(
     capability_id="cover_song",
     display_name="Cover song",
@@ -2677,7 +2628,7 @@ class CapabilityRegistry:
                 layer="shared_media",
                 modes=CHAT_FILE_CLIENT_MODES,
                 tools=MEDIA_WORKBENCH_TOOL_NAMES,
-                light_hint="你可以直接处理音频/视频任务：转写、转码、降噪、分离人声、切片打包训练素材等；处理工具返回成果句柄后，再按用户要求调用 send_file 交付。",
+                light_hint="你可以使用当前可用的媒体工具转写、降噪、分离人声或切片打包训练素材；处理工具返回成果句柄后，再按用户要求调用 send_file 交付。",
                 trigger=_has_media_context,
                 latent_reason="当前会话和可见工作区里还没有可处理的音频或视频，因此没有展开媒体处理工具。",
                 activation_hint="用户上传音频/视频、提供可下载的公开媒体链接，或在桌宠的 Akane 工作区放入媒体文件后会自动开放；工作区文件可先登记为 handle。",

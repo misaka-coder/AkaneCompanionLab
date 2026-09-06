@@ -69,7 +69,9 @@ def descriptor() -> CapabilityDescriptor:
             CapabilityIOSlot("fade_in_seconds", "number", raw={"minimum": 0, "maximum": 600}),
             CapabilityIOSlot("fade_out_seconds", "number", raw={"minimum": 0, "maximum": 600}),
             CapabilityIOSlot("speed_ratio", "number", raw={"minimum": 0.25, "maximum": 4}),
-            CapabilityIOSlot("send_to_user", "boolean"),
+            CapabilityIOSlot(
+                "send_to_user", "boolean", raw={"description": "默认 false，只登记产物；需要交付时使用返回的句柄。"}
+            ),
         ),
         outputs=(
             CapabilityIOSlot("files", "file", required=True, max_bytes=MAX_OUTPUT_BYTES, delivery="generated_file"),
@@ -231,7 +233,7 @@ class MediaConverter:
                             output_format=options.output_format,
                             mime_type=FORMATS[options.output_format][1],
                             summary=summary,
-                            send_to_user=args.get("send_to_user", True),
+                            send_to_user=args.get("send_to_user", False),
                         ),
                     ),
                 ),

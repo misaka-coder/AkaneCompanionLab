@@ -316,7 +316,7 @@ class RegisterWorkspaceItemsToolHandler(BaseToolHandler):
     def build_prompt_instruction(self) -> str:
         return (
             "- register_workspace_items：把工作区中已有的一个或多个文件原地登记为附件 handle，"
-            "之后可交给 inspect_media_info、transcribe_media、convert_media_file、send_file 等现有工具。"
+            "之后可将资源句柄交给当前实际可用的工具。"
             '格式为 {"type":"register_workspace_items",'
             '"targets":["workspace:/Inbox/录音.wav","workspace:/项目A"],'
             '"recursive":true,"max_files":500}。'

@@ -53,7 +53,6 @@ TOOL_GROUPS: dict[str, str] = {
     "clean_voice_track": "audio",
     "transcribe_media": "asr",
     "prepare_voice_dataset": "voice_dataset",
-    "convert_media_file": "media",
     "inspect_generated_file": "generated_files",
     "send_file": "file_handoff",
     "send_sticker": "stickers",

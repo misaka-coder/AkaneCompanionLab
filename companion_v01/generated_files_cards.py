@@ -143,28 +143,6 @@ def build_style_followup(
     return "\n".join(lines)
 
 
-def build_media_conversion_followup(
-    service: Any,
-    *,
-    generated: dict[str, Any],
-    source: dict[str, Any],
-    output_format: str,
-    send_to_user: bool,
-) -> str:
-    source_handle = str(source.get("handle") or "").strip()
-    new_handle = str(generated.get("generated_handle") or "").strip()
-    title = str(generated.get("output_title") or "转换音频").strip()
-    lines = [
-        f"你刚刚已经把 {source_handle or '媒体文件'} 转换成 {new_handle}《{title}》（{output_format}）。",
-    ]
-    if send_to_user:
-        lines.append("当前客户端如果支持发送文件，系统会尝试把转换后的媒体文件发给用户。")
-    else:
-        lines.append("这次只生成转换后的媒体文件，不自动发送给用户。")
-    lines.append("请基于这个既成事实自然回应，不要重复调用 convert_media_file。")
-    return "\n".join(lines)
-
-
 def build_audio_separation_followup(
     service: Any,
     *,
@@ -230,7 +208,6 @@ def build_voice_clean_followup(
         lines.append("当前客户端如果支持发送文件，系统会尝试把净化后的文件发给用户。")
     else:
         lines.append("这次只生成净化结果，不自动发送给用户。")
-    lines.append("如果用户还要裁剪、转码、去头尾静音或统一采样率，请对这个新结果继续调用 convert_media_file。")
     lines.append("请基于这个既成事实自然回应，不要重复调用 clean_voice_track。")
     return "\n".join(lines)
 
@@ -476,7 +453,7 @@ def build_media_info_followup(
             f"{video.get('width') or '?'}x{video.get('height') or '?'}{fps_label}。"
         )
     lines.append(
-        "请基于这些实际规格自然回应用户；如果后续要转换、截取或压缩，可参考这些信息再调用 convert_media_file。"
+        "请基于这些实际规格自然回应用户，后续操作以当前实际可用工具为准。"
     )
     return "\n".join(lines)
 
@@ -664,7 +641,7 @@ def render_generated_binary_inspection(
     if preview:
         lines.extend(["可用内容卡片：", preview])
     lines.append(
-        "如果这是音频/视频，请使用 inspect_media_info、transcribe_media、convert_media_file 等媒体工具继续处理。"
+        "如果还需要处理这些媒体，请将资源句柄交给当前实际可用的工具。"
     )
     return "\n".join(lines).strip()
 

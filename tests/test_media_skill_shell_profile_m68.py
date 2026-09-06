@@ -107,13 +107,11 @@ class MediaSkillCapabilityProfileTests(unittest.TestCase):
 
     def _handlers(self):
         from companion_v01.capability_registry import (
-            CONVERT_MEDIA_FILE_TOOL_SPEC,
             INSPECT_MEDIA_INFO_TOOL_SPEC,
         )
 
         return {
             INSPECT_MEDIA_INFO_TOOL_SPEC.capability_id: _SpecHandler(INSPECT_MEDIA_INFO_TOOL_SPEC),
-            CONVERT_MEDIA_FILE_TOOL_SPEC.capability_id: _SpecHandler(CONVERT_MEDIA_FILE_TOOL_SPEC),
         }
 
     def test_qq_shell_off_keeps_legacy_media_tools(self) -> None:
@@ -410,7 +408,8 @@ class MediaSkillExecutionLoopTests(unittest.TestCase):
         self.assertEqual(state["status"], EXEC_STATUS_FAILED)
         self.assertEqual(state.get("artifact_status"), ARTIFACT_STATUS_NOT_REGISTERED)
         self.assertNotIn("generated_resources", state)
-        self.assertIn("命令执行失败", result.followup_context)
+        self.assertIn("Unknown encoder", result.followup_context)
+        self.assertIn("execution_failed", result.followup_context)
 
     def test_no_output_globs_means_no_artifact_claim(self) -> None:
         result = self.handler.execute(

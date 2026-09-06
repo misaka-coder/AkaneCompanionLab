@@ -17,7 +17,6 @@ from companion_v01.tool_runtime import (
     ApplyStyleToExistingFileToolHandler,
     CleanVoiceTrackToolHandler,
     ComposeFileToolHandler,
-    ConvertMediaFileToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ManageGeneratedFileToolHandler,
@@ -91,12 +90,6 @@ class GeneratedFileTests(unittest.TestCase):
             handle = failed["attachment_handle"]
 
             results = [
-                generated_service.convert_media_file(
-                    profile_user_id="user",
-                    session_id="session",
-                    source_target=handle,
-                    output_format="mp3",
-                ),
                 generated_service.separate_audio_stems(
                     profile_user_id="user",
                     session_id="session",
@@ -618,177 +611,6 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertIn("开始/继续/直接做", instruction)
         self.assertIn("不要只口头答应", instruction)
         self.assertIn("tool_call 调用 compose_file", instruction)
-
-    def test_convert_media_file_creates_generated_audio(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "song.flac"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_bytes(b"fake flac payload")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="audio",
-                origin_name="song.flac",
-                storage_relpath="master/song.flac",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="song.flac",
-                short_hint="一首音频。",
-                detail={"file_kind": "flac"},
-                timestamp=110,
-            )
-
-            def fake_run(command, **kwargs):
-                Path(command[-1]).write_bytes(b"fake mp3 payload")
-
-                class Result:
-                    returncode = 0
-                    stdout = ""
-                    stderr = ""
-
-                return Result()
-
-            with (
-                patch("companion_v01.generated_files.shutil.which", return_value="ffmpeg"),
-                patch(
-                    "companion_v01.generated_files.subprocess.run",
-                    side_effect=fake_run,
-                ) as mocked_run,
-            ):
-                result = generated_service.convert_media_file(
-                    profile_user_id="user",
-                    session_id="session",
-                    source_target="audio_001",
-                    output_format="mp3",
-                    output_title="song_mp3",
-                    bitrate="192k",
-                    sample_rate=44100,
-                    channels=2,
-                    timestamp=120,
-                )
-
-            self.assertTrue(result["ok"])
-            generated = result["generated"]
-            self.assertEqual(generated["output_format"], "mp3")
-            self.assertEqual(generated["file_ext"], "mp3")
-            self.assertEqual(generated["mime_type"], "audio/mpeg")
-            self.assertEqual(generated["created_by_tool"], "convert_media_file")
-            self.assertTrue(Path(generated["absolute_path"]).exists())
-            media_info = (generated.get("content_card") or {}).get("media_info", {})
-            self.assertEqual(media_info.get("format_name"), "mp3")
-            self.assertEqual((media_info.get("audio") or {}).get("sample_rate"), 44100)
-            self.assertEqual((media_info.get("audio") or {}).get("channels"), 2)
-            self.assertEqual((media_info.get("audio") or {}).get("bit_rate"), 192000)
-            command = mocked_run.call_args.args[0]
-            self.assertIn("-b:a", command)
-            self.assertIn("192k", command)
-
-    def test_convert_media_file_supports_trim_filters_and_speed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "clip.mp4"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_bytes(b"fake video payload")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="file",
-                origin_name="clip.mp4",
-                storage_relpath="master/clip.mp4",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="clip.mp4",
-                short_hint="一段视频。",
-                detail={"file_kind": "mp4"},
-                timestamp=110,
-            )
-
-            def fake_run(command, **kwargs):
-                class Result:
-                    returncode = 0
-                    stdout = ""
-                    stderr = ""
-
-                if command[0] == "ffprobe":
-                    Result.stdout = "120.0"
-                    return Result()
-                Path(command[-1]).write_bytes(b"fake mp3 payload")
-                return Result()
-
-            with (
-                patch("companion_v01.generated_files.shutil.which", side_effect=lambda name: name),
-                patch(
-                    "companion_v01.generated_files.subprocess.run",
-                    side_effect=fake_run,
-                ) as mocked_run,
-            ):
-                result = generated_service.convert_media_file(
-                    profile_user_id="user",
-                    session_id="session",
-                    source_target="file_001",
-                    output_format="mp3",
-                    output_title="clip_audio",
-                    start_time="00:00:10",
-                    end_time="40s",
-                    normalize_volume=True,
-                    volume_gain_db=6,
-                    trim_silence=True,
-                    fade_in_seconds=2,
-                    fade_out_seconds=3,
-                    speed_ratio=1.5,
-                    timestamp=120,
-                )
-
-            self.assertTrue(result["ok"])
-            ffmpeg_command = mocked_run.call_args_list[-1].args[0]
-            self.assertIn("-ss", ffmpeg_command)
-            self.assertIn("10", ffmpeg_command)
-            self.assertIn("-t", ffmpeg_command)
-            self.assertIn("30", ffmpeg_command)
-            filter_text = ffmpeg_command[ffmpeg_command.index("-filter:a") + 1]
-            self.assertIn("silenceremove=", filter_text)
-            self.assertIn("areverse", filter_text)
-            self.assertIn("atempo=1.5", filter_text)
-            self.assertIn("loudnorm", filter_text)
-            self.assertIn("volume=6dB", filter_text)
-            self.assertIn("afade=t=in:st=0:d=2", filter_text)
-            self.assertIn("afade=t=out:st=17:d=3", filter_text)
-            conversion = result["generated"]["content_card"]["conversion"]
-            self.assertEqual(conversion["start_seconds"], 10.0)
-            self.assertEqual(conversion["duration_seconds"], 30.0)
-            self.assertTrue(conversion["normalize_volume"])
-            self.assertEqual(conversion["volume_gain_db"], 6)
-            self.assertTrue(conversion["trim_silence"])
-            self.assertEqual(conversion["speed_ratio"], 1.5)
 
     def test_inspect_media_info_reads_ffprobe_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1767,123 +1589,8 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["media_info"]["duration_seconds"], 12.0)
         self.assertEqual(result.followup_context, "读取完成。")
 
-    def test_convert_media_file_rejects_protected_platform_formats(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "song.kgm"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_bytes(b"protected payload")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="audio",
-                origin_name="song.kgm",
-                storage_relpath="master/song.kgm",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="song.kgm",
-                short_hint="一首平台缓存音频。",
-                detail={"file_kind": "kgm"},
-                timestamp=110,
-            )
-
-            result = generated_service.convert_media_file(
-                profile_user_id="user",
-                session_id="session",
-                source_target="audio_001",
-                output_format="mp3",
-                output_title="song_mp3",
-                timestamp=120,
-            )
-
-            self.assertFalse(result["ok"])
-            self.assertEqual(result["error"], "protected_media_format")
-            self.assertIn("不要尝试解密", result["followup_context"])
-
-    def test_convert_media_file_tool_handler_emits_generated_event(self) -> None:
-        class FakeGeneratedService:
-            def convert_media_file(self, **kwargs):
-                return {
-                    "ok": True,
-                    "generated": {"generated_id": "generated::1", "generated_handle": "gen_001"},
-                    "send_to_user": True,
-                    "followup_context": "转换完成。",
-                }
-
-        handler = ConvertMediaFileToolHandler(generated_file_service=FakeGeneratedService())
-        call = handler.normalize_call(
-            {
-                "type": "convert_media_file",
-                "source_id": "audio_001",
-                "output_format": "wav",
-                "start_time": "1:20",
-                "end_time": "2:00",
-                "normalize_volume": True,
-                "volume_gain_db": "6db",
-                "trim_silence": True,
-                "fade_in_seconds": 1.5,
-                "fade_out_seconds": 2,
-                "speed_ratio": "125%",
-                "send_to_user": True,
-            }
-        )
-
-        self.assertIsNotNone(call)
-        self.assertEqual((call or {}).get("start_time"), "1:20")
-        self.assertEqual((call or {}).get("volume_gain_db"), 6.0)
-        self.assertTrue((call or {}).get("trim_silence"))
-        self.assertEqual((call or {}).get("speed_ratio"), 1.25)
-        result = handler.execute(
-            call=call or {},
-            context=ToolExecutionContext(
-                profile_user_id="user",
-                session_id="session",
-                now_ts=100,
-                visual_payload={},
-            ),
-        )
-
-        self.assertEqual(result.stream_events[0]["type"], "generated_file_ready")
-        self.assertEqual(result.followup_context, "转换完成。")
-
-    def test_convert_media_file_tool_instruction_keeps_audio_options_optional(self) -> None:
-        handler = ConvertMediaFileToolHandler(generated_file_service=object())
-
-        instruction = handler.build_prompt_instruction()
-
-        self.assertIn("视频", instruction)
-        self.assertIn("sample_rate", instruction)
-        self.assertIn("可选项", instruction)
-        self.assertIn("不要硬填", instruction)
-        self.assertIn("16000", instruction)
-        self.assertIn("start_time", instruction)
-        self.assertIn("volume_gain_db", instruction)
-        self.assertIn("trim_silence", instruction)
-        self.assertIn("fade_out_seconds", instruction)
-        self.assertIn("speed_ratio", instruction)
-        self.assertIn("只有用户要音频轨、后续人声处理、训练素材或统一媒体规格时才提音频", instruction)
-        self.assertIn("如果用户只要原视频，改用 send_file 发送原文件", instruction)
-
     def test_media_handlers_do_not_report_ready_without_real_executors(self) -> None:
         class FakeGeneratedService:
-            @staticmethod
-            def media_conversion_status():
-                return {"enabled": False, "status": "missing_executor", "reason": "ffmpeg_not_found"}
-
             @staticmethod
             def voice_cleaning_status():
                 return {"enabled": True, "status": "ready", "reason": "", "provider": "ffmpeg"}
@@ -1906,14 +1613,12 @@ class GeneratedFileTests(unittest.TestCase):
 
         service = FakeGeneratedService()
         statuses = {
-            "convert": ConvertMediaFileToolHandler(generated_file_service=service).capability_status(),
             "clean": CleanVoiceTrackToolHandler(generated_file_service=service).capability_status(),
             "transcribe": TranscribeMediaToolHandler(generated_file_service=service).capability_status(),
             "dataset": PrepareVoiceDatasetToolHandler(generated_file_service=service).capability_status(),
             "inspect": InspectMediaInfoToolHandler(generated_file_service=service).capability_status(),
         }
 
-        self.assertEqual(statuses["convert"]["status"], "missing_executor")
         self.assertEqual(statuses["clean"]["status"], "ready")
         self.assertEqual(statuses["transcribe"]["reason"], "local_media_executor_unreachable")
         self.assertEqual(statuses["dataset"]["status"], "missing_executor")
@@ -1926,12 +1631,9 @@ class GeneratedFileTests(unittest.TestCase):
         self.assertIn("如果用户要字幕文件，优先用 srt 或 vtt", transcribe_instruction)
         self.assertIn("这个工具负责转写，不负责总结", transcribe_instruction)
         self.assertIn("如果用户只要原视频/原音频，不要为了回复而转写", transcribe_instruction)
-        self.assertIn("训练素材任务可以分多步组合", dataset_instruction)
-        self.assertIn("先 convert_media_file 提音频", dataset_instruction)
-        self.assertIn("再 separate_audio_stems 拿人声", dataset_instruction)
-        self.assertIn("再 clean_voice_track 降噪", dataset_instruction)
-        self.assertIn("最后 prepare_voice_dataset 切片打包", dataset_instruction)
-        self.assertIn("不要把这些步骤用于只要原文件的请求", dataset_instruction)
+        self.assertIn("按当前实际可用工具分步组合", dataset_instruction)
+        self.assertNotIn("convert_media_file", dataset_instruction)
+        self.assertIn("不要把人声处理和切片打包用于只要原文件的请求", dataset_instruction)
 
     def test_compose_file_applies_xlsx_formatting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

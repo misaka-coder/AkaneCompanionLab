@@ -418,158 +418,6 @@ def _generated_media_capability_status(
     return dict(status)
 
 
-class ConvertMediaFileToolHandler(BaseToolHandler):
-    tool_type = "convert_media_file"
-
-    def __init__(self, *, generated_file_service) -> None:
-        self.generated_file_service = generated_file_service
-
-    def capability_status(self) -> dict[str, Any]:
-        return _generated_media_capability_status(
-            self.generated_file_service,
-            getter_name="media_conversion_status",
-            missing_reason="media_conversion_status_missing",
-        )
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- convert_media_file：当用户要把普通音频转成常见格式，或从普通视频文件里提取音频时使用。"
-            '格式为 {"type":"convert_media_file","source_id":"file_001|audio_001|gen_001",'
-            '"output_format":"mp3|wav|flac|m4a|aac|ogg|opus","output_title":"输出文件名",'
-            '"start_time":"00:00:35","end_time":"00:01:20","normalize_volume":true,'
-            '"volume_gain_db":6,"trim_silence":true,"fade_in_seconds":2,"fade_out_seconds":3,"speed_ratio":1.25,'
-            '"bitrate":"192k","sample_rate":44100,"channels":2,"send_to_user":false}。'
-            "它适合普通非加密音频转码、压缩体积、截取片段、音量标准化、整体音量增减、自动去掉头尾静音、淡入淡出、调速、从 mp4/mov/mkv/webm 等视频提取音轨；不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
-            "start_time、end_time、normalize_volume、volume_gain_db、trim_silence、fade_in_seconds、fade_out_seconds、speed_ratio、bitrate、sample_rate、channels 都是可选项：用户没指定时不要硬填。"
-            "如果只是转 mp3，通常只填 source_id、output_format、output_title 即可；如果是语音识别/统一语音规格，可考虑 wav、sample_rate=16000、channels=1；音乐文件通常保留原采样率和声道更自然。"
-            "视频任务里只有用户要音频轨、后续人声处理、训练素材或统一媒体规格时才提音频；如果用户只要原视频，改用 send_file 发送原文件。"
-            "如果用户说“声音忽大忽小/调正常/更舒服”，优先用 normalize_volume；如果用户说“太小声/放大一点”，用正数 volume_gain_db（如 3 或 6）；如果用户说“太吵/压低一点”，用负数 volume_gain_db（如 -3 或 -6）。"
-            "如果用户说“把前后空白切掉/去掉开头结尾静音”，可填 trim_silence=true；如果用户说“截一段/加淡入淡出/放慢或加速”，再填写对应字段。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if str(value.get("type") or "").strip() != self.tool_type:
-            return None
-        source_id = str(
-            value.get("source_id") or value.get("source") or value.get("target") or value.get("attachment_id") or ""
-        ).strip()
-        if not source_id:
-            return None
-        return {
-            "type": self.tool_type,
-            "source_id": source_id[:120],
-            "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or "mp3"),
-            "output_title": str(value.get("output_title") or value.get("title") or "").strip()[:80],
-            "bitrate": str(value.get("bitrate") or value.get("audio_bitrate") or "").strip()[:20],
-            "sample_rate": self._coerce_int(value.get("sample_rate") or value.get("ar") or 0),
-            "channels": self._coerce_int(value.get("channels") or value.get("channel") or value.get("ac") or 0),
-            "start_time": str(value.get("start_time") or value.get("start") or value.get("ss") or "").strip()[:40],
-            "end_time": str(value.get("end_time") or value.get("end") or value.get("to") or "").strip()[:40],
-            "normalize_volume": self._coerce_bool(
-                value.get("normalize_volume") or value.get("loudnorm") or value.get("normalize_audio"),
-                default=False,
-            ),
-            "volume_gain_db": self._coerce_float(
-                value.get("volume_gain_db") or value.get("gain_db") or value.get("volume_db") or 0
-            ),
-            "trim_silence": self._coerce_bool(
-                value.get("trim_silence")
-                or value.get("remove_silence")
-                or value.get("trim_silence_edges")
-                or value.get("strip_silence"),
-                default=False,
-            ),
-            "fade_in_seconds": value.get("fade_in_seconds") or value.get("fade_in") or 0,
-            "fade_out_seconds": value.get("fade_out_seconds") or value.get("fade_out") or 0,
-            "speed_ratio": self._coerce_float(
-                value.get("speed_ratio") or value.get("speed") or value.get("atempo") or 0
-            ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
-        }
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.generated_file_service.convert_media_file(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            source_target=str(call.get("source_id") or ""),
-            output_format=str(call.get("output_format") or "mp3"),
-            output_title=str(call.get("output_title") or ""),
-            bitrate=str(call.get("bitrate") or ""),
-            sample_rate=int(call.get("sample_rate") or 0),
-            channels=int(call.get("channels") or 0),
-            start_time=str(call.get("start_time") or ""),
-            end_time=str(call.get("end_time") or ""),
-            normalize_volume=bool(call.get("normalize_volume")),
-            volume_gain_db=call.get("volume_gain_db") or 0,
-            trim_silence=bool(call.get("trim_silence")),
-            fade_in_seconds=call.get("fade_in_seconds") or 0,
-            fade_out_seconds=call.get("fade_out_seconds") or 0,
-            speed_ratio=call.get("speed_ratio") or 0,
-            send_to_user=bool(call.get("send_to_user")),
-            timestamp=context.now_ts,
-        )
-        generated = result.get("generated") if isinstance(result, dict) else None
-        events = []
-        if isinstance(generated, dict):
-            events.append(
-                {
-                    "type": "generated_file_ready",
-                    "generated_file": generated,
-                    "send_to_user": bool(result.get("send_to_user")),
-                }
-            )
-        return operation_tool_result(
-            tool_type=self.tool_type,
-            operation_result=result,
-            success_events=events,
-        )
-
-    def _normalize_output_format(self, value: Any) -> str:
-        text = str(value or "mp3").strip().lower().lstrip(".")
-        aliases = {
-            "wave": "wav",
-            "waveform": "wav",
-            "mpeg3": "mp3",
-            "mp4a": "m4a",
-            "oga": "ogg",
-        }
-        return aliases.get(text, text)
-
-    def _coerce_int(self, value: Any) -> int:
-        try:
-            return int(value or 0)
-        except Exception:
-            return 0
-
-    def _coerce_float(self, value: Any) -> float:
-        try:
-            text = str(value or "").strip().lower()
-            if not text:
-                return 0.0
-            text = text.replace("倍速", "").replace("倍", "").replace("分贝", "db").replace("x", "").strip()
-            if text.endswith("db"):
-                text = text[:-2].strip()
-            if text.endswith("%"):
-                return float(text[:-1]) / 100.0
-            return float(text)
-        except Exception:
-            return 0.0
-
-    def _coerce_bool(self, value: Any, *, default: bool) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        text = str(value).strip().lower()
-        if text in {"1", "true", "yes", "y", "on", "发送", "发给用户"}:
-            return True
-        if text in {"0", "false", "no", "n", "off", "不发送", "仅生成"}:
-            return False
-        return default
-
-
 class SeparateAudioStemsToolHandler(BaseToolHandler):
     tool_type = "separate_audio_stems"
 
@@ -594,7 +442,7 @@ class SeparateAudioStemsToolHandler(BaseToolHandler):
             '"output_title":"输出标题","send_to_user":false}。'
             "当前只支持 vocals_instrumental，也就是分离出人声（vocals）和伴奏（instrumental）两份结果。"
             "用户没有指定格式时默认用 mp3，适合聊天交付；只有明确要无损或后续处理需要时才选 wav/flac。"
-            "这个工具负责拆轨，不负责后续精修；如果还要转码、裁剪、统一采样率、去头尾静音或调音量，请对分离后的结果再调用 convert_media_file。"
+            "这个工具负责拆轨，不负责后续精修。"
             "如果来源是普通视频文件，系统会先尝试抽取音轨再分离。不要用于 kgm/ncm/qmc 等平台加密或专有缓存格式的解密。"
         )
 
@@ -837,7 +685,7 @@ class CleanVoiceTrackToolHandler(BaseToolHandler):
             '格式为 {"type":"clean_voice_track","source_id":"file_001|audio_001|gen_001",'
             '"mode":"denoise|dereverb|deecho|voice_focus","quality":"auto|ai|basic",'
             '"output_format":"wav|flac|mp3","output_title":"输出标题","post_filter":false,"send_to_user":false}。'
-            "它适合说话录音、直播片段、播客人声、分离后的人声轨；如果只是普通转码、裁剪、统一采样率、去头尾静音或调音量，请继续用 convert_media_file。"
+            "它适合说话录音、直播片段、播客人声、分离后的人声轨，不负责普通转码、裁剪或调音量。"
             "quality=auto 会优先尝试本地 AI 语音净化模型（当前设计对接 DeepFilterNet），没装环境时再退回基础净化；quality=basic 表示直接走 ffmpeg 轻净化；quality=ai 表示只接受 AI 净化。"
             "mode 主要是意图提示：denoise 更偏降噪，dereverb/deecho 更偏混响与回声整理，voice_focus 更偏让人声主体更靠前。"
             "post_filter 只在 AI 净化时有意义，适合杂音更重的情况；用户没提时不要硬填。"
@@ -1156,7 +1004,7 @@ class PrepareVoiceDatasetToolHandler(BaseToolHandler):
             '"clean_first":false,"normalize_volume":false,"send_to_user":false}。'
             "这个工具会把多个来源统一成训练用 wav、按停顿切片、生成 manifest.json 和 zip 批次；摘要会列出过短、过长、音量偏低、可能爆音等片段文件名，方便后续和用户一起筛。"
             "它适合处理已经分离/净化后的人声轨，也可以直接处理普通语音音频或带音轨视频；如果用户还没做人声分离/净化，且需要更干净素材，可先调用 separate_audio_stems 或 clean_voice_track。"
-            "训练素材任务可以分多步组合：必要时先 convert_media_file 提音频，再 separate_audio_stems 拿人声，再 clean_voice_track 降噪，最后 prepare_voice_dataset 切片打包；不要把这些步骤用于只要原文件的请求。"
+            "训练素材任务可按当前实际可用工具分步组合；不要把人声处理和切片打包用于只要原文件的请求。"
             "用户没指定细节时，profile=gpt_sovits 就够了，不要硬填一堆参数。"
         )
 
@@ -1315,7 +1163,7 @@ class InspectMediaInfoToolHandler(BaseToolHandler):
             "- inspect_media_info：当用户问音频/视频的时长、编码、采样率、声道、码率、分辨率、帧率、是否有音轨，"
             "或你在转换/压缩/截取前需要先看媒体规格时使用。"
             '格式为 {"type":"inspect_media_info","source_id":"file_001|audio_001|gen_001"}。'
-            "这个工具只读取媒体信息，不生成新文件；读取结果会告诉你真实规格，之后如果要处理文件再调用 convert_media_file。"
+            "这个工具只读取媒体信息，不生成新文件；读取结果会告诉你真实规格。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
