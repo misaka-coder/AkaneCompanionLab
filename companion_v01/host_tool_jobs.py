@@ -519,6 +519,12 @@ def _artifact_references(result: ToolExecutionResult) -> list[dict[str, Any]]:
             for reference in references:
                 if reference["handle"] == handle:
                     reference["sha256"] = str(generated["sha256"])
+        mode = event.get("delivery_mode")
+        if handle and isinstance(mode, str) and mode in {"file", "voice", "both"}:
+            for reference in references:
+                if reference["handle"] == handle:
+                    reference["delivery_mode"] = mode
+                    reference["send_to_user"] = event.get("send_to_user") is True
     return references
 
 

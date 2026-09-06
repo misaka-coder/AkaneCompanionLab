@@ -307,7 +307,6 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
         capability_result: Any,
         context: ToolExecutionContext,
     ) -> ToolExecutionResult:
-        del context
         content = getattr(capability_result, "content", None)
         if bool(getattr(capability_result, "is_error", False)) or not isinstance(content, Mapping):
             return execution_result
@@ -327,11 +326,14 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
                 continue
             generated_id = str(artifact.get("generated_id") or "").strip()
             generated_handle = str(artifact.get("generated_handle") or "").strip()
+            delivery_mode = artifact.get("delivery_mode", "file")
             if (
                 not generated_id.startswith("generated::")
                 or not generated_handle
                 or str(artifact.get("created_by_tool") or "").strip() != self.tool_type
                 or not isinstance(artifact.get("send_to_user"), bool)
+                or not isinstance(delivery_mode, str)
+                or delivery_mode not in {"file", "voice", "both"}
             ):
                 return execution_result
             generated_file = {
@@ -353,6 +355,8 @@ class PluginCapabilityToolHandler(AdapterCapabilityToolHandler):
                     "generated_file": generated_file,
                     "send_to_user": bool(artifact.get("send_to_user")),
                     "delivery_scope": "plugin_managed_artifact",
+                    "delivery_mode": delivery_mode,
+                    "client_mode": str(context.client_mode or ""),
                 }
             )
             emitted += 1

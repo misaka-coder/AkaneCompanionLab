@@ -118,6 +118,9 @@ class ManagedArtifactDraft:
     summary: str = ""
     send_to_user: bool = True
     path: Path | None = None
+    # Delivery is a request, never evidence of transport success. Voice/both
+    # require a supported audio artifact; defaults preserve API-v1 wheels.
+    delivery_mode: str = "file"
 
 
 @dataclass(frozen=True, slots=True, init=False)

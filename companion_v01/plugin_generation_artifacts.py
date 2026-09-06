@@ -91,6 +91,7 @@ class GenerationArtifactOutboxSink:
             "mime_type": mime_type,
             "summary": summary,
             "send_to_user": draft.send_to_user,
+            "delivery_mode": draft.delivery_mode,
             "file_size": artifact.file_size,
             "capability_id": capability_id,
         }
@@ -122,6 +123,7 @@ class GenerationArtifactOutboxSink:
             "file_size": artifact.file_size,
             "created_by_tool": capability_id,
             "send_to_user": draft.send_to_user,
+            "delivery_mode": draft.delivery_mode,
         }
 
 
@@ -167,6 +169,8 @@ def consume_generation_artifact(
         metadata = json.loads(_read_bounded(metadata_path, max_bytes=_MAX_METADATA_BYTES).decode("utf-8"))
         if not isinstance(metadata, Mapping):
             raise ValueError
+        # Old API-v1 outboxes did not include a mode; their only delivery was file.
+        metadata = {"delivery_mode": "file", **metadata}
         if not data_path.is_file():
             raise ValueError
         file_size = data_path.stat().st_size
@@ -182,6 +186,7 @@ def consume_generation_artifact(
         "output_format": str(reference.get("output_format") or ""),
         "mime_type": str(reference.get("mime_type") or ""),
         "send_to_user": reference.get("send_to_user"),
+        "delivery_mode": reference.get("delivery_mode", "file"),
         "file_size": file_size,
         "capability_id": capability_id,
     }
@@ -201,6 +206,7 @@ def consume_generation_artifact(
         mime_type=expected["mime_type"],
         summary=str(metadata.get("summary") or ""),
         send_to_user=expected["send_to_user"],
+        delivery_mode=expected["delivery_mode"],
     )
     try:
         validate_managed_artifact_draft(draft)

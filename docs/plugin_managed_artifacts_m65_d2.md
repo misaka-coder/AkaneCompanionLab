@@ -84,6 +84,19 @@ lifecycle.
 `delivery_scope="plugin_managed_artifact"`. The event contains only safe
 metadata.
 
+`ManagedArtifactDraft.delivery_mode` is `file` by default; audio drafts can request
+`voice` or `both`. Invalid modes and non-audio voice requests fail validation.
+The mode is integrity-bound through the isolated outbox and host reference and
+projected into the existing event, not a new channel sender. Old API-v1 drafts,
+references and outboxes without a mode retain file delivery.
+
+Long Job results persist each artifact's requested mode and `send_to_user` flag.
+Their completion event still says `available_not_delivered`; it supplies the
+request to the ordinary Agent follow-up, which uses the channel's existing
+send-audio/send-file tools. It does not treat an intent as an acknowledgement or
+add a second automatic-delivery queue. Direct event delivery uses the existing
+QQ voice/file/both branches; failed voice in `both` still attempts the file.
+
 At the QQ transport edge, Akane resolves the generated id against the current
 `profile_user_id` and `session_id`, passes the local path only to the gateway,
 and leaves the public frame unchanged. Resolution failure becomes

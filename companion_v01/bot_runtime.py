@@ -745,6 +745,12 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
         if isinstance(item, dict) and str(item.get("handle") or "").strip()
     ]
     handle_text = ", ".join(handles)[:2_000]
+    delivery_requests = ", ".join(
+        f"{item['handle']}={item['delivery_mode']}"
+        for item in job.artifacts
+        if isinstance(item, dict) and item.get("handle") and item.get("send_to_user") is True
+        and item.get("delivery_mode") in ("file", "voice", "both")
+    )[:2_000]
     fields: list[tuple[str, str]] = [
         ("job_id", job.job_id),
         ("capability_id", job.capability_id),
@@ -758,6 +764,8 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
     if handle_text:
         fields.append(("artifact_handles", handle_text))
         fields.append(("artifact_delivery_status", "available_not_delivered"))
+        if delivery_requests:
+            fields.append(("artifact_delivery_requests", delivery_requests))
         hashes = ", ".join(f"{item['handle']}={item['sha256']}" for item in job.artifacts
                            if isinstance(item, dict) and item.get("handle") and item.get("sha256"))[:2_000]
         if hashes:
@@ -776,6 +784,8 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
     if handle_text:
         lines.append(f"可用产物：{handle_text}")
         lines.append("这些产物已登记但尚未由本完成事件确认发送；需要交付时使用当前渠道的正常发送能力。")
+        if delivery_requests:
+            lines.append(f"原任务请求的交付形式：{delivery_requests}。这是发送意图，不是已发送状态；通过正常渠道发送能力完成交付。")
     if error:
         lines.append(f"失败原因：{error}")
     return PluginAgentEventRequest(

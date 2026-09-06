@@ -177,6 +177,7 @@ class GeneratedFileManagedArtifactSink:
             "file_size": int(generated.get("file_size") or artifact.file_size),
             "created_by_tool": capability_id,
             "send_to_user": bool(draft.send_to_user),
+            "delivery_mode": draft.delivery_mode,
         }
 
 
@@ -202,6 +203,7 @@ def normalize_managed_artifact_reference(
     created_by_tool = str(value.get("created_by_tool") or "").strip()
     file_size = value.get("file_size")
     send_to_user = value.get("send_to_user")
+    delivery_mode = value.get("delivery_mode", "file")
     if (
         not generated_id.startswith("generated::")
         or len(generated_id) > 128
@@ -216,6 +218,7 @@ def normalize_managed_artifact_reference(
         or file_size != expected_size
         or not isinstance(send_to_user, bool)
         or send_to_user is not draft.send_to_user
+        or delivery_mode != draft.delivery_mode
     ):
         return None
     return {
@@ -227,6 +230,7 @@ def normalize_managed_artifact_reference(
         "file_size": file_size,
         "created_by_tool": created_by_tool,
         "send_to_user": send_to_user,
+        "delivery_mode": delivery_mode,
     }
 
 
@@ -257,6 +261,8 @@ def validate_managed_artifact_draft(
             raise ManagedArtifactError("managed_artifact_source_unavailable") from None
     if not isinstance(draft.send_to_user, bool):
         raise ManagedArtifactError("managed_artifact_delivery_invalid")
+    if not isinstance(draft.delivery_mode, str) or draft.delivery_mode not in {"file", "voice", "both"}:
+        raise ManagedArtifactError("managed_artifact_delivery_invalid")
 
     title = str(draft.title or "").strip()
     if not title or len(title) > 120 or any(char in title for char in ("/", "\\", "\x00")):
@@ -273,6 +279,11 @@ def validate_managed_artifact_draft(
         expected_mimes = frozenset({guessed}) if guessed else frozenset()
     if expected_mimes and mime_type not in expected_mimes and mime_type.partition(";")[0] not in expected_mimes:
         raise ManagedArtifactError("managed_artifact_mime_mismatch")
+    if draft.delivery_mode != "file" and (
+        output_format not in {"wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"}
+        or not mime_type.startswith("audio/")
+    ):
+        raise ManagedArtifactError("managed_artifact_voice_requires_audio")
     summary = str(draft.summary or "").strip()
     if len(summary) > 1000:
         raise ManagedArtifactError("managed_artifact_summary_too_large")
