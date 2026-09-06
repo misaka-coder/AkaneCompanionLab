@@ -28,9 +28,10 @@ from scripts.akane_cover_package import cover_business
 _cover = cover_business()
 CoverMedia, CoverSongError, RvcWebUiProvider = _cover.CoverMedia, _cover.CoverSongError, _cover.RvcWebUiProvider
 CoverOptions, CoverPipeline, ProviderCalls = _cover.CoverOptions, _cover.CoverPipeline, _cover.ProviderCalls
+safe_model_fingerprint = _cover.safe_model_fingerprint
 from companion_v01.plugin_subprocess import PluginProcessRunner
 from services.asr_business import module as asr_business_module
-from companion_v01.local_media_executor import safe_model_fingerprint, safe_uploaded_suffix
+from companion_v01.local_media_executor import safe_uploaded_suffix
 
 
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024

@@ -6,6 +6,7 @@ from .media import CoverMedia
 from .pipeline import CoverOptions, CoverPipeline, ProviderCalls
 from .rvc import RvcWebUiProvider
 from .remote import RemoteRvcClient, RemoteRvcProvider
+from .models import safe_model_fingerprint
 
 __all__ = [
     "CoverSongError",
@@ -17,4 +18,5 @@ __all__ = [
     "RvcWebUiProvider",
     "RemoteRvcClient",
     "RemoteRvcProvider",
+    "safe_model_fingerprint",
 ]

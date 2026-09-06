@@ -7,7 +7,7 @@ import json
 import threading
 import unittest
 
-from companion_v01.cover_song import CoverSongError, RvcWebUiProvider
+from plugins.akane_cover_song.src.akane_cover_song import CoverSongError, RvcWebUiProvider
 
 
 @contextmanager

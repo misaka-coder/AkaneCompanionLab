@@ -1,25 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import shutil
+import math
 import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
-
-# Compatibility only until the built-in cover tool is removed. The independent
-# package owns all RVC byte transport and provider behavior.
-try:
-    from akane_cover_song.remote import RemoteRvcClient, RemoteRvcProvider as LocalRvcExecutorProvider
-except ModuleNotFoundError as exc:
-    if exc.name != "akane_cover_song":
-        raise
-    from plugins.akane_cover_song.src.akane_cover_song.remote import (
-        RemoteRvcClient,
-        RemoteRvcProvider as LocalRvcExecutorProvider,
-    )
 
 
 _AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
@@ -34,7 +22,7 @@ class LocalMediaExecutorError(RuntimeError):
         self.public_message = str(message or "本地媒体能力暂时不可用。").strip()
 
 
-class LocalMediaExecutorClient(RemoteRvcClient):
+class LocalMediaExecutorClient:
     """Loopback-only client for the PC-side media capability host.
 
     The cloud process may reach this loopback address through an SSH reverse
@@ -48,7 +36,18 @@ class LocalMediaExecutorClient(RemoteRvcClient):
         timeout_seconds: float = 1800.0,
         session: requests.Session | None = None,
     ) -> None:
-        super().__init__(base_url=base_url, timeout_seconds=timeout_seconds, session=session)
+        normalized = str(base_url).strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username or parsed.password or parsed.query or parsed.fragment
+        ):
+            raise ValueError("local media executor endpoint must use credential-free loopback HTTP")
+        if not math.isfinite(float(timeout_seconds)) or float(timeout_seconds) <= 0:
+            raise ValueError("invalid_remote_timeout")
+        self.base_url = normalized
+        self.timeout_seconds = min(7200, float(timeout_seconds))
         self.session = session or requests.Session()
         self._health_lock = threading.RLock()
         self._health_cache: tuple[float, dict[str, Any]] | None = None
@@ -263,30 +262,3 @@ def _safe_float(value: Any) -> float | None:
 def safe_uploaded_suffix(filename: str) -> str:
     suffix = Path(str(filename or "")).suffix.lower()
     return suffix if suffix in _MEDIA_SUFFIXES else ".bin"
-
-
-def safe_model_fingerprint(path: Path, *, indices: list[Path] | None = None) -> dict[str, Any]:
-    try:
-        stat = path.stat()
-    except OSError:
-        return {"name": path.name, "missing": True}
-    index_cards = []
-    for index_path in list(indices or [])[:12]:
-        try:
-            index_stat = index_path.stat()
-        except OSError:
-            continue
-        index_cards.append(
-            {
-                "name": index_path.name,
-                "size": int(index_stat.st_size),
-                "mtime_ns": int(index_stat.st_mtime_ns),
-            }
-        )
-    return {
-        "name": path.name,
-        "size": int(stat.st_size),
-        "mtime_ns": int(stat.st_mtime_ns),
-        "sha256_hint": hashlib.sha256(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()[:16],
-        "indices": index_cards,
-    }

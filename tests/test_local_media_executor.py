@@ -7,10 +7,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from companion_v01.local_media_executor import (
-    LocalMediaExecutorClient,
-    LocalRvcExecutorProvider,
-)
+from companion_v01.local_media_executor import LocalMediaExecutorClient
+from plugins.akane_cover_song.src.akane_cover_song import RemoteRvcClient, RemoteRvcProvider
 
 
 class _Response:
@@ -115,7 +113,7 @@ class LocalMediaExecutorTests(unittest.TestCase):
                 },
             )
         )
-        client = LocalMediaExecutorClient(base_url="http://127.0.0.1:19879", session=session)
+        client = RemoteRvcClient(base_url="http://127.0.0.1:19879", session=session)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "song.mp4"
@@ -189,8 +187,8 @@ class LocalMediaExecutorTests(unittest.TestCase):
                 ),
             ]
         )
-        client = LocalMediaExecutorClient(base_url="http://127.0.0.1:19879", session=session)
-        provider = LocalRvcExecutorProvider(client=client, default_model="Akie-test.pth")
+        client = RemoteRvcClient(base_url="http://127.0.0.1:19879", session=session)
+        provider = RemoteRvcProvider(client=client, default_model="Akie-test.pth")
         self.assertEqual(provider.timeout_seconds, client.timeout_seconds)
 
         with tempfile.TemporaryDirectory() as temp_dir:

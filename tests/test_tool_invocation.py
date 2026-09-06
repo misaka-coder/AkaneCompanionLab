@@ -242,15 +242,11 @@ class ToolInvocationTests(unittest.TestCase):
                 "send_to_user": True,
             }
         )
-        cover = tool_orchestration_engine.defer_generated_artifact_delivery(
-            {"type": "cover_song", "source_id": "audio_001", "delivery": "both"}
-        )
         delivery = tool_orchestration_engine.defer_generated_artifact_delivery(
             {"type": "send_file", "targets": ["gen_001", "gen_002"]}
         )
 
         self.assertFalse(cleaned["send_to_user"])
-        self.assertEqual(cover["delivery"], "none")
         self.assertEqual(delivery["targets"], ["gen_001", "gen_002"])
 
     def test_live_native_source_survives_normalize_but_not_execute_args(self) -> None:

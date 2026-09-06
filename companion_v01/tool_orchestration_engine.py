@@ -49,13 +49,6 @@ _EXPLICIT_DELIVERY_TOOL_TYPES = frozenset(
         "compose_file",
         "revise_generated_file",
         "apply_style_to_existing_file",
-        "cover_song",
-    }
-)
-
-_DIRECT_MEDIA_TOOL_TYPES = frozenset(
-    {
-        "cover_song",
     }
 )
 
@@ -68,8 +61,6 @@ def defer_generated_artifact_delivery(call: dict[str, Any]) -> dict[str, Any]:
         return normalized
     if "send_to_user" in normalized:
         normalized["send_to_user"] = False
-    if tool_type == "cover_song":
-        normalized["delivery"] = "none"
     return normalized
 
 

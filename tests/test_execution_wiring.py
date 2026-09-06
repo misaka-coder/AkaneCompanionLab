@@ -589,7 +589,6 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
                 workspace_file_service=None,
                 attachment_ingest_service=None,
                 generated_file_service=None,
-                cover_song_service=None,
                 retrieve_fn=None,
                 execution_provider=provider,
                 project_workspace_service=service,
@@ -621,7 +620,6 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
                 workspace_file_service=None,
                 attachment_ingest_service=None,
                 generated_file_service=None,
-                cover_song_service=None,
                 retrieve_fn=None,
                 execution_provider=provider,
             )
@@ -651,7 +649,6 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
             workspace_file_service=None,
             attachment_ingest_service=None,
             generated_file_service=None,
-            cover_song_service=None,
             retrieve_fn=None,
         )
         self.assertNotIn("exec_run", handlers)

@@ -1,7 +1,9 @@
 """Shared voice-name matching for online inference and offline recordings."""
 
 from pathlib import Path
+import hashlib
 import re
+from typing import Any
 
 
 def normalize_model_key(value):
@@ -14,3 +16,30 @@ def matching_models(models, requested):
     exact = [name for name in names if name.lower() == lowered or Path(name).stem.lower() == Path(lowered).stem.lower()]
     normalized = normalize_model_key(requested)
     return exact or [name for name in names if normalized and normalized in normalize_model_key(name)]
+
+
+def safe_model_fingerprint(path: Path, *, indices: list[Path] | None = None) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"name": path.name, "missing": True}
+    index_cards = []
+    for index_path in list(indices or [])[:12]:
+        try:
+            index_stat = index_path.stat()
+        except OSError:
+            continue
+        index_cards.append(
+            {
+                "name": index_path.name,
+                "size": int(index_stat.st_size),
+                "mtime_ns": int(index_stat.st_mtime_ns),
+            }
+        )
+    return {
+        "name": path.name,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sha256_hint": hashlib.sha256(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}".encode()).hexdigest()[:16],
+        "indices": index_cards,
+    }

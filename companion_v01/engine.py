@@ -38,8 +38,7 @@ from .tool_batch import execute_tool_batch
 from .tool_continuation import can_finish_tool_batch
 from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, HashedEmbeddingProvider
 from .generated_files import GeneratedFileService
-from .cover_song import CoverSongService, RvcWebUiProvider
-from .local_media_executor import LocalMediaExecutorClient, LocalRvcExecutorProvider
+from .local_media_executor import LocalMediaExecutorClient
 from .image_materials import SessionImageMaterialResolver
 from . import gift_engine
 from .gift_system import GiftSystemService
@@ -105,7 +104,6 @@ from .tool_runtime import (
     ApplyStyleToExistingFileToolHandler,
     BaseToolHandler,
     BrowserPageToolHandler,
-    CoverSongToolHandler,
     ClearAttachmentFocusToolHandler,
     ComposeFileToolHandler,
     BrowseMemoryToolHandler,
@@ -276,12 +274,10 @@ MEMORY_METADATA_PRESENT_FIELD = "_memory_metadata_present"
 
 MEDIA_PRESET_ROUTING = [
     "【媒体任务预设路由】",
-    "- 固定角色音色翻唱整首歌 → cover_song",
     "- 只要原文件不处理 → send_file，不要转写/转码/净化",
     "",
-    "生成与交付是两件事：生成或媒体处理工具只负责产出句柄，不直接发送；拿到 gen_ 等结果后，根据用户要求调用 send_file 精确交付，多个结果可一次批量发送。",
+    "生成与交付分别确认：以工具实际返回的交付状态为准，已发送的结果不要重复发送；仅登记的成果可按用户要求调用 send_file 精确交付，多个结果可一次批量发送。",
     "涉及大小、码率、分辨率、时长、格式兼容等具体约束时，先读取当前规格，再根据当前实际可用工具决定处理方式。",
-    "完整翻唱不要手工串联分轨和转码；优先直接调用 cover_song，让后端统一处理缓存、RVC 推理、混音与交付。",
 ]
 
 
@@ -459,7 +455,6 @@ class AkaneMemoryEngine:
             ensure_storage_ready=self.workspace_file_service.ensure_layout,
             work_dir=self.base_dir / "generated_work",
         )
-        self.cover_song_service: CoverSongService | None = None
         self.desktop_music_timeline_service = DesktopMusicTimelineService(
             store=self.store,
             generated_file_service=self.generated_file_service,
@@ -2479,51 +2474,6 @@ class AkaneMemoryEngine:
         )
         self.image_material_resolver = resolver
         return resolver
-
-    def _get_cover_song_service(self) -> CoverSongService | None:
-        service = getattr(self, "cover_song_service", None)
-        if service is not None:
-            return service
-        if not bool(getattr(config, "COVER_SONG_ENABLED", False)):
-            return None
-        generated_file_service = self._get_generated_file_service()
-        if generated_file_service is None:
-            return None
-        try:
-            local_executor = self._get_local_media_executor()
-            provider = (
-                LocalRvcExecutorProvider(
-                    client=local_executor,
-                    default_model=str(getattr(config, "RVC_DEFAULT_MODEL", "") or ""),
-                    separation_model=str(
-                        getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
-                    ),
-                )
-                if local_executor is not None
-                else RvcWebUiProvider(
-                    base_url=str(getattr(config, "RVC_WEBUI_BASE_URL", "http://127.0.0.1:7899") or ""),
-                    root_dir=str(getattr(config, "RVC_ROOT_DIR", "") or ""),
-                    timeout_seconds=float(getattr(config, "COVER_SONG_TIMEOUT_SECONDS", 1800.0) or 1800.0),
-                    separation_model=str(
-                        getattr(config, "COVER_SONG_SEPARATION_MODEL", "HP5_only_main_vocal") or "HP5_only_main_vocal"
-                    ),
-                )
-            )
-        except ValueError as exc:
-            logger.warning("cover song provider disabled: %s", exc)
-            return None
-        service = CoverSongService(
-            generated_file_service=generated_file_service,
-            provider=provider,
-            cache_root=self.base_dir / "generated_work" / "cover_song_cache",
-            default_model=str(getattr(config, "RVC_DEFAULT_MODEL", "") or ""),
-            default_output_format=str(getattr(config, "COVER_SONG_DEFAULT_OUTPUT_FORMAT", "mp3") or "mp3"),
-            default_delivery=str(getattr(config, "COVER_SONG_DEFAULT_DELIVERY", "auto") or "auto"),
-            max_duration_seconds=float(getattr(config, "COVER_SONG_MAX_DURATION_SECONDS", 900.0) or 900.0),
-            max_input_bytes=int(getattr(config, "COVER_SONG_MAX_INPUT_BYTES", 256 * 1024 * 1024) or 0),
-        )
-        self.cover_song_service = service
-        return service
 
     def _get_desktop_music_timeline_service(self) -> DesktopMusicTimelineService | None:
         service = getattr(self, "desktop_music_timeline_service", None)
@@ -9093,7 +9043,6 @@ class AkaneMemoryEngine:
             workspace_file_service=self._get_workspace_file_service(),
             attachment_ingest_service=self._get_attachment_ingest_service(),
             generated_file_service=self._get_generated_file_service(),
-            cover_song_service=self._get_cover_song_service(),
             retrieve_fn=self._execute_retrieve_memory_tool,
             skill_registry=self._get_skill_registry(),
             execution_provider=self._build_execution_provider(),

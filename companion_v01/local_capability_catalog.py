@@ -47,7 +47,6 @@ TOOL_GROUPS: dict[str, str] = {
     "revise_generated_file": "documents",
     "apply_style_to_existing_file": "documents",
     "inspect_media_info": "media",
-    "cover_song": "audio",
     "inspect_generated_file": "generated_files",
     "send_file": "file_handoff",
     "send_sticker": "stickers",
@@ -61,7 +60,6 @@ TOOL_GROUPS: dict[str, str] = {
 TOOL_USED_BY: dict[str, list[str]] = {
     "load_character_context": ["agent", "desktop_pet", "qq_text"],
     "load_material": ["agent", "desktop_pet", "qq_text"],
-    "cover_song": ["agent", "desktop_pet", "qq_text"],
     "send_sticker": ["agent", "qq_text"],
     "web_search": ["agent", "desktop_pet", "qq_text", "web_scene"],
     "open_browser": ["agent", "desktop_pet"],

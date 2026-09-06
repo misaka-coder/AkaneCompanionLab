@@ -193,20 +193,12 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.runner.processes)
         self.assertTrue(all(child.returncode is not None for child in children))
 
-    async def test_legacy_host_and_local_service_use_same_real_media_policy(self):
-        from companion_v01.cover_song import CoverSongService
+    async def test_public_pipeline_and_local_service_use_same_real_media_policy(self):
         from scripts.akane_local_capability_host import _cover_media
 
-        service = CoverSongService(
-            generated_file_service=None,
-            provider=None,
-            cache_root=self.root / "cache",
-            ffmpeg_path=self.ffmpeg,
-            ffprobe_path=self.ffprobe,
-        )
         decoded = self.root / "host-decoded.wav"
-        service._decode_source(source_path=self.source, output_path=decoded)
-        self.assertAlmostEqual(service._probe_duration(decoded), 1, delta=0.01)
+        await self.media.decode(source_path=self.source, output_path=decoded)
+        self.assertAlmostEqual(await self.media.probe_duration(decoded), 1, delta=0.01)
         host_mix, local_mix = self.root / "host.wav", self.root / "local.wav"
         params = dict(
             converted_vocals=decoded,
@@ -215,7 +207,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             vocal_gain_db=0,
             instrumental_gain_db=-1,
         )
-        service._mix_tracks(output_path=host_mix, **params)
+        await self.media.mix(output_path=host_mix, **params)
         await _cover_media(Path(self.ffmpeg), self.runner).mix(output_path=local_mix, **params)
         self.assertEqual(host_mix.read_bytes(), local_mix.read_bytes())
         self.assertAlmostEqual(await self.media.probe_duration(host_mix), 1, delta=0.01)

@@ -13,6 +13,7 @@ from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_tool_jobs import HostToolJobRuntime
 from companion_v01.mode_profiles import ModeProfileRegistry
+from companion_v01.native_tool_schema import build_openai_native_tool_specs
 from companion_v01.plugin_api import PluginConnectionResult
 from companion_v01.tool_runtime import ToolExecutionContext
 from tests.image_plugin_harness import ImageHarness
@@ -30,6 +31,26 @@ class CoverHarness(ImageHarness):
 
 
 class CoverInstallationTests(unittest.IsolatedAsyncioTestCase):
+    def check_discovery(self, harness, installed):
+        for mode in ("desktop_pet", "qq_text"):
+            client = ModeProfileRegistry().resolve_from_payload({"client_mode": mode})
+            handlers = harness.engine._resolve_tool_handlers(
+                client_context=client, profile_user_id="owner", session_id="session"
+            )
+            prompt = AkaneMemoryEngine._build_tool_prompt_context(
+                harness.engine,
+                allow_tool_call=True,
+                client_context=client,
+                profile_user_id="owner",
+                session_id="session",
+            )
+            self.assertEqual(CAPABILITY_ID in handlers, installed)
+            self.assertEqual(CAPABILITY_ID in prompt, installed)
+            self.assertNotIn("cover_song", handlers)
+            self.assertNotIn("cover_song", prompt)
+            specs = str(build_openai_native_tool_specs(handlers))
+            self.assertEqual(CAPABILITY_ID in specs, installed)
+
     async def test_installed_jobs_cancel_and_uncertain_remote_completion(self):
         with tempfile.TemporaryDirectory() as tmp, endpoint(wait_seconds=30) as (server, url):
             root = Path(tmp)
@@ -151,10 +172,11 @@ class CoverInstallationTests(unittest.IsolatedAsyncioTestCase):
 
             harness = await CoverHarness(root, SimpleNamespace(resolve=resolve)).start()
             try:
-                self.assertNotIn(CAPABILITY_ID, harness.handlers())
+                self.check_discovery(harness, False)
                 await harness.install()
                 self.assertFalse(resolutions, "Registration/health must not read private connections")
                 self.assertTrue(harness.approve_test_profile()["ok"])
+                self.check_discovery(harness, True)
                 (root / "attachments").mkdir(exist_ok=True)
                 source = root / "attachments" / "source.wav"
                 tone(source)
@@ -176,9 +198,25 @@ class CoverInstallationTests(unittest.IsolatedAsyncioTestCase):
                     return item
 
                 result = await invoke(delivery="none")
-                self.assertFalse(ready(result)["send_to_user"])
+                first = ready(result)
+                self.assertFalse(first["send_to_user"])
+                generated_handle = first["generated_file"]["generated_handle"]
+                ready(await harness.invoke(source_id=generated_handle, song_title="生成音频再输入", delivery="none"))
+                denied = await harness.runtime.invoke(
+                    CAPABILITY_ID,
+                    {"source_id": generated_handle, "song_title": "越界", "delivery": "none"},
+                    context=InvocationContext("owner", "other-session", "desktop_pet"),
+                )
+                self.assertTrue(denied.is_error)
                 self.assertEqual(len(server.requests), 1)
                 self.assertTrue(ready(await invoke())["send_to_user"])
+                handler = harness.handlers()[CAPABILITY_ID]
+                qq = await asyncio.to_thread(
+                    handler.execute,
+                    call=handler.normalize_call({"type": CAPABILITY_ID, "song_title": "测试曲"}),
+                    context=ToolExecutionContext("owner", "session", 1, {}, client_mode="qq_text"),
+                )
+                self.assertEqual(ready(qq)["delivery_mode"], "voice")
                 both = ready(await invoke(delivery="both"))
                 self.assertEqual(both["delivery_mode"], "both")
                 self.assertEqual(len(server.requests), 1, "Source cache must avoid inference")
@@ -199,12 +237,13 @@ class CoverInstallationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(result.is_error)
                 self.assertNotEqual(result.reason, "")
                 self.assertTrue((await harness.service.set_enabled(plugin_id=PLUGIN_ID, enabled=False))["ok"])
-                self.assertNotIn(CAPABILITY_ID, harness.handlers())
+                self.check_discovery(harness, False)
                 self.assertTrue((await harness.service.set_enabled(plugin_id=PLUGIN_ID, enabled=True))["ok"])
+                self.check_discovery(harness, True)
                 ready(await harness.invoke(song_title="测试曲", delivery="none"))
                 self.assertEqual(len(server.requests), 2)
                 self.assertTrue((await harness.service.uninstall(plugin_id=PLUGIN_ID))["ok"])
-                self.assertNotIn(CAPABILITY_ID, harness.handlers())
+                self.check_discovery(harness, False)
                 self.assertFalse(list((root / "workers").glob("**/outbox/**/*.*")))
             finally:
                 await harness.close()

@@ -17,12 +17,41 @@ from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
 
 
 class TimelinePluginBindingTests(unittest.TestCase):
+    def test_cover_song_has_one_plugin_authority(self):
+        from companion_v01.local_media_executor import LocalMediaExecutorClient
+        from companion_v01.capability_registry import CapabilityRegistry
+        from companion_v01.client_protocol import ClientMode
+
+        root = Path(__file__).resolve().parents[1]
+        self.assertFalse((root / "companion_v01/cover_song.py").exists())
+        self.assertFalse(hasattr(LocalMediaExecutorClient, "render_cover_song"))
+        for mode in ClientMode:
+            self.assertNotIn("cover_song", CapabilityRegistry().tool_names_for_mode(mode))
+        for path in (root / "companion_v01").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            for symbol in (
+                "CoverSongToolHandler",
+                "COVER_SONG_TOOL_SPEC",
+                "COVER_SONG_INPUT_SCHEMA",
+                "_get_cover_song_service",
+                "has_cover_song_cache",
+                "LocalRvcExecutorProvider",
+                "from akane_cover_song",
+                "from plugins.akane_cover_song",
+            ):
+                self.assertNotIn(symbol, source, str(path))
+
     def test_image_generation_has_one_plugin_authority(self):
         root = Path(__file__).resolve().parents[1]
         self.assertFalse((root / "companion_v01/image_generation.py").exists())
         for path in (root / "companion_v01").rglob("*.py"):
             source = path.read_text(encoding="utf-8")
-            for symbol in ("GenerateImageToolHandler", "GENERATE_IMAGE_TOOL_SPEC", "PinAIImageProvider", "_get_image_generation_service"):
+            for symbol in (
+                "GenerateImageToolHandler",
+                "GENERATE_IMAGE_TOOL_SPEC",
+                "PinAIImageProvider",
+                "_get_image_generation_service",
+            ):
                 self.assertNotIn(symbol, source, str(path))
 
     def test_dataset_business_has_one_plugin_authority(self):

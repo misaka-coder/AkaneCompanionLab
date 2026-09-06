@@ -28,13 +28,14 @@ adapters. Their HTTP audio replies and QQ transport are explicit test fixtures,
 not additional ML or real-message acceptance. No user account was messaged.
 
 `RvcWebUiProvider` owns discovery, parameter mapping, UVR separation and RVC
-conversion. The temporary compatibility import in `companion_v01/cover_song.py`
-points here; there is no second Gradio implementation in the host.
+conversion. The old built-in tool, service, schemas, engine factory and fixed
+cover hints are deleted. The host does not import this business package: only
+an installed plugin contributes its descriptor and implementation.
 
 `CoverMedia` owns audio-stream duration validation, 44.1 kHz stereo decoding,
 and WAV/FLAC/320 kbps MP3 mixing. Its async `run` port is injected: the library
-does not import an Akane process runner. Both remaining legacy callers bind
-the public SDK's cancellation-safe process runner to this same implementation.
+does not import an Akane process runner. The plugin and standalone local service
+bind the public SDK's cancellation-safe runner to this same implementation.
 The caller owns fresh input/work paths and removes partial outputs on failure.
 FFprobe is required: an unverified duration is no longer treated as zero.
 
@@ -48,8 +49,7 @@ are restricted, metadata is removed, and existing output files are rejected.
 No gain or mixing code remains in the legacy host or local-service wrapper.
 
 `CoverPipeline` owns input validation, source hashing, model/parameter cache
-keys, stem reuse, conversion, mixing and completed-result restoration. The old
-host service is now resource/publication glue over this pipeline. The existing
+keys, stem reuse, conversion, mixing and completed-result restoration. The existing
 local-service full-render backend uses this same pipeline with `cache=None`:
 its only glue binds the existing Demucs deployment and RVC provider. This does
 not create a second server cache. All completed-result caching remains on the
@@ -62,8 +62,9 @@ provider. Invalid conversion/mix parameters now fail rather than being clamped.
 
 `RemoteRvcClient` and `RemoteRvcProvider` own the byte-only loopback media-host
 protocol, including model discovery, UVR ZIP transfer, conversion and complete
-Demucs covers. The old `LocalMediaExecutorClient` inherits this implementation;
-its old RVC methods/provider have been removed. ASR compatibility is unchanged.
+Demucs covers. The old `LocalMediaExecutorClient` no longer inherits the RVC
+client; its RVC methods/provider and source fallback are removed. Its existing
+ASR consumer remains independent of this optional business plugin.
 Requests disable ambient proxy/credentials and redirects, bound response/ZIP
 sizes, filter timing keys and reject server model/index paths. Cancellation
 drains the active HTTP request. Disconnect, incomplete response, timeout or

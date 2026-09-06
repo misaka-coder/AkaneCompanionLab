@@ -1122,7 +1122,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertNotIn("\n- read_attachment_section", qq_prompt)
             self.assertNotIn("\n- transcribe_media", qq_prompt)
 
-    def test_ready_material_keeps_unhealthy_rvc_hidden_but_explains_recovery(self) -> None:
+    def test_ready_material_does_not_advertise_retired_builtin_rvc(self) -> None:
         class StubTool:
             def __init__(self, name: str, *, ready: bool = True) -> None:
                 self.name = name
@@ -1168,9 +1168,9 @@ class EngineExtensionTests(unittest.TestCase):
 
             self.assertIn("\n- inspect_media_info", prompt)
             self.assertNotIn("\n- cover_song：测试用工具", prompt)
-            self.assertIn("暂不可用的能力", prompt)
-            self.assertIn("本机 RVC 服务、FFmpeg 或可用音色模型当前没有通过检查", prompt)
-            self.assertIn("歌曲材料若已经存在，不需要再次上传", prompt)
+            self.assertNotIn("暂不可用的能力", prompt)
+            self.assertNotIn("RVC", prompt)
+            self.assertNotIn("翻唱", prompt)
 
     def test_capability_registry_expands_media_document_and_generated_tools(self) -> None:
         class StubTool:

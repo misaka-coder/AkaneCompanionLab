@@ -29,7 +29,6 @@ from .capability_registry import (
     BROWSE_MEMORY_TOOL_SPEC,
     CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
     COMPOSE_FILE_TOOL_SPEC,
-    COVER_SONG_TOOL_SPEC,
     FETCH_MEDIA_FROM_URL_TOOL_SPEC,
     INSPECT_ATTACHMENT_TOOL_SPEC,
     INSPECT_GENERATED_FILE_TOOL_SPEC,
@@ -106,7 +105,6 @@ from .tool_handlers.workspace import (
 from .tool_handlers.generated_media import (
     ApplyStyleToExistingFileToolHandler,
     ComposeFileToolHandler,
-    CoverSongToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ManageGeneratedFileToolHandler,

@@ -16,7 +16,6 @@ from ..capability_registry import (
     BROWSE_MEMORY_TOOL_SPEC,
     CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
     COMPOSE_FILE_TOOL_SPEC,
-    COVER_SONG_TOOL_SPEC,
     FETCH_MEDIA_FROM_URL_TOOL_SPEC,
     INSPECT_ATTACHMENT_TOOL_SPEC,
     INSPECT_GENERATED_FILE_TOOL_SPEC,
@@ -447,50 +446,6 @@ INSPECT_GENERATED_FILE_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-COVER_SONG_INPUT_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Create or restore a cached AI cover from a current-session audio/video/generated material. "
-        "The backend separates vocals and instrumental, converts the lead vocal with a local voice model, "
-        "mixes the result, stores it as a generated artifact, and can deliver it as QQ voice or file."
-    ),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "source_id": {
-            "type": "string",
-            "description": "Optional current-session audio/video/generated handle such as audio_001, file_001, or gen_001.",
-            "maxLength": 120,
-        },
-        "song_title": {
-            "type": "string",
-            "description": "Song title. Required when restoring a previously cached cover without source_id.",
-            "maxLength": 120,
-        },
-        "artist": {
-            "type": "string",
-            "description": "Optional original artist for cache disambiguation.",
-            "maxLength": 80,
-        },
-        "voice_model": {
-            "type": "string",
-            "description": "Target local RVC model name, or auto for the configured default.",
-            "maxLength": 120,
-        },
-        "pitch_shift": {"type": "integer", "minimum": -24, "maximum": 24},
-        "index_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "filter_radius": {"type": "integer", "minimum": 0, "maximum": 7},
-        "rms_mix_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        "protect": {"type": "number", "minimum": 0.0, "maximum": 0.5},
-        "vocal_gain_db": {"type": "number", "minimum": -12.0, "maximum": 12.0},
-        "instrumental_gain_db": {"type": "number", "minimum": -12.0, "maximum": 6.0},
-        "output_format": {"type": "string", "enum": ["mp3", "flac", "wav"]},
-        "delivery": {"type": "string", "enum": ["auto", "voice", "file", "both", "none"]},
-        "force_rebuild": {"type": "boolean"},
-    },
-    "required": [],
-}
-
-
 TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     "retrieve_memory": ToolMetadata(
         family="memory",
@@ -615,14 +570,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=3,
         input_schema=INSPECT_MEDIA_INFO_INPUT_SCHEMA,
     ),
-    "cover_song": ToolMetadata(
-        family="media_workbench",
-        operation="background",
-        risk="medium",
-        default_round_budget=5,
-        background=True,
-        input_schema=COVER_SONG_INPUT_SCHEMA,
-    ),
     "exec_run": ToolMetadata(
         family="execution",
         operation="control",
@@ -724,7 +671,6 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "send_music_card": SEND_MUSIC_CARD_TOOL_SPEC,
     "onebot_action": ONEBOT_ACTION_TOOL_SPEC,
     "inspect_media_info": INSPECT_MEDIA_INFO_TOOL_SPEC,
-    "cover_song": COVER_SONG_TOOL_SPEC,
     "exec_run": EXEC_RUN_TOOL_SPEC,
     "exec_status": EXEC_STATUS_TOOL_SPEC,
     "exec_cancel": EXEC_CANCEL_TOOL_SPEC,

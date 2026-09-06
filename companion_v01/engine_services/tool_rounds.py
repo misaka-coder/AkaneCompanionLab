@@ -489,15 +489,6 @@ def build_capability_snapshot(
                 workspace_inventory = dict(inventory_fn() or {})
             except Exception:
                 workspace_inventory = {}
-    has_cover_song_cache = False
-    cover_song_handler = (getattr(engine, "tool_handlers", {}) or {}).get("cover_song")
-    cover_song_service = getattr(cover_song_handler, "cover_song_service", None)
-    cache_status_fn = getattr(cover_song_service, "has_cached_cover", None)
-    if callable(cache_status_fn):
-        try:
-            has_cover_song_cache = bool(cache_status_fn(profile_user_id=profile_user_id))
-        except Exception:
-            has_cover_song_cache = False
     execution_provider_present = bool(getattr(engine, "execution_provider", None))
     execution_approval_override = ""
     if client_context.effective_mode == ClientMode.QQ_TEXT:
@@ -540,7 +531,6 @@ def build_capability_snapshot(
         has_document_workspace_file=bool(workspace_inventory.get("has_document_file")),
         has_media_workspace_file=bool(workspace_inventory.get("has_media_file")),
         has_image_workspace_file=bool(workspace_inventory.get("has_image_file")),
-        has_cover_song_cache=has_cover_song_cache,
         has_pending_gift=False,
         execution_enabled=execution_provider_present,
         execution_qq_enabled=execution_qq_enabled,

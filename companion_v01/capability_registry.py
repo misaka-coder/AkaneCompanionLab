@@ -187,7 +187,6 @@ ATTACHMENT_WORKSPACE_TOOL_NAMES = (
 )
 
 IMAGE_MATERIAL_TOOL_NAMES = ("load_material",)
-COVER_SONG_TOOL_NAMES = ("cover_song",)
 
 DOCUMENT_WORKBENCH_TOOL_NAMES = (
     "read_attachment_section",
@@ -1276,45 +1275,6 @@ INSPECT_MEDIA_INFO_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=4096,
 )
 
-COVER_SONG_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="cover_song",
-    display_name="Cover song",
-    description=(
-        "Create an AI cover from a current-session audio/video material using a local RVC voice model. "
-        "Separates vocals, converts the lead vocal, mixes with instrumental, and stores as a generated artifact."
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "source_id": {"type": "string", "maxLength": 120, "description": "Optional source audio/video/generated handle."},
-            "song_title": {"type": "string", "maxLength": 120, "description": "Song title. Required when restoring a cached cover without source_id."},
-            "artist": {"type": "string", "maxLength": 80, "description": "Optional original artist for cache disambiguation."},
-            "voice_model": {"type": "string", "maxLength": 120, "description": "Target local RVC model name, or auto for the configured default."},
-            "pitch_shift": {"type": "integer", "minimum": -24, "maximum": 24},
-            "index_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-            "filter_radius": {"type": "integer", "minimum": 0, "maximum": 7},
-            "rms_mix_rate": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-            "protect": {"type": "number", "minimum": 0.0, "maximum": 0.5},
-            "vocal_gain_db": {"type": "number", "minimum": -12.0, "maximum": 12.0},
-            "instrumental_gain_db": {"type": "number", "minimum": -12.0, "maximum": 6.0},
-            "output_format": {"type": "string", "enum": ["mp3", "flac", "wav"]},
-            "delivery": {"type": "string", "enum": ["auto", "voice", "file", "both", "none"]},
-            "force_rebuild": {"type": "boolean"},
-        },
-        "required": [],
-    },
-    risk="medium",
-    confirm="never",
-    effects=("file_create", "audio_delivery"),
-    visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="long_task",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
-
 # ── End M66-C canonical ToolSpecs ───────────────────────────────────────────
 
 
@@ -1641,7 +1601,6 @@ class CapabilitySnapshot:
     has_document_workspace_file: bool = False
     has_media_workspace_file: bool = False
     has_image_workspace_file: bool = False
-    has_cover_song_cache: bool = False
     has_pending_gift: bool = False
     # Host-frozen execution provider present (host config, not transient readiness).
     execution_enabled: bool = False
@@ -1740,10 +1699,6 @@ def _has_document_context(snapshot: CapabilitySnapshot) -> bool:
 
 def _has_media_context(snapshot: CapabilitySnapshot) -> bool:
     return snapshot.has_media_attachment or snapshot.has_media_generated_file or snapshot.has_media_workspace_file
-
-
-def _has_cover_song_context(snapshot: CapabilitySnapshot) -> bool:
-    return _has_media_context(snapshot) or snapshot.has_cover_song_cache
 
 
 def _execution_enabled(snapshot: CapabilitySnapshot) -> bool:
@@ -2372,22 +2327,6 @@ class CapabilityRegistry:
                 activation_hint="用户上传音频/视频、提供可下载的公开媒体链接，或在桌宠的 Akane 工作区放入媒体文件后会自动开放；工作区文件可先登记为 handle。",
                 unavailable_reason="媒体处理所需的本地组件当前没有通过可用性检查。",
                 recovery_hint="媒体组件恢复后会自动重新开放；已有材料无需重复上传。",
-            ),
-            CapabilityModule(
-                name="cover_song",
-                layer="shared_media",
-                modes=CHAT_FILE_CLIENT_MODES,
-                tools=COVER_SONG_TOOL_NAMES,
-                light_hint=(
-                    "你可以用本地角色音色翻唱用户提供的歌曲，并把转换后的人声与原伴奏重新混合成完整音频；"
-                    "没有歌曲材料时请自然请用户发送，已完成的歌曲可以按歌名从缓存再次交付。"
-                    "直接调用 cover_song 完成；拿到成果句柄后再按用户要求调用 send_file。"
-                ),
-                trigger=_has_cover_song_context,
-                latent_reason="当前还没有歌曲音频、视频或可复用的媒体结果，因此暂不展开翻唱工具。",
-                activation_hint="用户上传一首歌、提供可下载的公开歌曲链接，或把歌曲放进桌宠的 Akane 工作区后即可触发；同时需要本机 RVC 服务和至少一个可用音色模型。",
-                unavailable_reason="本机 RVC 服务、FFmpeg 或可用音色模型当前没有通过检查。",
-                recovery_hint="启动本机 RVC 服务并准备可用音色模型后会自动重新开放；歌曲材料若已经存在，不需要再次上传。",
             ),
             CapabilityModule(
                 name="generated_file_management",

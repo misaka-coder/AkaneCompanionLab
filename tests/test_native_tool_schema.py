@@ -116,7 +116,6 @@ class NativeToolSchemaTests(unittest.TestCase):
             workspace_file_service=object(),
             attachment_ingest_service=object(),
             generated_file_service=object(),
-            cover_song_service=object(),
             retrieve_fn=lambda *_args, **_kwargs: None,
             skill_registry=object(),
             execution_provider=execution_provider,
@@ -129,7 +128,8 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 45)
+        self.assertEqual(len(handlers), 44)
+        self.assertNotIn("cover_song", handlers)
         self.assertNotIn("generate_image", handlers)
         self.assertNotIn("convert_media_file", handlers)
         self.assertNotIn("separate_audio_stems", handlers)
