@@ -247,6 +247,7 @@ class EnvironmentTests(unittest.TestCase):
         source = self.store.resolve_generation_source(PLUGIN_ID)
         self.assertEqual(source.plugin_id, PLUGIN_ID)
         self.assertEqual(source.digest, published["digest"])
+        self.assertEqual(source.approved_permissions, tuple(sorted(staged["permissions"])))
         self.assertTrue(source.site_dir.is_dir())
         self.assertNotIn(str(source.site_dir), json.dumps(self.store.snapshot()))
 

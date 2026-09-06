@@ -76,6 +76,26 @@ Windows 子进程无控制台窗口。它不提供任务队列、权限审批、
 取消会等依赖真正结束并清理；依赖已完成的独立产物可能保留，但不能在取消确认后迟到登记。
 依赖返回完成未确认等真实失败时必须向上传播，不能把它转成“已停止”。
 
+## 命名连接与既有模型设置
+
+需要现有生图连接时，显式声明 `connection.image_generation.read`，注册时捕获
+`registrar.get_connection_port()`；只在正常 capability 调用中
+`await port.resolve("image_generation")`。返回 `PluginConnectionResult` 是私有配置值，
+不是可以放入 capability content 的结果。密钥/URL 不进 repr，且不得写日志、prompt、
+descriptor、产物、命令参数或完成事件。宿主只投影这个连接所需字段，不提供任意配置查询。
+
+当前生图连接继续由原模型服务设置拥有，保留专用 key 优先、原聊天 key 后备语义。
+每次调用取得当前 Bot 的不可变设置，更新/禁用在下一次调用生效；不创建插件专用第二份
+配置，也不返回其他聊天/视觉设置。`configured` 只表示配置齐备，不表示远端已成功。
+
+注册、健康检查、源码测试/暂存没有 invocation，因此不能读取连接。插件的安装健康
+只核验本地执行依赖，必须明确区分 runtime_ready 与 provider readiness；业务调用再
+验证远端，认证失败/服务不可用必须结构化返回，不在暂存阶段发起付费请求。
+
+托管制品的实际进程权限必须与安装时批准的集合一致；漂移会拒绝候选发布。无安装
+审批记录的旧 process-installed 插件不能通过该端口读取连接，须走显式安装审批。
+这些是可信插件的逻辑权限和数据边界，不是恶意 Python 代码的操作系统沙箱。
+
 ## 真实闭环验收
 
 单个组件通过不代表插件可用。回归必须覆盖全新源码项目从 stage 到 install、active 和真实 capability/command/event/background 行为。运行时未尝试某个插件时不能将其报告为 activation_failed，目标插件没有进入候选 generation 时也不能报告安装成功。

@@ -38,6 +38,9 @@ from .plugin_generation_codec import (
 )
 from .plugin_result_projection import sanitize_capability_result
 from .plugin_subprocess import drain
+from .plugin_connections import (
+    permitted_connections, connection_result_to_wire, connection_result_from_wire, rejected as connection_rejected,
+)
 from .plugin_generation_protocol import PLUGIN_GENERATION_PROTOCOL
 
 
@@ -65,6 +68,7 @@ class GenerationHostCallbackRouter:
         self._futures: dict[str, Any] = {}
         self._resource_provider: Any = None
         self._capability_provider: Any = None
+        self._connection_provider: Any = None
         self._capability_callbacks: dict[str, dict] = {}
         self._invocations: dict[str, ResourceInvocation] = {}
 
@@ -78,12 +82,18 @@ class GenerationHostCallbackRouter:
             raise TypeError("invalid_capability_provider")
         self._capability_provider = provider
 
+    def bind_connection_provider(self, provider: Any) -> None:
+        if not callable(getattr(provider, "resolve", None)):
+            raise TypeError("invalid_connection_provider")
+        self._connection_provider = provider
+
     def begin_invocation(self, request_id: str, *, plugin_id: str, context: InvocationContext,
                          capability_id: str = "", permissions=()) -> None:
         with self._lock:
             self._invocations[request_id] = ResourceInvocation(
                 plugin_id, context, capability_id=capability_id,
                 can_invoke_capabilities=CAPABILITY_INVOKE_PERMISSION in permissions,
+                connection_names=permitted_connections(permissions),
             )
 
     async def finish_invocation(self, request_id: str) -> None:
@@ -160,7 +170,38 @@ class GenerationHostCallbackRouter:
             self._schedule(callback_id, self._invoke_capability(callback_id, request, invocation),
                            loop=invocation.loop, unavailable_reason="capability_host_unavailable")
             return
+        if callback == "connection.resolve":
+            with self._lock:
+                invocation = self._invocations.get(str(request.get("invocation_id") or ""))
+            name = request.get("name")
+            if invocation is None or not invocation.active:
+                self._send_failure(callback_id, "connection_invocation_required")
+                return
+            if not isinstance(name, str) or name not in invocation.connection_names:
+                self._send_failure(callback_id, "connection_permission_required")
+                return
+            if self._connection_provider is None:
+                self._send_failure(callback_id, "connection_provider_unavailable")
+                return
+            self._schedule(callback_id, self._resolve_connection(callback_id, name, invocation),
+                           loop=invocation.loop, unavailable_reason="connection_host_unavailable")
+            return
         self._send_failure(callback_id, "callback_protocol_invalid")
+
+    async def _resolve_connection(self, callback_id, name, invocation):
+        task = asyncio.current_task()
+        invocation.pending.add(task)
+        try:
+            result = await self._connection_provider.resolve(name, invocation=invocation)
+            wire = connection_result_to_wire(result)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            wire = connection_result_to_wire(connection_rejected("connection_resolution_failed"))
+        finally:
+            invocation.pending.discard(task)
+        # Private callback lane only: never a public capability result or log.
+        self._send_wire_result(callback_id, wire)
 
     async def _invoke_capability(self, callback_id, request, invocation):
         task = asyncio.current_task()
@@ -496,6 +537,37 @@ class GenerationCapabilityProvider:
             return capability_result_from_wire(response.get("result"))
         except PluginGenerationCodecError:
             return CapabilityResult(is_error=True, status="error", reason="capability_dependency_result_invalid")
+        finally:
+            self._pending.pop(callback_id, None)
+
+
+class GenerationConnectionProvider:
+    def __init__(self, *, generation_id, emit, pending):
+        self._generation_id, self._emit, self._pending = generation_id, emit, pending
+
+    async def resolve(self, name, *, invocation):
+        request_id = generation_request_id.get()
+        if not request_id or not invocation.active:
+            return connection_rejected("connection_invocation_required")
+        callback_id = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._pending[callback_id] = future
+        self._emit({
+            "protocol": PLUGIN_GENERATION_PROTOCOL, "type": "callback_request",
+            "generation_id": self._generation_id, "callback_id": callback_id,
+            "callback": "connection.resolve", "invocation_id": request_id, "name": name,
+        })
+        try:
+            response = await future
+            if not response.get("ok"):
+                return connection_rejected(str(response.get("reason") or "connection_callback_failed"))
+            return connection_result_from_wire(response.get("result"))
+        except asyncio.CancelledError:
+            self._emit({"protocol": PLUGIN_GENERATION_PROTOCOL, "type": "callback_cancel",
+                        "generation_id": self._generation_id, "callback_id": callback_id})
+            raise
+        except (ValueError, TypeError):
+            return connection_rejected("connection_result_invalid")
         finally:
             self._pending.pop(callback_id, None)
 

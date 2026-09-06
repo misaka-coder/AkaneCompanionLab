@@ -29,6 +29,7 @@ from .plugin_api import (
     PluginHookEnvelope,
     PluginQQCommandResult,
     is_valid_plugin_id,
+    is_valid_permission_id,
 )
 from .plugin_events import PluginEventDispatchResult
 from .plugin_hooks import PluginHookDispatchResult
@@ -189,6 +190,7 @@ class PluginGenerationProcess:
         self._skill_roots: tuple[ContributedSkillRoot, ...] = ()
         self._plugin_version = ""
         self._permissions: tuple[str, ...] = ()
+        self._approved_permissions: tuple[str, ...] | None = None
         self._contribution_snapshot: Mapping[str, Any] = MappingProxyType({})
         self._managed_artifact_sink: ManagedArtifactSink | None = None
         self._callback_router = GenerationHostCallbackRouter(
@@ -295,6 +297,18 @@ class PluginGenerationProcess:
             raise RuntimeError("plugin_generation_already_started")
         self._callback_router.bind_capability_provider(provider)
 
+    def bind_connection_provider(self, provider: Any) -> None:
+        if self._process is not None:
+            raise RuntimeError("plugin_generation_already_started")
+        self._callback_router.bind_connection_provider(provider)
+
+    def bind_approved_permissions(self, permissions: tuple[str, ...]) -> None:
+        if self._process is not None:
+            raise RuntimeError("plugin_generation_already_started")
+        if not isinstance(permissions, tuple) or any(not is_valid_permission_id(p) for p in permissions):
+            raise ValueError("plugin_approved_permissions_invalid")
+        self._approved_permissions = tuple(sorted(set(permissions)))
+
     def bind_agent_event_port(self, port: Any) -> None:
         if self._process is not None:
             raise RuntimeError("plugin_generation_already_started")
@@ -371,6 +385,8 @@ class PluginGenerationProcess:
                 raise PluginGenerationError("plugin_generation_protocol_invalid")
             self._plugin_version = str(ready.get("plugin_version") or "")
             self._permissions = tuple(raw_permissions)
+            if self._approved_permissions is not None and tuple(sorted(set(self._permissions))) != self._approved_permissions:
+                raise PluginGenerationError("plugin_permissions_changed_after_approval")
             self._contribution_snapshot = MappingProxyType(
                 dict(json_snapshot(contribution_snapshot))
             )
@@ -658,7 +674,10 @@ class PluginGenerationProcess:
         request_id = uuid.uuid4().hex
         self._callback_router.begin_invocation(
             request_id, plugin_id=self.plugin_id, context=context, capability_id=capability_id,
-            permissions=self._permissions,
+            # Process-installed legacy plugins have no installation approval
+            # receipt. They cannot obtain newly privileged connection access.
+            permissions=(self._permissions if self._approved_permissions is not None else
+                         tuple(p for p in self._permissions if not p.startswith("connection."))),
         )
         try:
             request_id, response_queue = self._send_request(

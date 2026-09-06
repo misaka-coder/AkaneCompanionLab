@@ -51,6 +51,7 @@ class PluginGenerationCandidateBuilder:
         managed_artifact_sink: Any = None,
         resource_provider: Any = None,
         capability_provider: Any = None,
+        connection_provider: Any = None,
         notification_port: Any = None,
         agent_event_port: Any = None,
         plugin_storage_data_root: Path | None = None,
@@ -66,6 +67,7 @@ class PluginGenerationCandidateBuilder:
         self.managed_artifact_sink = managed_artifact_sink
         self.resource_provider = resource_provider
         self.capability_provider = capability_provider
+        self.connection_provider = connection_provider
         self.notification_port = notification_port
         self.agent_event_port = agent_event_port
         self.plugin_storage_data_root = (
@@ -124,6 +126,11 @@ class PluginGenerationCandidateBuilder:
                     plugin_storage_data_root=self.plugin_storage_data_root,
                     plugin_storage_instance_id=self.plugin_storage_instance_id,
                 )
+                if source.approved_permissions is not None:
+                    bind_approval = getattr(process, "bind_approved_permissions", None)
+                    if not callable(bind_approval):
+                        raise PluginGenerationCandidateError("plugin_permission_binding_unavailable", plugin_id=source.plugin_id)
+                    bind_approval(source.approved_permissions)
                 self._bind_ports(process)
                 processes.append(process)
 
@@ -184,6 +191,7 @@ class PluginGenerationCandidateBuilder:
             ("bind_managed_artifact_sink", self.managed_artifact_sink),
             ("bind_resource_provider", self.resource_provider),
             ("bind_capability_provider", self.capability_provider),
+            ("bind_connection_provider", self.connection_provider),
             ("bind_notification_port", self.notification_port),
             ("bind_agent_event_port", self.agent_event_port),
         )

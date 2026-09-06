@@ -75,6 +75,9 @@ class _Process:
     def bind_managed_artifact_sink(self, value: Any) -> None:
         self.bindings["artifact"] = value
 
+    def bind_approved_permissions(self, value: Any) -> None:
+        self.bindings["approved_permissions"] = value
+
     def bind_notification_port(self, value: Any) -> None:
         self.bindings["notification"] = value
 
@@ -127,7 +130,7 @@ class PluginGenerationCandidateBuilderTests(unittest.IsolatedAsyncioTestCase):
     async def test_builds_complete_candidate_and_binds_existing_host_ports(self) -> None:
         resolver = _Resolver(
             {
-                "akane.test.a": PluginGenerationSource("akane.test.a", self.site_a, "a"),
+                "akane.test.a": PluginGenerationSource("akane.test.a", self.site_a, "a", ("diagnostics.invoke",)),
                 "akane.test.b": PluginGenerationSource("akane.test.b", self.site_b, "b"),
             }
         )
@@ -162,6 +165,7 @@ class PluginGenerationCandidateBuilderTests(unittest.IsolatedAsyncioTestCase):
             [item.bindings for item in created],
             [
                 {
+                    "approved_permissions": ("diagnostics.invoke",),
                     "artifact": "artifact",
                     "notification": "notification",
                     "agent_event": "agent_event",

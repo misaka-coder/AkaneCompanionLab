@@ -90,6 +90,7 @@ class PluginGenerationSource:
     plugin_id: str
     site_dir: Path
     digest: str = ""
+    approved_permissions: tuple[str, ...] | None = None
 
 
 class ManagedPluginArtifactStore:
@@ -482,7 +483,9 @@ class ManagedPluginArtifactStore:
                     raise PluginInstallationError("plugin_artifact_unavailable")
                 if not _site_has_plugin_entry_point(site_dir, normalized):
                     raise PluginInstallationError("plugin_artifact_invalid")
-                return PluginGenerationSource(normalized, site_dir.resolve(), digest)
+                return PluginGenerationSource(
+                    normalized, site_dir.resolve(), digest, _normalize_permissions(artifact.get("permissions"))
+                )
 
         matches = tuple(
             item

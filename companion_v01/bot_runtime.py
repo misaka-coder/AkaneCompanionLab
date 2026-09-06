@@ -44,6 +44,7 @@ from .extension_management import (
 from .plugin_managed_artifacts import GeneratedFileManagedArtifactSink
 from .plugin_resources import GeneratedFileResourceProvider
 from .plugin_capability_calls import EnginePluginCapabilityProvider
+from .plugin_connections import ModelServicePluginConnectionProvider
 from .plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from .plugin_agent_events import HostAgentEventRouter
 from .plugin_api import PluginAgentEventRequest, PluginAgentEventResult, PluginExternalEvent
@@ -544,6 +545,7 @@ class BotRuntimeFactory:
             )
             engine.plugin_skill_roots_provider = plugin_runtime.skill_roots
             plugin_runtime.bind_capability_provider(EnginePluginCapabilityProvider(engine))
+            plugin_runtime.bind_connection_provider(ModelServicePluginConnectionProvider(engine, runtime_config))
             generated_file_service = engine._get_generated_file_service()
             if generated_file_service is not None:
                 plugin_runtime.bind_managed_artifact_sink(

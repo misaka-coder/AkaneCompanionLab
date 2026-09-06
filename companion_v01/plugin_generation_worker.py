@@ -17,6 +17,7 @@ from .plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from .plugin_generation_artifacts import GenerationArtifactOutboxSink, artifact_handoff_scope
 from .plugin_generation_callbacks import (
     GenerationCapabilityProvider,
+    GenerationConnectionProvider,
     GenerationAgentEventPort,
     GenerationNotificationPort,
     GenerationResourceProvider,
@@ -332,6 +333,11 @@ async def run_generation_worker(args: Any, protocol_stream: TextIO) -> int:
             pending=callback_responses,
         ))
         host.bind_capability_provider(GenerationCapabilityProvider(
+            generation_id=generation_id,
+            emit=lambda payload: emit_protocol_message(protocol_stream, payload),
+            pending=callback_responses,
+        ))
+        host.bind_connection_provider(GenerationConnectionProvider(
             generation_id=generation_id,
             emit=lambda payload: emit_protocol_message(protocol_stream, payload),
             pending=callback_responses,

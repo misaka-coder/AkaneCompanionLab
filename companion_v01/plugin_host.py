@@ -74,6 +74,7 @@ from .plugin_managed_artifacts import (
 from .plugin_notifications import _NotificationDeliveryLedger, _PluginScopedNotificationPort
 from .plugin_resources import ResourceInvocation, ScopedPluginResourcePort, current_resource_invocation
 from .plugin_capability_calls import ScopedPluginCapabilityPort
+from .plugin_connections import ScopedPluginConnectionPort, permitted_connections
 from .plugin_agent_events import _PluginScopedAgentEventPort
 from .plugin_qq_commands import PluginQQCommandBroker, _PluginCommandRegistration
 from .plugin_storage import PluginStorageService
@@ -255,6 +256,7 @@ class _StagedRegistrar(PluginRegistrar):
         self._storage_dir: Path | None = None
         self._resource_port: Any = None
         self._capability_port: Any = None
+        self._connection_port: Any = None
         self._background_services: list[_BackgroundServiceRegistration] = []
         self._job_permission: bool = False
         self._notification_port: Any = None  # NotificationPort | None
@@ -367,6 +369,13 @@ class _StagedRegistrar(PluginRegistrar):
         if self._capability_port is None:
             raise RuntimeError("capability_invoke_permission_required")
         return self._capability_port
+
+    def get_connection_port(self) -> Any:
+        if self._sealed:
+            raise RuntimeError("plugin_registrar_sealed")
+        if self._connection_port is None:
+            raise RuntimeError("connection_permission_required")
+        return self._connection_port
 
     def get_notification_port(self) -> Any:
         if self._sealed:
@@ -534,6 +543,7 @@ class PluginHost:
         self._managed_artifact_timeout_seconds = max(0.0, float(managed_artifact_timeout_seconds))
         self._resource_provider: Any = None
         self._capability_provider: Any = None
+        self._connection_provider: Any = None
         self._close_timeout_seconds = max(0.1, float(close_timeout_seconds))
         self._event_handler_timeout_seconds = max(0.01, float(event_handler_timeout_seconds))
         self._hook_handler_timeout_seconds = max(0.01, float(hook_handler_timeout_seconds))
@@ -760,6 +770,13 @@ class PluginHost:
         if not callable(getattr(provider, "invoke", None)):
             raise TypeError("invalid_capability_provider")
         self._capability_provider = provider
+
+    def bind_connection_provider(self, provider: Any) -> None:
+        if self._state != "created":
+            raise RuntimeError("plugin_host_already_started")
+        if not callable(getattr(provider, "resolve", None)):
+            raise TypeError("invalid_connection_provider")
+        self._connection_provider = provider
 
     def bind_plugin_storage_service(self, storage_service: PluginStorageService) -> None:
         """Bind the host-owned scoped storage service before restart-only startup.
@@ -1185,6 +1202,7 @@ class PluginHost:
         resource_invocation = ResourceInvocation(
             registration.plugin_id, context, capability_id=registration.descriptor.id,
             can_invoke_capabilities=CAPABILITY_INVOKE_PERMISSION in registration.permissions,
+            connection_names=permitted_connections(registration.permissions),
         )
         resource_token = current_resource_invocation.set(resource_invocation)
         try:
@@ -1395,6 +1413,10 @@ class PluginHost:
                 if self._capability_provider is None:
                     raise _ActivationFailure("capability_provider_unavailable")
                 registrar._capability_port = ScopedPluginCapabilityPort(selection.plugin_id, self._capability_provider)
+            if permitted_connections(manifest.permissions):
+                if self._connection_provider is None:
+                    raise _ActivationFailure("connection_provider_unavailable")
+                registrar._connection_port = ScopedPluginConnectionPort(selection.plugin_id, self._connection_provider)
             if BACKGROUND_JOB_PERMISSION in manifest.permissions:
                 registrar._set_job_permission(True)
             # Inject notification port if declared and bound

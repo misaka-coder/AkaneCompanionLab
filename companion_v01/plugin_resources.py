@@ -42,6 +42,7 @@ class ResourceInvocation:
     can_invoke_capabilities: bool = False
     dependency_chain: tuple[str, ...] = field(default_factory=dependency_chain.get)
     dependency_calls: int = 0
+    connection_names: tuple[str, ...] = ()
 
     async def aclose(self) -> None:
         self.active = False

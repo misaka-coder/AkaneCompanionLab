@@ -8,7 +8,7 @@ installed plugin artifact.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,6 +23,7 @@ NETWORK_READ_PERMISSION = "network.read"
 MANAGED_ARTIFACT_WRITE_PERMISSION = "artifact.write"
 RESOURCE_READ_PERMISSION = "resource.read"
 CAPABILITY_INVOKE_PERMISSION = "capability.invoke"
+IMAGE_CONNECTION_READ_PERMISSION = "connection.image_generation.read"
 PLUGIN_STORAGE_WRITE_PERMISSION = "storage.write"
 BACKGROUND_JOB_PERMISSION = "job.run"
 NOTIFICATION_SEND_PERMISSION = "notification.send"
@@ -183,6 +184,35 @@ class PluginCapabilityPort(Protocol):
         No raw paths, identity override or background use. Cycles/depth/call
         budgets are host-enforced. Cancellation waits for actual dependency
         cleanup; a real failure after cancellation is returned, not hidden.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class PluginConnectionResult:
+    """Private, invocation-only connection snapshot; never capability content.
+
+    Credentials and endpoint configuration must not enter logs, descriptions,
+    prompts, artifact metadata or command arguments. The named connection's
+    existing host settings remain the only configuration authority.
+    """
+
+    ok: bool
+    status: str
+    reason: str = ""
+    base_url: str = field(default="", repr=False)
+    model: str = ""
+    api_key: str = field(default="", repr=False)
+    options: dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+class PluginConnectionPort(Protocol):
+    async def resolve(self, name: str) -> PluginConnectionResult:
+        """Resolve only an explicitly permitted named connection in a live call.
+
+        Not available at registration/health/staging time. Resolve afresh per
+        invocation so setting changes and revocation take effect without a
+        second plugin configuration file. No caller-selected identity.
         """
         ...
 
@@ -621,6 +651,10 @@ class PluginRegistrar(Protocol):
         """Capture the invocation-scoped dependency port; requires capability.invoke."""
         ...
 
+    def get_connection_port(self) -> PluginConnectionPort:
+        """Requires the explicit read permission for a named connection."""
+        ...
+
     def get_resource_port(self) -> PluginResourcePort:
         """Capture the current-invocation resource port; requires resource.read.
 
@@ -759,6 +793,11 @@ __all__ = [
     "RESOURCE_READ_PERMISSION",
     "PluginResourcePort",
     "PluginResourceResult",
+    "CAPABILITY_INVOKE_PERMISSION",
+    "PluginCapabilityPort",
+    "IMAGE_CONNECTION_READ_PERMISSION",
+    "PluginConnectionPort",
+    "PluginConnectionResult",
     "NotificationIntent",
     "NotificationPort",
     "NotificationResult",
