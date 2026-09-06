@@ -53,7 +53,8 @@ class ImageHarness:
         _, self.attachments, self.files = services(root)
         self.runtime.bind_managed_artifact_sink(GeneratedFileManagedArtifactSink(self.files))
         self.runtime.bind_resource_provider(GeneratedFileResourceProvider(self.files, work_root=root / "copies"))
-        self.runtime.bind_connection_provider(self.connection_provider)
+        if self.connection_provider is not None:
+            self.runtime.bind_connection_provider(self.connection_provider)
         self.engine = EngineFacade(PluginCapabilityToolBridge(self.runtime, config_base_dir=root))
         self.engine.store, self.engine.capability_config_base_dir = self.files.store, root
         self.engine._get_generated_file_service = lambda: self.files

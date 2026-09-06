@@ -31,6 +31,7 @@ from companion_v01.plugin_managed_artifacts import (
     GeneratedFileManagedArtifactSink,
     ManagedArtifactError,
     ValidatedArtifact,
+    validate_managed_artifact_draft,
 )
 from companion_v01.plugin_generation_artifacts import (
     GenerationArtifactOutboxSink,
@@ -46,6 +47,21 @@ from companion_v01.tool_runtime import ToolExecutionContext, ToolExecutionResult
 
 PLUGIN_ID = "akane.test.artifact"
 CAPABILITY_ID = f"{PLUGIN_ID}.chart.v1"
+
+
+class DocumentMimeTests(unittest.TestCase):
+    def test_canonical_document_types_ignore_machine_file_associations(self):
+        mimes = {
+            "csv": "text/csv", "txt": "text/plain", "html": "text/html", "json": "application/json",
+            "lrc": "text/plain", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
+        with patch("companion_v01.plugin_managed_artifacts.mimetypes.guess_type", return_value=("application/x-unexpected", None)):
+            for fmt, mime in mimes.items():
+                with self.subTest(fmt=fmt):
+                    value = validate_managed_artifact_draft(ManagedArtifactDraft(data=b"test", title="document", output_format=fmt, mime_type=mime))
+                    self.assertEqual(value.mime_type, mime)
+                    with self.assertRaisesRegex(ManagedArtifactError, "managed_artifact_mime_mismatch"):
+                        validate_managed_artifact_draft(ManagedArtifactDraft(data=b"test", title="document", output_format=fmt, mime_type="image/png"))
 
 
 def _descriptor(*, max_bytes: int = 1024) -> CapabilityDescriptor:

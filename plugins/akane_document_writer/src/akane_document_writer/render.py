@@ -13,7 +13,7 @@ from xml.sax.saxutils import escape
 import zipfile
 import warnings
 
-from .markdown import blocks, table_from_content
+from .markdown import Block, blocks, table_from_content
 from .fonts import pdf_font
 from .styling import display_width, docx_format, shade, xlsx_format
 from .validation import DocumentError, FORMATS, formatting, table_rows, text
@@ -63,7 +63,14 @@ def _rectangular(rows: list[list[Any]]) -> list[list[Any]]:
 
 
 def render_document(
-    *, output_path: Path, output_format: str, title: str = "", content: str = "", rows: Any = None, styles: Any = None
+    *,
+    output_path: Path,
+    output_format: str,
+    title: str = "",
+    content: str = "",
+    rows: Any = None,
+    styles: Any = None,
+    source_blocks: list[Block] | None = None,
 ) -> dict:
     if output_format not in FORMATS or output_path.suffix.lower() != f".{output_format}":
         raise DocumentError("document_format_invalid")
@@ -72,7 +79,33 @@ def render_document(
     if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", content + title):
         raise DocumentError("document_control_character")
     validated_rows = table_rows(rows)
-    if not content and not validated_rows:
+    if source_blocks is not None:
+        if output_format not in {"docx", "pdf"} or content or rows or not isinstance(source_blocks, list):
+            raise DocumentError("document_source_blocks_invalid")
+        total = 0
+        for block in source_blocks:
+            if not isinstance(block, Block) or block.kind not in {
+                "paragraph",
+                "heading",
+                "bullet",
+                "number",
+                "code",
+                "table",
+            }:
+                raise DocumentError("document_source_blocks_invalid")
+            if not isinstance(block.text, str) or type(block.literal) is not bool:
+                raise DocumentError("document_source_blocks_invalid")
+            if block.kind == "heading" and not 1 <= block.level <= 6:
+                raise DocumentError("document_source_blocks_invalid")
+            if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", block.text):
+                raise DocumentError("document_control_character")
+            validated = table_rows(block.rows)
+            if block.kind == "table" and not validated:
+                raise DocumentError("document_table_empty")
+            total += len(block.text) + sum(len(text(cell)) for row in validated for cell in row)
+        if len(source_blocks) > 10000 or total > 1_000_000:
+            raise DocumentError("document_content_invalid")
+    if not content and not validated_rows and not source_blocks:
         raise DocumentError("document_content_required")
     if validated_rows and output_format not in {"csv", "xlsx", "docx", "pdf"}:
         raise DocumentError("document_rows_unsupported")
@@ -95,9 +128,9 @@ def render_document(
         elif output_format == "xlsx":
             _xlsx(path, title, validated_rows or table_rows(table_from_content(content)), rules)
         elif output_format == "docx":
-            _docx(path, title, content, validated_rows, rules)
+            _docx(path, title, content, validated_rows, rules, source_blocks=source_blocks)
         elif output_format == "pdf":
-            _pdf(path, title, content, validated_rows)
+            _pdf(path, title, content, validated_rows, source_blocks=source_blocks)
 
     _atomic(output_path, write)
     notices = []
@@ -199,7 +232,7 @@ def _inline(paragraph: Any, value: str) -> None:
             paragraph.add_run(part)
 
 
-def _word_table(document: Any, rows: list[list[Any]]) -> None:
+def _word_table(document: Any, rows: list[list[Any]], *, literal: bool = False) -> None:
     from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
@@ -240,7 +273,10 @@ def _word_table(document: Any, rows: list[list[Any]]) -> None:
             paragraph.alignment = (
                 WD_ALIGN_PARAGRAPH.CENTER if type(value) in (int, float, bool) else WD_ALIGN_PARAGRAPH.LEFT
             )
-            _inline(paragraph, text(value))
+            if literal:
+                paragraph.add_run(text(value))
+            else:
+                _inline(paragraph, text(value))
             if row_index == 0:
                 shade(cell._tc.get_or_add_tcPr(), "E7EDF3")
                 for run in paragraph.runs:
@@ -248,7 +284,15 @@ def _word_table(document: Any, rows: list[list[Any]]) -> None:
     document.add_paragraph().paragraph_format.space_after = Pt(4)
 
 
-def _docx(path: Path, title: str, content: str, rows: list[list[Any]], rules: dict) -> None:
+def _docx(
+    path: Path,
+    title: str,
+    content: str,
+    rows: list[list[Any]],
+    rules: dict,
+    *,
+    source_blocks: list[Block] | None = None,
+) -> None:
     from docx import Document
     from docx.oxml.ns import qn
     from docx.shared import Inches, Pt, RGBColor
@@ -276,9 +320,9 @@ def _docx(path: Path, title: str, content: str, rows: list[list[Any]], rules: di
     normal.paragraph_format.line_spacing = 1.15
     if title:
         document.add_paragraph(title, style="Title")
-    for block in blocks(content):
+    for block in source_blocks if source_blocks is not None else blocks(content):
         if block.kind == "table":
-            _word_table(document, table_rows(block.rows))
+            _word_table(document, table_rows(block.rows), literal=block.literal)
             continue
         if block.kind == "heading":
             paragraph = document.add_paragraph(style=f"Heading {block.level}")
@@ -293,21 +337,29 @@ def _docx(path: Path, title: str, content: str, rows: list[list[Any]], rules: di
             run = paragraph.add_run(block.text)
             run.font.name = "Consolas"
             run.font.size = Pt(10)
+        elif block.literal:
+            paragraph.add_run(block.text)
         else:
             _inline(paragraph, block.text)
     if rows:
-        _word_table(document, rows)
+        _word_table(document, rows, literal=True)
     docx_format(document, rules)
     document.save(path)
 
 
-def _pdf(path: Path, title: str, content: str, rows: list[list[Any]]) -> None:
+def _pdf(
+    path: Path, title: str, content: str, rows: list[list[Any]], *, source_blocks: list[Block] | None = None
+) -> None:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, TableStyle
 
     all_text = content + title + "".join(text(cell) for row in rows for cell in row)
+    if source_blocks is not None:
+        all_text += "".join(
+            block.text + "".join(text(cell) for row in block.rows for cell in row) for block in source_blocks
+        )
     if any(ord(char) > 0xFFFF for char in all_text):
         raise DocumentError("document_pdf_glyph_unsupported")
     font_name = pdf_font(all_text)
@@ -341,12 +393,12 @@ def _pdf(path: Path, title: str, content: str, rows: list[list[Any]]) -> None:
         )
         story.extend([table, Spacer(1, 10)])
 
-    for block in blocks(content):
+    for block in source_blocks if source_blocks is not None else blocks(content):
         if block.kind == "table":
             add_table(table_rows(block.rows))
         else:
             value = escape(block.text).replace("\n", "<br/>")
-            if block.kind != "code":
+            if block.kind != "code" and not block.literal:
                 value = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", value)
                 value = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", value)
                 value = re.sub(r"`([^`]+)`", r"\1", value)

@@ -1,9 +1,34 @@
 # Akane document writer
 
-Independent document-generation and non-destructive styling library. No host
-imports, hidden LLM call, model credentials, source-preview reconstruction, or
-in-place edits. Plugin installation/discovery is a separate migration slice;
-this library alone does not expose a model capability.
+Independent document-generation and non-destructive styling library with an
+optional public-SDK plugin. The library has no host imports, hidden LLM call,
+model credentials, source-preview reconstruction, or in-place edits.
+
+The repository market contains `akane.document-writer`, exposing `compose.v1`,
+`revise.v1` and `style.v1` capabilities under that namespace only while installed
+and enabled. Each runs as a cancellable long task in a renderer child process.
+Only prompt invocation, session resource reading and managed artifact writing
+permissions are requested. No installation into a user's profile is implicit.
+Install the declared dependencies into the worker interpreter; optional
+`AKANE_DOCUMENT_PYTHON` selects it. Health checks really write/read small Word,
+Excel and PDF files, including embedded Chinese text. Missing dependencies fail
+explicitly; they are never downloaded automatically.
+
+Compose requires `output_format` and complete `content_markdown`/`table_rows`, or
+`source_mode=full_text` with `source_ids` and no replacement body. The default
+`reference` mode only associates sources; it does not generate content from them.
+Full-text mode uses the public resource representation and rejects incomplete
+extraction. It preserves paragraph/table order and literal source punctuation,
+but does not reproduce page layout. Multiple/mixed tables cannot silently become
+one CSV/XLSX. Formula/date exports report their text conversion. Subtitle timing
+cannot be invented by format conversion.
+
+Revise requires an explicit generated-file handle and complete replacement
+content; style requires a DOCX/XLSX resource handle and actual formatting rules.
+Revisions preserve the old bytes and register real version/source lineage through
+the host. `send_to_user` defaults to false; true requests host delivery, and a
+registered artifact is not evidence of a successful send. Desktop/QQ rendering,
+memory projection, delivery and file storage remain host-owned.
 
 `render_document` writes complete supplied content to txt/md/html/json/srt/lrc/vtt,
 CSV, XLSX, DOCX, or PDF. JSON must actually parse. Text-like outputs preserve the
@@ -30,6 +55,9 @@ body paragraphs including the title. Run shading uses the requested RGB, not an
 approximate yellow fallback. Tables in Word require table_index when ambiguous;
 Excel workbooks with multiple sheets require sheet_name. Numeric row conditions
 use actual numeric cell values, not numbers extracted from arbitrary text.
+For example, `{"row_rules":[{"where":{"match_header":"数量","gte":1},"font_color":"red"}]}`
+styles rows whose numeric quantity is at least one. A condition uses `column` or
+`match_header` and exactly one of `eq/ne/lt/lte/gt/gte/contains`.
 
 New XLSX files size columns using CJK-aware widths and wrap text by default;
 existing sheet widths change only with explicit auto_width=true. OOXML editing
@@ -51,3 +79,5 @@ in public result dictionaries; exceptions carry stable reason codes.
 
 Tests: `python -m unittest discover -s plugins/akane_document_writer/tests -v`
 (set PYTHONPATH to `plugins/akane_document_writer/src` for a source checkout).
+Installed SDK/discovery/lifecycle/Job tests:
+`python -m unittest tests.test_document_writer_plugin -v`.

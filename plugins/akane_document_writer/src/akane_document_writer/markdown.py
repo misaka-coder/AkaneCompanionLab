@@ -13,6 +13,7 @@ class Block:
     level: int = 0
     rows: list[list[str]] = field(default_factory=list)
     marker: str = ""
+    literal: bool = False
 
 
 def cells(line: str) -> list[str]:

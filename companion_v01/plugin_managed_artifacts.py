@@ -24,6 +24,12 @@ from .plugin_result_projection import project_capability_result
 _KNOWN_FORMAT_MIME_TYPES: dict[str, frozenset[str]] = {
     "png": frozenset({"image/png"}),
     "md": frozenset({"text/markdown", "text/markdown; charset=utf-8"}),
+    "txt": frozenset({"text/plain"}),
+    "csv": frozenset({"text/csv"}),
+    "html": frozenset({"text/html"}),
+    "json": frozenset({"application/json"}),
+    "lrc": frozenset({"text/plain"}),
+    "docx": frozenset({"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}),
     # Windows registry associations vary for subtitles and archives. Accept
     # canonical MIME types independently of machine-local associations.
     "srt": frozenset({"application/x-subrip", "text/plain"}),
