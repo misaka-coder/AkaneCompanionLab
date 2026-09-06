@@ -1,12 +1,25 @@
 # Akane cover-song business runtime
 
-Current slice: reusable RVC protocol and process-safety boundary. This package
+Current slice: reusable RVC protocol, process-safety boundary and cover media policy. This package
 does **not yet** expose a marketplace plugin or claim the full cover pipeline.
 No SDK, Akane host, UI, Job, resource store, or channel imports are required.
 
 `RvcWebUiProvider` owns discovery, parameter mapping, UVR separation and RVC
 conversion. The temporary compatibility import in `companion_v01/cover_song.py`
 points here; there is no second Gradio implementation in the host.
+
+`CoverMedia` owns audio-stream duration validation, 44.1 kHz stereo decoding,
+and WAV/FLAC/320 kbps MP3 mixing. Its async `run` port is injected: the library
+does not import an Akane process runner. Both remaining legacy callers bind
+the public SDK's cancellation-safe process runner to this same implementation.
+The caller owns fresh input/work paths and removes partial outputs on failure.
+FFprobe is required: an unverified duration is no longer treated as zero.
+
+Mixing supports FFmpeg 4.3 as well as current versions. Both tracks are padded
+to the longer audio duration before undoing amix's default averaging; this
+avoids doubling the tail when one track ends first. Input demuxers/protocols
+are restricted, metadata is removed, and existing output files are rejected.
+No gain or mixing code remains in the legacy host or local-service wrapper.
 
 ## Dedicated RVC requirement
 
@@ -76,3 +89,10 @@ generated speech: UVR produced two 1,057,964-byte WAVs and RVC produced a
 478,444-byte, 40 kHz mono, 5.98-second WAV. The final safety implementation was
 retested against the model and left no inflight marker. No new weights, paid
 service, personal audio, QQ sending, or real desktop playback was involved.
+
+Six additional tests execute actual FFmpeg for all three formats, measured
+gain, unequal-track tails, audio duration inside longer video, invalid media,
+existing-file protection, child-process cancellation, and both legacy caller
+paths. All six pass with both the system FFmpeg and the existing RVC FFmpeg 4.3.
+These use generated tones, not singing-quality evaluation or plugin lifecycle
+acceptance. Cache/pipeline orchestration and the plugin binding are still pending.

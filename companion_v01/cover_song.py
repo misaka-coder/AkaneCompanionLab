@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 import uuid
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .generated_files_media import build_generated_media_info_projection
+from .plugin_subprocess import PluginProcessRunner, run_completed
 
 
 _PROTECTED_MEDIA_EXTENSIONS = {"kgm", "mflac", "mgg", "ncm", "qmc", "qmc0", "qmc3", "tkm"}
@@ -23,11 +23,13 @@ _STEM_CACHE_VERSION = "rvc-cover-stems-v2"
 # Transitional built-in cover service: all RVC protocol now belongs to the
 # independent package. Removed with the built-in tool at the plugin cutover.
 try:
+    from akane_cover_song.media import CoverMedia
     from akane_cover_song.rvc import CoverSongError, RvcWebUiProvider
 except ModuleNotFoundError as exc:
     if exc.name != "akane_cover_song":
         raise
     from plugins.akane_cover_song.src.akane_cover_song.rvc import CoverSongError, RvcWebUiProvider
+    from plugins.akane_cover_song.src.akane_cover_song.media import CoverMedia
 
 
 class CoverSongService:
@@ -61,6 +63,8 @@ class CoverSongService:
     def capability_status(self) -> dict[str, Any]:
         if not self.ffmpeg_path:
             return {"enabled": False, "status": "missing_executor", "reason": "ffmpeg_not_found"}
+        if not self.ffprobe_path:
+            return {"enabled": False, "status": "missing_executor", "reason": "ffprobe_not_found"}
         return self.provider.capability_status()
 
     def list_voice_models(self) -> list[str]:
@@ -153,7 +157,12 @@ class CoverSongService:
             )
         if source_path.stat().st_size > self.max_input_bytes:
             return self._failure("source", "input_too_large", "这份音频超过当前翻唱任务允许的文件大小。")
-        duration = self._probe_duration(source_path)
+        try:
+            duration = self._probe_duration(source_path)
+        except CoverSongError as exc:
+            return self._failure(exc.stage, exc.reason, exc.public_message)
+        except (OSError, TimeoutError):
+            return self._failure("source", "cover_media_probe_failed", "无法确认这份材料的音频时长。")
         if duration > self.max_duration_seconds:
             return self._failure(
                 "source",
@@ -576,115 +585,25 @@ class CoverSongService:
             ),
         }
 
-    def _decode_source(self, *, source_path: Path, output_path: Path) -> None:
-        if not self.ffmpeg_path:
-            raise CoverSongError(stage="decode", reason="ffmpeg_not_found", public_message="本机没有找到 FFmpeg。")
-        completed = subprocess.run(
-            [
-                self.ffmpeg_path,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(source_path),
-                "-vn",
-                "-ar",
-                "44100",
-                "-ac",
-                "2",
-                "-c:a",
-                "pcm_s16le",
-                str(output_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=min(self.provider.timeout_seconds, 900.0),
-            check=False,
-        )
-        if completed.returncode != 0 or not output_path.exists():
-            raise CoverSongError(
-                stage="decode",
-                reason="audio_decode_failed",
-                public_message="无法把这份来源转换为翻唱流程需要的普通音频格式。",
-            )
+    def _run_media(self, method, **kwargs):
+        async def execute():
+            runner = PluginProcessRunner()
+            media = CoverMedia(run=runner.run, ffmpeg=self.ffmpeg_path, ffprobe=self.ffprobe_path)
+            try:
+                return await getattr(media, method)(**kwargs)
+            finally:
+                await runner.aclose()
 
-    def _mix_tracks(
-        self,
-        *,
-        converted_vocals: Path,
-        instrumental: Path,
-        output_path: Path,
-        output_format: str,
-        vocal_gain_db: float,
-        instrumental_gain_db: float,
-    ) -> None:
-        codec_args: list[str]
-        if output_format == "mp3":
-            codec_args = ["-c:a", "libmp3lame", "-b:a", "320k"]
-        elif output_format == "flac":
-            codec_args = ["-c:a", "flac"]
-        else:
-            codec_args = ["-c:a", "pcm_s24le"]
-        filter_complex = (
-            f"[0:a]volume={vocal_gain_db:.3f}dB[v];"
-            f"[1:a]volume={instrumental_gain_db:.3f}dB[i];"
-            "[v][i]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
-            "alimiter=limit=0.95:attack=5:release=50[m]"
-        )
-        completed = subprocess.run(
-            [
-                self.ffmpeg_path,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-y",
-                "-i",
-                str(converted_vocals),
-                "-i",
-                str(instrumental),
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "[m]",
-                *codec_args,
-                str(output_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=min(self.provider.timeout_seconds, 1200.0),
-            check=False,
-        )
-        if completed.returncode != 0 or not output_path.exists():
-            raise CoverSongError(
-                stage="mix",
-                reason="audio_mix_failed",
-                public_message="转换后的人声已经生成，但最后与伴奏混音失败了。",
-            )
+        return run_completed(execute)
+
+    def _decode_source(self, *, source_path: Path, output_path: Path) -> None:
+        self._run_media("decode", source_path=source_path, output_path=output_path)
+
+    def _mix_tracks(self, **kwargs) -> None:
+        self._run_media("mix", **kwargs)
 
     def _probe_duration(self, path: Path) -> float:
-        if not self.ffprobe_path:
-            return 0.0
-        completed = subprocess.run(
-            [
-                self.ffprobe_path,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        try:
-            return max(0.0, float(str(completed.stdout or "0").strip()))
-        except Exception:
-            return 0.0
+        return self._run_media("probe_duration", path=path)
 
     def _valid_cached_output(self, output: Path, manifest: Path, cache_key: str) -> bool:
         if not output.exists() or not output.is_file() or output.stat().st_size <= 0 or not manifest.exists():

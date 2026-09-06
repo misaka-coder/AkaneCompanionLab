@@ -23,7 +23,8 @@ from fastapi.responses import Response
 
 from scripts.akane_separation_package import local_demucs_class, run_completed
 
-from companion_v01.cover_song import CoverSongError, RvcWebUiProvider
+from companion_v01.cover_song import CoverMedia, CoverSongError, RvcWebUiProvider
+from companion_v01.plugin_subprocess import PluginProcessRunner
 from services.asr_business import module as asr_business_module
 from companion_v01.local_media_executor import safe_model_fingerprint, safe_uploaded_suffix
 
@@ -636,45 +637,27 @@ def _mix_local_cover(
     vocal_gain_db: float,
     instrumental_gain_db: float,
 ) -> None:
-    codec_args = (
-        ["-c:a", "libmp3lame", "-b:a", "320k"]
-        if output_format == "mp3"
-        else (["-c:a", "flac"] if output_format == "flac" else ["-c:a", "pcm_s24le"])
-    )
-    filter_complex = (
-        f"[0:a]volume={vocal_gain_db:.3f}dB[v];"
-        f"[1:a]volume={instrumental_gain_db:.3f}dB[i];"
-        # RVC bundles FFmpeg 4.3, whose amix lacks normalize=0. Undo its
-        # two-input averaging before the limiter so the cover is not 6 dB quiet.
-        "[v][i]amix=inputs=2:duration=longest:dropout_transition=0,"
-        "volume=2.0,"
-        "alimiter=limit=0.95:attack=5:release=50[m]"
-    )
-    completed = subprocess.run(
-        [
-            str(ffmpeg_path),
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(converted_vocals),
-            "-i",
-            str(instrumental),
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[m]",
-            *codec_args,
-            str(output_path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=1200,
-        check=False,
-    )
-    if completed.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
-        raise RuntimeError("local_cover_mix_failed")
+    async def execute():
+        runner = PluginProcessRunner()
+        sibling = Path(ffmpeg_path).with_name("ffprobe" + Path(ffmpeg_path).suffix)
+        media = CoverMedia(
+            run=runner.run,
+            ffmpeg=ffmpeg_path,
+            ffprobe=sibling if sibling.is_file() else shutil.which("ffprobe"),
+        )
+        try:
+            await media.mix(
+                converted_vocals=converted_vocals,
+                instrumental=instrumental,
+                output_path=output_path,
+                output_format=output_format,
+                vocal_gain_db=vocal_gain_db,
+                instrumental_gain_db=instrumental_gain_db,
+            )
+        finally:
+            await runner.aclose()
+
+    run_completed(execute)
 
 
 def _unlink_quietly(path: Path) -> None:
