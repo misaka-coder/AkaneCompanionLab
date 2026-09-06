@@ -24,8 +24,15 @@ No gain or mixing code remains in the legacy host or local-service wrapper.
 `CoverPipeline` owns input validation, source hashing, model/parameter cache
 keys, stem reuse, conversion, mixing and completed-result restoration. The old
 host service is now resource/publication glue over this pipeline. The existing
-local-service full-render backend is retained through the provider interface;
-its server-side Demucs orchestration still awaits the next slice.
+local-service full-render backend uses this same pipeline with `cache=None`:
+its only glue binds the existing Demucs deployment and RVC provider. This does
+not create a second server cache. All completed-result caching remains on the
+client. The standalone service imports the business package directly, with an
+explicit checked-in-source fallback only for standalone source deployments.
+It does not import the legacy built-in cover service to obtain business code.
+RVC HTTP routes use per-request providers and drain blocking calls before
+cleaning temporary files; changing the UVR model no longer mutates a shared
+provider. Invalid conversion/mix parameters now fail rather than being clamped.
 
 `RemoteRvcClient` and `RemoteRvcProvider` own the byte-only loopback media-host
 protocol, including model discovery, UVR ZIP transfer, conversion and complete
@@ -155,3 +162,14 @@ Jobs, lifecycle and channel acceptance are still pending. Six additional real
 loopback HTTP tests cover remote parameter/byte transfer, model path rejection,
 ZIP bounds, repeated cancellation/drain, disconnect/502 fencing and endpoint
 validation. Their audio payloads are explicit transport fixtures, not inference.
+
+Four ASGI service tests cover three real FFmpeg output formats, no server cache,
+invalid parameters/inference failure, repeated cancellation before work cleanup,
+and request-scoped UVR selection. ML boundaries in these tests are explicit
+doubles. Separately, on 2026-09-06 the actual standalone loopback service used
+existing Demucs/RVC models with the same six-second synthetic acceptance audio.
+The independent remote client and pipeline produced a 720,102-byte, six-second
+WAV in 34.010 seconds (Demucs 24.511 s, conversion 8.056 s, mix 0.389 s).
+Source-key and title-only client cache restoration both returned identical
+bytes without another inference. Both endpoint fences were clear, and both
+owned services were stopped. No new model downloads, paid calls, QQ or playback.

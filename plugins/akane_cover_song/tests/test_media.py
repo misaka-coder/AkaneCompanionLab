@@ -163,7 +163,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_legacy_host_and_local_service_use_same_real_media_policy(self):
         from companion_v01.cover_song import CoverSongService
-        from scripts.akane_local_capability_host import _mix_local_cover
+        from scripts.akane_local_capability_host import _cover_media
 
         service = CoverSongService(
             generated_file_service=None,
@@ -184,7 +184,7 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
             instrumental_gain_db=-1,
         )
         service._mix_tracks(output_path=host_mix, **params)
-        _mix_local_cover(ffmpeg_path=Path(self.ffmpeg), output_path=local_mix, **params)
+        await _cover_media(Path(self.ffmpeg), self.runner).mix(output_path=local_mix, **params)
         self.assertEqual(host_mix.read_bytes(), local_mix.read_bytes())
         self.assertAlmostEqual(await self.media.probe_duration(host_mix), 1, delta=0.01)
 

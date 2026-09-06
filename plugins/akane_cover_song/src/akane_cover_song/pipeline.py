@@ -102,7 +102,7 @@ class CoverPipeline:
         *,
         provider,
         media,
-        cache: CoverCache,
+        cache: CoverCache | None = None,
         calls=None,
         default_model="",
         max_input_bytes=256 * 1024 * 1024,
@@ -144,6 +144,8 @@ class CoverPipeline:
             raise error("source", "cover_output_already_exists")
         model = await self.calls.call(self.provider.resolve_voice_model, voice_model, default_model=self.default_model)
         if source_path is None:
+            if self.cache is None:
+                raise error("source", "source_required")
             if force_rebuild:
                 raise error("source", "source_required_for_rebuild")
             entry = self.cache.find_cover(
@@ -193,7 +195,7 @@ class CoverPipeline:
                 "output_format": output_format,
             }
         )
-        entry = None if force_rebuild else self.cache.get("covers", key)
+        entry = None if force_rebuild or self.cache is None else self.cache.get("covers", key)
         if entry:
             shutil.copyfile(entry["paths"]["cover"], output)
             return {
@@ -220,7 +222,7 @@ class CoverPipeline:
             )
             timings["local_full_pipeline"] = time.perf_counter() - tick
         else:
-            stems = None if force_rebuild else self.cache.get("stems", stem_key)
+            stems = None if force_rebuild or self.cache is None else self.cache.get("stems", stem_key)
             if stems:
                 # Work copies protect immutable cache audio from provider code.
                 vocals, instrumental = work_dir / "vocals.wav", work_dir / "instrumental.wav"
@@ -240,10 +242,11 @@ class CoverPipeline:
                 for path in (vocals, instrumental):
                     await self.media.probe_duration(path)
                 try:
-                    self.cache.put(
-                        "stems", stem_key, files={"vocals": vocals, "instrumental": instrumental}, metadata=base
-                    )
-                    stem_stored = True
+                    if self.cache is not None:
+                        self.cache.put(
+                            "stems", stem_key, files={"vocals": vocals, "instrumental": instrumental}, metadata=base
+                        )
+                        stem_stored = True
                 except (OSError, ValueError):
                     notices.append("stem_cache_write_failed")
             converted = work_dir / "converted_vocals.wav"
@@ -284,7 +287,8 @@ class CoverPipeline:
             "pipeline": PIPELINE_VERSION,
         }
         try:
-            self.cache.put("covers", key, files={"cover": output}, metadata=metadata)
+            if self.cache is not None:
+                self.cache.put("covers", key, files={"cover": output}, metadata=metadata)
         except (OSError, ValueError):
             notices.append("cover_cache_write_failed")
         timings["total"] = time.perf_counter() - started

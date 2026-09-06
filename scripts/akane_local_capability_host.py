@@ -23,7 +23,11 @@ from fastapi.responses import Response
 
 from scripts.akane_separation_package import local_demucs_class, run_completed
 
-from companion_v01.cover_song import CoverMedia, CoverSongError, RvcWebUiProvider
+from scripts.akane_cover_package import cover_business
+
+_cover = cover_business()
+CoverMedia, CoverSongError, RvcWebUiProvider = _cover.CoverMedia, _cover.CoverSongError, _cover.RvcWebUiProvider
+CoverOptions, CoverPipeline, ProviderCalls = _cover.CoverOptions, _cover.CoverPipeline, _cover.ProviderCalls
 from companion_v01.plugin_subprocess import PluginProcessRunner
 from services.asr_business import module as asr_business_module
 from companion_v01.local_media_executor import safe_model_fingerprint, safe_uploaded_suffix
@@ -180,6 +184,43 @@ class LocalAsrRuntime:
                 "segments": result["segments"], "model": result["model"]}
 
 
+class _DemucsCoverProvider:
+    """Product binding: existing Demucs deployment + package RVC provider."""
+
+    provider_id = "local_demucs_rvc"
+
+    def __init__(self, rvc, demucs, lock, model):
+        self.rvc, self.demucs, self.lock, self.separation_model = rvc, demucs, lock, model
+
+    def resolve_voice_model(self, *args, **kwargs):
+        return self.rvc.resolve_voice_model(*args, **kwargs)
+
+    def model_fingerprint(self, model):
+        return self.rvc.model_fingerprint(model)
+
+    def convert_voice(self, **kwargs):
+        return self.rvc.convert_voice(**kwargs)
+
+    def separate_vocals(self, *, source_path, work_dir):
+        with self.lock:
+            if self.rvc.cancelled():
+                raise CoverSongError(stage="cancelled", reason="operation_cancelled", public_message="翻唱已取消。")
+            stems = self.demucs.separate(
+                source_path=source_path, output_root=work_dir / "stems", model=self.separation_model
+            )
+        vocals, instrumental = stems.get("vocals"), stems.get("instrumental")
+        if not isinstance(vocals, Path) or not isinstance(instrumental, Path):
+            raise CoverSongError(stage="separation", reason="demucs_outputs_missing", public_message="未得到完整分轨。")
+        return vocals, instrumental
+
+
+def _cover_media(ffmpeg_path, runner):
+    sibling = Path(ffmpeg_path).with_name("ffprobe" + Path(ffmpeg_path).suffix)
+    return CoverMedia(
+        run=runner.run, ffmpeg=ffmpeg_path, ffprobe=sibling if sibling.is_file() else shutil.which("ffprobe")
+    )
+
+
 def create_app(
     *,
     ffmpeg_path: Path,
@@ -197,19 +238,23 @@ def create_app(
         cache_dir=whisper_cache_dir,
         default_model=whisper_model,
     )
-    rvc_provider = RvcWebUiProvider(
-        base_url=rvc_base_url,
-        root_dir=rvc_root_dir or "",
-        timeout_seconds=float(os.environ.get("AKANE_LOCAL_RVC_TIMEOUT_SECONDS", "1800") or 1800),
-        separation_model=separation_model,
-    )
+
+    def request_rvc(calls=None, model=None):
+        return RvcWebUiProvider(
+            base_url=rvc_base_url,
+            root_dir=rvc_root_dir or "",
+            timeout_seconds=float(os.environ.get("AKANE_LOCAL_RVC_TIMEOUT_SECONDS", "1800") or 1800),
+            separation_model=model or separation_model,
+            cancelled=calls.cancelled if calls else lambda: False,
+        )
+
+    rvc_provider = request_rvc()
     demucs_runtime = LocalDemucsRuntime(
         python_path=demucs_python_path,
         package_root=demucs_package_root,
         ffmpeg_path=ffmpeg_path,
     )
     demucs_lock = threading.RLock()
-    cover_lock = threading.RLock()
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -357,14 +402,12 @@ def create_app(
         requested_separation_model: str = Form("", alias="separation_model"),
     ) -> Response:
         source_path = await _store_upload(file)
-        original_model = rvc_provider.separation_model
+        calls = ProviderCalls()
         try:
-            if requested_separation_model.strip():
-                rvc_provider.separation_model = requested_separation_model.strip()
+            provider = request_rvc(calls, requested_separation_model.strip())
             with tempfile.TemporaryDirectory(prefix="akane_local_rvc_separate_") as tmp:
-                vocals, instrumental = rvc_provider.separate_vocals(
-                    source_path=source_path,
-                    work_dir=Path(tmp),
+                vocals, instrumental = await calls.call(
+                    provider.separate_vocals, source_path=source_path, work_dir=Path(tmp)
                 )
                 archive_buffer = io.BytesIO()
                 with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -374,7 +417,6 @@ def create_app(
         except Exception as exc:
             raise _http_error("local_rvc_separation_failed", "本地人声分离失败。", exc) from exc
         finally:
-            rvc_provider.separation_model = original_model
             _unlink_quietly(source_path)
 
     @app.post("/v1/rvc/convert")
@@ -388,20 +430,29 @@ def create_app(
         protect: float = Form(0.33),
     ) -> Response:
         source_path = await _store_upload(file)
+        calls = ProviderCalls()
         try:
+            provider = request_rvc(calls)
+            options = CoverOptions(
+                pitch_shift=pitch_shift,
+                index_rate=index_rate,
+                filter_radius=filter_radius,
+                rms_mix_rate=rms_mix_rate,
+                protect=protect,
+            )
             with tempfile.TemporaryDirectory(prefix="akane_local_rvc_convert_") as tmp:
                 output_path = Path(tmp) / "converted.wav"
-                with rvc_provider.exclusive():
-                    result = rvc_provider.convert_voice(
-                        source_path=source_path,
-                        output_path=output_path,
-                        model_name=model_name,
-                        pitch_shift=max(-24, min(24, int(pitch_shift))),
-                        index_rate=max(0.0, min(1.0, float(index_rate))),
-                        filter_radius=max(0, min(7, int(filter_radius))),
-                        rms_mix_rate=max(0.0, min(1.0, float(rms_mix_rate))),
-                        protect=max(0.0, min(0.5, float(protect))),
-                    )
+                result = await calls.call(
+                    provider.convert_voice,
+                    source_path=source_path,
+                    output_path=output_path,
+                    model_name=model_name,
+                    pitch_shift=options.pitch_shift,
+                    index_rate=options.index_rate,
+                    filter_radius=options.filter_radius,
+                    rms_mix_rate=options.rms_mix_rate,
+                    protect=options.protect,
+                )
                 if not output_path.exists() or output_path.stat().st_size <= 0:
                     raise RuntimeError("rvc_output_missing")
                 headers = {
@@ -445,72 +496,46 @@ def create_app(
                 detail={"reason": "cover_output_format_not_allowed", "message": "请求的翻唱格式不受支持。"},
             )
         source_path = await _store_upload(file)
-        started = time.perf_counter()
-        timings: dict[str, float | str] = {}
+        runner, calls = PluginProcessRunner(), ProviderCalls()
         try:
-            with cover_lock:
-                with tempfile.TemporaryDirectory(prefix="akane_local_cover_") as tmp:
-                    job_dir = Path(tmp)
-                    with demucs_lock:
-                        separation_started = time.perf_counter()
-                        stems = demucs_runtime.separate(
-                            source_path=source_path,
-                            output_root=job_dir / "stems",
-                            model=normalized_demucs,
-                        )
-                        timings["separation"] = round(time.perf_counter() - separation_started, 3)
-                    vocals = stems.get("vocals")
-                    instrumental = stems.get("instrumental")
-                    if not isinstance(vocals, Path) or not isinstance(instrumental, Path):
-                        raise RuntimeError("demucs_outputs_missing")
-                    converted_vocals = job_dir / "converted_vocals.wav"
-                    conversion_started = time.perf_counter()
-                    with rvc_provider.exclusive():
-                        conversion = rvc_provider.convert_voice(
-                            source_path=vocals,
-                            output_path=converted_vocals,
-                            model_name=str(model_name or "").strip(),
-                            pitch_shift=max(-24, min(24, int(pitch_shift))),
-                            index_rate=max(0.0, min(1.0, float(index_rate))),
-                            filter_radius=max(0, min(7, int(filter_radius))),
-                            rms_mix_rate=max(0.0, min(1.0, float(rms_mix_rate))),
-                            protect=max(0.0, min(0.5, float(protect))),
-                        )
-                    timings["voice_conversion"] = round(time.perf_counter() - conversion_started, 3)
-                    for key, value in dict(conversion.get("timings") or {}).items():
-                        if isinstance(value, (int, float)):
-                            timings[f"rvc_{key}"] = round(float(value), 3)
-                    output_path = job_dir / f"cover.{normalized_format}"
-                    mix_started = time.perf_counter()
-                    _mix_local_cover(
-                        ffmpeg_path=ffmpeg_path,
-                        converted_vocals=converted_vocals,
-                        instrumental=instrumental,
-                        output_path=output_path,
-                        output_format=normalized_format,
-                        vocal_gain_db=max(-12.0, min(12.0, float(vocal_gain_db))),
-                        instrumental_gain_db=max(-12.0, min(6.0, float(instrumental_gain_db))),
-                    )
-                    timings["mix"] = round(time.perf_counter() - mix_started, 3)
-                    timings["total"] = round(time.perf_counter() - started, 3)
-                    timings["device"] = str(stems.get("device_used") or "")
-                    return Response(
-                        content=output_path.read_bytes(),
-                        media_type={
-                            "mp3": "audio/mpeg",
-                            "flac": "audio/flac",
-                            "wav": "audio/wav",
-                        }[normalized_format],
-                        headers={
-                            "X-Akane-Cover-Timings": json.dumps(timings, ensure_ascii=True),
-                        },
-                    )
+            provider = _DemucsCoverProvider(request_rvc(calls), demucs_runtime, demucs_lock, normalized_demucs)
+            options = CoverOptions(
+                pitch_shift=pitch_shift,
+                index_rate=index_rate,
+                filter_radius=filter_radius,
+                rms_mix_rate=rms_mix_rate,
+                protect=protect,
+                vocal_gain_db=vocal_gain_db,
+                instrumental_gain_db=instrumental_gain_db,
+            )
+            with tempfile.TemporaryDirectory(prefix="akane_local_cover_") as tmp:
+                result = await CoverPipeline(
+                    provider=provider,
+                    media=_cover_media(ffmpeg_path, runner),
+                    calls=calls,
+                ).run(
+                    source_path=source_path,
+                    work_dir=Path(tmp),
+                    voice_model=model_name,
+                    options=options,
+                    output_format=normalized_format,
+                )
+                timings = result["processing"]["seconds"]
+                timings.update({f"rvc_{k}": v for k, v in result["processing"]["rvc"].items()})
+                return Response(
+                    content=result["path"].read_bytes(),
+                    media_type={"mp3": "audio/mpeg", "flac": "audio/flac", "wav": "audio/wav"}[normalized_format],
+                    headers={"X-Akane-Cover-Timings": json.dumps(timings, ensure_ascii=True)},
+                )
         except HTTPException:
             raise
         except Exception as exc:
             raise _http_error("local_cover_failed", "本地完整翻唱失败。", exc) from exc
         finally:
-            _unlink_quietly(source_path)
+            try:
+                await runner.aclose()
+            finally:
+                _unlink_quietly(source_path)
 
     return app
 
@@ -600,11 +625,7 @@ def _render_stem_for_transfer(
     if normalized_format == "wav":
         shutil.copy2(source_path, output_path)
         return output_path
-    codec_args = (
-        ["-c:a", "libmp3lame", "-b:a", "320k"]
-        if normalized_format == "mp3"
-        else ["-c:a", "flac"]
-    )
+    codec_args = ["-c:a", "libmp3lame", "-b:a", "320k"] if normalized_format == "mp3" else ["-c:a", "flac"]
     completed = subprocess.run(
         [
             str(ffmpeg_path),
@@ -625,39 +646,6 @@ def _render_stem_for_transfer(
     if completed.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
         raise RuntimeError("demucs_output_encode_failed")
     return output_path
-
-
-def _mix_local_cover(
-    *,
-    ffmpeg_path: Path,
-    converted_vocals: Path,
-    instrumental: Path,
-    output_path: Path,
-    output_format: str,
-    vocal_gain_db: float,
-    instrumental_gain_db: float,
-) -> None:
-    async def execute():
-        runner = PluginProcessRunner()
-        sibling = Path(ffmpeg_path).with_name("ffprobe" + Path(ffmpeg_path).suffix)
-        media = CoverMedia(
-            run=runner.run,
-            ffmpeg=ffmpeg_path,
-            ffprobe=sibling if sibling.is_file() else shutil.which("ffprobe"),
-        )
-        try:
-            await media.mix(
-                converted_vocals=converted_vocals,
-                instrumental=instrumental,
-                output_path=output_path,
-                output_format=output_format,
-                vocal_gain_db=vocal_gain_db,
-                instrumental_gain_db=instrumental_gain_db,
-            )
-        finally:
-            await runner.aclose()
-
-    run_completed(execute)
 
 
 def _unlink_quietly(path: Path) -> None:
