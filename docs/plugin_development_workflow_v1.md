@@ -62,6 +62,17 @@ Windows 子进程无控制台窗口。它不提供任务队列、权限审批、
 没有运行中 event loop 时直接运行；已有 loop 时在一个线程内运行并同步等到结束。
 它不创建后台 Job、不提前返回、不提供同步调用方取消协议；新异步插件直接 await。
 
+## 没有输入文件的产物工作目录
+
+`await resource_port.work_directory()` 返回当前 invocation 私有临时目录，适用于
+纯文本生图、创建文档等没有现成输入副本的任务。沿用 `resource.read` 端口授权；
+文件登记仍须 `artifact.write`。目录不是稳定存储，不允许输出到 prompt 或 capability
+content。用它创建 `ManagedArtifactDraft(path=...)` 后保持文件到本次调用完成；
+宿主在产物交接完成、失败或取消实际排空后回收整个目录。不要后台继续写入。
+
+这沿用已有 invocation 生命周期；worker 内直接创建本地工作目录，不增加另一条
+文件登记协议或 Job。可交付超过内存 draft 16 MiB 上限的合法文件，仍受输出 slot 总预算限制。
+
 ## 当前调用内组合已安装能力
 
 需要复用另一个插件的实际产物时，声明 `capability.invoke` 并在注册阶段捕获

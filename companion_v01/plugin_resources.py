@@ -70,6 +70,16 @@ class ScopedPluginResourcePort:
         self._plugin_id = plugin_id
         self._provider = provider
 
+    async def work_directory(self) -> Path:
+        invocation = current_resource_invocation.get()
+        if invocation is None or not invocation.active or invocation.plugin_id != self._plugin_id:
+            raise RuntimeError("resource_invocation_required")
+        if asyncio.current_task().cancelling():
+            raise asyncio.CancelledError()
+        if invocation.temporary is None:
+            invocation.temporary = tempfile.TemporaryDirectory(prefix="akane-plugin-work-")
+        return Path(invocation.temporary.name)
+
     async def open(self, target: str) -> PluginResourceResult:
         invocation = current_resource_invocation.get()
         if invocation is None or not invocation.active or invocation.plugin_id != self._plugin_id:

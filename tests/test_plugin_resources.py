@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 import textwrap
 import threading
@@ -60,9 +61,17 @@ def write_resource_plugin(root: Path, *, permission: bool = True) -> Path:
                     inputs=(CapabilityIOSlot(name="target", kind="string", required=True),
                             CapabilityIOSlot(name="delay", kind="integer", required=False)),
                     outputs=(CapabilityIOSlot(name="file", kind="file", required=True,
-                                              max_bytes=1024*1024, delivery="generated_file"),), raw={},
+                                              max_bytes=32*1024*1024, delivery="generated_file"),), raw={},
                 ),)
             async def invoke(self, capability_id, args, context):
+                if args["target"] == "new":
+                    root = await self.port.work_directory()
+                    output = root / "new.txt"
+                    output.write_bytes(b"a" * (17 * 1024 * 1024))
+                    await asyncio.sleep(args.get("delay", 0))
+                    return CapabilityResult(is_error=False, status="ok", content=ManagedArtifactPayload(
+                        content={"new_file": True}, artifacts=(ManagedArtifactDraft(path=output,
+                            title="new-file", output_format="txt", mime_type="text/plain"),)))
                 result = await self.port.open(args["target"])
                 if not result.ok:
                     return CapabilityResult(is_error=True, status=result.status, reason=result.reason)
@@ -123,6 +132,64 @@ def add_attachment(root, attachments):
 
 
 class ResourcePortTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_worker_large_input_free_file_and_cancellation_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scratch = root / "temporary"
+            scratch.mkdir()
+            _, _, service = services(root)
+            generation = PluginGenerationProcess(
+                project_root=PROJECT_ROOT,
+                site_dir=write_resource_plugin(root),
+                plugin_id=PLUGIN_ID,
+                work_dir=root / "work",
+            )
+            generation.bind_resource_provider(GeneratedFileResourceProvider(service, work_root=root / "copies"))
+            generation.bind_managed_artifact_sink(GeneratedFileManagedArtifactSink(service))
+            with patch.dict(os.environ, {"TMPDIR": str(scratch), "TEMP": str(scratch), "TMP": str(scratch)}):
+                await asyncio.to_thread(generation.start)
+            try:
+                context = InvocationContext("owner", "session", "web")
+                result = await generation.invoke(CAPABILITY_ID, {"target": "new"}, context=context)
+                self.assertFalse(result.is_error, result.reason)
+                self.assertEqual(result.content["managed_artifacts"][0]["file_size"], 17 * 1024 * 1024)
+                self.assertFalse(list(scratch.glob("akane-plugin-work-*")))
+                task = asyncio.create_task(
+                    generation.invoke(CAPABILITY_ID, {"target": "new", "delay": 60}, context=context)
+                )
+                for _ in range(200):
+                    if list(scratch.glob("akane-plugin-work-*/new.txt")):
+                        break
+                    await asyncio.sleep(0.01)
+                self.assertTrue(list(scratch.glob("akane-plugin-work-*/new.txt")))
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                self.assertFalse(list(scratch.glob("akane-plugin-work-*")))
+                self.assertFalse(list((root / "work").glob("outbox/**/*.*")))
+            finally:
+                await asyncio.to_thread(generation.stop)
+
+    async def test_work_directory_without_input_has_invocation_lifetime(self):
+        port = ScopedPluginResourcePort(PLUGIN_ID, None)
+        with self.assertRaisesRegex(RuntimeError, "resource_invocation_required"):
+            await port.work_directory()
+        scope = ResourceInvocation(PLUGIN_ID, InvocationContext("owner", "session", "web"))
+        token = current_resource_invocation.set(scope)
+        try:
+            path = await port.work_directory()
+            (path / "new.bin").write_bytes(b"generated without an input")
+            self.assertEqual(await port.work_directory(), path)
+            with self.assertRaisesRegex(RuntimeError, "resource_invocation_required"):
+                await ScopedPluginResourcePort("wrong.owner", None).work_directory()
+            await scope.aclose()
+            self.assertFalse(path.exists())
+            with self.assertRaisesRegex(RuntimeError, "resource_invocation_required"):
+                await port.work_directory()
+        finally:
+            current_resource_invocation.reset(token)
+            await scope.aclose()
+
     async def test_resource_port_requires_manifest_permission(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

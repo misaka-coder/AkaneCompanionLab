@@ -172,6 +172,17 @@ class PluginResourcePort(Protocol):
         """Copy one existing attachment/generated handle for this invocation."""
         ...
 
+    async def work_directory(self) -> Path:
+        """Private scratch directory owned until artifact handoff completes.
+
+        Works without an input resource (e.g. text-to-image or documents).
+        Requires the captured resource.read port and a live invocation; raises
+        RuntimeError with a stable reason outside that scope. Never publish the
+        directory as content. artifact.write is still required to register files.
+        The host removes it after success, failure or fully drained cancellation.
+        """
+        ...
+
 
 class PluginCapabilityPort(Protocol):
     async def invoke(self, capability_id: str, arguments: dict[str, Any]) -> CapabilityResult:
