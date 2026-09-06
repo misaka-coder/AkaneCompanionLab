@@ -28,7 +28,6 @@ from .generated_media import (
     ApplyStyleToExistingFileToolHandler,
     ComposeFileToolHandler,
     CoverSongToolHandler,
-    GenerateImageToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ManageGeneratedFileToolHandler,
@@ -78,7 +77,6 @@ def build_builtin_tool_handlers(
     workspace_file_service: Any,
     attachment_ingest_service: Any,
     generated_file_service: Any,
-    image_generation_service: Any | None,
     cover_song_service: Any | None,
     retrieve_fn: Any,
     skill_registry: Any | None = None,
@@ -90,9 +88,8 @@ def build_builtin_tool_handlers(
 ) -> dict[str, BaseToolHandler]:
     """Construct every built-in handler from explicitly injected services.
 
-    Handler keys, construction order and conditional availability (generate_image
-    and cover_song only when their service is available) mirror the previous
-    engine-owned assembly exactly.
+    Cover-song availability remains conditional on its injected service.
+    Optional image generation is supplied only through the plugin bridge.
     """
     handlers: dict[str, BaseToolHandler] = {
         "retrieve_memory": RetrieveMemoryToolHandler(
@@ -256,10 +253,6 @@ def build_builtin_tool_handlers(
                 service=project_workspace_service,
                 execution_provider=execution_provider,
             )
-    if image_generation_service is not None:
-        handlers["generate_image"] = GenerateImageToolHandler(
-            image_generation_service=image_generation_service,
-        )
     if cover_song_service is not None:
         handlers["cover_song"] = CoverSongToolHandler(cover_song_service=cover_song_service)
     return handlers

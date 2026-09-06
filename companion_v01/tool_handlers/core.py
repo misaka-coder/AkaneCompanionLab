@@ -18,7 +18,6 @@ from ..capability_registry import (
     COMPOSE_FILE_TOOL_SPEC,
     COVER_SONG_TOOL_SPEC,
     FETCH_MEDIA_FROM_URL_TOOL_SPEC,
-    GENERATE_IMAGE_TOOL_SPEC,
     INSPECT_ATTACHMENT_TOOL_SPEC,
     INSPECT_GENERATED_FILE_TOOL_SPEC,
     INSPECT_MEDIA_INFO_TOOL_SPEC,
@@ -320,66 +319,6 @@ LOAD_MATERIAL_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-GENERATE_IMAGE_INPUT_SCHEMA: dict[str, Any] = {
-    "description": (
-        "Generate a new image or edit one to five current-session reference images. "
-        "The host resolves img_*/gen_* handles and calls the configured PinAI GPT Image provider. "
-        "Use only for an explicit image-generation/editing intent; never invent paths, URLs, or base64."
-    ),
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "prompt": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4000,
-            "description": "Complete creative/edit instruction preserving the user's requested constraints.",
-        },
-        "reference_images": {
-            "type": "array",
-            "items": {"type": "string", "maxLength": 120},
-            "maxItems": 5,
-            "description": "Optional current-session img_*/gen_* handles. Omit for text-to-image.",
-        },
-        "mask_image": {
-            "type": "string",
-            "maxLength": 120,
-            "description": "Optional current-session mask image handle. Requires at least one reference image.",
-        },
-        "size": {
-            "type": "string",
-            "pattern": "^(auto|[0-9]{3,4}x[0-9]{3,4})$",
-            "description": "auto or WIDTHxHEIGHT; bounded by the host. Common: 1024x1024, 1536x1024, 1024x1536.",
-        },
-        "quality": {"type": "string", "enum": ["auto", "low", "medium", "high"]},
-        "background": {
-            "type": "string",
-            "enum": ["auto", "opaque"],
-            "description": "gpt-image-2 does not support transparent backgrounds.",
-        },
-        "output_format": {"type": "string", "enum": ["png", "jpeg", "webp"]},
-        "compression": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 100,
-            "description": "JPEG/WebP output compression quality. Ignored for PNG.",
-        },
-        "input_fidelity": {
-            "type": "string",
-            "enum": ["auto", "low", "high"],
-            "description": "How strongly edits should preserve input details.",
-        },
-        "n": {"type": "integer", "minimum": 1, "maximum": 4},
-        "output_title": {"type": "string", "maxLength": 80},
-        "send_to_user": {
-            "type": "boolean",
-            "description": "Default true: deliver generated images through the current client.",
-        },
-    },
-    "required": ["prompt"],
-}
-
-
 READ_ATTACHMENT_SECTION_INPUT_SCHEMA: dict[str, Any] = {
     "description": (
         "Expand a specific page / line range / table / sheet of a long attachment in "
@@ -612,14 +551,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
         default_round_budget=4,
         input_schema=LOAD_MATERIAL_INPUT_SCHEMA,
     ),
-    "generate_image": ToolMetadata(
-        family="image_generation",
-        operation="external",
-        risk="medium",
-        default_round_budget=5,
-        background=True,
-        input_schema=GENERATE_IMAGE_INPUT_SCHEMA,
-    ),
     "retry_attachment": ToolMetadata(family="file_workspace", operation="control", risk="low", default_round_budget=3),
     "clear_attachment_focus": ToolMetadata(
         family="file_workspace", operation="control", risk="low", default_round_budget=3
@@ -776,7 +707,6 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "fetch_media_from_url": FETCH_MEDIA_FROM_URL_TOOL_SPEC,
     "inspect_attachment": INSPECT_ATTACHMENT_TOOL_SPEC,
     "load_material": LOAD_MATERIAL_TOOL_SPEC,
-    "generate_image": GENERATE_IMAGE_TOOL_SPEC,
     "retry_attachment": RETRY_ATTACHMENT_TOOL_SPEC,
     "clear_attachment_focus": CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
     "read_attachment_section": READ_ATTACHMENT_SECTION_TOOL_SPEC,

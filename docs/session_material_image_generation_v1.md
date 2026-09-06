@@ -1,5 +1,13 @@
 # Session Material Transfer + PinAI Image Generation V1
 
+Updated 2026-09-06: the former built-in `generate_image` provider/service/handler
+and fixed schema/prompt have been removed. The optional market plugin exposes
+`akane.image-generation.run.v1`; install/enable it explicitly. `load_material`
+and common session material registration/delivery remain host-owned. Current
+acceptance and limitations: [plugin migration V2](optional_business_plugins_v2.md).
+The Phase 1 shapes below document the original workflow; the installed plugin's
+descriptor is the current schema authority and defaults `send_to_user` to false.
+
 ## Goal
 
 Akane does not need a permanent asset library for this milestone. She needs a
@@ -88,11 +96,10 @@ IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES=20971520
 IMAGE_GENERATION_MAX_OUTPUT_BYTES=26214400
 ```
 
-PinAI 的 API key 按平台分组。`IMAGE_GENERATION_API_KEY` 必须显式配置为绑定 OpenAI 平台的 key；即使聊天接口也使用 PinAI，也不要自动复用聊天 key。运行时会通过 `/models` 检查当前 key 是否能看到配置的图片模型；平台分组不匹配、鉴权失败、模型缺失或端点不可用时会隐藏工具，不产生图片费用。
-
-The image key is separate from chat/vision configuration. A deployment may use
-the same PinAI key value, but code must not silently send an unrelated chat
-provider key to the PinAI host.
+当前插件每次通过有权限的命名连接读取当前 Bot 模型服务设置；专用图片 key 为空时保留
+现有聊天 key 回退规则，管理员需确保该凭证确实适用于所配置的图片服务。插件不另存配置。
+安装健康检查只验证本地编解码，不访问 `/models`、不发起付费请求，也不保证服务商可用。
+网络生成/编辑遵循首次确认策略；鉴权、禁用或服务商拒绝在实际调用时结构化报告。
 
 ## Provider Rules
 

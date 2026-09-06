@@ -1,6 +1,14 @@
 schema_version = 1
 
 [[plugins]]
+source = "akane_image_generation"
+plugin_id = "akane.image-generation"
+display_name = "图片生成与参考图编辑"
+summary = "通过当前模型服务连接生成或编辑图片；只接受会话材料句柄，按实际格式和尺寸登记多图。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "network.read", "connection.image_generation.read"]
+requirements = ["Python 3.11+；宿主公共 SDK 需支持命名连接和调用工作目录。", "宿主解释器需 requests >=2.31,<3、urllib3 >=2.2,<3、Pillow >=10,<13；健康检查真实测试 PNG/JPEG/WebP 编解码，不访问云端。", "使用现有 Bot 模型服务里的图片连接；需启用并配置支持 Images API 的服务商，不新建配置仓库。", "网络调用可能计费，遵循现有首次确认策略；安装不会替用户修改审批。", "最多 5 张参考图、4 张输出；mask 需与首张参考图同尺寸的含 alpha PNG。服务商可能不支持全部参数；实际尺寸、格式或数量偏离时明确提示。", "已发出的请求取消后等待实际响应；断连无法确认远端结束时失败，不声称已停止推理。", "默认登记不发送、不播放；可用 load_material 看图、send_file 交付或把生成句柄再次用作参考图。不自动安装依赖。"]
+
+[[plugins]]
 source = "akane_voice_dataset"
 plugin_id = "akane.voice-dataset"
 display_name = "语音训练素材整理"

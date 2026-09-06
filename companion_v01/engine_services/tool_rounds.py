@@ -87,7 +87,6 @@ def describe_tool_call_for_prompt(tool_call: dict[str, Any]) -> str:
 def build_tool_working_stream_event(tool_call: dict[str, Any]) -> dict[str, Any]:
     tool_type = str((tool_call or {}).get("type") or "unknown").strip() or "unknown"
     message = {
-        "generate_image": "我开始生成图片，可能需要一会儿。",
         "load_material": "我重新看一下原图。",
     }.get(tool_type, "我查一下。")
     return {
@@ -280,10 +279,7 @@ def resolve_capability_selection(
             if domain_profile.id != DEFAULT_DOMAIN_PROFILE_ID
             else tuple(handlers.keys())
         ),
-        hidden_tool_names=(
-            *domain_profile.hidden_tool_names,
-            *(() if "generate_image" in handlers else ("generate_image",)),
-        ),
+        hidden_tool_names=domain_profile.hidden_tool_names,
         intent_text=intent_text,
         profile_user_id=profile_user_id,
         session_id=session_id,

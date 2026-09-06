@@ -156,10 +156,19 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
             sent = gateway.send_generated_files(qq_context, qq.stream_events)
         self.assertTrue(sent["ok"], sent)
         transport.assert_called_once()
-        self.assertTrue(transport.call_args.args[1].endswith("/upload_private_file"))
         uploaded = transport.call_args.kwargs["json"]
-        self.assertTrue(Path(uploaded["file"]).is_file())
-        self.assertTrue(uploaded["name"].endswith("." + expected_extension))
+        if expected_extension in {"png", "jpeg", "webp"}:
+            self.assertTrue(transport.call_args.args[1].endswith("/send_private_msg"))
+            images = [segment for segment in uploaded["message"] if segment["type"] == "image"]
+            self.assertEqual(len(images), 1)
+            path = Path(qq.stream_events[0]["file"]["absolute_path"]).resolve()
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.suffix, "." + expected_extension)
+            self.assertIn(images[0]["data"]["file"], (str(path), path.as_uri()))
+        else:
+            self.assertTrue(transport.call_args.args[1].endswith("/upload_private_file"))
+            self.assertTrue(Path(uploaded["file"]).is_file())
+            self.assertTrue(uploaded["name"].endswith("." + expected_extension))
 
     async def exercise_host_jobs(self, *, root, engine, files, attachments, source_id):
         engine.executor_broker = ExecutorBroker(None)

@@ -17,6 +17,14 @@ from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
 
 
 class TimelinePluginBindingTests(unittest.TestCase):
+    def test_image_generation_has_one_plugin_authority(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertFalse((root / "companion_v01/image_generation.py").exists())
+        for path in (root / "companion_v01").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            for symbol in ("GenerateImageToolHandler", "GENERATE_IMAGE_TOOL_SPEC", "PinAIImageProvider", "_get_image_generation_service"):
+                self.assertNotIn(symbol, source, str(path))
+
     def test_dataset_business_has_one_plugin_authority(self):
         from companion_v01.generated_files import GeneratedFileService
         from companion_v01 import generated_files_media, generated_files_io, generated_files_cards

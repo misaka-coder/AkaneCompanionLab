@@ -468,7 +468,16 @@ class ToolInvocationTests(unittest.TestCase):
 
             @staticmethod
             def tool_spec():
-                return tool_orchestration_engine.GENERATE_IMAGE_TOOL_SPEC
+                return CapabilityToolSpec(
+                    capability_id="generate_image",
+                    display_name="Long-task fixture",
+                    description="Test-only long operation.",
+                    input_schema={"type": "object", "properties": {"prompt": {"type": "string"}}},
+                    execution_class="long_task",
+                    risk="low",
+                    confirm="never",
+                    effects=("test",),
+                )
 
             @staticmethod
             def normalize_call(value):

@@ -10,5 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["requests>=2.31,<3", "urllib3>=2.2,<3", "Pillow>=10,<13"]
 
+[project.entry-points."akane.plugins.v1"]
+"akane.image-generation" = "akane_image_generation.plugin:create_plugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -117,17 +117,18 @@ class LocalCapabilityCatalogTests(unittest.TestCase):
         )
 
         by_id = {item["id"]: item for item in catalog["capabilities"]}
-        image_generation = by_id["prompt_module.image_generation"]
+        image_material = by_id["prompt_module.image_material_reload"]
+        self.assertNotIn("prompt_module.image_generation", by_id)
 
-        self.assertFalse(image_generation["enabled"])
-        self.assertEqual(image_generation["status"], "unavailable")
-        self.assertEqual(image_generation["reason"], "tool_not_registered:generate_image")
+        self.assertFalse(image_material["enabled"])
+        self.assertEqual(image_material["status"], "unavailable")
+        self.assertEqual(image_material["reason"], "tool_not_registered:load_material")
 
     def test_prompt_module_uses_runtime_tool_readiness_as_its_source_of_truth(self) -> None:
         unavailable_catalog = build_local_capability_catalog(
             engine=SimpleNamespace(
                 tool_handlers={
-                    "generate_image": StatusHandler(
+                    "load_material": StatusHandler(
                         status="unavailable",
                         reason="provider_endpoint_missing",
                     )
@@ -136,20 +137,20 @@ class LocalCapabilityCatalogTests(unittest.TestCase):
             config_module=SimpleNamespace(),
         )
         ready_catalog = build_local_capability_catalog(
-            engine=SimpleNamespace(tool_handlers={"generate_image": StatusHandler(status="ready")}),
+            engine=SimpleNamespace(tool_handlers={"load_material": StatusHandler(status="ready")}),
             config_module=SimpleNamespace(),
         )
 
         unavailable = {
             item["id"]: item for item in unavailable_catalog["capabilities"]
-        }["prompt_module.image_generation"]
+        }["prompt_module.image_material_reload"]
         ready = {
             item["id"]: item for item in ready_catalog["capabilities"]
-        }["prompt_module.image_generation"]
+        }["prompt_module.image_material_reload"]
 
         self.assertFalse(unavailable["enabled"])
         self.assertEqual(unavailable["status"], "unavailable")
-        self.assertEqual(unavailable["reason"], "tool_not_ready:generate_image")
+        self.assertEqual(unavailable["reason"], "tool_not_ready:load_material")
         self.assertTrue(ready["enabled"])
         self.assertEqual(ready["status"], "ready")
         self.assertNotIn("reason", ready)

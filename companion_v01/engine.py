@@ -40,7 +40,6 @@ from .embedding_provider import BaseEmbeddingProvider, CachedEmbeddingProvider, 
 from .generated_files import GeneratedFileService
 from .cover_song import CoverSongService, RvcWebUiProvider
 from .local_media_executor import LocalMediaExecutorClient, LocalRvcExecutorProvider
-from .image_generation import ImageGenerationService, PinAIImageProvider
 from .image_materials import SessionImageMaterialResolver
 from . import gift_engine
 from .gift_system import GiftSystemService
@@ -112,7 +111,6 @@ from .tool_runtime import (
     BrowseMemoryToolHandler,
     DesktopSatelliteToolHandler,
     FetchMediaFromUrlToolHandler,
-    GenerateImageToolHandler,
     InspectAttachmentToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
@@ -2481,40 +2479,6 @@ class AkaneMemoryEngine:
         )
         self.image_material_resolver = resolver
         return resolver
-
-    def _get_image_generation_service(self) -> ImageGenerationService | None:
-        service = getattr(self, "image_generation_service", None)
-        if service is not None:
-            return service
-        if not bool(getattr(self.settings, "image_generation_enabled", False)):
-            return None
-        resolver = self._get_image_material_resolver()
-        generated_file_service = self._get_generated_file_service()
-        if resolver is None or generated_file_service is None:
-            return None
-        image_api_key = str(getattr(self.settings, "image_generation_api_key", "") or "").strip()
-        if not image_api_key:
-            image_api_key = str(getattr(self.settings, "chat_api_key", "") or "").strip()
-        provider = PinAIImageProvider(
-            base_url=str(getattr(self.settings, "image_generation_base_url", "") or ""),
-            api_key=image_api_key,
-            model=str(getattr(self.settings, "image_generation_model", "gpt-image-2") or "gpt-image-2"),
-            timeout_seconds=float(getattr(config, "IMAGE_GENERATION_TIMEOUT_SECONDS", 300.0) or 300.0),
-            max_output_bytes=int(getattr(config, "IMAGE_GENERATION_MAX_OUTPUT_BYTES", 25 * 1024 * 1024) or 0),
-        )
-        if not provider.configured:
-            return None
-        service = ImageGenerationService(
-            provider=provider,
-            image_material_resolver=resolver,
-            generated_file_service=generated_file_service,
-            max_input_images=int(getattr(config, "IMAGE_GENERATION_MAX_INPUT_IMAGES", 5) or 5),
-            max_output_images=int(getattr(config, "IMAGE_GENERATION_MAX_OUTPUT_IMAGES", 4) or 4),
-            max_image_bytes=int(getattr(config, "IMAGE_GENERATION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
-            max_total_input_bytes=int(getattr(config, "IMAGE_GENERATION_MAX_TOTAL_INPUT_BYTES", 20 * 1024 * 1024) or 0),
-        )
-        self.image_generation_service = service
-        return service
 
     def _get_cover_song_service(self) -> CoverSongService | None:
         service = getattr(self, "cover_song_service", None)
@@ -9129,7 +9093,6 @@ class AkaneMemoryEngine:
             workspace_file_service=self._get_workspace_file_service(),
             attachment_ingest_service=self._get_attachment_ingest_service(),
             generated_file_service=self._get_generated_file_service(),
-            image_generation_service=self._get_image_generation_service(),
             cover_song_service=self._get_cover_song_service(),
             retrieve_fn=self._execute_retrieve_memory_tool,
             skill_registry=self._get_skill_registry(),

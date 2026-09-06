@@ -265,6 +265,7 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         fake_engine = SimpleNamespace(
             _resolve_tool_handlers=lambda **_kwargs: {"exec_run": handler},
             _build_execution_host_context=AkaneMemoryEngine._build_execution_host_context,
+            _build_loadable_capability_catalog=lambda **_kwargs: ("", []),
         )
 
         native = AkaneMemoryEngine._build_tool_prompt_context(
@@ -588,7 +589,6 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
                 workspace_file_service=None,
                 attachment_ingest_service=None,
                 generated_file_service=None,
-                image_generation_service=None,
                 cover_song_service=None,
                 retrieve_fn=None,
                 execution_provider=provider,
@@ -621,7 +621,6 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
                 workspace_file_service=None,
                 attachment_ingest_service=None,
                 generated_file_service=None,
-                image_generation_service=None,
                 cover_song_service=None,
                 retrieve_fn=None,
                 execution_provider=provider,
@@ -652,7 +651,6 @@ class ExecCatalogRegistrationTests(unittest.TestCase):
             workspace_file_service=None,
             attachment_ingest_service=None,
             generated_file_service=None,
-            image_generation_service=None,
             cover_song_service=None,
             retrieve_fn=None,
         )

@@ -44,7 +44,6 @@ TOOL_GROUPS: dict[str, str] = {
     "retry_attachment": "attachments",
     "clear_attachment_focus": "attachments",
     "compose_file": "documents",
-    "generate_image": "image_generation",
     "revise_generated_file": "documents",
     "apply_style_to_existing_file": "documents",
     "inspect_media_info": "media",
@@ -62,7 +61,6 @@ TOOL_GROUPS: dict[str, str] = {
 TOOL_USED_BY: dict[str, list[str]] = {
     "load_character_context": ["agent", "desktop_pet", "qq_text"],
     "load_material": ["agent", "desktop_pet", "qq_text"],
-    "generate_image": ["agent", "desktop_pet", "qq_text"],
     "cover_song": ["agent", "desktop_pet", "qq_text"],
     "send_sticker": ["agent", "qq_text"],
     "web_search": ["agent", "desktop_pet", "qq_text", "web_scene"],

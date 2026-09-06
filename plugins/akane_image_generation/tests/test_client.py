@@ -61,7 +61,7 @@ def server(*replies):
             reply = queue.popleft()
             if reply.get("block"):
                 waiting.set()
-                release.wait(5)
+                release.wait(reply.get("wait_seconds", 5))
             if reply.get("disconnect"):
                 self.connection.shutdown(socket.SHUT_RDWR)
                 self.connection.close()
@@ -81,7 +81,7 @@ def server(*replies):
                 self.wfile.flush()
                 if reply.get("keep_open"):
                     waiting.set()
-                    release.wait(5)
+                    release.wait(reply.get("wait_seconds", 5))
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
@@ -138,6 +138,7 @@ class ImageTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(len(result.images), 2)
                 self.assertEqual(result.images[0].output_format, fmt.lower())
+                self.assertIn("provider_output_dimensions_changed", result.notices)
                 self.assertNotEqual(result.images[0].data, result.images[1].data)
                 fields = json.loads(calls[0][2])
                 self.assertEqual(fields["size"], "512x1024")
@@ -236,6 +237,34 @@ class ImageTests(unittest.IsolatedAsyncioTestCase):
             result = await client(url, transient_retry_count=1).generate(prompt="x")
             self.assertEqual(len(result.images), 1)
             self.assertEqual(len(calls), 2)
+
+    async def test_rejection_diagnostics_are_allowlisted_not_raw_provider_text(self):
+        for supplied, expected in (("n", "n"), ("fixture-key", ""), ("https://private.example/?key=secret", "")):
+            with server({"status": 400, "body": {"error": {"message": "private secret text", "param": supplied}}}) as (
+                url,
+                *_,
+            ):
+                with self.assertRaises(ImageError) as raised:
+                    await client(url).generate(prompt="x")
+                self.assertEqual(raised.exception.http_status, 400)
+                self.assertEqual(raised.exception.rejected_parameter, expected)
+                self.assertEqual(str(raised.exception), "provider_rejected_request")
+
+    async def test_cancel_with_only_some_final_images_is_unconfirmed(self):
+        with server({"block": True, "body": events(final(picture())), "mime": "text/event-stream"}) as (
+            url,
+            _,
+            waiting,
+            release,
+            _,
+        ):
+            runtime = client(url)
+            task = asyncio.create_task(runtime.generate(prompt="x", n=2))
+            self.assertTrue(await asyncio.to_thread(waiting.wait, 2))
+            task.cancel()
+            release.set()
+            with self.assertRaisesRegex(ImageError, "remote_completion_unconfirmed"):
+                await task
 
     async def test_cancel_waits_for_remote_terminal_and_close_drains(self):
         with server({"block": True}) as (url, calls, waiting, release, finished):

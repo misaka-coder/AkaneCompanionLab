@@ -126,6 +126,7 @@ class ImageClient:
         self._check_cancel(signal)
         deadline = time.monotonic() + self._timeout
         notices, uploaded = [], []
+        failure = None
         with requests.Session() as session:
             try:
                 if not refs:
@@ -169,13 +170,24 @@ class ImageClient:
                 with response:
                     images = self._decode(response, fields["n"], deadline)
                 if len(images) < fields["n"]:
+                    if signal.is_set():
+                        raise ImageError("remote_completion_unconfirmed")
                     notices.append("provider_returned_fewer_images")
+                if fields["size"] != "auto":
+                    expected_size = tuple(map(int, fields["size"].split("x")))
+                    if any((image.width, image.height) != expected_size for image in images):
+                        notices.append("provider_output_dimensions_changed")
+                if any(image.output_format != fields["output_format"] for image in images):
+                    notices.append("provider_output_format_changed")
             except (requests.RequestException, HTTPError, TimeoutError):
                 # A disconnected client cannot assert remote inference stopped.
-                raise ImageError("remote_completion_unconfirmed") from None
+                failure = ImageError("remote_completion_unconfirmed")
+                raise failure from None
             except ImageError as exc:
+                failure = exc
                 if signal.is_set() and exc.code in {"provider_stream_incomplete", "provider_response_deadline"}:
-                    raise ImageError("remote_completion_unconfirmed") from None
+                    failure = ImageError("remote_completion_unconfirmed")
+                    raise failure from None
                 raise
             finally:
                 # These IDs were created by this invocation, never user assets.
@@ -192,6 +204,10 @@ class ImageClient:
                                 notices.append("provider_uploaded_file_cleanup_failed")
                     except requests.RequestException:
                         notices.append("provider_uploaded_file_cleanup_failed")
+                if failure is not None:
+                    failure.notices = tuple(dict.fromkeys(notices))
+                elif signal.is_set() and "provider_uploaded_file_cleanup_failed" in notices:
+                    raise ImageError("provider_uploaded_file_cleanup_unconfirmed")
         return ImageResult(tuple(images), fields["n"], tuple(dict.fromkeys(notices)))
 
     def _headers(self):
@@ -220,6 +236,7 @@ class ImageClient:
             with response:
                 status = response.status_code
                 error = self._body(response, 64 * 1024, deadline).decode("utf-8", errors="replace").lower()
+            parameter = self._error_parameter(error)
             code = (
                 "provider_images_api_unsupported"
                 if "images api is not supported" in error
@@ -240,8 +257,38 @@ class ImageClient:
             if code == "provider_no_compatible_accounts" and attempt < self._retries:
                 signal.wait(min(attempt + 1, max(0, deadline - time.monotonic())))
                 continue
-            raise ImageError(code, retryable=status == 429 or status >= 500)
+            raise ImageError(
+                code, retryable=status == 429 or status >= 500, http_status=status, rejected_parameter=parameter
+            )
         raise ImageError("provider_unavailable")
+
+    @staticmethod
+    def _error_parameter(raw):
+        # Only a finite schema field allowlist leaves the transport. Never
+        # echo an arbitrary error code, message, request ID, URL or credential.
+        try:
+            payload = json.loads(raw)
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            parameter = error.get("param", "") if isinstance(error, dict) else ""
+        except (ValueError, RecursionError):
+            return ""
+        allowed = {
+            "model",
+            "prompt",
+            "n",
+            "stream",
+            "size",
+            "quality",
+            "background",
+            "response_format",
+            "output_format",
+            "output_compression",
+            "input_fidelity",
+            "image",
+            "image[]",
+            "mask",
+        }
+        return parameter if isinstance(parameter, str) and parameter in allowed else ""
 
     @staticmethod
     def _chunks(response, limit, deadline):
@@ -278,10 +325,12 @@ class ImageClient:
             done = False
             # Partial images may be large; bound the whole stream, not just finals.
             for chunk in self._chunks(response, limit * 4, deadline):
+                search_from = len(pending)
                 pending.extend(chunk)
-                while b"\n" in pending:
-                    raw, _, rest = pending.partition(b"\n")
-                    pending = bytearray(rest)
+                while (newline := pending.find(b"\n", search_from)) >= 0:
+                    raw = bytes(pending[:newline])
+                    del pending[: newline + 1]
+                    search_from = 0
                     lines += 1
                     if lines > 4096 or len(raw) > limit:
                         raise ImageError("provider_stream_size_limit")

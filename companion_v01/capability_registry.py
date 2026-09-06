@@ -187,7 +187,6 @@ ATTACHMENT_WORKSPACE_TOOL_NAMES = (
 )
 
 IMAGE_MATERIAL_TOOL_NAMES = ("load_material",)
-IMAGE_GENERATION_TOOL_NAMES = ("generate_image",)
 COVER_SONG_TOOL_NAMES = ("cover_song",)
 
 DOCUMENT_WORKBENCH_TOOL_NAMES = (
@@ -1041,42 +1040,6 @@ MANAGE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
     max_result_bytes=4096,
 )
 
-GENERATE_IMAGE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="generate_image",
-    display_name="Generate image",
-    description=(
-        "Generate a new image or edit one to five current-session reference images using the configured image provider. "
-        "Use only for explicit image-generation/editing intent."
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "prompt": {"type": "string", "minLength": 1, "maxLength": 4000, "description": "Complete creative/edit instruction."},
-            "reference_images": {"type": "array", "items": {"type": "string", "maxLength": 120}, "maxItems": 5, "description": "Optional current-session img_*/gen_* handles."},
-            "mask_image": {"type": "string", "maxLength": 120, "description": "Optional mask image handle."},
-            "size": {"type": "string", "pattern": "^(auto|[0-9]{3,4}x[0-9]{3,4})$", "description": "auto or WIDTHxHEIGHT. Common: 1024x1024, 1536x1024."},
-            "quality": {"type": "string", "enum": ["auto", "low", "medium", "high"]},
-            "background": {"type": "string", "enum": ["auto", "opaque"]},
-            "output_format": {"type": "string", "enum": ["png", "jpeg", "webp"]},
-            "compression": {"type": "integer", "minimum": 0, "maximum": 100},
-            "input_fidelity": {"type": "string", "enum": ["auto", "low", "high"]},
-            "n": {"type": "integer", "minimum": 1, "maximum": 4},
-            "output_title": {"type": "string", "maxLength": 80},
-            "send_to_user": {"type": "boolean"},
-        },
-        "required": ["prompt"],
-    },
-    risk="medium",
-    confirm="never",
-    effects=("image_generation",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.0.0",
-    schema_version=1,
-    execution_class="long_task",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
 SEND_FILE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="send_file",
     display_name="Send file",
@@ -2324,16 +2287,6 @@ class CapabilityRegistry:
                 trigger=_has_image_context,
                 latent_reason="当前会话还没有可重新加载的图片材料。",
                 activation_hint="用户上传图片或生成一张图片后，这项材料读取能力会自动开放。",
-            ),
-            CapabilityModule(
-                name="image_generation",
-                layer="shared_image_generation",
-                modes=CHAT_FILE_CLIENT_MODES,
-                tools=IMAGE_GENERATION_TOOL_NAMES,
-                light_hint="用户明确要文生图、图生图、融合多张图片或继续修改生成图时，可以调用已配置的云端图片生成能力；使用当前会话 img_/gen_ handle，不填写路径或 URL。",
-                trigger=_always,
-                unavailable_reason="当前配置的图片中转没有通过 Images API 可用性检查，因此没有暴露生图工具。",
-                recovery_hint="中转恢复 Images API 或切换到支持生图的 provider 后，系统会自动重新开放；当前不要声称已经生成图片。",
             ),
             CapabilityModule(
                 name="conversation_file_authoring",

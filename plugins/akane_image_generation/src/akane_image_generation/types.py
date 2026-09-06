@@ -8,10 +8,13 @@ from PIL import Image
 
 
 class ImageError(RuntimeError):
-    def __init__(self, code, *, retryable=False):
+    def __init__(self, code, *, retryable=False, http_status=0, rejected_parameter=""):
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        self.http_status = http_status
+        self.rejected_parameter = rejected_parameter
+        self.notices = ()
 
 
 @dataclass(frozen=True)
