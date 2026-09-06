@@ -190,9 +190,6 @@ IMAGE_MATERIAL_TOOL_NAMES = ("load_material",)
 
 DOCUMENT_WORKBENCH_TOOL_NAMES = (
     "read_attachment_section",
-    "compose_file",
-    "revise_generated_file",
-    "apply_style_to_existing_file",
 )
 
 MEDIA_WORKBENCH_TOOL_NAMES = (
@@ -209,7 +206,6 @@ GENERATED_FILE_MANAGEMENT_TOOL_NAMES = (
 )
 
 FILE_HANDOFF_TOOL_NAMES = ("send_file",)
-CONVERSATION_FILE_AUTHORING_TOOL_NAMES = ("compose_file",)
 QQ_STICKER_TOOL_NAMES = ("send_sticker",)
 QQ_ONEBOT_ACTION_TOOL_NAMES = ("onebot_action",)
 QQ_MUSIC_CARD_TOOL_NAMES = ("send_music_card",)
@@ -771,198 +767,6 @@ REGISTER_WORKSPACE_ITEMS_TOOL_SPEC = CapabilityToolSpec(
     idempotency="idempotent",
     max_result_bytes=32768,
 )
-COMPOSE_FILE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="compose_file",
-    display_name="Compose file",
-    description=(
-        "把当前对话中已经整理好的内容，或 source_ids 指向的现有材料，生成一个新的文档、表格、"
-        "字幕或文本文件。普通聊天回复不要调用。若只是忠实转换现有材料，可不填 content_markdown；"
-        "若需要改写、总结或排版，先在 content_markdown/table_rows 中给出要写入的最终内容。"
-        "适合文档、静态展示页和短小自包含文件；返回成功只证明文件已生成，不证明内容可运行。"
-        "可执行程序、游戏、多文件项目或需要调试的代码优先加载 coding-project Skill 并用 Shell 真实验证。"
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "source_ids": {
-                "type": "array",
-                "items": {"type": "string", "maxLength": 120},
-                "maxItems": 20,
-                "description": "可选的现有材料句柄，如 file_*、img_*、audio_*、gen_*。",
-            },
-            "task": {
-                "type": "string",
-                "maxLength": 500,
-                "description": "要整理、转换或导出的目标；不要只写“处理一下”。",
-            },
-            "output_format": {
-                "type": "string",
-                "enum": ["md", "txt", "docx", "xlsx", "pdf", "json", "csv", "html", "srt", "lrc", "vtt"],
-                "description": "目标文件格式。",
-            },
-            "output_title": {
-                "type": "string",
-                "maxLength": 80,
-                "description": "可选文件标题；未指定时系统会生成安全标题。",
-            },
-            "structure": {
-                "type": "string",
-                "maxLength": 80,
-                "description": "可选结构提示，如 summary、table、report、notes。",
-            },
-            "style": {
-                "type": "string",
-                "maxLength": 80,
-                "description": "可选整体风格提示，如 clean、formal、casual。",
-            },
-            "fidelity": {
-                "type": "string",
-                "maxLength": 80,
-                "description": "可选保真要求；忠实转换现有材料时可说明 preserve。",
-            },
-            "content_markdown": {
-                "type": "string",
-                "maxLength": 80000,
-                "description": "要写入文档/文本的完整正文或 Markdown。忠实转换 source_ids 时可留空。",
-            },
-            "table_rows": {
-                "type": "array",
-                "items": {
-                    "type": "array",
-                    "items": {"type": "string", "maxLength": 500},
-                    "maxItems": 50,
-                },
-                "maxItems": 1000,
-                "description": "生成表格时使用；第一行通常是表头。",
-            },
-            "formatting": {
-                "type": "object",
-                "additionalProperties": True,
-                "description": "可选白名单样式规则，如 header、columns、rows、row_rules、highlights、auto_width。",
-            },
-        },
-        "required": ["output_format"],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_create",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
-
-REVISE_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="revise_generated_file",
-    display_name="Revise generated file",
-    description=(
-        "修改一个已经生成的 gen_* 文件并创建新版本，不覆盖旧文件。"
-        "instruction 说明修改目标；需要重写正文或表格时，同时提供 content_markdown 或 table_rows。"
-        "成功只代表产生了修改版文件，不代表修改解决了运行问题；修改后仍需真实验证。"
-        "复杂代码不建议连续整文件重写，优先加载 coding-project Skill 局部修改并运行检查。"
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "target": {
-                "type": "string",
-                "maxLength": 120,
-                "description": "要修改的 gen_* 句柄或 latest。",
-            },
-            "instruction": {
-                "type": "string",
-                "maxLength": 500,
-                "description": "用户要求怎样修改。",
-            },
-            "output_format": {
-                "type": "string",
-                "enum": ["md", "txt", "docx", "xlsx", "pdf", "json", "csv", "html"],
-                "description": "可选的新版本格式；省略时沿用合适格式。",
-            },
-            "output_title": {"type": "string", "maxLength": 80, "description": "可选的新版本标题。"},
-            "content_markdown": {
-                "type": "string",
-                "maxLength": 80000,
-                "description": "修改后的完整正文或 Markdown；仅描述小改动时可留空。",
-            },
-            "table_rows": {
-                "type": "array",
-                "items": {
-                    "type": "array",
-                    "items": {"type": "string", "maxLength": 500},
-                    "maxItems": 50,
-                },
-                "maxItems": 1000,
-                "description": "修改后的完整表格行。",
-            },
-            "formatting": {
-                "type": "object",
-                "additionalProperties": True,
-                "description": "可选白名单样式规则。",
-            },
-        },
-        "required": ["target"],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_revise",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
-APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC = CapabilityToolSpec(
-    capability_id="apply_style_to_existing_file",
-    display_name="Apply style to existing file",
-    description=(
-        "只给现有 docx/xlsx 材料或生成文件套用样式，不重写正文。"
-        "用户要增删改内容时改用 revise_generated_file；从材料整理新文件时用 compose_file。"
-    ),
-    input_schema={
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "target": {
-                "type": "string",
-                "maxLength": 120,
-                "description": "file_*、gen_* 句柄或 latest。",
-            },
-            "target_type": {
-                "type": "string",
-                "enum": ["attachment", "generated"],
-                "description": "可选来源类型；句柄已经明确时可省略。",
-            },
-            "instruction": {
-                "type": "string",
-                "maxLength": 500,
-                "description": "用户的样式要求，如“姓名列标红、低于60分整行标红”。",
-            },
-            "output_title": {"type": "string", "maxLength": 80, "description": "可选的样式版标题。"},
-            "formatting": {
-                "type": "object",
-                "additionalProperties": True,
-                "description": "可选白名单样式规则，如 header、columns、rows、row_rules、highlights。",
-            },
-        },
-        "required": ["target"],
-    },
-    risk="medium",
-    confirm="first_time",
-    effects=("file_style",),
-    visible_in=("desktop", "qq"),
-    spec_version="1.1.0",
-    schema_version=2,
-    execution_class="sync",
-    idempotency="effectful",
-    max_result_bytes=8192,
-)
-
 INSPECT_GENERATED_FILE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="inspect_generated_file",
     display_name="Inspect generated file",
@@ -2244,14 +2048,6 @@ class CapabilityRegistry:
                 activation_hint="用户上传图片或生成一张图片后，这项材料读取能力会自动开放。",
             ),
             CapabilityModule(
-                name="conversation_file_authoring",
-                layer="shared_file_authoring",
-                modes=CHAT_FILE_CLIENT_MODES,
-                tools=CONVERSATION_FILE_AUTHORING_TOOL_NAMES,
-                light_hint="即使没有附件，你也可以把当前对话中已经整理好的内容直接生成文件并交给当前端；用户说开始/直接做/生成时，不要只口头承诺。",
-                trigger=_always,
-            ),
-            CapabilityModule(
                 name="qq_file_delivery",
                 layer="qq_delivery",
                 modes=(ClientMode.QQ_TEXT,),
@@ -2309,10 +2105,10 @@ class CapabilityRegistry:
                 layer="shared_document",
                 modes=CHAT_FILE_CLIENT_MODES,
                 tools=DOCUMENT_WORKBENCH_TOOL_NAMES,
-                light_hint="你可以阅读、整理、转换和样式加工文本、Office、PDF 等文档。",
+                light_hint="你可以分段读取当前会话中的文本、Office、PDF 等文档材料。",
                 trigger=_has_document_context,
-                latent_reason="当前会话和可见工作区里还没有可处理的文档材料，因此没有展开文档读取与修改工具。",
-                activation_hint="用户上传文档，或在桌宠的 Akane 工作区放入文档后会自动开放；若工作区文件尚无 handle，先登记再继续处理。当前对话内容仍可直接生成新文档。",
+                latent_reason="当前会话和可见工作区里还没有可处理的文档材料，因此没有展开文档读取工具。",
+                activation_hint="用户上传文档，或在桌宠的 Akane 工作区放入文档后会自动开放；若工作区文件尚无 handle，先登记再继续处理。",
                 unavailable_reason="文档处理组件当前没有通过可用性检查。",
                 recovery_hint="文档组件恢复后会自动重新开放；已有材料无需重复上传。",
             ),

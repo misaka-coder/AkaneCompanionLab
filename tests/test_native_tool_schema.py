@@ -20,9 +20,6 @@ from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD, bu
 from companion_v01.tool_orchestration_engine import native_legacy_prompt_exclusions
 from companion_v01.tool_runtime import (
     AdapterCapabilityToolHandler,
-    ApplyStyleToExistingFileToolHandler,
-    ComposeFileToolHandler,
-    ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     TOOL_METADATA_BY_TYPE,
     TOOL_SPEC_BY_TYPE,
@@ -128,7 +125,7 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 44)
+        self.assertEqual(len(handlers), 41)
         self.assertNotIn("cover_song", handlers)
         self.assertNotIn("generate_image", handlers)
         self.assertNotIn("convert_media_file", handlers)
@@ -358,61 +355,7 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(native_legacy_prompt_exclusions(specs), {"mcp.demo.echo"})
 
     def test_file_native_specs_match_the_arguments_handlers_actually_consume(self) -> None:
-        compose = ComposeFileToolHandler(generated_file_service=None)
-        revised = ReviseGeneratedFileToolHandler(generated_file_service=None)
-        styled = ApplyStyleToExistingFileToolHandler(generated_file_service=None)
         send = SendFileToolHandler(generated_file_service=None)
-
-        compose_call = compose.normalize_call(
-            {
-                "type": "compose_file",
-                "source_ids": ["file_001"],
-                "task": "整理报告",
-                "output_format": "docx",
-                "output_title": "报告",
-                "structure": "report",
-                "style": "formal",
-                "fidelity": "preserve",
-                "content_markdown": "# 报告",
-                "table_rows": [["列", "值"], ["A", "1"]],
-                "formatting": {"header": {"bold": True}},
-            }
-        )
-        self.assertEqual(compose_call["task"], "整理报告")
-        self.assertEqual(compose_call["output_format"], "docx")
-        self.assertEqual(compose_call["content_markdown"], "# 报告")
-        self.assertEqual(compose_call["formatting"], {"header": {"bold": True}})
-
-        revise_call = revised.normalize_call(
-            {
-                "type": "revise_generated_file",
-                "target": "gen_001",
-                "instruction": "补一段总结",
-                "output_format": "pdf",
-                "output_title": "报告修订版",
-                "content_markdown": "# 修订版",
-                "table_rows": [["列", "值"]],
-                "formatting": {"header": {"bold": True}},
-            }
-        )
-        self.assertEqual(revise_call["instruction"], "补一段总结")
-        self.assertEqual(revise_call["output_format"], "pdf")
-        self.assertEqual(revise_call["content_markdown"], "# 修订版")
-
-        style_call = styled.normalize_call(
-            {
-                "type": "apply_style_to_existing_file",
-                "target": "file_001",
-                "target_type": "attachment",
-                "instruction": "姓名列标红",
-                "output_title": "样式版",
-                "formatting": {"columns": [{"match_header": "姓名", "font_color": "red"}]},
-            }
-        )
-        self.assertEqual(style_call["target_type"], "attachment")
-        self.assertEqual(style_call["instruction"], "姓名列标红")
-        self.assertEqual(style_call["formatting"]["columns"][0]["font_color"], "red")
-
         send_call = send.normalize_call(
             {
                 "type": "send_file",
@@ -424,9 +367,6 @@ class NativeToolSchemaTests(unittest.TestCase):
         self.assertEqual(send_call["delivery_action"], "reveal")
 
         for tool_name, handler in (
-            ("compose_file", compose),
-            ("revise_generated_file", revised),
-            ("apply_style_to_existing_file", styled),
             ("send_file", send),
         ):
             native = build_openai_native_tool_specs({tool_name: handler})[0]["function"]

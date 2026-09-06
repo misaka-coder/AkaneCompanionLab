@@ -13,13 +13,11 @@ from unittest.mock import patch
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.store import MemoryStore
+from tests.generated_artifact_fixtures import register_text_artifact
 from companion_v01.tool_runtime import (
-    ApplyStyleToExistingFileToolHandler,
-    ComposeFileToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ManageGeneratedFileToolHandler,
-    ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     ToolExecutionContext,
 )
@@ -52,6 +50,34 @@ def _write_test_wav(path: Path, *, sample_rate: int = 1000) -> None:
 
 
 class GeneratedFileTests(unittest.TestCase):
+    def test_inspect_generated_lrc_reads_lyrics_instead_of_binary_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = MemoryStore(root / "db")
+            service = GeneratedFileService(
+                base_dir=root / "generated", store=store,
+                attachment_service=AttachmentInboxService(store=store),
+            )
+            path = service.allocate_output_path(
+                profile_user_id="user", session_id="session", title="歌词", output_format="lrc",
+                timestamp=100, allow_generic_format=True,
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("[00:01.00]第一句\n[00:02.00]末句\n", encoding="utf-8")
+            generated = service.register_generated_artifact(
+                profile_user_id="user", session_id="session", output_path=path,
+                output_title="歌词", output_format="lrc", mime_type="text/plain",
+                content_card={}, summary="", created_by_tool="fixture.register",
+                allow_generic_format=True, timestamp=100,
+            )
+            result = service.inspect_generated_file(
+                profile_user_id="user", session_id="session", target=generated["generated_handle"],
+                section="content", max_chars=2000,
+            )
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["inspection"]["source_kind"], "lrc")
+            self.assertIn("[00:02.00]末句", result["inspection"]["content"])
+
     def test_media_tools_preserve_failed_attachment_root_cause(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -290,314 +316,6 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertIn("时长：3:12", context)
             self.assertIn("音频：编码 flac，48000Hz，2声道，1.41Mbps。", context)
 
-    def test_compose_file_creates_markdown_from_attachment(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root)
-            attachment_service = AttachmentInboxService(store=store)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="document",
-                origin_name="notes.txt",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="课堂笔记",
-                short_hint="讲了向量检索和工具调用。",
-                detail={"text_preview": "RAG 可以把长期记忆和当前上下文结合起来。"},
-                timestamp=110,
-            )
-
-            result = generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=["file_001"],
-                task="整理成学习笔记",
-                output_format="md",
-                output_title="RAG 学习笔记",
-                content_markdown="# RAG 学习笔记\n\n- 向量检索\n- 工具调用",
-                timestamp=120,
-            )
-
-            self.assertTrue(result["ok"])
-            generated = result["generated"]
-            self.assertEqual(generated["generated_handle"], "gen_001")
-            output_path = Path(generated["absolute_path"])
-            self.assertTrue(output_path.exists())
-            self.assertIn("向量检索", output_path.read_text(encoding="utf-8"))
-
-            prompt = generated_service.build_prompt_context(
-                profile_user_id="user",
-                session_id="session",
-            )
-            self.assertIn("生成文件工作台", prompt)
-            self.assertIn("gen_001", prompt)
-            self.assertIn("RAG 学习笔记", prompt)
-
-    def test_compose_file_fallback_uses_larger_original_attachment_material(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "long.txt"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_text("\n".join(f"完整第{index}行" for index in range(1, 260)), encoding="utf-8")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="document",
-                origin_name="long.txt",
-                storage_relpath="master/long.txt",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="长文本",
-                short_hint="预览只有开头。",
-                detail={"text_preview": "完整第1行\n完整第2行", "preview_is_truncated": True},
-                timestamp=110,
-            )
-
-            result = generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=["file_001"],
-                task="转成 Markdown",
-                output_format="md",
-                output_title="长文本整理",
-                timestamp=120,
-            )
-
-            self.assertTrue(result["ok"])
-            output_text = Path(result["generated"]["absolute_path"]).read_text(encoding="utf-8")
-            self.assertIn("完整第200行", output_text)
-            self.assertNotIn("任务：", output_text)
-            self.assertNotIn("来源摘录", output_text)
-            self.assertNotIn("注意：上面是系统可安全展开的片段", output_text)
-
-    def test_compose_file_faithful_conversion_recovers_from_prompt_excerpt(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            full_text = "\n".join(
-                [
-                    "source plugin:https://example.com/index.json",
-                    "TachiyomiJ2K:https://example.com/tachiyomi",
-                    "Mihon:https://example.com/mihon",
-                    "komikku:https://example.com/komikku",
-                    "tail:https://example.com/extensions-source",
-                ]
-            )
-            stored = attachment_root / "master" / "links.txt"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_text(full_text, encoding="utf-8")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="document",
-                origin_name="links.txt",
-                storage_relpath="master/links.txt",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="链接列表",
-                short_hint="一些链接。",
-                detail={"text_preview": full_text},
-                timestamp=110,
-            )
-
-            result = generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=["file_001"],
-                task="忠实转换为 PDF，保留原文内容",
-                output_format="txt",
-                output_title="链接列表转换",
-                content_markdown=full_text[:120],
-                send_to_user=False,
-                timestamp=120,
-            )
-
-            self.assertTrue(result["ok"])
-            output_text = Path(result["generated"]["absolute_path"]).read_text(encoding="utf-8")
-            self.assertIn("tail:https://example.com/extensions-source", output_text)
-            self.assertNotIn("任务：", output_text)
-            self.assertNotIn("来源摘录", output_text)
-
-    def test_compose_file_faithful_generated_source_does_not_include_source_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            original = generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=[],
-                task="写一封心里话",
-                output_format="md",
-                output_title="我想对主人说的话",
-                content_markdown="亲爱的主人：\n\n谢谢你一直陪着我。\n\n最喜欢主人的 Akane",
-                send_to_user=False,
-                timestamp=100,
-            )
-            self.assertTrue(original["ok"])
-
-            converted = generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=["gen_001"],
-                task="将刚刚写给主人的心里话文档转换成 PDF 格式",
-                output_format="txt",
-                output_title="我想对主人说的话",
-                send_to_user=False,
-                timestamp=110,
-            )
-
-            self.assertTrue(converted["ok"])
-            output_text = Path(converted["generated"]["absolute_path"]).read_text(encoding="utf-8")
-            self.assertIn("亲爱的主人", output_text)
-            self.assertIn("最喜欢主人的 Akane", output_text)
-            self.assertNotIn("任务：", output_text)
-            self.assertNotIn("来源摘录", output_text)
-            self.assertNotIn("用途：", output_text)
-
-    def test_compose_file_summary_does_not_replace_with_full_source_prefix(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            full_text = "第一段\n第二段\n第三段\n第四段"
-            stored = attachment_root / "master" / "notes.txt"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-            stored.write_text(full_text, encoding="utf-8")
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="document",
-                origin_name="notes.txt",
-                storage_relpath="master/notes.txt",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="笔记",
-                short_hint="一些段落。",
-                detail={"text_preview": full_text},
-                timestamp=110,
-            )
-
-            result = generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=["file_001"],
-                task="摘要成一个短文件",
-                output_format="txt",
-                output_title="摘要",
-                content_markdown="第一段",
-                send_to_user=False,
-                timestamp=120,
-            )
-
-            self.assertTrue(result["ok"])
-            output_text = Path(result["generated"]["absolute_path"]).read_text(encoding="utf-8")
-            self.assertEqual(output_text, "第一段")
-
-    def test_compose_file_tool_handler_emits_generated_event(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root)
-            attachment_service = AttachmentInboxService(store=store)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            handler = ComposeFileToolHandler(generated_file_service=generated_service)
-            call = handler.normalize_call(
-                {
-                    "type": "compose_file",
-                    "output_format": "txt",
-                    "output_title": "小结",
-                    "content_markdown": "这是整理好的内容。",
-                    "formatting": {
-                        "header": {"bold": True},
-                        "columns": [{"match_header": "姓名", "font_color": "red", "unknown": "ignored"}],
-                        "unsafe": "ignored",
-                    },
-                    "send_to_user": True,
-                }
-            )
-            self.assertIsNotNone(call)
-            self.assertIn("formatting", call or {})
-            self.assertNotIn("unsafe", (call or {}).get("formatting", {}))
-            self.assertNotIn("unknown", (call or {}).get("formatting", {}).get("columns", [{}])[0])
-            context = ToolExecutionContext(
-                profile_user_id="user",
-                session_id="session",
-                now_ts=123,
-                visual_payload={},
-            )
-            result = handler.execute(call=call or {}, context=context)
-
-            self.assertEqual(result.stream_events[0]["type"], "generated_file_ready")
-            self.assertIn("gen_001", result.followup_context)
-            self.assertTrue(result.stream_events[0]["send_to_user"])
-
-    def test_compose_file_instruction_discourages_verbal_only_promises(self) -> None:
-        handler = ComposeFileToolHandler(generated_file_service=object())
-        instruction = handler.build_prompt_instruction()
-
-        self.assertIn("开始/继续/直接做", instruction)
-        self.assertIn("不要只口头答应", instruction)
-        self.assertIn("tool_call 调用 compose_file", instruction)
-
     def test_inspect_media_info_reads_ffprobe_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -733,135 +451,6 @@ class GeneratedFileTests(unittest.TestCase):
 
         self.assertEqual(statuses["inspect"]["provider"], "ffprobe")
 
-    def test_compose_file_applies_xlsx_formatting(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root)
-            attachment_service = AttachmentInboxService(store=store)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-
-            result = generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=[],
-                task="生成带样式的成绩表",
-                output_format="xlsx",
-                output_title="成绩表",
-                table_rows=[
-                    ["姓名", "评价"],
-                    ["Akane", "合格"],
-                    ["Miku", "优秀"],
-                ],
-                formatting={
-                    "header": {"bold": True},
-                    "columns": [{"match_header": "姓名", "font_color": "red"}],
-                    "rows": [{"index": 2, "fill_color": "yellow"}],
-                    "highlights": [{"text": "优秀", "fill_color": "orange", "bold": True}],
-                },
-                send_to_user=False,
-                timestamp=140,
-            )
-
-            self.assertTrue(result["ok"])
-            from openpyxl import load_workbook  # type: ignore
-
-            workbook = load_workbook(Path(result["generated"]["absolute_path"]))
-            sheet = workbook.active
-            self.assertTrue(sheet["A1"].font.bold)
-            self.assertTrue(str(sheet["A2"].font.color.rgb).endswith("FF0000"))
-            self.assertTrue(str(sheet["A2"].fill.fgColor.rgb).endswith("FFFF00"))
-            self.assertTrue(sheet["B3"].font.bold)
-            self.assertTrue(str(sheet["B3"].fill.fgColor.rgb).endswith("FFC000"))
-            self.assertEqual(result["generated"]["content_card"]["formatting"]["columns"][0]["font_color"], "FF0000")
-
-    def test_revise_generated_file_creates_versioned_output(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root)
-            attachment_service = AttachmentInboxService(store=store)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            original = generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=[],
-                task="写一份草稿",
-                output_format="md",
-                output_title="草稿",
-                content_markdown="# 草稿\n\n第一段\n\n第二段",
-                send_to_user=False,
-                timestamp=100,
-            )["generated"]
-
-            revised = generated_service.revise_generated_file(
-                profile_user_id="user",
-                session_id="session",
-                target="gen_001",
-                instruction="删掉第二段，加一句总结",
-                output_format="md",
-                output_title="草稿修改版",
-                content_markdown="# 草稿修改版\n\n第一段\n\n总结：已经更简洁。",
-                timestamp=120,
-            )
-
-            self.assertTrue(revised["ok"])
-            generated = revised["generated"]
-            self.assertEqual(generated["generated_handle"], "gen_002")
-            self.assertEqual(generated["version_of_generated_id"], original["generated_id"])
-            self.assertEqual(generated["version_no"], 2)
-            output_path = Path(generated["absolute_path"])
-            self.assertIn("总结", output_path.read_text(encoding="utf-8"))
-
-    def test_revise_generated_file_tool_handler_emits_generated_event(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root)
-            attachment_service = AttachmentInboxService(store=store)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=[],
-                task="写一份小结",
-                output_format="txt",
-                output_title="小结",
-                content_markdown="旧内容",
-                timestamp=100,
-            )
-            handler = ReviseGeneratedFileToolHandler(generated_file_service=generated_service)
-            call = handler.normalize_call(
-                {
-                    "type": "revise_generated_file",
-                    "target": "gen_001",
-                    "instruction": "改得更自然",
-                    "content_markdown": "新内容",
-                    "send_to_user": True,
-                }
-            )
-            context = ToolExecutionContext(
-                profile_user_id="user",
-                session_id="session",
-                now_ts=130,
-                visual_payload={},
-            )
-
-            result = handler.execute(call=call or {}, context=context)
-
-            self.assertEqual(result.stream_events[0]["type"], "generated_file_ready")
-            self.assertIn("gen_002", result.followup_context)
-            self.assertTrue(result.stream_events[0]["send_to_user"])
-
     def test_send_file_supports_generated_and_attachment_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -895,15 +484,12 @@ class GeneratedFileTests(unittest.TestCase):
                 detail={"media_info": {"video": {"codec": "h264"}}},
                 timestamp=95,
             )
-            generated_service.compose_file(
+            register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份小结",
                 output_format="txt",
                 output_title="小结",
-                content_markdown="生成内容",
-                send_to_user=False,
+                content="生成内容",
                 timestamp=100,
             )
 
@@ -936,17 +522,14 @@ class GeneratedFileTests(unittest.TestCase):
                 store=store,
                 attachment_service=attachment_service,
             )
-            generated = generated_service.compose_file(
+            generated = register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="生成结果",
                 output_format="txt",
                 output_title="准确结果",
-                content_markdown="generated",
-                send_to_user=False,
+                content="generated",
                 timestamp=100,
-            )["generated"]
+            )
             attachment = attachment_service.create_pending(
                 profile_user_id="user",
                 session_id="session",
@@ -1000,28 +583,22 @@ class GeneratedFileTests(unittest.TestCase):
                 store=store,
                 attachment_service=attachment_service,
             )
-            first = generated_service.compose_file(
+            first = register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份原始人声说明",
                 output_format="txt",
                 output_title="昔涟_人声",
-                content_markdown="原始人声文件",
-                send_to_user=False,
+                content="原始人声文件",
                 timestamp=100,
-            )["generated"]
-            second = generated_service.compose_file(
+            )
+            second = register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份降噪人声说明",
                 output_format="txt",
                 output_title="昔涟_人声_降噪",
-                content_markdown="降噪人声文件",
-                send_to_user=False,
+                content="降噪人声文件",
                 timestamp=110,
-            )["generated"]
+            )
 
             result = generated_service.send_file(
                 profile_user_id="user",
@@ -1086,15 +663,12 @@ class GeneratedFileTests(unittest.TestCase):
                 short_hint="第二张菜单图。",
                 timestamp=96,
             )
-            generated_service.compose_file(
+            register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份小结",
                 output_format="txt",
                 output_title="小结",
-                content_markdown="生成内容",
-                send_to_user=False,
+                content="生成内容",
                 timestamp=100,
             )
 
@@ -1257,15 +831,12 @@ class GeneratedFileTests(unittest.TestCase):
                 store=store,
                 attachment_service=attachment_service,
             )
-            generated_service.compose_file(
+            register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份小结",
                 output_format="md",
                 output_title="小结",
-                content_markdown="# 小结\n\n第一段内容。\n\n最后一段内容。",
-                send_to_user=False,
+                content="# 小结\n\n第一段内容。\n\n最后一段内容。",
                 timestamp=100,
             )
 
@@ -1343,15 +914,12 @@ class GeneratedFileTests(unittest.TestCase):
                 store=store,
                 attachment_service=attachment_service,
             )
-            generated_service.compose_file(
+            register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份小结",
                 output_format="txt",
                 output_title="小结",
-                content_markdown="可以回头查看的内容",
-                send_to_user=False,
+                content="可以回头查看的内容",
                 timestamp=100,
             )
             handler = InspectGeneratedFileToolHandler(generated_file_service=generated_service)
@@ -1374,122 +942,6 @@ class GeneratedFileTests(unittest.TestCase):
             self.assertEqual(result.stream_events[0]["type"], "generated_file_inspected")
             self.assertIn("可以回头查看", result.followup_context)
 
-    def test_apply_style_to_existing_attachment_xlsx(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            attachment_root = root / "attachments"
-            stored = attachment_root / "master" / "scores.xlsx"
-            stored.parent.mkdir(parents=True, exist_ok=True)
-
-            from openpyxl import Workbook, load_workbook  # type: ignore
-
-            workbook = Workbook()
-            sheet = workbook.active
-            sheet.append(["姓名", "分数"])
-            sheet.append(["Akane", 95])
-            sheet.append(["Miku", 55])
-            workbook.save(stored)
-
-            store = MemoryStore(root / "db")
-            attachment_service = AttachmentInboxService(store=store, base_dir=attachment_root)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            attachment = attachment_service.create_pending(
-                profile_user_id="user",
-                session_id="session",
-                source="qq",
-                kind="document",
-                origin_name="scores.xlsx",
-                storage_relpath="master/scores.xlsx",
-                timestamp=100,
-            )
-            attachment_service.mark_ready(
-                profile_user_id="user",
-                session_id="session",
-                attachment_id=attachment["attachment_id"],
-                summary_title="成绩表",
-                short_hint="包含姓名和分数。",
-                detail={"file_kind": "xlsx", "sheets": [{"name": "Sheet", "rows": [["姓名", "分数"]]}]},
-                timestamp=110,
-            )
-
-            result = generated_service.apply_style_to_existing_file(
-                profile_user_id="user",
-                session_id="session",
-                target="file_001",
-                target_type="attachment",
-                instruction="低于60分整行标红，姓名列加粗",
-                output_title="成绩表标注版",
-                formatting={
-                    "columns": [{"match_header": "姓名", "bold": True}],
-                    "row_rules": [{"where": {"column": "分数", "lt": 60}, "font_color": "red"}],
-                },
-                send_to_user=False,
-                timestamp=130,
-            )
-
-            self.assertTrue(result["ok"])
-            generated = result["generated"]
-            self.assertEqual(generated["generated_handle"], "gen_001")
-            self.assertEqual(generated["created_by_tool"], "apply_style_to_existing_file")
-            output_path = Path(generated["absolute_path"])
-            self.assertTrue(output_path.exists())
-            styled = load_workbook(output_path)
-            styled_sheet = styled.active
-            self.assertTrue(styled_sheet["A2"].font.bold)
-            self.assertTrue(styled_sheet["A3"].font.bold)
-            self.assertTrue(str(styled_sheet["A3"].font.color.rgb).endswith("FF0000"))
-            self.assertTrue(str(styled_sheet["B3"].font.color.rgb).endswith("FF0000"))
-
-    def test_apply_style_to_existing_file_tool_handler_emits_generated_event(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            store = MemoryStore(root)
-            attachment_service = AttachmentInboxService(store=store)
-            generated_service = GeneratedFileService(
-                base_dir=root / "generated_files",
-                store=store,
-                attachment_service=attachment_service,
-            )
-            generated_service.compose_file(
-                profile_user_id="user",
-                session_id="session",
-                source_targets=[],
-                task="生成表格",
-                output_format="xlsx",
-                output_title="成绩表",
-                table_rows=[["姓名", "分数"], ["Akane", 95]],
-                send_to_user=False,
-                timestamp=100,
-            )
-            handler = ApplyStyleToExistingFileToolHandler(generated_file_service=generated_service)
-            call = handler.normalize_call(
-                {
-                    "type": "apply_style_to_existing_file",
-                    "target": "gen_001",
-                    "target_type": "generated",
-                    "instruction": "姓名列标红",
-                    "formatting": {"columns": [{"match_header": "姓名", "font_color": "red"}]},
-                    "send_to_user": True,
-                }
-            )
-            context = ToolExecutionContext(
-                profile_user_id="user",
-                session_id="session",
-                now_ts=130,
-                visual_payload={},
-            )
-
-            result = handler.execute(call=call or {}, context=context)
-
-            self.assertEqual(result.stream_events[0]["type"], "generated_file_ready")
-            self.assertEqual(result.stream_events[0]["generated_file"]["generated_handle"], "gen_002")
-            self.assertTrue(result.stream_events[0]["send_to_user"])
-            self.assertIn("apply_style_to_existing_file", result.followup_context)
-
     def test_manage_generated_files_archive_hides_from_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1500,15 +952,12 @@ class GeneratedFileTests(unittest.TestCase):
                 store=store,
                 attachment_service=attachment_service,
             )
-            generated_service.compose_file(
+            register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份小结",
                 output_format="txt",
                 output_title="小结",
-                content_markdown="旧内容",
-                send_to_user=False,
+                content="旧内容",
                 timestamp=100,
             )
 
@@ -1538,17 +987,14 @@ class GeneratedFileTests(unittest.TestCase):
                 store=store,
                 attachment_service=attachment_service,
             )
-            generated = generated_service.compose_file(
+            generated = register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份小结",
                 output_format="txt",
                 output_title="小结",
-                content_markdown="旧内容",
-                send_to_user=False,
+                content="旧内容",
                 timestamp=100,
-            )["generated"]
+            )
             output_path = Path(generated["absolute_path"])
             self.assertTrue(output_path.exists())
 
@@ -1575,15 +1021,12 @@ class GeneratedFileTests(unittest.TestCase):
                 store=store,
                 attachment_service=attachment_service,
             )
-            generated_service.compose_file(
+            register_text_artifact(generated_service,
                 profile_user_id="user",
                 session_id="session",
-                source_targets=[],
-                task="写一份小结",
                 output_format="txt",
                 output_title="小结",
-                content_markdown="旧内容",
-                send_to_user=False,
+                content="旧内容",
                 timestamp=100,
             )
             handler = ManageGeneratedFileToolHandler(generated_file_service=generated_service)

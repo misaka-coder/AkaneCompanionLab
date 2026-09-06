@@ -179,157 +179,6 @@ def inspect_generated_file(
     }
 
 
-def apply_style_to_existing_file(
-    service: Any,
-    *,
-    profile_user_id: str,
-    session_id: str,
-    target: str = "latest",
-    instruction: str = "",
-    output_title: str = "",
-    formatting: dict[str, Any] | None = None,
-    send_to_user: bool = True,
-    target_type: str = "",
-    timestamp: int | None = None,
-) -> dict[str, Any]:
-    effective_ts = int(timestamp or time.time())
-    style_rules = service._normalize_formatting(formatting)
-    if not style_rules:
-        return {
-            "ok": False,
-            "generated": None,
-            "send_to_user": False,
-            "error": "missing_formatting",
-            "followup_context": (
-                "你刚刚想给已有文件套样式，但没有提供可执行的 formatting 规则。"
-                "请先明确要标红/高亮/加粗的列、行、关键词或单元格，不要重复调用工具。"
-            ),
-        }
-
-    source = service._resolve_existing_file_for_style(
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        target=target,
-        target_type=target_type,
-    )
-    if source is None:
-        return {
-            "ok": False,
-            "generated": None,
-            "send_to_user": False,
-            "error": "source_file_not_found",
-            "followup_context": (
-                f"你刚刚想给 {target or 'latest'} 套样式，但没有找到对应的附件或生成文件。"
-                "请自然向用户确认要处理哪份文件，不要重复调用 apply_style_to_existing_file。"
-            ),
-        }
-
-    source_path = source.get("absolute_path")
-    if not isinstance(source_path, Path) or not source_path.exists() or not source_path.is_file():
-        return {
-            "ok": False,
-            "generated": None,
-            "send_to_user": False,
-            "error": "source_file_missing_on_disk",
-            "followup_context": (
-                f"你刚刚想给 {source.get('handle') or target} 套样式，"
-                "但本地文件本体已经找不到了。请自然告诉用户文件记录还在，但文件本体缺失。"
-            ),
-        }
-
-    source_format = service._normalize_output_format(source.get("output_format"))
-    if source_format not in {"xlsx", "docx"}:
-        return {
-            "ok": False,
-            "generated": None,
-            "send_to_user": False,
-            "error": f"unsupported_style_format:{source_format or 'unknown'}",
-            "followup_context": (
-                f"你刚刚想直接给 {source.get('handle') or target} 套样式，"
-                f"但当前只支持对 docx/xlsx 做无内容重写的样式加工；这份文件格式是 {source_format or 'unknown'}。"
-                "如果用户要改写内容或换格式，请改用 compose_file 或 revise_generated_file。"
-            ),
-        }
-
-    title = service._normalize_title(output_title) or f"{source.get('title') or '生成文件'} 样式版"
-    output_path = service._build_output_path(
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        title=title,
-        output_format=source_format,
-        timestamp=effective_ts,
-    )
-    try:
-        if source_format == "xlsx":
-            service._style_existing_xlsx(
-                source_path=source_path,
-                output_path=output_path,
-                formatting=style_rules,
-            )
-        elif source_format == "docx":
-            service._style_existing_docx(
-                source_path=source_path,
-                output_path=output_path,
-                formatting=style_rules,
-            )
-    except Exception as exc:
-        return {
-            "ok": False,
-            "generated": None,
-            "send_to_user": False,
-            "error": str(exc),
-            "followup_context": (
-                f"你刚刚尝试给「{source.get('title') or target}」套样式但失败：{str(exc)[:180]}。"
-                "请自然告诉用户失败原因；如果是缺少依赖，可以提醒先安装对应 Python 库。"
-            ),
-        }
-
-    source_id = str(source.get("source_id") or "").strip()
-    source_ids = [source_id] if source_id else []
-    for extra_id in list(source.get("extra_source_ids") or [])[:8]:
-        text = str(extra_id or "").strip()
-        if text and text not in source_ids:
-            source_ids.append(text)
-
-    content_card = service._build_style_content_card(
-        title=title,
-        output_format=source_format,
-        source=source,
-        instruction=instruction,
-        formatting=style_rules,
-    )
-    generated = service.store.add_generated_file(
-        profile_user_id=profile_user_id,
-        session_id=session_id,
-        output_title=title,
-        output_format=source_format,
-        storage_relpath=service._storage_relpath(output_path),
-        mime_type=service._mime_type_for_format(source_format),
-        file_ext=source_format,
-        file_size=output_path.stat().st_size,
-        source_ids=source_ids,
-        content_card=content_card,
-        summary=str(content_card.get("summary") or "").strip(),
-        created_by_tool="apply_style_to_existing_file",
-        version_of_generated_id=str(source.get("source_id") or "").strip() if source.get("source_type") == "generated" else "",
-        version_no=int(source.get("version_no") or 1) + 1 if source.get("source_type") == "generated" else 1,
-        delivery_status="pending" if send_to_user else "not_requested",
-        timestamp=effective_ts,
-    )
-    generated["absolute_path"] = str(service.absolute_path(generated))
-    return {
-        "ok": True,
-        "generated": generated,
-        "source": source,
-        "send_to_user": bool(send_to_user),
-        "followup_context": service._build_style_followup(
-            source=source,
-            generated=generated,
-            send_to_user=send_to_user,
-        ),
-    }
-
-
 def manage_generated_files(
     service: Any,
     *,
@@ -1230,55 +1079,7 @@ def clip_inspection_text(service: Any, text: str, *, max_chars: int) -> str:
     return raw[:max_chars] + "\n\n（内容已按 max_chars 截断；如需更多，请指定更大的 max_chars 或查看 tail。）"
 
 
-def resolve_existing_file_for_style(
-    service: Any,
-    *,
-    profile_user_id: str,
-    session_id: str,
-    target: str,
-    target_type: str,
-) -> dict[str, Any] | None:
-    normalized = str(target or "").strip()
-    normalized_type = str(target_type or "").strip().lower()
-    lowered = normalized.lower()
-    looks_like_attachment = lowered.startswith(("file_", "img_", "image_", "audio_"))
-    looks_like_generated = lowered.startswith(("gen_", "generated::"))
-
-    prefer_attachment = normalized_type in {"attachment", "inbox", "file"} or looks_like_attachment
-    prefer_generated = normalized_type in {"generated", "gen"} or looks_like_generated
-
-    if prefer_attachment:
-        attachment = service._resolve_attachment_style_source(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            target=normalized,
-        )
-        if attachment is not None:
-            return attachment
-        if prefer_generated:
-            return None
-
-    if not prefer_attachment:
-        generated = service._resolve_generated_style_source(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            target=normalized,
-        )
-        if generated is not None:
-            return generated
-
-    if not prefer_generated:
-        attachment = service._resolve_attachment_style_source(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            target=normalized,
-        )
-        if attachment is not None:
-            return attachment
-    return None
-
-
-def resolve_generated_style_source(
+def resolve_generated_media_source(
     service: Any,
     *,
     profile_user_id: str,
@@ -1310,7 +1111,7 @@ def resolve_generated_style_source(
     }
 
 
-def resolve_attachment_style_source(
+def resolve_attachment_media_source(
     service: Any,
     *,
     profile_user_id: str,

@@ -24,11 +24,9 @@ import config
 
 from .browser_page_runtime import BrowserPageResult, ManagedBrowserPageRunner
 from .capability_registry import (
-    APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
     BROWSER_PAGE_TOOL_SPEC,
     BROWSE_MEMORY_TOOL_SPEC,
     CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
-    COMPOSE_FILE_TOOL_SPEC,
     FETCH_MEDIA_FROM_URL_TOOL_SPEC,
     INSPECT_ATTACHMENT_TOOL_SPEC,
     INSPECT_GENERATED_FILE_TOOL_SPEC,
@@ -46,7 +44,6 @@ from .capability_registry import (
     REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
     RETRIEVE_MEMORY_TOOL_SPEC,
     RETRY_ATTACHMENT_TOOL_SPEC,
-    REVISE_GENERATED_FILE_TOOL_SPEC,
     SEND_AUDIO_TOOL_SPEC,
     SEND_FILE_TOOL_SPEC,
     SEND_MUSIC_CARD_TOOL_SPEC,
@@ -103,12 +100,9 @@ from .tool_handlers.workspace import (
 )
 
 from .tool_handlers.generated_media import (
-    ApplyStyleToExistingFileToolHandler,
-    ComposeFileToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ManageGeneratedFileToolHandler,
-    ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     SendStickerToolHandler,
 )

@@ -189,6 +189,10 @@ class DocumentPluginTests(unittest.IsolatedAsyncioTestCase):
                 session_id="session",
             )
             schema = json.dumps(build_openai_native_tool_specs(handlers), sort_keys=True)
+            for retired in ("compose_file", "revise_generated_file", "apply_style_to_existing_file"):
+                self.assertNotIn(retired, handlers)
+                self.assertNotIn(retired, prompt)
+                self.assertNotIn(retired, schema)
             for capability in CAPABILITIES.values():
                 self.assertEqual(capability in handlers, installed)
                 self.assertEqual(capability in prompt, installed)
@@ -238,6 +242,16 @@ class DocumentPluginTests(unittest.IsolatedAsyncioTestCase):
                     )
                     record = self.output(harness, result)
                     self.assertEqual(Path(record["absolute_path"]).read_bytes(), content.encode("utf-8"))
+                    inspection = harness.files.inspect_generated_file(
+                        profile_user_id="owner",
+                        session_id="session",
+                        target=record["generated_handle"],
+                        section="content",
+                        max_chars=2000,
+                    )
+                    self.assertTrue(inspection["ok"], inspection)
+                    self.assertEqual(inspection["inspection"]["source_kind"], fmt)
+                    self.assertEqual(inspection["inspection"]["content"].strip(), content.strip())
                     records[fmt] = record
                 rows = [["项目", "数值", "状态"], ["中文长项目", 0, False], ["**原样符号**", -2.5, "=1+1"]]
                 for fmt in ("csv", "xlsx", "docx", "pdf"):

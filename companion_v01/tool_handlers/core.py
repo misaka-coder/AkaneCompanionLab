@@ -11,11 +11,9 @@ import re
 from typing import Any, Callable, Mapping
 
 from ..capability_registry import (
-    APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
     BROWSER_PAGE_TOOL_SPEC,
     BROWSE_MEMORY_TOOL_SPEC,
     CLEAR_ATTACHMENT_FOCUS_TOOL_SPEC,
-    COMPOSE_FILE_TOOL_SPEC,
     FETCH_MEDIA_FROM_URL_TOOL_SPEC,
     INSPECT_ATTACHMENT_TOOL_SPEC,
     INSPECT_GENERATED_FILE_TOOL_SPEC,
@@ -34,7 +32,6 @@ from ..capability_registry import (
     REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
     RETRIEVE_MEMORY_TOOL_SPEC,
     RETRY_ATTACHMENT_TOOL_SPEC,
-    REVISE_GENERATED_FILE_TOOL_SPEC,
     SEND_AUDIO_TOOL_SPEC,
     SEND_FILE_TOOL_SPEC,
     SEND_MUSIC_CARD_TOOL_SPEC,
@@ -416,7 +413,7 @@ INSPECT_GENERATED_FILE_INPUT_SCHEMA: dict[str, Any] = {
     "description": (
         "Re-read a file you generated (e.g. gen_001): its body, head/tail, zip file "
         "list, or manifest. Read-only — does not send, modify, or delete. To resend a "
-        "file use send_file; to edit it use revise_generated_file."
+        "file use send_file; use only currently available capabilities to edit it."
     ),
     "type": "object",
     "additionalProperties": False,
@@ -533,15 +530,6 @@ TOOL_METADATA_BY_TYPE: dict[str, ToolMetadata] = {
     ),
     "register_workspace_items": ToolMetadata(
         family="file_workspace", operation="control", risk="low", default_round_budget=4
-    ),
-    "compose_file": ToolMetadata(
-        family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
-    ),
-    "revise_generated_file": ToolMetadata(
-        family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
-    ),
-    "apply_style_to_existing_file": ToolMetadata(
-        family="file_workspace", operation="control", risk="medium", default_round_budget=4, requires_confirmation=True
     ),
     "inspect_generated_file": ToolMetadata(
         family="file_workspace",
@@ -660,9 +648,6 @@ TOOL_SPEC_BY_TYPE: dict[str, Any] = {
     "list_workspace": LIST_WORKSPACE_TOOL_SPEC,
     "read_workspace": READ_WORKSPACE_TOOL_SPEC,
     "register_workspace_items": REGISTER_WORKSPACE_ITEMS_TOOL_SPEC,
-    "compose_file": COMPOSE_FILE_TOOL_SPEC,
-    "revise_generated_file": REVISE_GENERATED_FILE_TOOL_SPEC,
-    "apply_style_to_existing_file": APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC,
     "inspect_generated_file": INSPECT_GENERATED_FILE_TOOL_SPEC,
     "manage_generated_file": MANAGE_GENERATED_FILE_TOOL_SPEC,
     "send_file": SEND_FILE_TOOL_SPEC,

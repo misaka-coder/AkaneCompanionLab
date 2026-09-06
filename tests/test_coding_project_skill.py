@@ -10,8 +10,6 @@ import unittest
 from pathlib import Path
 
 from companion_v01.capability_registry import (
-    COMPOSE_FILE_TOOL_SPEC,
-    REVISE_GENERATED_FILE_TOOL_SPEC,
     SEND_FILE_TOOL_SPEC,
 )
 from companion_v01.execution_local import TrustedLocalExecutor
@@ -155,17 +153,6 @@ class CodingProjectSkillTests(unittest.TestCase):
 
 
 class ToolDescriptionBoundaryTests(unittest.TestCase):
-    def test_compose_file_spec_names_generation_vs_run_boundary(self) -> None:
-        description = COMPOSE_FILE_TOOL_SPEC.description
-        self.assertIn("返回成功只证明文件已生成，不证明内容可运行", description)
-        self.assertIn("静态展示页", description)
-        self.assertIn("coding-project Skill", description)
-
-    def test_revise_spec_names_verification_boundary_and_local_edits(self) -> None:
-        description = REVISE_GENERATED_FILE_TOOL_SPEC.description
-        self.assertIn("不代表修改解决了运行问题", description)
-        self.assertIn("局部修改", description)
-
     def test_exec_run_spec_states_the_shell_boundary_without_repeating_parameter_manuals(self) -> None:
         description = EXEC_RUN_TOOL_SPEC.description
         self.assertIn("仍在运行时返回 run_id", description)

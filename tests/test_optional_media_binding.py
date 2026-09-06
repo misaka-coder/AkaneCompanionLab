@@ -17,6 +17,34 @@ from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
 
 
 class TimelinePluginBindingTests(unittest.TestCase):
+    def test_document_business_has_one_plugin_authority(self):
+        from companion_v01.generated_files import GeneratedFileService
+        from companion_v01.attachment_inbox import AttachmentInboxService
+        from companion_v01.capability_registry import CapabilityRegistry
+        from companion_v01.client_protocol import ClientMode
+
+        retired = ("compose_file", "revise_generated_file", "apply_style_to_existing_file")
+        for name in retired:
+            self.assertFalse(hasattr(GeneratedFileService, name))
+        self.assertFalse(hasattr(AttachmentInboxService, "read_material_for_generation"))
+        for mode in ClientMode:
+            self.assertTrue(set(retired).isdisjoint(CapabilityRegistry().tool_names_for_mode(mode)))
+        root = Path(__file__).resolve().parents[1]
+        self.assertFalse((root / "companion_v01/generated_files_io.py").exists())
+        for path in (root / "companion_v01").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            for symbol in (
+                *retired,
+                "COMPOSE_FILE_TOOL_SPEC",
+                "REVISE_GENERATED_FILE_TOOL_SPEC",
+                "APPLY_STYLE_TO_EXISTING_FILE_TOOL_SPEC",
+                "from akane_document_writer",
+                "from plugins.akane_document_writer",
+                "def _normalize_formatting(",
+                "def _build_fallback_markdown(",
+            ):
+                self.assertNotIn(symbol, source, str(path))
+
     def test_cover_song_has_one_plugin_authority(self):
         from companion_v01.local_media_executor import LocalMediaExecutorClient
         from companion_v01.capability_registry import CapabilityRegistry
@@ -56,11 +84,10 @@ class TimelinePluginBindingTests(unittest.TestCase):
 
     def test_dataset_business_has_one_plugin_authority(self):
         from companion_v01.generated_files import GeneratedFileService
-        from companion_v01 import generated_files_media, generated_files_io, generated_files_cards
+        from companion_v01 import generated_files_media, generated_files_cards
 
         self.assertFalse(hasattr(GeneratedFileService, "prepare_voice_dataset"))
         self.assertFalse(hasattr(generated_files_media, "slice_voice_samples"))
-        self.assertFalse(hasattr(generated_files_io, "write_pcm16_wav"))
         self.assertFalse(hasattr(generated_files_cards, "build_voice_dataset_content_card"))
         root = Path(__file__).resolve().parents[1]
         for folder in ("companion_v01", "scripts"):
@@ -134,13 +161,12 @@ class TimelinePluginBindingTests(unittest.TestCase):
 
     def test_old_file_transcription_business_is_deleted_but_voice_shape_remains(self):
         from companion_v01.generated_files import GeneratedFileService
-        from companion_v01 import generated_files_media, generated_files_io
+        from companion_v01 import generated_files_media
 
         self.assertFalse(hasattr(GeneratedFileService, "transcribe_media"))
         self.assertFalse(hasattr(GeneratedFileService, "asr_status"))
         self.assertFalse(hasattr(generated_files_media, "load_faster_whisper_model"))
         self.assertFalse(hasattr(generated_files_media, "transcribe_media"))
-        self.assertFalse(hasattr(generated_files_io, "render_transcript_output"))
         self.assertTrue(hasattr(GeneratedFileService, "_prepare_transcription_input"))
         root = Path(__file__).resolve().parents[1]
         for folder in ("companion_v01", "scripts"):

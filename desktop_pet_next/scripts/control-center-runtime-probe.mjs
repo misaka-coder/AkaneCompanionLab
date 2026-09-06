@@ -47,7 +47,7 @@ const runtime = {
     capabilities: {
       declared: ["tts", "workspace_summary"],
       effective_modules: ["audio", "files"],
-      tool_names: ["retrieve_memory", "compose_file"],
+      tool_names: ["retrieve_memory", "send_file"],
     },
     workspace: { files: 2, outputs: 1 },
     runtime: {
@@ -110,11 +110,11 @@ function capabilityCatalog() {
     schemaVersion: 1,
     capabilities: [
       {
-        id: "tool.compose_file",
+        id: "tool.send_file",
         kind: "tool",
         type: "tool",
         adapter: "tool_runtime",
-        name: "Compose File",
+        name: "Send File",
         enabled: true,
         status: "ready",
         risk: "medium",

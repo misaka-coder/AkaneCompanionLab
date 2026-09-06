@@ -778,7 +778,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         class FakeEngine:
             def process_turn_stream(self, payload: dict):
-                yield {"type": "assistant_stage_decision", "has_tool_call": True, "tool_type": "compose_file"}
+                yield {"type": "assistant_stage_decision", "has_tool_call": True, "tool_type": "send_file"}
                 yield dict(generated_receipt)
                 yield {"type": "assistant_stage_decision", "has_tool_call": True, "tool_type": "send_file"}
                 yield dict(delivery_event)

@@ -202,7 +202,9 @@ class ToolInvocationTests(unittest.TestCase):
 
     def test_tool_metadata_contract_fields_are_descriptive_only_for_now(self) -> None:
         read_metadata = TOOL_METADATA_BY_TYPE["retrieve_memory"]
-        write_metadata = TOOL_METADATA_BY_TYPE["compose_file"]
+        write_metadata = ToolMetadata(
+            family="file_workspace", operation="control", risk="medium", requires_confirmation=True
+        )
 
         self.assertTrue(read_metadata.is_read_only)
         self.assertFalse(write_metadata.is_read_only)
@@ -213,7 +215,7 @@ class ToolInvocationTests(unittest.TestCase):
 
         metadata_dict = tool_orchestration_engine.tool_metadata_dict(
             SimpleMetadataHandler(write_metadata),
-            tool_type="compose_file",
+            tool_type="manage_generated_file",
         )
 
         self.assertNotIn("requires_confirmation", metadata_dict)
@@ -233,21 +235,6 @@ class ToolInvocationTests(unittest.TestCase):
 
         self.assertEqual(normalized, {"type": "web_search", "query": "天气", "limit": 2})
         self.assertEqual(handler.normalized_inputs, [{"type": "web_search", "query": "天气", "ignored": ""}])
-
-    def test_generated_artifact_tools_defer_delivery_to_send_file_round(self) -> None:
-        cleaned = tool_orchestration_engine.defer_generated_artifact_delivery(
-            {
-                "type": "compose_file",
-                "source_ids": ["audio_001"],
-                "send_to_user": True,
-            }
-        )
-        delivery = tool_orchestration_engine.defer_generated_artifact_delivery(
-            {"type": "send_file", "targets": ["gen_001", "gen_002"]}
-        )
-
-        self.assertFalse(cleaned["send_to_user"])
-        self.assertEqual(delivery["targets"], ["gen_001", "gen_002"])
 
     def test_live_native_source_survives_normalize_but_not_execute_args(self) -> None:
         handler = RecordingHandler()
@@ -634,7 +621,7 @@ class RecordingHandler:
 
 
 class SimpleMetadataHandler:
-    tool_type = "compose_file"
+    tool_type = "manage_generated_file"
 
     def __init__(self, metadata: ToolMetadata) -> None:
         self._metadata = metadata

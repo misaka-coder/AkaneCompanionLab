@@ -1641,20 +1641,6 @@ class AttachmentInboxService:
                     return "\n".join(lines[start:end]).strip()[:limit]
         return preview[:limit]
 
-    def read_material_for_generation(self, item: dict[str, Any], *, max_chars: int = 30000) -> str:
-        """Return a larger, bounded source excerpt for backend rendering.
-
-        This is still not long-term memory: it is only used when Akane asks the
-        file generator to create an output from an attachment.
-        """
-
-        content = self._extract_original_file_section(item, section="全文", max_chars=max_chars)
-        if content:
-            return content[:max_chars]
-        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
-        preview = str(detail.get("text_preview") or detail.get("content_preview") or "").strip()
-        return preview[:max_chars]
-
     def _extract_original_file_section(self, item: dict[str, Any], *, section: str, max_chars: int = 12000) -> str:
         source_path = self._resolve_storage_path(item)
         if source_path is None:

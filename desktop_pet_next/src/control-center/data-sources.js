@@ -3249,7 +3249,7 @@ function buildRecentOutputsPatch(workspace) {
 function buildAbilityLabels({ tools, workspaceCounts }) {
   const labels = [];
   if (tools.some((name) => /file|attachment|compose|send/i.test(name))) labels.push("文件处理");
-  if (tools.some((name) => /send_file|compose_file/i.test(name))) labels.push("文档交付");
+  if (tools.some((name) => /send_file/i.test(name))) labels.push("文档交付");
   if (tools.some((name) => /media|audio|voice|transcribe/i.test(name))) labels.push("媒体工具");
   if (tools.some((name) => /memory/i.test(name))) labels.push("记忆检索");
   if (workspaceCounts.files > 0) labels.push(`手边文件 ${workspaceCounts.files}`);

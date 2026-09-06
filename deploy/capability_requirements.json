@@ -3,9 +3,7 @@
   "bots": {
     "personal": {
       "required": [
-        "tool.compose_file",
         "tool.send_file",
-        "tool.generate_image",
         "provider.tts.edge"
       ]
     },

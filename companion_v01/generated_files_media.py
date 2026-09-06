@@ -39,14 +39,14 @@ def resolve_media_source(
     lowered = normalized.lower()
     looks_like_generated = lowered.startswith(("gen_", "generated::"))
     if not looks_like_generated:
-        attachment = service._resolve_attachment_style_source(
+        attachment = service._resolve_attachment_media_source(
             profile_user_id=profile_user_id,
             session_id=session_id,
             target=normalized,
         )
         if attachment is not None:
             return attachment
-    generated = service._resolve_generated_style_source(
+    generated = service._resolve_generated_media_source(
         profile_user_id=profile_user_id,
         session_id=session_id,
         target=normalized,
@@ -55,7 +55,7 @@ def resolve_media_source(
         return generated
     if looks_like_generated:
         return None
-    return service._resolve_attachment_style_source(
+    return service._resolve_attachment_media_source(
         profile_user_id=profile_user_id,
         session_id=session_id,
         target=normalized,

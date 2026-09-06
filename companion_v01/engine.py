@@ -101,11 +101,9 @@ from .tool_invocation import (
 from .tool_invocation import TOOL_SOURCE_FIELD
 from .tool_runtime import (
     AdapterCapabilityToolHandler,
-    ApplyStyleToExistingFileToolHandler,
     BaseToolHandler,
     BrowserPageToolHandler,
     ClearAttachmentFocusToolHandler,
-    ComposeFileToolHandler,
     BrowseMemoryToolHandler,
     DesktopSatelliteToolHandler,
     FetchMediaFromUrlToolHandler,
@@ -124,7 +122,6 @@ from .tool_runtime import (
     ReadWorkspaceToolHandler,
     RegisterWorkspaceItemsToolHandler,
     RetrieveMemoryToolHandler,
-    ReviseGeneratedFileToolHandler,
     RetryAttachmentToolHandler,
     SendFileToolHandler,
     SendStickerToolHandler,

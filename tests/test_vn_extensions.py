@@ -922,7 +922,6 @@ class EngineExtensionTests(unittest.TestCase):
                     "inspect_attachment",
                     "retry_attachment",
                     "clear_attachment_focus",
-                    "compose_file",
                     "inspect_media_info",
                     "send_file",
                     "send_sticker",
@@ -938,7 +937,7 @@ class EngineExtensionTests(unittest.TestCase):
                 session_id="desktop_pet_test",
             )
             self.assertIn("\n- fetch_media_from_url", prompt)
-            self.assertIn("\n- compose_file", prompt)
+            self.assertNotIn("\n- compose_file", prompt)
             self.assertNotIn("\n- sync_attachment_workspace", prompt)
             self.assertNotIn("\n- inspect_media_info", prompt)
             self.assertNotIn("\n- send_sticker", prompt)
@@ -1021,9 +1020,7 @@ class EngineExtensionTests(unittest.TestCase):
                 for name in [
                     "manage_persona",
                     "fetch_media_from_url",
-                    "compose_file",
                     "read_attachment_section",
-                    "apply_style_to_existing_file",
                     "inspect_media_info",
                     "inspect_generated_file",
                     "send_file",
@@ -1049,7 +1046,7 @@ class EngineExtensionTests(unittest.TestCase):
             self.assertIn("音频/视频", prompt)
             self.assertIn("如果用户只要原视频/原音频，下载后直接交付原文件", prompt)
             self.assertIn("\n- fetch_media_from_url", prompt)
-            self.assertIn("\n- compose_file", prompt)
+            self.assertNotIn("\n- compose_file", prompt)
             self.assertNotIn("\n- inspect_media_info", prompt)
             self.assertNotIn("\n- separate_audio_stems", prompt)
             self.assertNotIn("\n- clean_voice_track", prompt)
@@ -1197,10 +1194,7 @@ class EngineExtensionTests(unittest.TestCase):
                     "inspect_attachment",
                     "retry_attachment",
                     "clear_attachment_focus",
-                    "compose_file",
                     "read_attachment_section",
-                    "revise_generated_file",
-                    "apply_style_to_existing_file",
                     "inspect_media_info",
                     "inspect_generated_file",
                     "send_file",

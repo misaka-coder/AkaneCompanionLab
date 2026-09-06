@@ -385,7 +385,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                     "web_search": FakeNativeHandler("web_search"),
                     "retrieve_memory": FakeNativeHandler("retrieve_memory"),
                     "read_memory_timeline": FakeNativeHandler("read_memory_timeline"),
-                    "compose_file": FakeNativeHandler("compose_file"),
+                    "manage_generated_file": FakeNativeHandler("manage_generated_file"),
                 },
                 allow_tool_call=True,
             )
@@ -466,13 +466,13 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         original_allowlist = getattr(config, "NATIVE_TOOL_DECISION_ALLOWLIST", "web_search")
         try:
             config.ENABLE_NATIVE_TOOL_DECISION = True
-            config.NATIVE_TOOL_DECISION_ALLOWLIST = "inspect_media_info,compose_file,send_file"
+            config.NATIVE_TOOL_DECISION_ALLOWLIST = "inspect_media_info,manage_generated_file,send_file"
             plan = tool_orchestration_engine.build_native_tool_decision_plan(
                 {
                     name: FakeNativeHandler(name)
                     for name in (
                         "inspect_media_info",
-                        "compose_file",
+                        "manage_generated_file",
                         "send_file",
                     )
                 },
@@ -480,7 +480,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 provider_supports_native_tools=True,
                 allowed_tool_names=(
                     "inspect_media_info",
-                    "compose_file",
+                    "manage_generated_file",
                     "send_file",
                 ),
             )
@@ -489,7 +489,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             names = [tool["function"]["name"] for tool in plan.tools]
             self.assertEqual(
                 names,
-                ["inspect_media_info", "compose_file", "send_file"],
+                ["inspect_media_info", "manage_generated_file", "send_file"],
             )
             self.assertEqual(plan.legacy_prompt_exclusions, set(names))
             for tool in plan.tools:
@@ -552,7 +552,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                     "web_search": FakeNativeHandler("web_search"),
                     "retrieve_memory": FakeNativeHandler("retrieve_memory"),
                     "read_memory_timeline": FakeNativeHandler("read_memory_timeline"),
-                    "compose_file": FakeNativeHandler("compose_file"),
+                    "manage_generated_file": FakeNativeHandler("manage_generated_file"),
                 },
                 allow_tool_call=True,
                 provider_supports_native_tools=True,
@@ -562,7 +562,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             names = [tool["function"]["name"] for tool in plan.tools]
             self.assertEqual(set(names), {"web_search", "retrieve_memory", "read_memory_timeline"})
             # Native-provided tools are excluded from the legacy prompt; the
-            # write tool (compose_file) is not in the allowlist, so it stays legacy.
+            # write tool (manage_generated_file) is not in the allowlist, so it stays legacy.
             self.assertEqual(
                 plan.legacy_prompt_exclusions,
                 {"web_search", "retrieve_memory", "read_memory_timeline"},
@@ -1953,7 +1953,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
         engine._execute_and_record_tool_batch(
             tool_calls=[
                 {
-                    "type": "compose_file",
+                    "type": "manage_generated_file",
                     TOOL_SOURCE_FIELD: NATIVE_OPENAI,
                     TOOL_INVOCATION_ID_FIELD: "call_artifact",
                 }
@@ -2534,10 +2534,10 @@ class NativeCanonicalDescriptionTests(unittest.TestCase):
 
     def test_canonical_handler_descriptions_have_no_legacy_envelope(self) -> None:
         from companion_v01.native_tool_schema import build_openai_native_tool_specs
-        from companion_v01.tool_runtime import ComposeFileToolHandler
+        from companion_v01.tool_runtime import ManageGeneratedFileToolHandler
 
         handlers = {
-            "compose_file": ComposeFileToolHandler(generated_file_service=None),
+            "manage_generated_file": ManageGeneratedFileToolHandler(generated_file_service=None),
         }
         specs = build_openai_native_tool_specs(handlers)
         self.assertEqual(len(specs), 1)

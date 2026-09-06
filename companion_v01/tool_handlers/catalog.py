@@ -25,12 +25,9 @@ from .extensions import ManageExtensionToolHandler
 from .character_world import LoadCharacterContextToolHandler
 from .core import BaseToolHandler
 from .generated_media import (
-    ApplyStyleToExistingFileToolHandler,
-    ComposeFileToolHandler,
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
     ManageGeneratedFileToolHandler,
-    ReviseGeneratedFileToolHandler,
     SendFileToolHandler,
     SendStickerToolHandler,
 )
@@ -123,13 +120,6 @@ def build_builtin_tool_handlers(
         ),
         "fetch_media_from_url": FetchMediaFromUrlToolHandler(
             attachment_ingest_service=attachment_ingest_service
-        ),
-        "compose_file": ComposeFileToolHandler(generated_file_service=generated_file_service),
-        "revise_generated_file": ReviseGeneratedFileToolHandler(
-            generated_file_service=generated_file_service
-        ),
-        "apply_style_to_existing_file": ApplyStyleToExistingFileToolHandler(
-            generated_file_service=generated_file_service
         ),
         "inspect_media_info": InspectMediaInfoToolHandler(
             generated_file_service=generated_file_service

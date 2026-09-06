@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import config
-
 from .core import (
     BaseToolHandler,
     ToolExecutionContext,
@@ -15,208 +13,21 @@ from .core import (
     operation_tool_result,
 )
 
-class ComposeFileToolHandler(BaseToolHandler):
-    tool_type = "compose_file"
-
-    def __init__(self, *, generated_file_service) -> None:
-        self.generated_file_service = generated_file_service
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- compose_file：当用户要你把工作台材料、已生成文件或当前对话内容整理成一个新文件时使用。"
-            "如果用户明确要求生成/导出文件，或在已有任务后说“开始/继续/直接做”，不要只口头答应，"
-            "应立刻在 tool_call 调用 compose_file。"
-            '格式为 {"type":"compose_file","source_ids":["file_001","gen_001"],'
-            '"task":"要整理/改写/导出的目标","output_format":"md|txt|docx|xlsx|pdf|json|csv|html",'
-            '"output_title":"文件标题","structure":"summary|table|report|notes|custom",'
-            '"style":"clean|formal|casual","content_markdown":"你整理好的正文或 Markdown",'
-            '"table_rows":[["列1","列2"],["内容1","内容2"]],'
-            '"formatting":{"header":{"bold":true},"columns":[{"match_header":"姓名","font_color":"red"}],'
-            '"highlights":[{"text":"重点","fill_color":"yellow"}]},"send_to_user":false}。'
-            "这个工具只负责把你已经整理好的内容渲染成文件；如果需要提取重点、改写或排版，"
-            "请把最终内容写进 content_markdown 或 table_rows，不要只写一句任务就指望工具替你思考。"
-            "但如果用户只是要求忠实转换/导出原始附件（例如 TXT 转 PDF/Word、原文导出），"
-            "不要把提示词里的短预览复制进 content_markdown；请留空 content_markdown/table_rows，"
-            "只填写 source_ids、task、output_format、output_title，后端会从原始附件读取更完整的安全材料。"
-            "要生成表格优先用 table_rows；要生成 Word/PDF/Markdown 优先用 content_markdown。"
-            "需要标红、加粗、黄色高亮时，把明确规则写进 formatting；后端只执行白名单样式字段。"
-            "生成结果会成为 gen_001 这类可继续修改的生成文件，不会覆盖用户原始附件。"
-            "它适合文档、静态展示页和短小自包含文件；返回成功只证明文件已生成，不证明内容可运行。"
-            "可执行程序、游戏、多文件项目或需要调试的代码优先加载 coding-project Skill 并用 Shell 真实验证。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if str(value.get("type") or "").strip() != self.tool_type:
-            return None
-        sources = (
-            value.get("source_ids")
-            if value.get("source_ids") is not None
-            else value.get("sources")
-            if value.get("sources") is not None
-            else value.get("targets")
-            if value.get("targets") is not None
-            else value.get("target")
-        )
-        output_format = self._normalize_output_format(value.get("output_format") or value.get("format") or "md")
-        table_rows = self._normalize_table_rows(value.get("table_rows") or value.get("rows") or value.get("table"))
-        return {
-            "type": self.tool_type,
-            "source_ids": self._normalize_sources(sources),
-            "task": str(value.get("task") or value.get("instruction") or value.get("goal") or "").strip()[:500],
-            "output_format": output_format,
-            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[
-                :80
-            ],
-            "structure": str(value.get("structure") or value.get("layout") or "").strip()[:80],
-            "style": str(value.get("style") or "").strip()[:80],
-            "fidelity": str(value.get("fidelity") or "").strip()[:80],
-            "content_markdown": str(
-                value.get("content_markdown")
-                or value.get("markdown")
-                or value.get("content")
-                or value.get("body")
-                or ""
-            ).strip()[:80000],
-            "table_rows": table_rows,
-            "formatting": self._normalize_formatting(
-                value.get("formatting") or value.get("styles") or value.get("style_rules")
-            ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
-        }
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.generated_file_service.compose_file(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            source_targets=list(call.get("source_ids") or []),
-            task=str(call.get("task") or ""),
-            output_format=str(call.get("output_format") or "md"),
-            output_title=str(call.get("output_title") or ""),
-            structure=str(call.get("structure") or ""),
-            style=str(call.get("style") or ""),
-            fidelity=str(call.get("fidelity") or ""),
-            content_markdown=str(call.get("content_markdown") or ""),
-            table_rows=list(call.get("table_rows") or []),
-            formatting=call.get("formatting") if isinstance(call.get("formatting"), dict) else {},
-            send_to_user=bool(call.get("send_to_user")),
-            timestamp=context.now_ts,
-        )
-        generated = result.get("generated") if isinstance(result, dict) else None
-        events = []
-        if isinstance(generated, dict):
-            events.append(
-                {
-                    "type": "generated_file_ready",
-                    "generated_file": generated,
-                    "send_to_user": bool(result.get("send_to_user")),
-                }
-            )
-        return operation_tool_result(
-            tool_type=self.tool_type,
-            operation_result=result,
-            success_events=events,
-        )
-
-    def _normalize_sources(self, value: Any) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            raw_items = [item.strip() for item in value.replace("，", ",").replace("、", ",").split(",")]
-        elif isinstance(value, (list, tuple, set)):
-            raw_items = list(value)
-        else:
-            raw_items = [value]
-        sources: list[str] = []
-        for item in raw_items:
-            text = str(item or "").strip()
-            if text and text not in sources:
-                sources.append(text[:120])
-        return sources[:20]
-
-    def _normalize_output_format(self, value: Any) -> str:
-        text = str(value or "md").strip().lower().lstrip(".")
-        aliases = {
-            "markdown": "md",
-            "text": "txt",
-            "plain": "txt",
-            "word": "docx",
-            "excel": "xlsx",
-        }
-        return aliases.get(text, text)[:16]
-
-    def _normalize_table_rows(self, value: Any) -> list[list[str]]:
-        if not isinstance(value, list):
-            return []
-        rows: list[list[str]] = []
-        for row in value[:1000]:
-            if not isinstance(row, (list, tuple)):
-                continue
-            cells = [str(cell or "").strip()[:500] for cell in list(row)[:50]]
-            if any(cells):
-                rows.append(cells)
-        return rows
-
-    def _normalize_formatting(self, value: Any) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            return {}
-        allowed_top = {"header", "columns", "rows", "cells", "highlights", "paragraphs", "row_rules", "auto_width"}
-        allowed_style = {
-            "bold",
-            "italic",
-            "font_color",
-            "fill_color",
-            "highlight_color",
-            "match_header",
-            "header",
-            "column",
-            "letter",
-            "index",
-            "row",
-            "row_index",
-            "start",
-            "end",
-            "from",
-            "to",
-            "text",
-            "contains",
-            "paragraph_index",
-            "where",
-        }
-        normalized: dict[str, Any] = {}
-        for key, raw in value.items():
-            if key not in allowed_top:
-                continue
-            if key == "auto_width":
-                normalized[key] = self._coerce_bool(raw, default=True)
-                continue
-            if key == "header" and isinstance(raw, dict):
-                normalized[key] = {str(k): v for k, v in raw.items() if str(k) in allowed_style}
-                continue
-            if not isinstance(raw, list):
-                continue
-            items = []
-            for item in raw[:120]:
-                if not isinstance(item, dict):
-                    continue
-                items.append({str(k): v for k, v in item.items() if str(k) in allowed_style})
-            if items:
-                normalized[key] = items
-        return normalized
-
-    def _coerce_bool(self, value: Any, *, default: bool) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        text = str(value).strip().lower()
-        if text in {"1", "true", "yes", "y", "on", "发送", "发给用户"}:
-            return True
-        if text in {"0", "false", "no", "n", "off", "不发送", "仅生成"}:
-            return False
-        return default
-
+def _normalize_file_targets(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.replace("，", ",").replace("、", ",").split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+    sources: list[str] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in sources:
+            sources.append(text[:120])
+    return sources[:20]
 
 def _generated_media_capability_status(
     service: Any,
@@ -308,219 +119,6 @@ class InspectMediaInfoToolHandler(BaseToolHandler):
         )
 
 
-class ReviseGeneratedFileToolHandler(BaseToolHandler):
-    tool_type = "revise_generated_file"
-
-    def __init__(self, *, generated_file_service) -> None:
-        self.generated_file_service = generated_file_service
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- revise_generated_file：当用户要修改你刚生成的 gen_001/gen_002 文件时使用，默认生成新版本，不覆盖旧文件。"
-            '格式为 {"type":"revise_generated_file","target":"gen_001",'
-            '"instruction":"用户要求怎么改","output_format":"md|txt|docx|xlsx|pdf|json|csv|html",'
-            '"output_title":"修改版标题","content_markdown":"修改后的完整正文或 Markdown",'
-            '"table_rows":[["列1","列2"],["内容1","内容2"]],'
-            '"formatting":{"rows":[{"index":2,"fill_color":"yellow"}]},"send_to_user":false}。'
-            "这个工具不会替你理解“删第二段、加总结”；你需要根据生成文件工作台里的预览先整理出修改后的最终内容，"
-            "再把最终内容写进 content_markdown 或 table_rows。"
-            "如果只是调整颜色、加粗或高亮，把明确样式规则写进 formatting。"
-            "如果用户只是要求继续改文件，优先用这个工具；如果是从原始附件重新整理一份新文件，用 compose_file。"
-            "成功只代表产生了修改版文件，不代表修改解决了运行问题；复杂代码不建议连续整文件重写，"
-            "优先加载 coding-project Skill 局部修改并运行检查。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if str(value.get("type") or "").strip() != self.tool_type:
-            return None
-        table_rows = self._normalize_table_rows(value.get("table_rows") or value.get("rows") or value.get("table"))
-        return {
-            "type": self.tool_type,
-            "target": str(value.get("target") or value.get("generated_id") or value.get("file_id") or "latest").strip()[
-                :120
-            ],
-            "instruction": str(value.get("instruction") or value.get("task") or value.get("request") or "").strip()[
-                :500
-            ],
-            "output_format": self._normalize_output_format(value.get("output_format") or value.get("format") or ""),
-            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[
-                :80
-            ],
-            "content_markdown": str(
-                value.get("content_markdown")
-                or value.get("markdown")
-                or value.get("content")
-                or value.get("body")
-                or ""
-            ).strip()[:80000],
-            "table_rows": table_rows,
-            "formatting": ComposeFileToolHandler._normalize_formatting(
-                self, value.get("formatting") or value.get("styles") or value.get("style_rules")
-            ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
-        }
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.generated_file_service.revise_generated_file(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            target=str(call.get("target") or "latest"),
-            instruction=str(call.get("instruction") or ""),
-            output_format=str(call.get("output_format") or ""),
-            output_title=str(call.get("output_title") or ""),
-            content_markdown=str(call.get("content_markdown") or ""),
-            table_rows=list(call.get("table_rows") or []),
-            formatting=call.get("formatting") if isinstance(call.get("formatting"), dict) else {},
-            send_to_user=bool(call.get("send_to_user")),
-            timestamp=context.now_ts,
-        )
-        generated = result.get("generated") if isinstance(result, dict) else None
-        events = []
-        if isinstance(generated, dict):
-            events.append(
-                {
-                    "type": "generated_file_ready",
-                    "generated_file": generated,
-                    "send_to_user": bool(result.get("send_to_user")),
-                }
-            )
-        return operation_tool_result(
-            tool_type=self.tool_type,
-            operation_result=result,
-            success_events=events,
-        )
-
-    def _normalize_output_format(self, value: Any) -> str:
-        text = str(value or "").strip().lower().lstrip(".")
-        aliases = {
-            "markdown": "md",
-            "text": "txt",
-            "plain": "txt",
-            "word": "docx",
-            "excel": "xlsx",
-        }
-        return aliases.get(text, text)[:16]
-
-    def _normalize_table_rows(self, value: Any) -> list[list[str]]:
-        if not isinstance(value, list):
-            return []
-        rows: list[list[str]] = []
-        for row in value[:1000]:
-            if not isinstance(row, (list, tuple)):
-                continue
-            cells = [str(cell or "").strip()[:500] for cell in list(row)[:50]]
-            if any(cells):
-                rows.append(cells)
-        return rows
-
-    def _coerce_bool(self, value: Any, *, default: bool) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        text = str(value).strip().lower()
-        if text in {"1", "true", "yes", "y", "on", "发送", "发给用户"}:
-            return True
-        if text in {"0", "false", "no", "n", "off", "不发送", "仅生成"}:
-            return False
-        return default
-
-
-class ApplyStyleToExistingFileToolHandler(BaseToolHandler):
-    tool_type = "apply_style_to_existing_file"
-
-    def __init__(self, *, generated_file_service) -> None:
-        self.generated_file_service = generated_file_service
-
-    def build_prompt_instruction(self) -> str:
-        return (
-            "- apply_style_to_existing_file：当用户只要求给已有 docx/xlsx 文件套样式，而不是重写全文时使用。"
-            '格式为 {"type":"apply_style_to_existing_file","target":"file_001|gen_001|最近",'
-            '"target_type":"attachment|generated","instruction":"用户的样式要求",'
-            '"output_title":"样式版标题",'
-            '"formatting":{"header":{"bold":true},"columns":[{"match_header":"姓名","font_color":"red"}],'
-            '"rows":[{"index":2,"fill_color":"yellow"}],'
-            '"row_rules":[{"where":{"column":"分数","lt":60},"font_color":"red"}],'
-            '"highlights":[{"text":"重点","fill_color":"yellow"}]},"send_to_user":false}。'
-            "适合“把姓名列标红”“低于60分整行标红”“重点高亮”这类操作；"
-            "它会复制原文件并套样式，不需要你把大表格或整篇 Word 重新输出。"
-            "如果用户要增删改正文内容，用 revise_generated_file；如果要从附件整理成新文件，用 compose_file。"
-        )
-
-    def normalize_call(self, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
-            return None
-        if str(value.get("type") or "").strip() != self.tool_type:
-            return None
-        return {
-            "type": self.tool_type,
-            "target": str(value.get("target") or value.get("source_id") or value.get("file_id") or "latest").strip()[
-                :120
-            ],
-            "target_type": self._normalize_target_type(value.get("target_type") or value.get("source_type")),
-            "instruction": str(value.get("instruction") or value.get("task") or value.get("request") or "").strip()[
-                :500
-            ],
-            "output_title": str(value.get("output_title") or value.get("title") or value.get("name") or "").strip()[
-                :80
-            ],
-            "formatting": ComposeFileToolHandler._normalize_formatting(
-                self, value.get("formatting") or value.get("styles") or value.get("style_rules")
-            ),
-            "send_to_user": self._coerce_bool(value.get("send_to_user"), default=False),
-        }
-
-    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.generated_file_service.apply_style_to_existing_file(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            target=str(call.get("target") or "latest"),
-            target_type=str(call.get("target_type") or ""),
-            instruction=str(call.get("instruction") or ""),
-            output_title=str(call.get("output_title") or ""),
-            formatting=call.get("formatting") if isinstance(call.get("formatting"), dict) else {},
-            send_to_user=bool(call.get("send_to_user")),
-            timestamp=context.now_ts,
-        )
-        generated = result.get("generated") if isinstance(result, dict) else None
-        events = []
-        if isinstance(generated, dict):
-            events.append(
-                {
-                    "type": "generated_file_ready",
-                    "generated_file": generated,
-                    "send_to_user": bool(result.get("send_to_user")),
-                }
-            )
-        return operation_tool_result(
-            tool_type=self.tool_type,
-            operation_result=result,
-            success_events=events,
-        )
-
-    def _normalize_target_type(self, value: Any) -> str:
-        text = str(value or "").strip().lower()
-        if text in {"attachment", "inbox", "file", "qq_file"}:
-            return "attachment"
-        if text in {"generated", "gen", "generated_file"}:
-            return "generated"
-        return ""
-
-    def _coerce_bool(self, value: Any, *, default: bool) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        text = str(value).strip().lower()
-        if text in {"1", "true", "yes", "y", "on", "发送", "发给用户"}:
-            return True
-        if text in {"0", "false", "no", "n", "off", "不发送", "仅生成"}:
-            return False
-        return default
-
-
 class SendFileToolHandler(BaseToolHandler):
     tool_type = "send_file"
 
@@ -552,7 +150,7 @@ class SendFileToolHandler(BaseToolHandler):
             if value.get("generated_id") is not None
             else value.get("file_id")
         )
-        targets = ComposeFileToolHandler._normalize_sources(self, targets_value)
+        targets = _normalize_file_targets(targets_value)
         return {
             "type": self.tool_type,
             "target": targets[0] if targets else "latest",
@@ -712,7 +310,7 @@ class InspectGeneratedFileToolHandler(BaseToolHandler):
             '"section":"content|head|tail|summary|file_list|manifest|file:manifest.json","max_chars":12000}。'
             "它只读取生成物，不会发送、修改或删除文件；适合继续修改前先确认内容、查看转写稿、检查训练集 zip 的 manifest/README。"
             "正文还有未展示部分时结果会带 cursor；如果已展示内容足够可以直接回答，只有确实需要后续正文时才用 inspect_generated_file(cursor=\"...\") 继续。"
-            "如果只是要把文件再发给用户，用 send_file；如果要修改内容，用 revise_generated_file。"
+            "如果只是要把文件再发给用户，用 send_file；修改内容仅使用当前可用的写入能力。"
         )
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
@@ -1018,7 +616,7 @@ class ManageGeneratedFileToolHandler(BaseToolHandler):
             if value.get("generated_id") is not None
             else value.get("file_id")
         )
-        targets = ComposeFileToolHandler._normalize_sources(self, targets_value)
+        targets = _normalize_file_targets(targets_value)
         return {
             "type": self.tool_type,
             "action": action,

@@ -12,6 +12,7 @@ from companion_v01.attachment_ingest import AttachmentIngestService
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
 from companion_v01.engine import AkaneMemoryEngine
+from tests.generated_artifact_fixtures import register_text_artifact
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.store import MemoryStore
 from companion_v01.tool_runtime import (
@@ -313,7 +314,7 @@ class WorkspaceFileServiceTests(unittest.TestCase):
         self.assertEqual(second_path.name, "file_001__note_2.md")
         self.assertNotEqual(first_path, second_path)
 
-    def test_generation_recreates_deleted_workspace_and_writes_visible_output(self) -> None:
+    def test_artifact_registration_recreates_deleted_workspace_and_writes_visible_output(self) -> None:
         outputs_dir = self.service.layer_dir("Outputs")
         inbox = AttachmentInboxService(store=self.store, base_dir=self.service.layer_dir("Inbox"))
         generated_service = GeneratedFileService(
@@ -326,22 +327,19 @@ class WorkspaceFileServiceTests(unittest.TestCase):
         )
         shutil.rmtree(self.root)
 
-        result = generated_service.compose_file(
+        generated = register_text_artifact(generated_service,
             profile_user_id="master",
             session_id="desktop",
-            source_targets=[],
-            task="生成测试文件",
             output_format="md",
             output_title="测试产物",
-            content_markdown="# visible output",
-            send_to_user=False,
+            content="# visible output",
             timestamp=210,
         )
 
-        self.assertTrue(result["ok"])
+        self.assertEqual(generated["status"], "ready")
         for folder_name in ("Inbox", "Outputs", "Archive"):
             self.assertTrue((self.root / folder_name).is_dir())
-        output_path = generated_service.absolute_path(result["generated"])
+        output_path = generated_service.absolute_path(generated)
         self.assertTrue(output_path.is_relative_to(self.root / "Outputs"))
         self.assertEqual(output_path.parent, self.root / "Outputs" / "1970-01-01")
         self.assertNotIn("desktop", output_path.relative_to(self.root / "Outputs").parts)

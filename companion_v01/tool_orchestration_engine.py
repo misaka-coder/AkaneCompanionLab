@@ -44,24 +44,6 @@ class NativeToolDecisionPlan:
         return bool(self.tools)
 
 
-_EXPLICIT_DELIVERY_TOOL_TYPES = frozenset(
-    {
-        "compose_file",
-        "revise_generated_file",
-        "apply_style_to_existing_file",
-    }
-)
-
-def defer_generated_artifact_delivery(call: dict[str, Any]) -> dict[str, Any]:
-    """Keep artifact creation and user delivery as two observable native tool rounds."""
-
-    normalized = dict(call)
-    tool_type = str(normalized.get("type") or "").strip()
-    if tool_type not in _EXPLICIT_DELIVERY_TOOL_TYPES:
-        return normalized
-    if "send_to_user" in normalized:
-        normalized["send_to_user"] = False
-    return normalized
 
 
 def _bounded_int(raw_value: Any, *, default: int, lower: int = 1, upper: int = 16) -> int:
@@ -438,7 +420,6 @@ def normalize_tool_invocation(
             invocation_id=invocation_id,
             capability_selection=frozen_selection,
         )
-    normalized = defer_generated_artifact_delivery(normalized)
     receipt = value.get(TOOL_EXECUTION_RECEIPT_FIELD)
     if isinstance(receipt, dict):
         normalized[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)

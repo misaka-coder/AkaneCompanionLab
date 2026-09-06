@@ -21,7 +21,7 @@ class SubagentPolicyTests(unittest.TestCase):
         )
 
     def test_work_tools_inherit_without_a_coding_allowlist(self):
-        names = ("browser_page", "compose_file", "inspect_generated_file", "manage_generated_file",
+        names = ("browser_page", "inspect_generated_file", "manage_generated_file",
                  "register_workspace_items", "manage_skill", "mcp_manage", "manage_extension",
                  "project_inspect", "workspace_write", "workspace_patch", "exec_run", "exec_status",
                  "exec_cancel", "web_search", "load_skill", "load_mcp", "invoke_mcp", "mcp.demo.echo",

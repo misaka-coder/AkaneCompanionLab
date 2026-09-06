@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from companion_v01.attachment_inbox import AttachmentInboxService
+from tests.generated_artifact_fixtures import register_text_artifact
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.store import MemoryStore
 
@@ -317,8 +318,6 @@ class ResourceVisibilityContractTests(unittest.TestCase):
             self.assertIn("原始第80行", attachment_prompt)
 
             from companion_v01.tool_runtime import (
-                ComposeFileToolHandler,
-                ReviseGeneratedFileToolHandler,
                 SendFileToolHandler,
                 ToolExecutionContext,
             )
@@ -332,44 +331,21 @@ class ResourceVisibilityContractTests(unittest.TestCase):
                     current_user_source_id=f"msg_{now_ts}",
                 )
 
-            compose_handler = ComposeFileToolHandler(generated_file_service=generated_service)
-            compose_call = compose_handler.normalize_call(
-                {
-                    "type": "compose_file",
-                    "source_ids": ["file_001"],
-                    "task": "忠实转成 Markdown，保留原文内容",
-                    "output_format": "md",
-                    "output_title": "长文本整理",
-                    "send_to_user": False,
-                }
+            composed = register_text_artifact(
+                generated_service, profile_user_id="user", session_id="session",
+                output_title="长文本整理", output_format="md",
+                content="\n".join(f"原始第{i}行" for i in range(1, 201)), timestamp=120,
+                source_ids=[attachment["attachment_id"]],
             )
-            compose_result = compose_handler.execute(
-                call=compose_call or {},
-                context=tool_context(120),
+            revised = register_text_artifact(
+                generated_service, profile_user_id="user", session_id="session",
+                output_title="长文本整理_摘要版", output_format="md",
+                content="# 执行摘要\n\n这是补了摘要的整理版。\n\n原始第1行\n原始第2行",
+                timestamp=130, revision_of=composed["generated_handle"],
             )
-            composed = compose_result.stream_events[0]["generated_file"]
-            composed_text = Path(composed["absolute_path"]).read_text(encoding="utf-8")
-            self.assertIn("原始第200行", composed_text)
-            self.assertNotIn("注意：上面是系统可安全展开的片段", composed_text)
-
-            revise_handler = ReviseGeneratedFileToolHandler(generated_file_service=generated_service)
-            revise_call = revise_handler.normalize_call(
-                {
-                    "type": "revise_generated_file",
-                    "target": "gen_001",
-                    "instruction": "在开头补一段执行摘要",
-                    "output_format": "md",
-                    "output_title": "长文本整理_摘要版",
-                    "content_markdown": "# 执行摘要\n\n这是补了摘要的整理版。\n\n原始第1行\n原始第2行",
-                    "send_to_user": False,
-                }
-            )
-            revise_result = revise_handler.execute(
-                call=revise_call or {},
-                context=tool_context(130),
-            )
-            revised = revise_result.stream_events[0]["generated_file"]
             self.assertEqual(revised["generated_handle"], "gen_002")
+            self.assertEqual(revised["version_of_generated_id"], composed["generated_id"])
+            self.assertIn("原始第200行", Path(composed["absolute_path"]).read_text(encoding="utf-8"))
 
             send_handler = SendFileToolHandler(generated_file_service=generated_service)
             send_call = send_handler.normalize_call(
@@ -394,8 +370,7 @@ class ResourceVisibilityContractTests(unittest.TestCase):
 
             self.assertIn("gen_001：长文本整理.md", generated_prompt)
             self.assertIn("gen_002：长文本整理_摘要版.md", generated_prompt)
-            self.assertIn("来源工具：compose_file", generated_prompt)
-            self.assertIn("来源工具：revise_generated_file", generated_prompt)
+            self.assertIn("来源工具：fixture.register", generated_prompt)
             self.assertIn("【当前材料工作台】", combined)
             self.assertIn("【生成文件工作台】", combined)
 
