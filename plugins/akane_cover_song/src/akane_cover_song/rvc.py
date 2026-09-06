@@ -16,7 +16,8 @@ import requests
 
 from .errors import CoverSongError
 from .lease import EndpointLease, check_cancelled
-from .models import matching_models, normalize_model_key
+from .models import endpoint_namespace, matching_models, normalize_model_key
+from .cache import cache_key
 
 _AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 
@@ -146,6 +147,15 @@ class RvcWebUiProvider:
                     index_items.append({"name": path.name, **self._stat_fingerprint(path)})
         output["indices"] = sorted(index_items, key=lambda item: str(item.get("name") or ""))[:12]
         return output
+
+    def cache_namespace(self):
+        weights = {}
+        if self.root_dir is not None:
+            base = self.root_dir / "assets" / "uvr5_weights"
+            for suffix in (".pth", ".onnx"):
+                path = base / (Path(self.separation_model).name + suffix)
+                weights[suffix] = self._stat_fingerprint(path)
+        return cache_key({"endpoint": endpoint_namespace(self.base_url, self.root_dir), "separator_weights": weights})
 
     @exclusive_operation
     def separate_vocals(self, *, source_path: Path, work_dir: Path) -> tuple[Path, Path]:

@@ -253,6 +253,11 @@ class RemoteRvcProvider:
         self.rvc_separation_model = separation_model
         self.separation_model = demucs_model
 
+    def cache_namespace(self):
+        from .models import endpoint_namespace
+
+        return endpoint_namespace(self.client.base_url)
+
     def exclusive(self):
         return self.client.exclusive()
 

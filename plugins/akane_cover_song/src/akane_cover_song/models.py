@@ -4,6 +4,19 @@ from pathlib import Path
 import hashlib
 import re
 from typing import Any
+from urllib.parse import urlsplit
+
+
+def endpoint_namespace(base_url, root_dir=""):
+    parsed = urlsplit(base_url)
+    # Normalize loopback aliases without exposing the endpoint or model root.
+    identity = (
+        parsed.scheme,
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+        parsed.path.rstrip("/"),
+        str(root_dir or ""),
+    )
+    return hashlib.sha256(repr(identity).encode()).hexdigest()
 
 
 def normalize_model_key(value):

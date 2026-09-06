@@ -22,6 +22,14 @@ def tone(path, *, seconds=1, rate=44100, amplitude=0.1):
 
 
 class MediaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_output_format_is_probed_not_guessed_from_extension(self):
+        mislabeled = self.root / "mislabeled.mp3"
+        shutil.copyfile(self.source, mislabeled)
+        self.assertEqual((await self.media.probe_audio(mislabeled))["container"], "wav")
+        with self.assertRaises(CoverSongError) as caught:
+            await self.media.probe_output(mislabeled, "mp3")
+        self.assertEqual(caught.exception.reason, "cover_output_format_mismatch")
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

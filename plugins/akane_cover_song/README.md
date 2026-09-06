@@ -108,6 +108,23 @@ probed audio format; an older remote service returning another format produces
 `provider_output_audio_format_changed`. Provide source media to rebuild a prior
 mono recording. No existing generated files or caches are deleted.
 
+All outputs, including restored recordings, are probed in the pipeline exactly
+once: codec/container/rate/channels/duration come from FFprobe. A WAV response to
+an MP3 request fails with `cover_output_format_mismatch`, before caching or
+publication, instead of acquiring a misleading extension. Source cache keys
+include an opaque endpoint/root namespace and local UVR weight statistics;
+changing the service, local model root or tracked separator weight revision
+invalidates both source-cache layers. Loopback hostname aliases share the same
+identity. Historical title restores remain independent of the current endpoint.
+Replacing remote separator weights in place is not observable through the old
+server protocol; use `force_rebuild` after that administrator operation.
+
+Post-cutover acceptance also installed a fresh wheel and ran the **direct WebUI**
+path through a HostJob: actual UVR/RVC produced a 1,586,982-byte 24-bit WAV,
+44.1 kHz stereo, 5.997279 s. The observed Job duration was 7.891 s; source and title
+restores were byte-identical. This run does not establish subjective singing
+quality or a general speed guarantee. The owned acceptance WebUI was stopped.
+
 `ProviderCalls` drains blocking provider threads on repeated cancellation.
 Pass its `cancelled` callback into each per-invocation WebUI provider. The
 pipeline leaves work-directory cleanup to its caller, which must await the

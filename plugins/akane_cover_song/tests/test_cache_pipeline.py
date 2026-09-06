@@ -236,6 +236,17 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             await self.run_cover(source_path=None, force_rebuild=True)
         self.assertEqual(caught.exception.reason, "source_required_for_rebuild")
 
+    async def test_changed_provider_namespace_invalidates_both_source_cache_layers(self):
+        self.provider.cache_namespace = lambda: "first-endpoint-or-separator-revision"
+        first = await self.run_cover()
+        self.provider.cache_namespace = lambda: "second-endpoint-or-separator-revision"
+        changed = await self.run_cover()
+        self.assertNotEqual(first["cache_key"], changed["cache_key"])
+        self.assertFalse(changed["processing"]["cache_hit"])
+        self.assertFalse(changed["processing"]["stems_cache_hit"])
+        self.assertEqual((self.provider.separations, self.provider.conversions), (2, 2))
+        self.assertTrue((await self.run_cover(source_path=None))["processing"]["cache_hit"])
+
     async def test_failed_conversion_leaves_only_completed_stems_and_no_cover(self):
         def fail(**kwargs):
             raise CoverSongError(stage="voice", reason="fixture_failure", public_message="fixture")

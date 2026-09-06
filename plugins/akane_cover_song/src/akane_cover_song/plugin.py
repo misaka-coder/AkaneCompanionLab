@@ -202,14 +202,12 @@ class CoverSong:
                 force_rebuild=args.get("force_rebuild", False),
             )
             output = result["path"]
-            # Includes historical cache restores; never infer PCM format from metadata.
-            audio = await media.probe_audio(output)
+            # The single pipeline validates new and restored output exactly once.
+            audio = result["metadata"]["audio_info"]
             if not 0 < output.stat().st_size <= MAX_BYTES:
                 raise fail("cover_output_invalid", "output")
             processing = result["processing"]
             notices = list(processing.get("notices", []))
-            if (audio["sample_rate"], audio["channels"]) != (44100, 2):
-                notices.append("provider_output_audio_format_changed")
             notices = list(dict.fromkeys(notices))
             metadata = result["metadata"]
             summary = ("已恢复翻唱缓存" if processing["cache_hit"] else "已完成角色音色翻唱") + f"，生成 {fmt} 文件。"

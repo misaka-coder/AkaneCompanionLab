@@ -48,7 +48,7 @@ class CoverMedia:
                 "-select_streams",
                 "a:0",
                 "-show_entries",
-                "format=duration:stream=duration,sample_rate,channels",
+                "format=duration,format_name:stream=duration,sample_rate,channels,codec_name",
                 "-of",
                 "json",
                 path,
@@ -76,7 +76,15 @@ class CoverMedia:
             "duration_seconds": duration,
             "sample_rate": int(stream["sample_rate"]),
             "channels": int(stream["channels"]),
+            "codec": str(stream.get("codec_name") or ""),
+            "container": str(data.get("format", {}).get("format_name") or ""),
         }
+
+    async def probe_output(self, path, output_format):
+        info = await self.probe_audio(path)
+        if output_format not in FORMATS or info["container"] != output_format:
+            raise failure("output", "cover_output_format_mismatch")
+        return info
 
     async def probe_duration(self, path: Path) -> float:
         return (await self.probe_audio(path))["duration_seconds"]

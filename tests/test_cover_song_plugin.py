@@ -29,6 +29,9 @@ class CoverHarness(ImageHarness):
     plugin_id = PLUGIN_ID
     capability_id = CAPABILITY_ID
 
+    def register_audio(self, path):
+        return self.register_image(path, mime="audio/wav", kind="audio")
+
 
 class CoverInstallationTests(unittest.IsolatedAsyncioTestCase):
     def check_discovery(self, harness, installed):
@@ -71,7 +74,7 @@ class CoverInstallationTests(unittest.IsolatedAsyncioTestCase):
             source = root / "attachments" / "source.wav"
             tone(source)
             server.payload = source.read_bytes()
-            handle = harness.register_image(source, mime="audio/wav")
+            handle = harness.register_audio(source)
             engine = harness.engine
             engine.executor_broker = ExecutorBroker(None)
             engine._tool_hook_result_status = AkaneMemoryEngine._tool_hook_result_status
@@ -181,7 +184,7 @@ class CoverInstallationTests(unittest.IsolatedAsyncioTestCase):
                 source = root / "attachments" / "source.wav"
                 tone(source)
                 server.payload = source.read_bytes()  # deliberately mono historical/old-server output
-                handle = harness.register_image(source, mime="audio/wav")
+                handle = harness.register_audio(source)
 
                 async def invoke(**kwargs):
                     return await harness.invoke(source_id=handle, song_title="测试曲", **kwargs)
@@ -242,6 +245,10 @@ class CoverInstallationTests(unittest.IsolatedAsyncioTestCase):
                 self.check_discovery(harness, True)
                 ready(await harness.invoke(song_title="测试曲", delivery="none"))
                 self.assertEqual(len(server.requests), 2)
+                malformed = await invoke(output_format="mp3", delivery="none")
+                self.assertEqual(malformed.state_updates["adapter_capability_reason"], "cover_output_format_mismatch")
+                self.assertFalse([e for e in malformed.stream_events if e["type"] == "generated_file_ready"])
+                self.assertEqual(len(server.requests), 3)
                 self.assertTrue((await harness.service.uninstall(plugin_id=PLUGIN_ID))["ok"])
                 self.check_discovery(harness, False)
                 self.assertFalse(list((root / "workers").glob("**/outbox/**/*.*")))

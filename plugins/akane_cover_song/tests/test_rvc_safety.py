@@ -85,6 +85,25 @@ FINAL = {"body": {"is_generating": False, "data": ["Success"]}}
 
 
 class RvcSafetyTests(unittest.TestCase):
+    def test_cache_namespace_tracks_endpoint_root_and_separator_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = RvcWebUiProvider(base_url="http://localhost:7899", root_dir=root)
+            alias = RvcWebUiProvider(base_url="http://127.0.0.1:7899", root_dir=root)
+            original = provider.cache_namespace()
+            self.assertEqual(original, alias.cache_namespace())
+            self.assertNotEqual(
+                original, RvcWebUiProvider(base_url="http://localhost:7898", root_dir=root).cache_namespace()
+            )
+            self.assertNotEqual(
+                original, RvcWebUiProvider(base_url="http://localhost:7899", root_dir=root / "other").cache_namespace()
+            )
+            weights = root / "assets/uvr5_weights"
+            weights.mkdir(parents=True)
+            (weights / "HP5_only_main_vocal.pth").write_bytes(b"explicit-weight-stat-fixture")
+            self.assertNotEqual(original, provider.cache_namespace())
+            self.assertNotIn(str(root), provider.cache_namespace())
+
     def test_cross_process_lock_and_loopback_aliases(self):
         with tempfile.TemporaryDirectory() as directory, http_server([FINAL]) as (url, calls, *_):
             lease = EndpointLease(url, state_dir=directory)

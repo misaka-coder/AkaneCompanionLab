@@ -161,12 +161,14 @@ class CoverPipeline:
                 params=params,
             )
             await self.calls.call(shutil.copyfile, entry["paths"]["cover"], output)
-            return {
-                "path": output,
-                "metadata": entry["metadata"],
-                "cache_key": entry["key"],
-                "processing": {"cache_hit": True, "seconds": {"total": round(time.perf_counter() - started, 3)}},
-            }
+            return await self._restored(
+                output,
+                entry["metadata"],
+                entry["key"],
+                output_format,
+                {},
+                started,
+            )
         model = await self.calls.call(self.provider.resolve_voice_model, voice_model, default_model=self.default_model)
         source_path = Path(source_path)
         if not source_path.is_file():
@@ -190,10 +192,12 @@ class CoverPipeline:
         tick = time.perf_counter()
         fingerprint = await self.calls.call(self.provider.model_fingerprint, model)
         timings["model_fingerprint"] = time.perf_counter() - tick
+        namespace = getattr(self.provider, "cache_namespace", None)
         base = {
             "source_sha256": source_sha,
             "provider": self.provider.provider_id,
             "separation_model": self.provider.separation_model,
+            "provider_namespace": await self.calls.call(namespace) if callable(namespace) else "",
         }
         key = cache_key(
             {
@@ -209,12 +213,14 @@ class CoverPipeline:
         if entry:
             await self.calls.call(shutil.copyfile, entry["paths"]["cover"], output)
             timings["total"] = time.perf_counter() - started
-            return {
-                "path": output,
-                "metadata": {**entry["metadata"], "song_title": title, "artist": artist},
-                "cache_key": key,
-                "processing": {"cache_hit": True, "seconds": {k: round(v, 3) for k, v in timings.items()}},
-            }
+            return await self._restored(
+                output,
+                {**entry["metadata"], "song_title": title, "artist": artist},
+                key,
+                output_format,
+                {k: round(v, 3) for k, v in timings.items()},
+                started,
+            )
         stem_key = cache_key({**base, "pipeline": STEM_VERSION})
         stem_hit, stem_stored, notices = False, False, []
         full_renderer = getattr(self.provider, "render_full_cover", None)
@@ -290,9 +296,8 @@ class CoverPipeline:
                 instrumental_gain_db=options.instrumental_gain_db,
             )
             timings["mix"] = time.perf_counter() - tick
-        probe = getattr(self.media, "probe_audio", None)
-        audio_info = await probe(output) if callable(probe) else {}
-        actual_duration = audio_info.get("duration_seconds") or await self.media.probe_duration(output)
+        audio_info = await self.media.probe_output(output, output_format)
+        actual_duration = audio_info["duration_seconds"]
         if audio_info and (audio_info["sample_rate"], audio_info["channels"]) != (44100, 2):
             notices.append("provider_output_audio_format_changed")
         if output.stat().st_size <= 0 or output.stat().st_size > 1024 * 1024 * 1024:
@@ -335,3 +340,16 @@ class CoverPipeline:
     def _full_cover(self, renderer, **kwargs):
         with self.provider.exclusive():
             return renderer(**kwargs)
+
+    async def _restored(self, output, metadata, key, output_format, seconds, started):
+        info = await self.media.probe_output(output, output_format)
+        seconds["total"] = round(time.perf_counter() - started, 3)
+        notices = (
+            [] if (info["sample_rate"], info["channels"]) == (44100, 2) else ["provider_output_audio_format_changed"]
+        )
+        return {
+            "path": output,
+            "cache_key": key,
+            "metadata": {**metadata, "audio_info": info, "duration_seconds": info["duration_seconds"]},
+            "processing": {"cache_hit": True, "seconds": seconds, "notices": notices},
+        }

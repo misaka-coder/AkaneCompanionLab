@@ -105,12 +105,12 @@ class ImageHarness:
             profile_user_id="owner", session_id="session", target=handle, timestamp=None
         )
 
-    def register_image(self, path, *, mime="image/png"):
+    def register_image(self, path, *, mime="image/png", kind="image"):
         item = self.attachments.create_pending(
             profile_user_id="owner",
             session_id="session",
             source="test",
-            kind="image",
+            kind=kind,
             origin_name=path.name,
             file_ext=path.suffix.lstrip("."),
             mime_type=mime,
