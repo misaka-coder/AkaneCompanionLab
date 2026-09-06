@@ -1,7 +1,7 @@
 # Akane cover-song business runtime
 
-Current slice: reusable RVC protocol, process-safety boundary and cover media policy. This package
-does **not yet** expose a marketplace plugin or claim the full cover pipeline.
+Current slice: reusable RVC protocol, process safety, media policy, two-layer
+cache and cover pipeline. This package does **not yet** expose a marketplace plugin.
 No SDK, Akane host, UI, Job, resource store, or channel imports are required.
 
 `RvcWebUiProvider` owns discovery, parameter mapping, UVR separation and RVC
@@ -20,6 +20,36 @@ to the longer audio duration before undoing amix's default averaging; this
 avoids doubling the tail when one track ends first. Input demuxers/protocols
 are restricted, metadata is removed, and existing output files are rejected.
 No gain or mixing code remains in the legacy host or local-service wrapper.
+
+`CoverPipeline` owns input validation, source hashing, model/parameter cache
+keys, stem reuse, conversion, mixing and completed-result restoration. The old
+host service is now resource/publication glue over this pipeline. The existing
+local-service full-render backend is retained through the provider interface;
+its transport and server-side Demucs orchestration still await the next slice.
+
+`CoverCache(root, scope=...)` hashes the complete caller identity. Akane's SDK
+storage root is instance/plugin-scoped, so the future adapter must also pass the
+trusted invocation's profile identity, never a model argument. Cache v3 uses
+copied content-addressed audio objects and atomic completed manifests. A reader
+verifies size and SHA-256 before restoration. Availability hints only check a
+bounded set of manifests and sizes; they are not a cache-hit guarantee. Failed
+writes do not invalidate prior completed records and return explicit notices.
+Objects are not automatically garbage-collected, avoiding deletion while a
+different process is restoring them; this disposable cache may grow over time.
+
+The old v2 cache files remain untouched but are not automatically imported:
+their lossy profile filenames cannot prove ownership, and their mixed-file
+manifests have no content-integrity evidence. Previously registered generated
+artifacts remain readable. Provide the original source to rebuild v3 cache.
+Title-only restoration requires matching voice, format and parameters; a
+different artist is ambiguous. Force-rebuild requires source media and bypasses
+both cache layers.
+
+`ProviderCalls` drains blocking provider threads on repeated cancellation.
+Pass its `cancelled` callback into each per-invocation WebUI provider. The
+pipeline leaves work-directory cleanup to its caller, which must await the
+pipeline before deleting any work/input files. Remote uncertainty remains a
+failure rather than being relabeled as confirmed cancellation.
 
 ## Dedicated RVC requirement
 
@@ -95,4 +125,16 @@ gain, unequal-track tails, audio duration inside longer video, invalid media,
 existing-file protection, child-process cancellation, and both legacy caller
 paths. All six pass with both the system FFmpeg and the existing RVC FFmpeg 4.3.
 These use generated tones, not singing-quality evaluation or plugin lifecycle
-acceptance. Cache/pipeline orchestration and the plugin binding are still pending.
+acceptance.
+
+Seven cache/pipeline tests additionally cover actual cross-process writes,
+partial-write rollback, identity collision avoidance, corruption, title lookup,
+two-layer reuse, force rebuild, failure notices and repeated cancellation. The
+pipeline tests use explicit provider doubles with real FFmpeg; they do not
+claim model quality. A separate 2026-09-06 isolated real UVR/RVC/FFmpeg pipeline
+produced a 719,776-byte, 5.997275-second WAV in 11.194 seconds. Both source-key
+reuse and title-only restoration returned byte-identical audio without another
+inference. The endpoint fence was clear and the owned server was stopped.
+The rebuilt wheel imported `CoverPipeline`, `CoverCache` and `CoverMedia` under
+`python -I` without importing any Akane host module. Plugin market installation,
+Jobs, lifecycle and channel acceptance are still pending.
