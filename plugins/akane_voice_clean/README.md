@@ -41,3 +41,31 @@ install a GPU environment or download weights.
 Run `python -m unittest discover -s plugins/akane_voice_clean/tests -v` from an
 Akane SDK development environment. Model tests require a prepared environment;
 skipped tests must not be reported as real AI acceptance.
+
+## Verified Windows CPU environment
+
+On 2026-09-06 a separate Python 3.11 environment successfully loaded the official
+DeepFilterNet2 checkpoint and performed real inference with
+`torch==2.6.0+cpu`, `torchaudio==2.6.0+cpu`, `deepfilternet==0.5.6`,
+`numpy==1.26.4`, `soundfile==0.12.1`. CPU Torch wheels use the
+[official PyTorch index](https://download.pytorch.org/whl/cpu); the remaining
+packages use PyPI. This does not claim that an arbitrary newer TorchAudio build
+is compatible with DeepFilterNet 0.5.6.
+
+For local provisioning, choose a disk with sufficient free space and put the
+virtual environment, `UV_CACHE_DIR` (or `PIP_CACHE_DIR`), `TEMP`/`TMP`, archive
+and extracted model on that disk. Keep them outside the source repository;
+do not change the host/global Python. Configure `AKANE_CLEAN_PYTHON` and
+`AKANE_CLEAN_MODEL_ROOT` in the process which runs the plugin/tests. Installing
+these dependencies does not by itself install or activate this business plugin.
+
+The official [DeepFilterNet2 archive](https://github.com/Rikorose/DeepFilterNet/tree/main/models)
+used for acceptance has SHA256
+`850e695d1c27f2a7b4dcd89b16bc8d49367effc680b1369e995e31d46376cba7`.
+Keep `config.ini` and `checkpoints/model_96.ckpt.best` together. The worker uses
+DeepFilterNet's supported `log_level="none"`, preventing its Git metadata
+subprocess and host-identifying logging. The worker also rejects Python
+subprocess creation via an audit hook. Python 3.11's Windows platform probe can
+then use its real OS API fallback instead of starting `cmd /c ver`; no platform
+values or third-party compatibility modules are fabricated. A real-model test
+verifies inference still succeeds with descendant process creation denied.

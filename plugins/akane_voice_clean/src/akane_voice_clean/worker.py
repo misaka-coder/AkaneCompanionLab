@@ -15,6 +15,14 @@ class CleaningError(RuntimeError):
     pass
 
 
+def deny_descendant_process(event, args):
+    del args
+    if event in ("subprocess.Popen", "os.system", "os.posix_spawn", "os.spawn"):
+        # Windows platform probing may try `cmd /c ver`; PermissionError lets
+        # Python use its real getwindowsversion fallback without starting it.
+        raise PermissionError("cleaning_child_process_forbidden")
+
+
 def load_model(model_root, *, post_filter=False):
     if model_root and not (Path(model_root) / "config.ini").is_file():
         raise CleaningError("deepfilternet_model_missing")
@@ -34,7 +42,10 @@ def load_model(model_root, *, post_filter=False):
     if not checkpoints:
         raise CleaningError("deepfilternet_model_missing")
     try:
-        model, state, _ = init_df(str(root), post_filter=post_filter, log_file=None, log_level="ERROR")
+        # DF's logger probes Git via a subprocess even at ERROR. Its supported
+        # "none" level skips that metadata collection entirely, keeping this
+        # worker free of unowned descendants and host-identifying log output.
+        model, state, _ = init_df(str(root), post_filter=post_filter, log_file=None, log_level="none")
         # DF's loader tolerates missing parameters. Do not advertise a randomly
         # initialized/partially restored model as successful AI cleaning.
         checkpoint = max(checkpoints, key=lambda p: int(p.name.split(".")[0].split("_")[-1]))
@@ -104,6 +115,7 @@ def main():
     parser.add_argument("--source", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    sys.addaudithook(deny_descendant_process)
     try:
         # Third-party stdout can contain local paths; stdout is only our JSON.
         with contextlib.redirect_stdout(sys.stderr):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from array import array
 import hashlib
+import json
 import math
 from pathlib import Path
 import shutil
@@ -234,6 +235,114 @@ class CleaningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["fallback_reason"], "")
         self.assertNotEqual(output.read_bytes(), original)
         self.assertEqual(self.source.read_bytes(), original)
+
+    async def test_real_ai_post_filter_reaches_audio(self):
+        try:
+            await self.cleaner.ai()
+        except CleaningError as exc:
+            self.skipTest(f"Prepared DeepFilterNet environment required: {exc}")
+        plain, output = await self.clean(quality="ai")
+        plain_audio = output.read_bytes()
+        output.unlink()
+        filtered, output = await self.clean(quality="ai", post_filter=True)
+        self.assertFalse(plain["post_filter_applied"])
+        self.assertTrue(filtered["post_filter_applied"])
+        self.assertEqual(filtered["backend_used"], "deepfilternet")
+        self.assertNotEqual(output.read_bytes(), plain_audio)
+
+    async def test_real_ai_worker_cancel_waits_for_exit(self):
+        try:
+            await self.cleaner.ai()
+        except CleaningError as exc:
+            self.skipTest(f"Prepared DeepFilterNet environment required: {exc}")
+        write_audio(self.source, seconds=120)
+        real_run = self.cleaner.runner.run
+        ai_started = asyncio.Event()
+
+        async def track_worker(argv, **kwargs):
+            if "--source" in argv:
+                ai_started.set()
+            return await real_run(argv, **kwargs)
+
+        with patch.object(self.cleaner.runner, "run", side_effect=track_worker):
+            task = asyncio.create_task(self.clean(quality="ai"))
+            try:
+                await asyncio.wait_for(ai_started.wait(), 10)
+                await asyncio.sleep(2)
+                children = tuple(self.cleaner.runner.processes)
+                self.assertTrue(children)
+                task.cancel()
+                await asyncio.sleep(0)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 10)
+                self.assertTrue(all(child.returncode is not None for child in children))
+                self.assertEqual(list(self.root.iterdir()), [self.source])
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+    async def test_empty_checkpoint_cannot_be_reported_as_loaded_ai_model(self):
+        if not self.cleaner.model_root:
+            self.skipTest("Explicit prepared model directory required")
+        try:
+            await self.cleaner.ai()
+        except CleaningError as exc:
+            self.skipTest(f"Prepared DeepFilterNet environment required: {exc}")
+        model = self.root / "invalid-model"
+        (model / "checkpoints").mkdir(parents=True)
+        shutil.copy2(Path(self.cleaner.model_root) / "config.ini", model / "config.ini")
+        code, _ = await self.cleaner.runner.run(
+            [
+                self.cleaner.python,
+                "-c",
+                "import sys, torch; torch.save({}, sys.argv[1])",
+                str(model / "checkpoints/model_96.ckpt.best"),
+            ],
+            timeout=30,
+        )
+        self.assertEqual(code, 0)
+        self.cleaner.model_root = model
+        with self.assertRaisesRegex(CleaningError, "^deepfilternet_model_unavailable$"):
+            await self.cleaner.ai()
+
+    async def test_real_model_probe_needs_no_descendant_process(self):
+        if not self.cleaner.model_root:
+            self.skipTest("Explicit prepared model directory required")
+        try:
+            await self.cleaner.ai()
+        except CleaningError as exc:
+            self.skipTest(f"Prepared DeepFilterNet environment required: {exc}")
+        # This uses the real model/library. Subprocess creation is rejected,
+        # while Python's Windows platform probe may use its real OS API fallback.
+        script = (
+            "import sys, runpy\n"
+            "def deny_spawn(event, args):\n"
+            "    if event in ('subprocess.Popen', 'os.system', 'os.posix_spawn'):\n"
+            "        raise PermissionError('unexpected_descendant')\n"
+            "sys.addaudithook(deny_spawn)\n"
+            "sys.argv = sys.argv[1:]\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+        )
+        worker = Path(__file__).resolve().parents[1] / "src/akane_voice_clean/worker.py"
+        code, raw = await self.cleaner.runner.run(
+            [
+                self.cleaner.python,
+                "-c",
+                script,
+                str(worker),
+                "--probe",
+                "--device",
+                "cpu",
+                "--model-root",
+                str(self.cleaner.model_root),
+            ],
+            capture=True,
+            timeout=60,
+        )
+        self.assertEqual(code, 0, raw)
+        self.assertTrue(json.loads(raw)["ok"])
 
 
 if __name__ == "__main__":
