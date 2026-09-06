@@ -2,7 +2,7 @@
 
 ## 结果与范围
 
-- 共享 Host 已从 `e636331` 切换到 Akane `604b9eb`，配套 MemCore `42658a3`。
+- 共享 Host 已从 `e636331` 切换到 Akane `604b9eb`。本次初始配套 MemCore `42658a3` 后确认仍为 V4 渲染；已在跨日修复中替换为 `bd001af` / `0.1.0+chatv6.1`，详见 [V6 生产修复记录](memcore_chat_v6_production_repair_20260906.md)。下文保留初次部署经过，不应再据此选择 `42658a3` 作为当前发布包。
 - personal 与 finance 的真实 QQ self-check 均为 `connected`；两个 Bot 均 online。
 - personal 原有 `akane.test.hydration 0.1.0`、`akane.timer 0.2.0` 保持 active。
 - finance 仍只有原有 `akane.finance 0.8.3`，保持 active；没有为 finance 安装新插件。

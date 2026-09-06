@@ -57,4 +57,4 @@ Shell 在同步观察阶段使用 silent/current_turn，实际返回 running 后
 - MemCore 全量回归：运行 606 项，无失败、5 项跳过；新增 4 项覆盖无回复关闭、幂等、未配对阻止关闭、跨 namespace 拒绝、settlement 与 raw 压缩。
 - MemCore 构建通过；本轮修改文件的 Ruff 检查/格式检查通过。仓库全局仍有其他文件的既有 lint/格式问题，没有顺手修改。
 - 两个仓库 `git diff --check` 通过。QQ/桌宠真实传输仍待部署实测，不把 mock 端口作为线上成功证据。
-- 发布时必须一同包含 MemCore `42658a3` 的公开 `append_final` 契约；不可只替换 Akane 宿主代码。
+- 发布时必须同时包含 MemCore 的公开 `append_final` 契约与 V6 助手作者保真投影。`42658a3` 只有前者，不能单独作为合格发布包；修复版本为 `bd001af` / `0.1.0+chatv6.1`。使用实际服务解释器运行 `scripts/check_memcore_runtime_contract.py`，同时验证接口、投影版本以及纯文本/JSON 助手历史不被加时间戳；不可只替换 Akane 宿主代码或只核对提交号。
