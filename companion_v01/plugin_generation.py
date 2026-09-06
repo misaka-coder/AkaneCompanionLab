@@ -777,6 +777,8 @@ class PluginGenerationProcess:
                 ))
             if sum(item.data_path.stat().st_size for item in staged_artifacts) > outputs[0].max_bytes:
                 return _generation_artifact_failure("managed_artifact_too_large")
+            if any(item.draft.source_handles or item.draft.revision_of for item in staged_artifacts) and "resource.read" not in self._permissions:
+                return _generation_artifact_failure("managed_artifact_lineage_resource_permission_required")
             if self._managed_artifact_sink is None:
                 return _generation_artifact_failure("managed_artifact_sink_unavailable")
             for staged in staged_artifacts:

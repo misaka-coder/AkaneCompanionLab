@@ -92,6 +92,8 @@ class GenerationArtifactOutboxSink:
             "summary": summary,
             "send_to_user": draft.send_to_user,
             "delivery_mode": draft.delivery_mode,
+            "source_handles": list(draft.source_handles),
+            "revision_of": draft.revision_of,
             "file_size": artifact.file_size,
             "capability_id": capability_id,
         }
@@ -124,6 +126,8 @@ class GenerationArtifactOutboxSink:
             "created_by_tool": capability_id,
             "send_to_user": draft.send_to_user,
             "delivery_mode": draft.delivery_mode,
+            **({"source_handles": list(draft.source_handles)} if draft.source_handles else {}),
+            **({"revision_of": draft.revision_of} if draft.revision_of else {}),
         }
 
 
@@ -170,7 +174,7 @@ def consume_generation_artifact(
         if not isinstance(metadata, Mapping):
             raise ValueError
         # Old API-v1 outboxes did not include a mode; their only delivery was file.
-        metadata = {"delivery_mode": "file", **metadata}
+        metadata = {"delivery_mode": "file", "source_handles": [], "revision_of": "", **metadata}
         if not data_path.is_file():
             raise ValueError
         file_size = data_path.stat().st_size
@@ -187,6 +191,8 @@ def consume_generation_artifact(
         "mime_type": str(reference.get("mime_type") or ""),
         "send_to_user": reference.get("send_to_user"),
         "delivery_mode": reference.get("delivery_mode", "file"),
+        "source_handles": reference.get("source_handles", []),
+        "revision_of": reference.get("revision_of", ""),
         "file_size": file_size,
         "capability_id": capability_id,
     }
@@ -207,6 +213,8 @@ def consume_generation_artifact(
         summary=str(metadata.get("summary") or ""),
         send_to_user=expected["send_to_user"],
         delivery_mode=expected["delivery_mode"],
+        source_handles=tuple(expected["source_handles"]) if isinstance(expected["source_handles"], list) else expected["source_handles"],
+        revision_of=expected["revision_of"],
     )
     try:
         validate_managed_artifact_draft(draft)

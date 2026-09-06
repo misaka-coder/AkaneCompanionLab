@@ -541,6 +541,7 @@ class GeneratedFileService:
         send_to_user: bool = False,
         timestamp: int | None = None,
         allow_generic_format: bool = False,
+        revision_of: str = "",
     ) -> dict[str, Any]:
         """Register a non-empty artifact already rendered into managed output storage."""
         target = Path(output_path)
@@ -558,6 +559,18 @@ class GeneratedFileService:
             raise RuntimeError("generated artifact format is unsupported")
         if target.suffix.lower() != f".{normalized_format}":
             raise RuntimeError("generated artifact format does not match its file extension")
+        parent = None
+        if revision_of:
+            parent = self.resolve_generated_artifact(
+                profile_user_id=profile_user_id, session_id=session_id, target=revision_of,
+            )
+            if parent is None:
+                raise RuntimeError("generated_artifact_revision_source_unavailable")
+        provenance = list(source_ids or ())
+        if parent:
+            for source_id in [parent["generated_id"], *list(parent.get("source_ids") or ())]:
+                if source_id not in provenance:
+                    provenance.append(source_id)
         generated = self.store.add_generated_file(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -567,10 +580,12 @@ class GeneratedFileService:
             mime_type=str(mime_type or "application/octet-stream").strip(),
             file_ext=normalized_format,
             file_size=file_size,
-            source_ids=source_ids,
+            source_ids=provenance,
             content_card=content_card if isinstance(content_card, dict) else {},
             summary=str(summary or "").strip(),
             created_by_tool=str(created_by_tool or "").strip(),
+            version_of_generated_id=str(parent.get("generated_id") or "") if parent else "",
+            version_no=int(parent.get("version_no") or 1) + 1 if parent else 1,
             delivery_status="pending" if send_to_user else "not_requested",
             timestamp=timestamp,
         )
@@ -944,6 +959,7 @@ class GeneratedFileService:
         return {
             "absolute_path": str(file_ref.get("absolute_path") or "").strip(),
             "source_type": str(file_ref.get("source_type") or "").strip(),
+            "source_id": str(file_ref.get("source_id") or "").strip(),
             "handle": str(file_ref.get("handle") or "").strip(),
             "name": str(file_ref.get("name") or "").strip(),
         }

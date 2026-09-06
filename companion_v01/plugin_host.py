@@ -1298,6 +1298,8 @@ class PluginHost:
             total_bytes = sum(validate_managed_artifact_draft(draft).file_size for draft in payload.artifacts)
         except ManagedArtifactError as exc:
             return _managed_artifact_failure(exc.reason)
+        if any(draft.source_handles or draft.revision_of for draft in payload.artifacts) and RESOURCE_READ_PERMISSION not in registration.permissions:
+            return _managed_artifact_failure("managed_artifact_lineage_resource_permission_required")
         if total_bytes > declared_max_bytes:
             return _managed_artifact_failure("managed_artifact_too_large")
         artifact_refs = []

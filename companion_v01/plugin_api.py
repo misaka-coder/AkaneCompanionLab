@@ -122,6 +122,10 @@ class ManagedArtifactDraft:
     # Delivery is a request, never evidence of transport success. Voice/both
     # require a supported audio artifact; defaults preserve API-v1 wheels.
     delivery_mode: str = "file"
+    # Existing opaque handles only. Host resolves them in the trusted calling
+    # conversation and owns provenance/version numbering, never the plugin.
+    source_handles: tuple[str, ...] = ()
+    revision_of: str = ""
 
 
 @dataclass(frozen=True, slots=True, init=False)

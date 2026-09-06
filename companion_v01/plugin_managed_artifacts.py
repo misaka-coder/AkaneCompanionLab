@@ -112,6 +112,20 @@ class GeneratedFileManagedArtifactSink:
         session_id = str(context.session_id or "").strip()
         if not profile_user_id or not session_id:
             raise ManagedArtifactError("managed_artifact_context_required")
+        source_ids = []
+        for handle in draft.source_handles:
+            resource = self._service.resolve_input_resource(
+                profile_user_id=profile_user_id, session_id=session_id, target=handle,
+                timestamp=int(time.time()),
+            )
+            if not resource or str(resource.get("handle") or "").lower() != handle.lower() or not resource.get("source_id"):
+                raise ManagedArtifactError("managed_artifact_source_reference_unavailable")
+            if resource["source_id"] not in source_ids:
+                source_ids.append(resource["source_id"])
+        if draft.revision_of and self._service.resolve_generated_artifact(
+            profile_user_id=profile_user_id, session_id=session_id, target=draft.revision_of,
+        ) is None:
+            raise ManagedArtifactError("managed_artifact_revision_source_unavailable")
 
         target = self._service.allocate_output_path(
             profile_user_id=profile_user_id,
@@ -147,7 +161,8 @@ class GeneratedFileManagedArtifactSink:
                 },
                 summary=summary,
                 created_by_tool=capability_id,
-                source_ids=(),
+                source_ids=source_ids,
+                revision_of=draft.revision_of,
                 send_to_user=bool(draft.send_to_user),
                 timestamp=effective_ts,
                 allow_generic_format=True,
@@ -178,6 +193,8 @@ class GeneratedFileManagedArtifactSink:
             "created_by_tool": capability_id,
             "send_to_user": bool(draft.send_to_user),
             "delivery_mode": draft.delivery_mode,
+            **({"source_handles": list(draft.source_handles)} if draft.source_handles else {}),
+            **({"revision_of": draft.revision_of} if draft.revision_of else {}),
         }
 
 
@@ -219,6 +236,8 @@ def normalize_managed_artifact_reference(
         or not isinstance(send_to_user, bool)
         or send_to_user is not draft.send_to_user
         or delivery_mode != draft.delivery_mode
+        or value.get("source_handles", []) != list(draft.source_handles)
+        or value.get("revision_of", "") != draft.revision_of
     ):
         return None
     return {
@@ -231,6 +250,8 @@ def normalize_managed_artifact_reference(
         "created_by_tool": created_by_tool,
         "send_to_user": send_to_user,
         "delivery_mode": delivery_mode,
+        **({"source_handles": list(draft.source_handles)} if draft.source_handles else {}),
+        **({"revision_of": draft.revision_of} if draft.revision_of else {}),
     }
 
 
@@ -261,6 +282,16 @@ def validate_managed_artifact_draft(
             raise ManagedArtifactError("managed_artifact_source_unavailable") from None
     if not isinstance(draft.send_to_user, bool):
         raise ManagedArtifactError("managed_artifact_delivery_invalid")
+    def valid_handle(value: Any, *, generated_only: bool = False) -> bool:
+        prefixes = ("gen_", "generated::") if generated_only else ("gen_", "file_", "img_", "audio_", "video_")
+        return (isinstance(value, str) and len(value) <= 128 and value.startswith(prefixes)
+                and re.fullmatch(r"[A-Za-z0-9_:.-]+", value) is not None)
+    if (not isinstance(draft.source_handles, tuple) or len(draft.source_handles) > 20
+            or any(not valid_handle(handle) for handle in draft.source_handles)
+            or len(set(draft.source_handles)) != len(draft.source_handles)):
+        raise ManagedArtifactError("managed_artifact_source_reference_invalid")
+    if not isinstance(draft.revision_of, str) or draft.revision_of and not valid_handle(draft.revision_of, generated_only=True):
+        raise ManagedArtifactError("managed_artifact_revision_reference_invalid")
     if not isinstance(draft.delivery_mode, str) or draft.delivery_mode not in {"file", "voice", "both"}:
         raise ManagedArtifactError("managed_artifact_delivery_invalid")
 
