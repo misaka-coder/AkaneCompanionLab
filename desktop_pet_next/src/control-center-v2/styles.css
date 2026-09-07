@@ -848,6 +848,7 @@ button:disabled { cursor: not-allowed; opacity: 0.48; }
 .system-recovery-actions { display: grid; gap: 8px; margin-top: 14px; }
 .system-recovery-actions .action-button { width: 100%; }
 .system-recovery-note { margin: 11px 0 0; color: var(--text-faint); font-size: 7px; line-height: 1.55; }
+.perception-boundary-note { margin: 12px 0 0; color: var(--text); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .system-setting-list { display: grid; margin-top: 13px; }
 .system-setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 72px; border-top: 1px solid var(--line); }
 .system-setting:first-child { border-top: 0; }

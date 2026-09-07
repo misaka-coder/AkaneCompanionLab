@@ -62,6 +62,7 @@ assert.throws(() => guardContext.render({ ...editState, viewModel: { ...editStat
 // Run production stream/render functions, replacing only UI effects with spies.
 const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const commands = { proactiveWakeRunning: true, sending: true, lastSettingsCommandResult: null,
+  pendingAttachments: { importing: () => false },
   scheduleSettingsSnapshot() {}, messages: [], sendMessage: (text) => commands.messages.push(text),
   interruptReply: () => { commands.proactiveWakeRunning = false; commands.sending = false; } };
 vm.createContext(commands);

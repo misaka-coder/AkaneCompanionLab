@@ -12,6 +12,7 @@ export function renderPerception(state) {
   return `<section class="system-panel glass-panel" aria-label="桌面观察与主动陪伴">
     <div class="system-panel-head"><div><p class="eyebrow">SCREEN & COMPANIONSHIP</p><h3>桌面观察与主动陪伴</h3></div><span class="mini-chip">${escapeHtml(status)}</span></div>
     <p class="system-recovery-note">连续画面直接交给视觉模型，以当前角色回应，不采集系统音频。开启后选择共享区域；若提示需要点击授权，请在桌宠弹出的菜单点击「屏幕共享」。画面会在对话或观察评估时发送给视觉服务。</p>
+    <p class="perception-boundary-note">不会自动读取剪贴板或附带窗口标题。按需读取窗口的桌面工具独立于屏幕共享，受绑定电脑与能力权限控制；关闭「看屏幕」只停止画面采样。手动粘贴文字、图片和文件仍可正常使用。</p>
     ${!perception.available ? '<p role="status">等待桌宠实时连接，暂时不能修改观察设置。</p>' : ""}
     ${perception.error ? `<p class="form-message" role="alert">${escapeHtml(perception.error)}</p>` : ""}
     <div class="system-setting-list">

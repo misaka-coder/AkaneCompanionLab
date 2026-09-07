@@ -103,10 +103,6 @@ const TTS_PREWARM_COOLDOWN_MS = 10 * 60 * 1000;
 const ASR_TIMEOUT_MS = 2 * 60 * 1000;
 const REALTIME_VOICE_FINAL_TIMEOUT_MS = 15 * 1000;
 const REALTIME_VOICE_STABLE_LISTENER_MS = 5 * 1000;
-const DESKTOP_CONTEXT_POLL_MS = 1500;
-const DESKTOP_CONTEXT_TURN_WAIT_MS = 280;
-const DESKTOP_CONTEXT_TURN_WAIT_FOCUSED_MS = 1200;
-const DESKTOP_CONTEXT_MAX_AGE_MS = 2 * 60 * 1000;
 const SCREEN_VISION_JPEG_QUALITY = 0.8;
 const PROACTIVE_WAKE_DEFAULT_SEC = 30;
 const PROACTIVE_WAKE_MIN_SEC = 15;
@@ -120,7 +116,6 @@ const SYSTEM_MEDIA_MAX_AGE_MS = 10000;
 const SYSTEM_MEDIA_LYRICS_RETRY_MS = 30000;
 const SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS = 1200;
 const SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS = 2400;
-const CLIPBOARD_TEXT_LIMIT = 600;
 const BACKEND_RETRY_MS = 30 * 1000;
 const VOICE_MIME_TYPES = [
   "audio/webm;codecs=opus",
@@ -204,8 +199,6 @@ const DEFAULT_STATE = {
   voiceEnabled: false,
   voiceInputEnabled: true,
   voiceVolume: 0.85,
-  desktopContextEnabled: true,
-  clipboardContextEnabled: false,
   screenVisionEnabled: false,
   ...SCREEN_OBSERVATION_DEFAULTS,
   proactiveWakeEnabled: false,
@@ -743,7 +736,6 @@ let realtimeVoiceCall = null;
 let voiceShortcutHeld = false;
 let asrController = null;
 let voiceInputToken = 0;
-let desktopContextPollTimer = 0;
 let proactiveWakeTimer = 0;
 let proactiveWakeLastAt = 0;
 let proactiveWakeNextAllowedAt = 0;
@@ -762,7 +754,6 @@ let backendSwitchToken = 0;
 let backendSwitchPending = false;
 let validatedBotBindingKey = "";
 let desktopFileDeliveryHandled = new Set();
-let lastDesktopForeground = null;
 
 const els = {
   stage: document.querySelector(".stage"),
@@ -862,7 +853,6 @@ async function boot() {
       scheduleSave(0);
       void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
     }
-    scheduleDesktopContextPoll();
     scheduleSystemMediaPoll({ immediate: true });
     scheduleScreenVisionCapture({ immediate: true });
     scheduleProactiveWake();
@@ -1646,7 +1636,6 @@ async function registerWindowListeners() {
 
   window.addEventListener("beforeunload", () => {
     unlistenFns.forEach((unlisten) => unlisten());
-    window.clearTimeout(desktopContextPollTimer);
     window.clearTimeout(systemMediaPollTimer);
     window.clearTimeout(proactiveWakeTimer);
     window.clearTimeout(idleJumpTimer);
@@ -1874,12 +1863,6 @@ async function handleSettingsCommand(payload) {
       break;
     case "setVoiceVolume":
       setVoiceVolume(Number(payload.value));
-      break;
-    case "setDesktopContextEnabled":
-      setDesktopContextEnabled(Boolean(payload.value));
-      break;
-    case "setClipboardContextEnabled":
-      setClipboardContextEnabled(Boolean(payload.value));
       break;
     case "setScreenVisionEnabled":
       await setScreenVisionEnabled(Boolean(payload.value));
@@ -2247,8 +2230,6 @@ function buildSettingsSnapshot() {
       voiceEnabled: state.voiceEnabled,
       voiceInputEnabled: state.voiceInputEnabled,
       voiceVolume: state.voiceVolume,
-      desktopContextEnabled: state.desktopContextEnabled,
-      clipboardContextEnabled: state.clipboardContextEnabled,
       screenVisionEnabled: state.screenVisionEnabled,
       ...normalizeScreenObservationSettings(state),
       proactiveWakeEnabled: state.proactiveWakeEnabled,
@@ -2367,7 +2348,12 @@ function buildCurrentExpressionSnapshot() {
 }
 
 function normalizeState(value) {
-  const { screenVisionMode: _retiredMode, screenVisionIntervalSec: _retiredInterval, ...incoming } = value ?? {};
+  // Ignore retired automatic perception preferences when loading older state.
+  const {
+    screenVisionMode: _retiredMode, screenVisionIntervalSec: _retiredInterval,
+    desktopContextEnabled: _retiredDesktopContext, clipboardContextEnabled: _retiredClipboard,
+    ...incoming
+  } = value ?? {};
   const scale = clamp(Number(incoming.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
   const _legacySize = isLegacyWindowSize(incoming.width, incoming.height, scale);
   const instanceId = String(incoming.instanceId || "").trim() || LOCAL_DEFAULT_INSTANCE_ID;
@@ -2395,10 +2381,6 @@ function normalizeState(value) {
     voiceEnabled: Boolean(incoming.voiceEnabled ?? DEFAULT_STATE.voiceEnabled),
     voiceInputEnabled: Boolean(incoming.voiceInputEnabled ?? DEFAULT_STATE.voiceInputEnabled),
     voiceVolume: clamp(Number(incoming.voiceVolume ?? DEFAULT_STATE.voiceVolume), 0, 1),
-    desktopContextEnabled: Boolean(incoming.desktopContextEnabled ?? DEFAULT_STATE.desktopContextEnabled),
-    clipboardContextEnabled: Boolean(
-      incoming.clipboardContextEnabled ?? DEFAULT_STATE.clipboardContextEnabled
-    ),
     screenVisionEnabled: Boolean(incoming.screenVisionEnabled ?? DEFAULT_STATE.screenVisionEnabled),
     ...normalizeScreenObservationSettings(incoming),
     proactiveWakeEnabled: Boolean(incoming.proactiveWakeEnabled ?? DEFAULT_STATE.proactiveWakeEnabled),
@@ -2682,30 +2664,6 @@ function setMusicVolumeNormalization(value) {
   scheduleSave(0);
   setRuntimeStatus(state.musicVolumeNormalization ? "音量均衡已开启" : "音量均衡已关闭", {
     mode: musicPlaying ? "music" : "idle"
-  });
-  scheduleSettingsSnapshot();
-}
-
-function setDesktopContextEnabled(enabled) {
-  state.desktopContextEnabled = Boolean(enabled);
-  if (!state.desktopContextEnabled) {
-    window.clearTimeout(desktopContextPollTimer);
-    desktopContextPollTimer = 0;
-  } else {
-    scheduleDesktopContextPoll({ immediate: true });
-  }
-  scheduleSave(0);
-  setRuntimeStatus(state.desktopContextEnabled ? "前台窗口感知已开启" : "前台窗口感知已关闭", {
-    mode: "idle"
-  });
-  scheduleSettingsSnapshot();
-}
-
-function setClipboardContextEnabled(enabled) {
-  state.clipboardContextEnabled = Boolean(enabled);
-  scheduleSave(0);
-  setRuntimeStatus(state.clipboardContextEnabled ? "剪贴板上下文已开启" : "剪贴板上下文已关闭", {
-    mode: "idle"
   });
   scheduleSettingsSnapshot();
 }
@@ -6016,30 +5974,6 @@ function restoreLatestReply(bundle) {
   });
 }
 
-function scheduleDesktopContextPoll({ immediate = false } = {}) {
-  window.clearTimeout(desktopContextPollTimer);
-  desktopContextPollTimer = 0;
-  if (!isTauriRuntime || !state.desktopContextEnabled) return;
-
-  const delay = immediate ? 0 : DESKTOP_CONTEXT_POLL_MS;
-  desktopContextPollTimer = window.setTimeout(async () => {
-    desktopContextPollTimer = 0;
-    await refreshDesktopForegroundCache();
-    scheduleDesktopContextPoll();
-  }, delay);
-}
-
-async function refreshDesktopForegroundCache() {
-  const snapshot = await tauriCall("get_desktop_context_snapshot", {}, { quiet: true });
-  const foreground = normalizeForegroundContext(snapshot?.foreground);
-  if (isUsableForegroundContext(foreground)) {
-    lastDesktopForeground = {
-      ...foreground,
-      capturedAt: Number(snapshot?.capturedAt || Date.now())
-    };
-  }
-}
-
 function scheduleSystemMediaPoll({ immediate = false } = {}) {
   window.clearTimeout(systemMediaPollTimer);
   systemMediaPollTimer = 0;
@@ -6349,20 +6283,6 @@ function shouldWaitForSystemMediaLyricsForTurn(message, options = {}) {
   return isLyricsFocusedTurnMessage(message);
 }
 
-function isDesktopContextFocusedTurnMessage(message) {
-  const text = String(message || "").trim().toLowerCase();
-  if (!text) return false;
-  return /剪贴板|复制|粘贴|当前窗口|前台|这个窗口|正在看|屏幕|网页|浏览器|页面/.test(text);
-}
-
-function getDesktopContextTurnWaitMs(message, options = {}) {
-  if (options.waitDesktopContext === false) return 0;
-  if (options.waitDesktopContext === true || isDesktopContextFocusedTurnMessage(message)) {
-    return DESKTOP_CONTEXT_TURN_WAIT_FOCUSED_MS;
-  }
-  return DESKTOP_CONTEXT_TURN_WAIT_MS;
-}
-
 function waitForSystemMediaLyrics(request, timeoutMs) {
   if (!request || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve({ timedOut: false });
   let timeoutId = 0;
@@ -6521,100 +6441,6 @@ function summarizeSystemMediaLyrics() {
     previous: lyric.previousText || "",
     next: lyric.nextText || ""
   };
-}
-
-function waitForLatencyBudget(promise, timeoutMs, fallbackFactory, timeoutEvent) {
-  const timeout = Number(timeoutMs);
-  if (!Number.isFinite(timeout) || timeout <= 0) {
-    return Promise.resolve(typeof fallbackFactory === "function" ? fallbackFactory() : null);
-  }
-
-  let timeoutId = 0;
-  return Promise.race([
-    Promise.resolve(promise),
-    new Promise((resolve) => {
-      timeoutId = window.setTimeout(() => {
-        markTurnLatency(timeoutEvent || "latency-budget-timeout", { timeoutMs: timeout });
-        resolve(typeof fallbackFactory === "function" ? fallbackFactory() : null);
-      }, timeout);
-    })
-  ]).finally(() => {
-    if (timeoutId) window.clearTimeout(timeoutId);
-  });
-}
-
-function buildCachedDesktopContextForTurn() {
-  if (!state.desktopContextEnabled) return null;
-  const foreground = isFreshForegroundCache(lastDesktopForeground)
-    ? normalizeForegroundContext(lastDesktopForeground)
-    : null;
-  if (!foreground) return null;
-  return {
-    ok: true,
-    enabled: true,
-    captured_at: Date.now(),
-    platform: navigator.platform || "unknown",
-    foreground,
-    clipboard: {
-      included: false,
-      reason: state.clipboardContextEnabled ? "latency_budget" : "disabled"
-    }
-  };
-}
-
-async function collectDesktopContextForTurn() {
-  if (!state.desktopContextEnabled) return null;
-
-  let foreground = null;
-  if (isTauriRuntime) {
-    const snapshot = await tauriCall("get_desktop_context_snapshot", {}, { quiet: true });
-    const current = normalizeForegroundContext(snapshot?.foreground);
-    if (isUsableForegroundContext(current)) {
-      foreground = current;
-      lastDesktopForeground = {
-        ...current,
-        capturedAt: Number(snapshot?.capturedAt || Date.now())
-      };
-    }
-  }
-
-  if (!foreground && isFreshForegroundCache(lastDesktopForeground)) {
-    foreground = normalizeForegroundContext(lastDesktopForeground);
-  }
-
-  const clipboard = await collectClipboardContext();
-  if (!foreground && !clipboard.included) return null;
-
-  return {
-    ok: true,
-    enabled: true,
-    captured_at: Date.now(),
-    platform: navigator.platform || "unknown",
-    foreground: foreground || emptyForegroundContext("unavailable"),
-    clipboard
-  };
-}
-
-async function collectClipboardContext() {
-  if (!state.clipboardContextEnabled) return { included: false };
-  try {
-    if (!navigator.clipboard?.readText) return { included: false, reason: "unsupported" };
-    const raw = await navigator.clipboard.readText();
-    const text = String(raw || "").trim();
-    if (!text) return { included: true, text: "", empty: true, source: "web_clipboard" };
-    return {
-      included: true,
-      text: text.slice(0, CLIPBOARD_TEXT_LIMIT),
-      truncated: text.length > CLIPBOARD_TEXT_LIMIT,
-      source: "web_clipboard"
-    };
-  } catch (error) {
-    return {
-      included: false,
-      reason: "read_failed",
-      error: formatError(error).slice(0, 160)
-    };
-  }
 }
 
 function screenObservationScope() {
@@ -6777,41 +6603,6 @@ function clearScreenVisionWorkspace({ quiet = false } = {}) {
   screenObservation.clear();
   if (!quiet) setRuntimeStatus("最近屏幕画面已清空", { mode: "idle" });
   scheduleSettingsSnapshot();
-}
-
-function normalizeForegroundContext(value) {
-  if (!value || typeof value !== "object") return null;
-  return {
-    title: String(value.title || "").trim(),
-    process_name: String(value.process_name || value.processName || "").trim(),
-    pid: Number.isFinite(Number(value.pid)) ? Number(value.pid) : null,
-    source: String(value.source || "").trim() || "unknown"
-  };
-}
-
-function emptyForegroundContext(source) {
-  return {
-    title: "",
-    process_name: "",
-    pid: null,
-    source
-  };
-}
-
-function isFreshForegroundCache(value) {
-  if (!value) return false;
-  const capturedAt = Number(value.capturedAt || value.captured_at || 0);
-  return capturedAt > 0 && Date.now() - capturedAt <= DESKTOP_CONTEXT_MAX_AGE_MS;
-}
-
-function isUsableForegroundContext(value) {
-  if (!value || value.source !== "foreground") return false;
-  const processName = String(value.process_name || "").toLowerCase();
-  const title = String(value.title || "").toLowerCase();
-  if (!value.title && !value.process_name) return false;
-  if (processName === "akane_desktop_pet_next.exe") return false;
-  if (processName === "msedgewebview2.exe" && title.includes("akane")) return false;
-  return true;
 }
 
 function interruptReply({ announce = false, reason = "user_stopped_reply" } = {}) {
@@ -7288,15 +7079,6 @@ async function* sendThinkStream(message, turnToken, options = {}) {
   thinkController = controller;
   const timeoutId = window.setTimeout(() => controller.abort(), THINK_TIMEOUT_MS);
   markTurnLatency("turn-context-start");
-  const desktopContextPromise = collectDesktopContextForTurn()
-    .then((desktopContext) => {
-      markTurnLatency("desktop-context-ready", { included: Boolean(desktopContext) });
-      return desktopContext;
-    })
-    .catch((error) => {
-      markTurnLatency("desktop-context-error", { error: formatError(error).slice(0, 120) });
-      return null;
-    });
   const lyricsHydrationPromise = hydrateSystemMediaLyricsForTurn(message, options)
     .then((result) => {
       markTurnLatency("lyrics-hydration-ready", {
@@ -7310,12 +7092,6 @@ async function* sendThinkStream(message, turnToken, options = {}) {
       markTurnLatency("lyrics-hydration-error", { error: formatError(error).slice(0, 120) });
       return { waited: false, status: "error" };
     });
-  const desktopContext = await waitForLatencyBudget(
-    desktopContextPromise,
-    getDesktopContextTurnWaitMs(message, options),
-    buildCachedDesktopContextForTurn,
-    "desktop-context-timeout"
-  );
   if (shouldWaitForSystemMediaLyricsForTurn(message, options)) {
     await lyricsHydrationPromise;
   } else {
@@ -7353,7 +7129,6 @@ async function* sendThinkStream(message, turnToken, options = {}) {
     character_pack_id: getCurrentCharacterPackId(),
     client_capabilities: buildClientCapabilities(),
     current_visual: buildCurrentVisual(),
-    desktop_context: desktopContext,
     desktop_screen_frames: desktopScreenFrames,
     desktop_activity: buildDesktopMusicActivity()
   }, buildDesktopCareContext(), getCareFeatureStatus());
@@ -8017,9 +7792,7 @@ function normalizeSegments(value) {
 }
 
 function buildClientCapabilities() {
-  const capabilities = [...BASE_CAPABILITIES, AUDIO_PLAYBACK_CAPABILITY];
-  if (state.desktopContextEnabled) capabilities.push("desktop_context");
-  return capabilities;
+  return [...BASE_CAPABILITIES, AUDIO_PLAYBACK_CAPABILITY];
 }
 
 function buildSpeechTextKey(text) {

@@ -643,6 +643,8 @@ class DesktopSatelliteService:
             "media_control_failed",
             "media_state_not_confirmed",
             "unsupported_platform",
+            "foreground_is_desktop_pet",
+            "foreground_unavailable",
             "no_active_session",
             "control_failed",
             "read_failed",

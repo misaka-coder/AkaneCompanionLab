@@ -655,28 +655,37 @@ proper bridge.
 
 ### `petdesk-runtime`
 
-Current Akane use:
+Historical M32 integration:
 
 - sibling Tauri/WebView2 runtime launched by Akane starter scripts;
 - consumed through `/pet/health`, `/pet/resource-manifest`, `/pet/snapshot`,
   `/pet/turn`, and audio resource routes.
 
-Authority:
+Current authority (supersedes the original M63 runtime direction):
 
-- `petdesk-runtime` owns desktop rendering, resource resolver, renderer manager,
-  audio queue, native hit regions, and runtime window behavior.
+- `desktop_pet_next` is Akane's active desktop product mainline, as specified
+  in `AGENTS.md`; new Akane desktop behavior belongs there.
+- `petdesk-runtime` owns its reusable runtime implementation in the package
+  ecosystem. It is not a second authority for Akane product behavior.
 - Akane owns backend turn generation, TTS synthesis, character resources,
   session policy, and compatibility bridge output.
 
 Old implementation status:
 
 ```text
-side-by-side replacement path
+documented compatibility bridge; not the active Akane desktop product mainline
 ```
 
-The old Electron/desktop pet remains frozen for existing user entry points, but
-new desktop runtime behavior should go into `petdesk-runtime`. Akane `/pet/*`
-must remain a bridge, not a second runtime.
+The old Electron `desktop_pet` remains frozen for existing user entry points.
+Akane `/pet/*` must remain a bridge, not a second runtime or a reason
+to expand the frozen Electron implementation. It is transitional. Applying package behavior into
+`desktop_pet_next` still requires deletion or collapse of the replaced host path.
+
+Desktop perception cleanup: `desktop_pet_next` no longer polls or automatically
+attaches window titles or clipboard text. The bound Satellite owns on-demand
+window reads, without the old frontend cache. See
+`desktop_perception_retirement_v1.md` for the removed paths, compatibility
+boundary, migration behavior, and regression commands.
 
 ### `petdesk-live2d-pixi-driver`
 

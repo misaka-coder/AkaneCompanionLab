@@ -237,20 +237,21 @@ struct PetState {
     voice_input_enabled: bool,
     #[serde(default = "default_voice_volume")]
     voice_volume: f64,
-    #[serde(default = "default_desktop_context_enabled")]
-    desktop_context_enabled: bool,
-    #[serde(default)]
-    clipboard_context_enabled: bool,
     #[serde(default)]
     screen_vision_enabled: bool,
-    #[serde(default = "default_screen_vision_mode")]
-    screen_vision_mode: String,
+    // Frontend owns normalization; native persistence only preserves these values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    screen_vision_sample_interval_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    screen_vision_window_sec: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    screen_vision_max_edge: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    screen_vision_packing: Option<String>,
     #[serde(default)]
     proactive_wake_enabled: bool,
     #[serde(default = "default_proactive_wake_interval_sec")]
     proactive_wake_interval_sec: u32,
-    #[serde(default = "default_screen_vision_interval_sec")]
-    screen_vision_interval_sec: u32,
     #[serde(default = "default_screen_vision_frame_count")]
     screen_vision_frame_count: u32,
     #[serde(default = "default_hit_test_enabled")]
@@ -285,13 +286,13 @@ impl Default for PetState {
             voice_enabled: false,
             voice_input_enabled: true,
             voice_volume: 0.85,
-            desktop_context_enabled: true,
-            clipboard_context_enabled: false,
             screen_vision_enabled: false,
-            screen_vision_mode: default_screen_vision_mode(),
+            screen_vision_sample_interval_sec: None,
+            screen_vision_window_sec: None,
+            screen_vision_max_edge: None,
+            screen_vision_packing: None,
             proactive_wake_enabled: false,
             proactive_wake_interval_sec: default_proactive_wake_interval_sec(),
-            screen_vision_interval_sec: default_screen_vision_interval_sec(),
             screen_vision_frame_count: default_screen_vision_frame_count(),
             hit_test_enabled: true,
             hitbox_overlay: false,
@@ -1046,14 +1047,23 @@ fn activate_character_pack(
     })
 }
 
-#[tauri::command]
 fn get_desktop_context_snapshot() -> DesktopContextSnapshot {
+    desktop_context_snapshot_from_foreground(collect_foreground_window(), current_time_millis())
+}
+
+fn desktop_context_snapshot_from_foreground(
+    foreground: ForegroundWindowInfo,
+    captured_at: u128,
+) -> DesktopContextSnapshot {
+    // An on-demand observation, never a cached external window relabelled as current.
+    let ok = foreground.source == "foreground"
+        && (!foreground.title.trim().is_empty() || !foreground.process_name.trim().is_empty());
     DesktopContextSnapshot {
-        ok: true,
-        enabled: true,
-        captured_at: current_time_millis(),
+        ok,
+        enabled: foreground.source != "unsupported_platform",
+        captured_at,
         platform: std::env::consts::OS.to_string(),
-        foreground: collect_foreground_window(),
+        foreground,
     }
 }
 
@@ -5329,9 +5339,7 @@ fn normalize_pet_state(state: &mut PetState) -> Result<(), String> {
         state.current_emotion = DEFAULT_EMOTION.to_string();
     }
     state.voice_volume = clamp(state.voice_volume, 0.0, 1.0);
-    state.screen_vision_mode = normalize_screen_vision_mode(&state.screen_vision_mode);
     state.proactive_wake_interval_sec = state.proactive_wake_interval_sec.clamp(15, 600);
-    state.screen_vision_interval_sec = state.screen_vision_interval_sec.clamp(15, 600);
     state.screen_vision_frame_count = state.screen_vision_frame_count.clamp(1, 5);
     for runtime in state.characters.values_mut() {
         normalize_character_runtime_state(runtime);
@@ -5399,31 +5407,12 @@ fn default_voice_input_enabled() -> bool {
     true
 }
 
-fn default_desktop_context_enabled() -> bool {
-    true
-}
-
 fn default_character_pack_id() -> String {
     DEFAULT_CHARACTER_PACK_ID.to_string()
 }
 
-fn default_screen_vision_mode() -> String {
-    "summary".to_string()
-}
-
-fn normalize_screen_vision_mode(value: &str) -> String {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "direct" => "direct".to_string(),
-        _ => "summary".to_string(),
-    }
-}
-
 fn default_proactive_wake_interval_sec() -> u32 {
     30
-}
-
-fn default_screen_vision_interval_sec() -> u32 {
-    25
 }
 
 fn default_screen_vision_frame_count() -> u32 {
@@ -6257,15 +6246,7 @@ async fn execute_satellite_invocation_once(
 
     let result = match tool_id {
         DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID => {
-            match serde_json::to_value(get_desktop_context_snapshot()) {
-                Ok(data) => satellite_terminal_result(tool_id, "succeeded", "", data),
-                Err(_) => satellite_terminal_result(
-                    tool_id,
-                    "failed",
-                    "result_serialization_failed",
-                    serde_json::Value::Null,
-                ),
-            }
+            desktop_context_terminal_result(get_desktop_context_snapshot())
         }
         SYSTEM_MEDIA_SNAPSHOT_TOOL_ID => {
             match serde_json::to_value(get_current_system_media().await) {
@@ -6380,6 +6361,32 @@ async fn execute_satellite_invocation_once(
         current.insert(invocation_id.to_string(), result.clone());
     }
     result
+}
+
+fn desktop_context_terminal_result(snapshot: DesktopContextSnapshot) -> SatelliteTerminalResult {
+    let (status, reason) = if snapshot.ok {
+        ("succeeded", "")
+    } else {
+        (
+            "failed",
+            match snapshot.foreground.source.as_str() {
+                "self" => "foreground_is_desktop_pet",
+                "unsupported_platform" => "unsupported_platform",
+                _ => "foreground_unavailable",
+            },
+        )
+    };
+    match serde_json::to_value(snapshot) {
+        Ok(data) => {
+            satellite_terminal_result(DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID, status, reason, data)
+        }
+        Err(_) => satellite_terminal_result(
+            DESKTOP_CONTEXT_SNAPSHOT_TOOL_ID,
+            "failed",
+            "result_serialization_failed",
+            serde_json::Value::Null,
+        ),
+    }
 }
 
 fn satellite_terminal_result(
@@ -6913,7 +6920,6 @@ fn main() {
             bind_project_directory,
             pick_local_plugin_path,
             activate_character_pack,
-            get_desktop_context_snapshot,
             get_current_system_media,
             control_system_media,
             prepare_audio_asset,
@@ -7122,6 +7128,73 @@ mod tests {
         assert!(is_safe_instance_id("finance.prod_1"));
         assert!(!is_safe_instance_id("../finance"));
         assert!(!is_safe_instance_id(""));
+    }
+
+    #[test]
+    fn perception_state_drops_retired_preferences_and_preserves_direct_settings() {
+        let mut wire = serde_json::to_value(PetState::default()).unwrap();
+        for (key, value) in [
+            ("desktopContextEnabled", serde_json::json!(true)),
+            ("clipboardContextEnabled", serde_json::json!(true)),
+            ("screenVisionMode", serde_json::json!("summary")),
+            ("screenVisionIntervalSec", serde_json::json!(25)),
+            ("screenVisionSampleIntervalSec", serde_json::json!(0.5)),
+            ("screenVisionWindowSec", serde_json::json!(120)),
+            ("screenVisionMaxEdge", serde_json::json!(1920)),
+            ("screenVisionPacking", serde_json::json!("frames")),
+        ] {
+            wire[key] = value;
+        }
+        let state: PetState = serde_json::from_value(wire).unwrap();
+        let saved = serde_json::to_value(state).unwrap();
+        for key in [
+            "desktopContextEnabled",
+            "clipboardContextEnabled",
+            "screenVisionMode",
+            "screenVisionIntervalSec",
+        ] {
+            assert!(saved.get(key).is_none(), "retired field survived: {key}");
+        }
+        assert_eq!(saved["screenVisionSampleIntervalSec"], 0.5);
+        assert_eq!(saved["screenVisionWindowSec"], 120.0);
+        assert_eq!(saved["screenVisionMaxEdge"], 1920);
+        assert_eq!(saved["screenVisionPacking"], "frames");
+    }
+
+    #[test]
+    fn perception_context_never_reports_missing_observations_as_success() {
+        for (source, expected_reason) in [
+            ("self", "foreground_is_desktop_pet"),
+            ("none", "foreground_unavailable"),
+            ("foreground", "foreground_unavailable"),
+            ("unsupported_platform", "unsupported_platform"),
+        ] {
+            let snapshot =
+                desktop_context_snapshot_from_foreground(empty_foreground_window(source), 123);
+            assert!(!snapshot.ok);
+            let result = desktop_context_terminal_result(snapshot);
+            assert_eq!(result.status, "failed");
+            assert_eq!(result.reason, expected_reason);
+            assert_eq!(result.data["capturedAt"], 123);
+            assert_eq!(result.data["foreground"]["source"], source);
+        }
+        let snapshot = desktop_context_snapshot_from_foreground(
+            ForegroundWindowInfo {
+                title: "Synthetic current window".to_string(),
+                process_name: "editor.exe".to_string(),
+                pid: Some(123),
+                source: "foreground".to_string(),
+            },
+            456,
+        );
+        let result = desktop_context_terminal_result(snapshot);
+        assert_eq!(result.status, "succeeded");
+        assert!(result.reason.is_empty());
+        assert_eq!(result.data["capturedAt"], 456);
+        assert_eq!(
+            result.data["foreground"]["title"],
+            "Synthetic current window"
+        );
     }
 
     #[test]
@@ -7417,8 +7490,18 @@ mod tests {
             &serde_json::json!({}),
         )
         .await;
-        assert_eq!(first.status, "succeeded");
+        assert_eq!(
+            first.status,
+            if first.data["ok"] == true {
+                "succeeded"
+            } else {
+                "failed"
+            }
+        );
+        assert_eq!(first.reason.is_empty(), first.data["ok"] == true);
         assert!(first.data.get("foreground").is_some());
+        assert_eq!(first.status, second.status);
+        assert_eq!(first.reason, second.reason);
         assert_eq!(first.data, second.data);
     }
 
@@ -7565,7 +7648,11 @@ mod tests {
             );
             assert_eq!(
                 result.get("status").and_then(serde_json::Value::as_str),
-                Some("succeeded")
+                Some(if result["data"]["ok"] == true {
+                    "succeeded"
+                } else {
+                    "failed"
+                })
             );
             assert!(result
                 .get("data")

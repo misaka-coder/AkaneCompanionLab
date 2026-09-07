@@ -82,8 +82,6 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.voiceSetWakeSensitivity]: "setWakeSensitivity",
   [CONTROL_CENTER_ACTIONS.characterRefresh]: "reloadResources",
   [CONTROL_CENTER_ACTIONS.characterPreviewEmotion]: "previewEmotion",
-  [CONTROL_CENTER_ACTIONS.perceptionDesktopContextSetEnabled]: "setDesktopContextEnabled",
-  [CONTROL_CENTER_ACTIONS.perceptionClipboardContextSetEnabled]: "setClipboardContextEnabled",
   [CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetEnabled]: "setScreenVisionEnabled",
   [CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetSampleIntervalSec]: "setScreenVisionSampleIntervalSec",
   [CONTROL_CENTER_ACTIONS.perceptionScreenVisionSetWindowSec]: "setScreenVisionWindowSec",
@@ -1658,8 +1656,6 @@ function buildOverviewRuntimePatch({ health, diagnostics, workspace, metricsText
 function buildOverviewSenseRuntimePatch(petState) {
   const state = asObject(petState);
   const entries = [
-    ["activeWindowEnabled", state.desktopContextEnabled],
-    ["clipboardEnabled", state.clipboardContextEnabled],
     ["screenVisionEnabled", state.screenVisionEnabled],
     ["proactiveWakeEnabled", state.proactiveWakeEnabled]
   ].filter(([, value]) => typeof value === "boolean");

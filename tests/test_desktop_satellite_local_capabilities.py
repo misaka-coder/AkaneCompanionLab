@@ -446,6 +446,45 @@ class DesktopSatelliteLocalCapabilitiesTests(unittest.TestCase):
         self.assertEqual(envelope.data["result"]["foreground"]["processName"], "editor")
         self.assertIn("真实读取完成", result.followup_context)
 
+    def test_window_unavailability_reason_survives_satellite_transport(self) -> None:
+        for reason in ("foreground_is_desktop_pet", "foreground_unavailable"):
+            with self.subTest(reason=reason):
+                service = DesktopSatelliteService(instance_id="instance-a", token="device-secret")
+                broker = ExecutorBroker(service)
+                spec = next(item for item in DESKTOP_SATELLITE_TOOL_SPECS if item.capability_id == "desktop_context_snapshot")
+                results = {}
+                with TestClient(self._app(service)) as client:
+                    with client.websocket_connect(
+                        "/capabilities/satellite/ws", headers={"Authorization": "Bearer device-secret"},
+                    ) as websocket:
+                        websocket.receive_json()
+                        websocket.send_json(_registration("instance-a"))
+                        registered = websocket.receive_json()
+                        receipt = service.resolve_receipt(spec)
+                        self.assertIsNotNone(receipt)
+
+                        def execute():
+                            results["result"] = broker.execute(
+                                spec=spec, receipt_value=receipt.as_dict(),
+                                invocation_id="window-unavailable", arguments={},
+                            )
+
+                        worker = threading.Thread(target=execute, daemon=True)
+                        worker.start()
+                        self.assertEqual(websocket.receive_json()["tool_id"], spec.capability_id)
+                        websocket.send_json(_execution_message(
+                            "result", registered, "window-unavailable", spec.capability_id,
+                            status="failed", reason=reason,
+                            data={"ok": False, "enabled": True, "capturedAt": 123,
+                                  "platform": "synthetic", "foreground": {"source": "self", "title": ""}},
+                        ))
+                        worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(results["result"].status, "failed")
+                self.assertEqual(results["result"].reason, reason)
+                self.assertFalse(results["result"].data["ok"])
+                self.assertEqual(results["result"].data["capturedAt"], 123)
+
     def test_media_control_execution_unknown_reaches_model_as_unconfirmed_not_success(self) -> None:
         service = DesktopSatelliteService(instance_id="instance-a", token="device-secret")
         broker = ExecutorBroker(service)
