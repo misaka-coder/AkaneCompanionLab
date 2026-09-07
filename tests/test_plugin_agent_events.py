@@ -148,6 +148,15 @@ class QQPluginAgentEventTests(unittest.IsolatedAsyncioTestCase):
         class Gateway:
             master_qq = "1906243651"
 
+            def context_from_delivery_context(self, payload):
+                return QQMessageContext(
+                    should_respond=True, reason="plugin_event", should_record=False,
+                    **{key: payload[key] for key in (
+                        "is_group", "target_id", "user_id", "group_id", "session_id", "profile_user_id",
+                        "clean_message", "raw_message", "sender_label", "source_message_id", "character_pack_id",
+                    ) if key in payload},
+                )
+
             def resolve_identity(self, *, user_id: int, group_id: int = 0):
                 if group_id:
                     return f"qq_group_shared_{group_id}", f"qq_group_shared_{group_id}"

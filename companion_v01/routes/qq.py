@@ -32,7 +32,14 @@ from ..tts_provider_runtime import (
     synthesize_tts_resolution,
 )
 from ..runtime_settings import runtime_setting
-from ..durable_session_queue import DurableSessionWorkQueue
+from ..durable_session_queue import DurableSessionWorkQueue, SessionWorkError
+from ..host_completion_batch import (
+    completion_batch_key,
+    completion_input_fingerprint,
+    completion_metadata,
+    completion_timestamp,
+    completion_turn_payload,
+)
 from ..session_inbox import SessionInboxItem
 from ..turn_coordination import SessionWorkQueue, TurnCoordinator
 from ..qq_group_attention import AttentionTicket, QQGroupAttentionState
@@ -2771,7 +2778,9 @@ def build_qq_router(
             return
 
         event = dict(first_payload.get("event") or {})
-        turn_payload = dict(first_payload.get("turn_payload") or {})
+        turn_payload = completion_turn_payload(items)
+        if len(items) > 1:
+            context = _restore_queued_context(items[0], {**first_payload, "turn_payload": turn_payload})
         await _restore_queued_native_images(context, turn_payload)
         qq_user_id = int(getattr(context, "user_id", 0) or 0)
         actor_id = f"qq:{qq_user_id}" if qq_user_id else f"qq-profile:{profile_user_id}"
@@ -2785,6 +2794,8 @@ def build_qq_router(
             ) as turn_control_id:
                 queue_wait_ms = _session_item_wait_ms(items[0])
                 turn_payload["_turn_control_id"] = turn_control_id
+                if isinstance(session_work_queue, DurableSessionWorkQueue) and completion_batch_key(items[0]):
+                    await session_work_queue.begin_processing(items)
                 processing_started_at = time.perf_counter()
                 turn_result = await _run_qq_turn_delivery_unlocked(
                     context=context,
@@ -2795,6 +2806,13 @@ def build_qq_router(
             result_payload = turn_result if isinstance(turn_result, dict) else {}
             send_result = result_payload.get("send_result")
             send_payload = send_result if isinstance(send_result, dict) else {}
+            if completion_batch_key(items[0]) and (
+                result_payload.get("final_frame_received") is False
+                or bool((result_payload.get("frame") or {}).get("_transient_final_failure"))
+                or not send_payload.get("ok")
+                or (result_payload.get("file_send_result") or {}).get("ok") is False
+            ):
+                raise SessionWorkError("host_completion_turn_or_delivery_incomplete")
             duration_ms = (time.perf_counter() - started_at) * 1000
             runtime_metrics.observe_request(
                 "qq_group_turn_queue",
@@ -2814,6 +2832,7 @@ def build_qq_router(
                 duration_ms=round(duration_ms, 1),
                 sent=bool(send_payload.get("ok")),
                 delivery_status=str(send_payload.get("status") or ""),
+                batch_count=len(items),
             )
         except Exception as exc:
             duration_ms = (time.perf_counter() - started_at) * 1000
@@ -2827,7 +2846,7 @@ def build_qq_router(
                 user_id=qq_user_id,
                 source_message_id=str(getattr(context, "source_message_id", "") or ""),
                 queue_sequence=items[0].sequence,
-                reason=exc.__class__.__name__,
+                reason=exc.reason if isinstance(exc, SessionWorkError) else exc.__class__.__name__,
                 duration_ms=round(duration_ms, 1),
             )
             raise
@@ -2867,6 +2886,7 @@ def build_qq_router(
             "qq",
             _handle_queued_session_work,
             on_error=_session_work_error,
+            batch_key=completion_batch_key,
         )
 
     async def _enqueue_session_work(
@@ -3170,7 +3190,7 @@ def build_qq_router(
         message = str(request.message or "").strip()
         if not message:
             return PluginAgentEventResult(False, "rejected", "agent_event_message_required")
-        event_timestamp = int(time.time())
+        event_timestamp = completion_timestamp(request, int(time.time()))
         sender_label = "插件事件"
         if str(request.event.source or "").strip().lower().startswith("host."):
             sender_label = "系统事件"
@@ -3259,12 +3279,13 @@ def build_qq_router(
                 profile_user_id=resolved_profile_user_id,
                 session_id=resolved_session_id,
                 kind="turn",
-                payload=_durable_qq_work_payload(
-                    event=synthetic_event,
-                    turn_payload=turn_payload,
-                ),
+                payload={
+                    **_durable_qq_work_payload(event=synthetic_event, turn_payload=turn_payload),
+                    "host_completion": completion_metadata(request, resolved_reference),
+                },
                 source="qq",
                 source_event_id=source_event_id,
+                input_fingerprint=completion_input_fingerprint(request, resolved_reference),
             )
             if not queued.get("ok"):
                 return PluginAgentEventResult(
@@ -3275,6 +3296,8 @@ def build_qq_router(
                 )
             queued_item = queued.get("item")
             queued_status = str(getattr(queued_item, "status", "") or "")
+            if queued_status == "failed":
+                return PluginAgentEventResult(False, "failed", "agent_event_previously_failed", "not_sent")
             delivery_status = "suppressed" if queued_status == "committed" else "queued"
             return PluginAgentEventResult(True, "accepted", "", delivery_status)
         try:

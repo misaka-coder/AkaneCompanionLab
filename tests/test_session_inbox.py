@@ -166,7 +166,7 @@ class SessionInboxStoreTests(unittest.TestCase):
                 retry_delay_seconds=5,
             )
             self.assertEqual(failed["status"], "retryable")
-            self.assertEqual(store.claim_next("profile\0session", worker_id="worker-b")["status"], "idle")
+            self.assertEqual(store.claim_next("profile\0session", worker_id="worker-b")["status"], "deferred")
 
             clock.value = 105.0
             retried = store.claim_next("profile\0session", worker_id="worker-b")

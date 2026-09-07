@@ -755,7 +755,12 @@ def _host_job_completion_request(job: HostJob) -> PluginAgentEventRequest:
         ("job_id", job.job_id),
         ("capability_id", job.capability_id),
         ("status", status),
+        ("finished_at", str(job.finished_at)),
     ]
+    if job.turn_id:
+        fields.append(("origin_turn_id", job.turn_id))
+    if job.tool_call_id:
+        fields.append(("tool_call_id", job.tool_call_id))
     task_directory = str(job.payload.get("working_directory") or "").strip()
     if task_directory:
         fields.append(("task_working_directory", task_directory))

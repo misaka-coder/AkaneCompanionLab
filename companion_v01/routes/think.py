@@ -13,7 +13,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import config
 from ..client_protocol import ClientMode, default_capabilities_for_mode
 from ..desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, build_desktop_pet_error_payload
-from ..durable_session_queue import DurableSessionWorkQueue, RetryableSessionWorkError
+from ..durable_session_queue import DurableSessionWorkQueue, RetryableSessionWorkError, SessionWorkError
+from ..host_completion_batch import (
+    completion_batch_key,
+    completion_input_fingerprint,
+    completion_metadata,
+    completion_timestamp,
+    completion_turn_payload,
+)
 from ..session_inbox import SessionInboxItem
 from ..plugin_api import (
     DIRECT_CONVERSATION_EVENT,
@@ -348,7 +355,7 @@ def build_think_router(
         ):
             return PluginAgentEventResult(False, "rejected", "event_context_unresolved")
         message = str(event_request.message or "").strip()
-        timestamp = int(time.time())
+        timestamp = completion_timestamp(event_request, int(time.time()))
         payload: dict[str, Any] = {
             "user_id": session_id,
             "session_id": session_id,
@@ -393,9 +400,13 @@ def build_think_router(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 kind="turn",
-                payload={"turn_payload": payload},
+                payload={
+                    "turn_payload": payload,
+                    "host_completion": completion_metadata(event_request, resolved_reference),
+                },
                 source="desktop_pet",
                 source_event_id=source_event_id,
+                input_fingerprint=completion_input_fingerprint(event_request, resolved_reference),
             )
             if not queued.get("ok"):
                 return PluginAgentEventResult(
@@ -406,6 +417,8 @@ def build_think_router(
                 )
             queued_item = queued.get("item")
             queued_status = str(getattr(queued_item, "status", "") or "")
+            if queued_status == "failed":
+                return PluginAgentEventResult(False, "failed", "agent_event_previously_failed", "not_sent")
             delivery_status = "suppressed" if queued_status == "committed" else "queued"
             return PluginAgentEventResult(True, "accepted", "", delivery_status)
         if not _desktop_delivery_is_available():
@@ -452,11 +465,10 @@ def build_think_router(
         plugin_agent_event_handler_registrar("desktop_pet", _submit_plugin_agent_event)
 
     async def _handle_queued_desktop_work(_key: str, items: list[SessionInboxItem]) -> None:
-        if len(items) != 1:
-            raise ValueError("desktop_session_work_single_item_required")
+        if not items:
+            raise ValueError("desktop_session_work_items_required")
         item = items[0]
-        stored = item.payload if isinstance(item.payload, dict) else {}
-        payload = dict(stored.get("turn_payload") or {})
+        payload = completion_turn_payload(items)
         profile_user_id, session_id, actor_id = _turn_identity(payload)
         if profile_user_id != item.profile_user_id or session_id != item.session_id:
             raise ValueError("desktop_session_work_identity_mismatch")
@@ -470,7 +482,8 @@ def build_think_router(
             "client_capabilities",
             list(default_capabilities_for_mode(ClientMode.DESKTOP_PET)),
         )
-        payload["memory_idempotency_key"] = f"session-inbox:{item.item_id}"
+        if not completion_batch_key(item):
+            payload["memory_idempotency_key"] = f"session-inbox:{item.item_id}"
         _append_current_turn_context(payload, await _dispatch_plugin_direct_event(None, payload))
         async with turn_coordinator.hold(
             profile_user_id,
@@ -479,11 +492,17 @@ def build_think_router(
             channel="desktop_pet",
         ) as turn_control_id:
             payload["_turn_control_id"] = turn_control_id
+            if completion_batch_key(item):
+                await session_work_queue.begin_processing(items)
             frame = await asyncio.to_thread(engine.process_turn, payload)
         if not isinstance(frame, dict) or bool(frame.get("_transient_final_failure")):
+            if completion_batch_key(item):
+                raise SessionWorkError("host_completion_turn_incomplete")
             raise RuntimeError("desktop_session_turn_incomplete")
         delivery_result = await _deliver_desktop_frame(frame)
         if delivery_result.get("ok") is not True:
+            if completion_batch_key(item):
+                raise SessionWorkError("host_completion_frame_delivery_failed")
             raise RuntimeError(str(delivery_result.get("reason") or "desktop_delivery_failed"))
         log_event(
             "desktop_session_work_completed",
@@ -491,6 +510,7 @@ def build_think_router(
             profile_user_id=profile_user_id,
             source_event_id=item.source_event_id,
             delivery_status=str(delivery_result.get("status") or "queued"),
+            batch_count=len(items),
         )
 
     def _desktop_session_work_error(
@@ -514,6 +534,7 @@ def build_think_router(
             "desktop_pet",
             _handle_queued_desktop_work,
             on_error=_desktop_session_work_error,
+            batch_key=completion_batch_key,
         )
 
     async def _control_payload(request: Request) -> dict[str, Any] | JSONResponse:

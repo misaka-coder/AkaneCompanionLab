@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from typing import Any, Awaitable, Callable
 
 from .session_inbox import SessionInboxItem, SessionInboxStore
+
+logger = logging.getLogger(__name__)
+
+
+class SessionWorkError(RuntimeError):
+    """A terminal failure with a host-authored, log-safe reason code."""
+
+    def __init__(self, reason: str) -> None:
+        if not reason or len(reason) > 160 or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_" for c in reason):
+            raise ValueError("invalid_session_work_reason")
+        super().__init__(reason)
+        self.reason = reason
 
 
 class RetryableSessionWorkError(RuntimeError):
@@ -17,7 +30,7 @@ class RetryableSessionWorkError(RuntimeError):
 
 
 class DurableSessionWorkQueue:
-    """Drain one durable item at a time per session, in parallel across sessions."""
+    """Drain one durable envelope per session; sources opt into compatible batches."""
 
     def __init__(
         self,
@@ -28,6 +41,8 @@ class DurableSessionWorkQueue:
         on_error: Callable[[str, list[SessionInboxItem], BaseException], None] | None = None,
         worker_id: str = "",
         lease_seconds: float = 300.0,
+        max_batch_items: int = 32,
+        max_batch_bytes: int = 65_536,
     ) -> None:
         self._store = store
         self._fallback_handler = handler
@@ -39,10 +54,13 @@ class DurableSessionWorkQueue:
             str,
             Callable[[str, list[SessionInboxItem], BaseException], None],
         ] = {}
+        self._batch_keys: dict[str, Callable[[SessionInboxItem], str]] = {}
         self._schedule_task = schedule_task or asyncio.create_task
         self._on_error = on_error
         self._worker_id = str(worker_id or "").strip() or f"inbox_worker_{uuid.uuid4().hex}"
         self._lease_seconds = max(1.0, float(lease_seconds))
+        self._max_batch_items = max(1, int(max_batch_items))
+        self._max_batch_bytes = max(1, int(max_batch_bytes))
         self._workers: dict[str, Any] = {}
 
     def register_handler(
@@ -51,11 +69,16 @@ class DurableSessionWorkQueue:
         handler: Callable[[str, list[SessionInboxItem]], Awaitable[None]],
         *,
         on_error: Callable[[str, list[SessionInboxItem], BaseException], None] | None = None,
+        batch_key: Callable[[SessionInboxItem], str] | None = None,
     ) -> None:
         normalized = str(source or "").strip()
         if not normalized or not callable(handler):
             raise ValueError("session_work_source_and_handler_required")
         self._source_handlers[normalized] = handler
+        if batch_key is None:
+            self._batch_keys.pop(normalized, None)
+        else:
+            self._batch_keys[normalized] = batch_key
         if on_error is None:
             self._source_error_handlers.pop(normalized, None)
         else:
@@ -68,20 +91,39 @@ class DurableSessionWorkQueue:
         claim_token: Any,
         error: Any,
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self._store.fail,
             item_id,
             claim_token=claim_token,
             error=error,
             retryable=True,
         )
+        await self._wake_after_settlement(item_id, result)
+        return result
 
     async def commit_claim(self, item_id: Any, *, claim_token: Any) -> dict[str, Any]:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self._store.commit,
             item_id,
             claim_token=claim_token,
         )
+        await self._wake_after_settlement(item_id, result)
+        return result
+
+    async def _wake_after_settlement(self, item_id: Any, result: dict[str, Any]) -> None:
+        if result.get("ok"):
+            item = await asyncio.to_thread(self._store.get, item_id)
+            if item is not None and await asyncio.to_thread(self._store.pending_count, item.session_key):
+                self._ensure_worker(item.session_key)
+
+    def _batch_key(self, item: SessionInboxItem) -> str:
+        policy = self._batch_keys.get(item.source)
+        return policy(item) if policy is not None else ""
+
+    async def begin_processing(self, items: list[SessionInboxItem]) -> None:
+        result = await asyncio.to_thread(self._store.begin_processing, items)
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("reason") or "session_processing_fence_failed"))
 
     async def enqueue(self, *, schedule: bool = True, **fields: Any) -> dict[str, Any]:
         result = await asyncio.to_thread(self._store.enqueue, **fields)
@@ -133,6 +175,7 @@ class DurableSessionWorkQueue:
         self._workers[key] = self._schedule_task(self._drain(key))
 
     async def _drain(self, key: str) -> None:
+        recheck_idle = False
         try:
             while True:
                 claim = await asyncio.to_thread(
@@ -140,65 +183,101 @@ class DurableSessionWorkQueue:
                     key,
                     worker_id=self._worker_id,
                     lease_seconds=self._lease_seconds,
+                    batch_key=self._batch_key,
+                    max_batch_items=self._max_batch_items,
+                    max_batch_bytes=self._max_batch_bytes,
                 )
                 if not claim.get("ok"):
+                    if claim.get("status") == "deferred":
+                        # A deferred head is an ordering barrier, not permission
+                        # for a newer completion to overtake the user's input.
+                        await asyncio.sleep(max(0.01, float(claim["retry_after"])))
+                        continue
+                    recheck_idle = claim.get("status") == "idle"
                     return
                 item = claim.get("item")
                 if not isinstance(item, SessionInboxItem):
                     return
+                items = list(claim.get("items") or [item])
                 try:
                     handler = self._source_handlers.get(item.source) or self._fallback_handler
                     if handler is None:
                         raise LookupError("session_work_handler_unavailable")
-                    await handler(key, [item])
+                    await self._handle_with_lease(handler, key, items)
                 except asyncio.CancelledError:
                     await asyncio.shield(
                         asyncio.to_thread(
-                            self._store.fail,
-                            item.item_id,
-                            claim_token=claim.get("claim_token"),
+                            self._store.settle_claims,
+                            items,
+                            status="queued",
                             error="worker_cancelled",
-                            retryable=True,
                         )
                     )
                     raise
                 except RetryableSessionWorkError as exc:
                     await asyncio.to_thread(
-                        self._store.fail,
-                        item.item_id,
-                        claim_token=claim.get("claim_token"),
+                        self._store.settle_claims,
+                        items,
+                        status="queued",
                         error=exc.reason,
-                        retryable=True,
                         retry_delay_seconds=exc.retry_delay_seconds,
                     )
-                    error_handler = self._source_error_handlers.get(item.source) or self._on_error
-                    if error_handler is not None:
-                        error_handler(key, [item], exc)
-                    self._schedule_task(self._resume_after(key, exc.retry_delay_seconds))
-                    return
+                    self._report_error(key, items, exc)
+                    continue
                 except Exception as exc:
                     await asyncio.to_thread(
-                        self._store.fail,
-                        item.item_id,
-                        claim_token=claim.get("claim_token"),
-                        error=exc.__class__.__name__,
-                        retryable=False,
+                        self._store.settle_claims,
+                        items,
+                        status="failed",
+                        error=exc.reason if isinstance(exc, SessionWorkError) else exc.__class__.__name__,
                     )
-                    error_handler = self._source_error_handlers.get(item.source) or self._on_error
-                    if error_handler is not None:
-                        error_handler(key, [item], exc)
+                    self._report_error(key, items, exc)
                     continue
-                await asyncio.to_thread(
-                    self._store.commit,
-                    item.item_id,
-                    claim_token=claim.get("claim_token"),
+                settled = await asyncio.to_thread(
+                    self._store.settle_claims,
+                    items,
+                    status="committed",
                 )
+                if not settled.get("ok"):
+                    self._report_error(key, items, RuntimeError("session_claim_settlement_failed"))
+                    return
         finally:
             self._workers.pop(key, None)
+            # enqueue() can race the final empty DB check while this worker
+            # still looks busy. Retire and recheck without an await in between.
+            if recheck_idle and self._store.pending_count(key):
+                self._ensure_worker(key)
 
-    async def _resume_after(self, key: str, delay_seconds: float) -> None:
-        await asyncio.sleep(max(0.01, float(delay_seconds)))
-        self._ensure_worker(key)
+    async def _handle_with_lease(self, handler, key: str, items: list[SessionInboxItem]) -> None:
+        async def renew() -> None:
+            while True:
+                await asyncio.sleep(self._lease_seconds / 3)
+                result = await asyncio.to_thread(self._store.renew_claims, items, lease_seconds=self._lease_seconds)
+                if not result.get("ok"):
+                    raise RuntimeError("session_claim_lease_lost")
+
+        work = asyncio.create_task(handler(key, items))
+        heartbeat = asyncio.create_task(renew())
+        try:
+            done, _ = await asyncio.wait((work, heartbeat), return_when=asyncio.FIRST_COMPLETED)
+            if heartbeat in done:
+                await heartbeat
+            await work
+        finally:
+            for task in (work, heartbeat):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(work, heartbeat, return_exceptions=True)
+
+    def _report_error(self, key: str, items: list[SessionInboxItem], exc: BaseException) -> None:
+        handler = self._source_error_handlers.get(items[0].source) or self._on_error
+        if handler is not None:
+            try:
+                handler(key, items, exc)
+            except Exception:
+                logger.exception("session work error observer failed")
+        else:
+            logger.error("session work failed: %s", type(exc).__name__)
 
 
-__all__ = ["DurableSessionWorkQueue", "RetryableSessionWorkError"]
+__all__ = ["DurableSessionWorkQueue", "RetryableSessionWorkError", "SessionWorkError"]
