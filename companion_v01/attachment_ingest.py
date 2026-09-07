@@ -297,6 +297,7 @@ class AttachmentIngestService:
         kind: str = "",
         source: str = "local",
         character_pack_id: str = "",
+        observe_image: bool = True,
         timestamp: int | None = None,
     ) -> dict[str, Any]:
         """Synchronously copy a trusted local file into the attachment inbox."""
@@ -335,6 +336,7 @@ class AttachmentIngestService:
                 "file_ext": suffix,
                 "kind": normalized_kind,
                 "character_pack_id": character_pack_id,
+                "_observe_image": bool(observe_image),
             },
             effective_ts,
             trusted_local_source=local_path,

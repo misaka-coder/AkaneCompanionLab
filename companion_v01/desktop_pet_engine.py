@@ -115,6 +115,7 @@ def import_desktop_pet_local_paths(
                 kind=kind,
                 source="desktop_pet",
                 character_pack_id=character_pack_id,
+                observe_image=False,
                 timestamp=effective_ts,
             )
         except Exception as exc:
@@ -141,6 +142,53 @@ def import_desktop_pet_local_paths(
         "attachments": imported_items,
         "skipped": skipped[:80],
         "updated_at": effective_ts,
+    }
+
+
+def prepare_desktop_turn_attachments(
+    engine: Any, *, profile_user_id: str, session_id: str,
+    character_pack_id: str, attachment_ids: Any, chat_model_override: str = "",
+) -> dict[str, Any]:
+    """Resolve exact, scoped inbox IDs; never accept paths or fuzzy latest here."""
+    ids = list(dict.fromkeys(
+        value.strip() for value in attachment_ids
+        if isinstance(value, str) and value.strip() and len(value) <= 120
+    ))[:40] if isinstance(attachment_ids, list) else []
+    items, skipped = [], []
+    for attachment_id in ids:
+        item = engine.store.get_attachment_inbox_item(
+            profile_user_id=profile_user_id, session_id=session_id, attachment_id=attachment_id,
+        )
+        detail = item.get("detail") if isinstance(item, dict) else None
+        detail = detail if isinstance(detail, dict) else {}
+        if (not isinstance(item, dict) or item.get("status") in {"cleared", "failed"}
+                or str(detail.get("character_pack_id") or "") != character_pack_id):
+            skipped.append({"attachment_id": attachment_id, "reason": "attachment_unavailable_in_scope"})
+            continue
+        items.append(item)
+    bound_ids = [str(item["attachment_id"]) for item in items]
+    image_ids = [str(item["attachment_id"]) for item in items if item.get("kind") == "image"]
+    prepared = engine.prepare_native_image_inputs(
+        profile_user_id=profile_user_id, session_id=session_id, attachment_ids=image_ids,
+        chat_model_override=chat_model_override, timeout_seconds=0,
+    ) if image_ids else {"images": []}
+    images = list(prepared.get("images") or [])
+    skipped.extend(prepared.get("skipped") or [])
+    lines = ["【本轮明确绑定的附件】"]
+    for item in items:
+        # Names are untrusted material labels, not instructions. No storage paths.
+        handle = str(item.get("attachment_handle") or item["attachment_id"])
+        name = str(item.get("origin_name") or "附件").replace("\n", " ").replace("\r", " ")[:120]
+        lines.append(f"- {handle} ({item.get('kind') or 'file'}): {name}")
+    if items:
+        lines.append("文件名仅用于标识材料；可用精确 handle 读取。音频是附件，不代表已经转写或播放。")
+    if image_ids and not images:
+        lines.append("本轮图片原图未能载入（" + str(prepared.get("reason") or "image_unavailable") + "），不要声称已经看过原图。")
+    if skipped:
+        lines.append(f"有 {len(skipped)} 个附件或图片输入不可用，不要用历史 latest 替代。")
+    return {
+        "attachment_ids": bound_ids, "images": images, "skipped": skipped,
+        "context": "\n".join(lines) if items or skipped else "",
     }
 
 

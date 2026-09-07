@@ -33,7 +33,7 @@ class InspectAttachmentToolHandler(BaseToolHandler):
         return (
             "- inspect_attachment：列出当前材料，或读取单个材料的元数据和已有摘要。"
             '格式为 {"type":"inspect_attachment","target":"all|附件id|标题|文件名|latest","kind":"any|image|file|document|audio"}。'
-            "群聊中的 latest 只指本轮 QQ 消息明确绑定的材料；本轮没有绑定材料时，结果会要求列出工作台或使用精确 handle。"
+            "消息明确绑定附件时，latest 只指本轮材料；群聊没有绑定材料时，需列出工作台或使用精确 handle。"
             "图片像素、文字和视觉细节由 load_material 读取，参数使用本工具返回的精确 handle。"
             "工作台材料只是临时上下文，不是角色资源或长期记忆。"
             "对比多张图片时，先取得精确 handle，再一次传给 load_material。"
@@ -55,13 +55,16 @@ class InspectAttachmentToolHandler(BaseToolHandler):
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         requested_target = str(call.get("target") or "").strip()
         effective_target = requested_target
-        if self._is_latest_alias(requested_target) and self._is_qq_group_turn(context):
-            bound_ids = self._current_qq_attachment_ids(context)
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        if self._is_latest_alias(requested_target) and (
+            "current_attachment_ids" in request_context or self._is_qq_group_turn(context)
+        ):
+            bound_ids = self._current_attachment_ids(context)
             if not bound_ids:
                 return ToolExecutionResult(
                     tool_type=self.tool_type,
                     followup_context=(
-                        "本轮 QQ 群消息没有绑定任何附件，因此不能把共享工作台中的历史 latest 当成本轮图片或文件。"
+                        "本轮消息没有绑定任何附件，因此不能把共享工作台中的历史 latest 当成本轮图片或文件。"
                         "如果用户指的是历史材料，请先用 inspect_attachment(target=\"all\") 查看发送者、时间和 handle，"
                         "再用精确 handle 打开；不要猜测。"
                     ),
@@ -124,9 +127,9 @@ class InspectAttachmentToolHandler(BaseToolHandler):
         )
 
     @staticmethod
-    def _current_qq_attachment_ids(context: ToolExecutionContext) -> list[str]:
+    def _current_attachment_ids(context: ToolExecutionContext) -> list[str]:
         request_context = context.request_context if isinstance(context.request_context, dict) else {}
-        values = request_context.get("qq_current_attachment_ids")
+        values = request_context.get("current_attachment_ids", request_context.get("qq_current_attachment_ids"))
         if not isinstance(values, list):
             return []
         return [str(value or "").strip() for value in values if str(value or "").strip()]

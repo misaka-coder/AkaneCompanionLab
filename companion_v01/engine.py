@@ -3877,7 +3877,11 @@ class AkaneMemoryEngine:
             chat_model_override=chat_model_override,
         )
 
-    def prepare_qq_native_image_inputs(
+    def prepare_qq_native_image_inputs(self, **kwargs) -> dict[str, Any]:
+        """Compatibility adapter for QQ callers; one shared image preparation path."""
+        return self.prepare_native_image_inputs(**kwargs)
+
+    def prepare_native_image_inputs(
         self,
         *,
         profile_user_id: str,
@@ -4034,6 +4038,18 @@ class AkaneMemoryEngine:
         date_label = timestamp_to_date_label(now_ts)
         time_of_day = detect_time_of_day_from_text(user_message) or infer_time_of_day(now_ts)
         turn_extra_user_context = self._build_turn_extra_user_context(payload, client_context)
+        if client_context.effective_mode == ClientMode.DESKTOP_PET and "current_attachment_ids" in payload:
+            attachments = desktop_pet_engine.prepare_desktop_turn_attachments(
+                self, profile_user_id=profile_user_id, session_id=session_id,
+                character_pack_id=turn_character_pack_id,
+                attachment_ids=payload.get("current_attachment_ids"),
+                chat_model_override=chat_model_override,
+            )
+            payload["current_attachment_ids"] = attachments["attachment_ids"]
+            payload["native_user_images"] = attachments["images"]
+            turn_extra_user_context = self._merge_extra_user_context(
+                turn_extra_user_context, attachments["context"],
+            )
         native_user_images = self._extract_native_user_images(payload)
         if native_user_images:
             turn_extra_user_context = self._merge_extra_user_context(
@@ -4087,6 +4103,8 @@ class AkaneMemoryEngine:
                 user_memory_metadata["message_addressing"] = message_addressing
             if forward_references:
                 user_memory_metadata["forward_references"] = forward_references
+            if payload.get("current_attachment_ids"):
+                user_memory_metadata["current_attachment_ids"] = list(payload["current_attachment_ids"])
             user_record = self.store.add_message(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
