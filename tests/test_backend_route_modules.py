@@ -1679,6 +1679,12 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
     def test_qq_router_passive_forward_and_media_are_enriched_off_webhook(self) -> None:
+        self._check_passive_forward_and_media_enrichment(durable=False)
+
+    def test_qq_router_durable_passive_forward_and_media_survive_admission(self) -> None:
+        self._check_passive_forward_and_media_enrichment(durable=True)
+
+    def _check_passive_forward_and_media_enrichment(self, *, durable: bool) -> None:
         runtime = FakeRuntimeMetrics()
         gateway = NapCatQQGateway()
         scheduled: list[Any] = []
@@ -1747,6 +1753,14 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "results": [],
                 }
 
+        queue_options = {}
+        if durable:
+            temp_dir = tempfile.TemporaryDirectory()
+            self.addCleanup(temp_dir.cleanup)
+            inbox_store = SessionInboxStore(Path(temp_dir.name) / "akane_memory_v01.db")
+            queue_options["session_work_queue"] = DurableSessionWorkQueue(
+                inbox_store, schedule_task=FakeSupervisor.create_task,
+            )
         app = FastAPI()
         app.include_router(
             build_qq_router(
@@ -1757,6 +1771,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
                 log_event=lambda _name, **_kwargs: None,
                 async_task_supervisor=FakeSupervisor(),
+                **queue_options,
             )
         )
         response = TestClient(app).post(
@@ -1780,6 +1795,11 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "buffered")
         self.assertEqual(response.json()["reason"], "passive_content_enrichment")
         self.assertEqual(recorded_batches, [])
+        self.assertEqual(len(scheduled), 1)
+        duplicate = TestClient(app).post(
+            "/api/qq/napcat/event", json=json.loads(response.request.content),
+        )
+        self.assertEqual(duplicate.json()["reason"], "duplicate_event")
         self.assertEqual(len(scheduled), 1)
         asyncio.run(scheduled.pop())
         self.assertEqual(len(ingest_calls), 1)

@@ -103,6 +103,48 @@ class QQGatewayTests(unittest.TestCase):
         self.addCleanup(self.master_qq_patcher.stop)
         self.addCleanup(self.bot_qq_patcher.stop)
 
+    def test_restore_admitted_passive_media_preserves_binding_without_readmission(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message", "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID, "user_id": QQ_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID, "message_id": "passive-restore",
+            "time": int(time.time()), "sender": {"nickname": "Alice"},
+            "message": [
+                {"type": "image", "data": {"file": "balance.png"}},
+                {"type": "forward", "data": {"id": "forward-restore"}},
+                {"type": "image", "data": {"file": "second.png"}},
+            ],
+        }
+        admitted = gateway.build_message_context(event)
+        self.assertTrue(admitted.should_record)
+        delivery = admitted.to_delivery_context()
+        delivery.update(character_pack_id="reimu", chat_model_override="saved-model")
+        self.assertEqual(gateway.build_message_context(event).reason, "duplicate_event")
+        for restore_gateway in (gateway, NapCatQQGateway()):
+            for _attempt in range(2):
+                # Queued work remains valid even after the webhook freshness window.
+                with patch("time.time", return_value=event["time"] + 86400):
+                    restored = restore_gateway.restore_admitted_passive_context(event, delivery)
+                self.assertEqual(restored.message_chain, admitted.message_chain)
+                self.assertEqual(restored.attachments, admitted.attachments)
+                self.assertEqual(restored.forward_refs, admitted.forward_refs)
+                self.assertEqual(restored.session_id, admitted.session_id)
+                self.assertEqual(restored.actor_profile_user_id, admitted.actor_profile_user_id)
+                self.assertEqual(restored.character_pack_id, "reimu")
+                self.assertEqual(restored.chat_model_override, "saved-model")
+                self.assertFalse(restored.should_respond)
+                self.assertTrue(restored.should_record)
+        self.assertEqual(gateway.build_message_context(event).reason, "duplicate_event")
+        for mismatch in (
+            {"user_id": QQ_OTHER_USER_FIXTURE_ID},
+            {"group_id": QQ_FILE_GROUP_FIXTURE_ID},
+            {"message_id": "different-message"},
+            {"message_type": "private", "group_id": 0},
+        ):
+            with self.subTest(mismatch=mismatch), self.assertRaisesRegex(ValueError, "source_mismatch"):
+                gateway.restore_admitted_passive_context({**event, **mismatch}, delivery)
+
     def test_render_reply_messages_prefers_speech_segments(self) -> None:
         gateway = NapCatQQGateway()
 

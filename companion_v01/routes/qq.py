@@ -2594,22 +2594,10 @@ def build_qq_router(
         )
         context = stored_context
         if str(getattr(item, "kind", "") or "") == "passive":
-            builder = getattr(qq_gateway, "build_message_context", None)
-            rebuilt = builder(event) if callable(builder) else None
-            if rebuilt is not None and stored_context is not None:
-                # Preserve the original routing/persona binding while restoring
-                # attachment and forward-reference objects from the raw event.
-                context = replace(
-                    rebuilt,
-                    session_id=stored_context.session_id,
-                    profile_user_id=stored_context.profile_user_id,
-                    actor_profile_user_id=stored_context.actor_profile_user_id,
-                    character_pack_id=stored_context.character_pack_id,
-                    reply_mode=stored_context.reply_mode,
-                    chat_model_override=stored_context.chat_model_override,
-                )
-            elif rebuilt is not None:
-                context = rebuilt
+            restorer = getattr(qq_gateway, "restore_admitted_passive_context", None)
+            if not callable(restorer) or not isinstance(delivery_context, dict):
+                raise ValueError("queued_passive_context_restore_unavailable")
+            context = restorer(event, delivery_context)
         if context is None:
             raise ValueError("queued_context_restore_failed")
         expected_profile = str(getattr(item, "profile_user_id", "") or "").strip()
@@ -2675,7 +2663,7 @@ def build_qq_router(
             }
             for item in items:
                 item_payload = item.payload if isinstance(item.payload, dict) else {}
-                item_context = _restore_queued_context(item, item_payload)
+                item_context = context if item is items[0] else _restore_queued_context(item, item_payload)
                 item_event = dict(item_payload.get("event") or {})
                 base_payload = (
                     dict(item_payload.get("turn_payload") or {})
