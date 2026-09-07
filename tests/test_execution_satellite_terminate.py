@@ -83,6 +83,7 @@ class SystemProcessTerminateContractTests(unittest.TestCase):
                 "type": "register",
                 "protocol_version": 1,
                 "instance_id": "instance-a",
+                "bot_id": "instance-a",
                 "offers": [
                     {
                         "tool_id": SPEC.capability_id,
@@ -93,7 +94,8 @@ class SystemProcessTerminateContractTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertIn("system_process_terminate", supported)
+        self.assertIsNotNone(supported)
+        self.assertIn("system_process_terminate", supported[0])
 
     def test_normalize_call_validates_pid(self) -> None:
         handler = DesktopSatelliteToolHandler(tool_id="system_process_terminate", offer_source=None)
@@ -154,6 +156,60 @@ class SatelliteApprovalGateTests(unittest.TestCase):
         self.assertEqual(envelope.status, "ask")
         self.assertEqual(result.stream_events[0]["type"], "capability_approval_required")
         self.assertTrue(result.stream_events[0].get("requestId"))
+
+    def test_group_grant_is_bound_to_requesting_actor_not_shared_profile(self) -> None:
+        engine = _engine(self.base_dir)
+
+        def gate(actor: str, pid: int = 1234):
+            return _satellite_permission_gate(
+                engine, spec=SPEC, invocation=_invocation(pid),
+                profile_user_id="qq_group_shared_123", session_id="qq_group_shared_123",
+                client_context=None, request_context={"actor_profile_user_id": actor},
+            )
+
+        asked = gate("master")
+        self.assertEqual(asked[1].status, "ask")
+        request_id = asked[0].stream_events[0]["requestId"]
+        approved = engine.approval_store.decide_request(
+            profile_user_id="qq_group_shared_123", request_id=request_id,
+            payload={"decision": "approved"},
+        )
+        self.assertTrue(approved["ok"])
+        binding = engine.approval_store.get_resume_binding(
+            profile_user_id="qq_group_shared_123", request_id=request_id,
+        )
+        self.assertEqual(binding["authorizationProfileUserId"], "master")
+        self.assertEqual(gate("qq_456")[1].status, "ask")
+        self.assertEqual(gate("master", 9999)[1].status, "ask")
+        self.assertIsNone(gate("master"))
+
+    def test_owner_group_still_obeys_owner_ops_policy(self) -> None:
+        import config
+        engine = _engine(self.base_dir)
+        for mode, expected in (("disabled", "blocked"), ("ask_each_time", "ask"), ("trusted_auto_allow", "dispatch")):
+            save_capability_approval_modes(
+                base_dir=self.base_dir, profile_user_id="master", modes={"ops": mode},
+            )
+            with self.subTest(mode=mode), patch.object(config, "MASTER_QQ", "10001"), patch.object(
+                engine.executor_broker, "execute", wraps=engine.executor_broker.execute,
+            ) as dispatch:
+                result, envelope = execute_tool_invocation(
+                    engine, invocation=_invocation(1234),
+                    profile_user_id="qq_group_shared_123", session_id="qq_group_shared_123",
+                    character_pack_id="", visual_payload={}, now_ts=0,
+                    request_context={
+                        "actor_profile_user_id": "master",
+                        "qq_delivery_context": {"is_group": True, "group_id": 123, "user_id": 10001},
+                    },
+                )
+                if expected == "dispatch":
+                    dispatch.assert_called_once()
+                else:
+                    dispatch.assert_not_called()
+                    if expected == "ask":
+                        self.assertEqual(envelope.status, "ask")
+                    else:
+                        self.assertEqual(result.stream_events[0]["status"], "blocked")
 
     def test_trusted_auto_allow_proceeds(self) -> None:
         self._set_policy("trusted_auto_allow")

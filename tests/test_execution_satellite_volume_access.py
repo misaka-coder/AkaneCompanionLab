@@ -52,6 +52,7 @@ def _engine(base_dir: Path) -> SimpleNamespace:
         approval_store=CapabilityApprovalStore(),
         tool_handlers={
             "system_volume": DesktopSatelliteToolHandler(tool_id="system_volume", offer_source=None),
+            "desktop_context_snapshot": DesktopSatelliteToolHandler(tool_id="desktop_context_snapshot", offer_source=None),
             "system_media_control": DesktopSatelliteToolHandler(tool_id="system_media_control", offer_source=None),
         },
         executor_broker=ExecutorBroker(None),
@@ -80,6 +81,7 @@ class SystemVolumeContractTests(unittest.TestCase):
                 "type": "register",
                 "protocol_version": 1,
                 "instance_id": "instance-a",
+                "bot_id": "instance-a",
                 "offers": [
                     {
                         "tool_id": SPEC.capability_id,
@@ -90,7 +92,8 @@ class SystemVolumeContractTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertIn("system_volume", supported)
+        self.assertIsNotNone(supported)
+        self.assertIn("system_volume", supported[0])
 
     def test_normalize_call_validates_action_and_value(self) -> None:
         handler = DesktopSatelliteToolHandler(tool_id="system_volume", offer_source=None)
@@ -113,11 +116,14 @@ class SatelliteChannelAccessTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.base_dir = Path(self._tmp.name)
         self.engine = _engine(self.base_dir)
+        owner = patch.object(config, "MASTER_QQ", "10001")
+        owner.start()
+        self.addCleanup(owner.stop)
 
     def _dispatch(self, invocation: ToolInvocation, *, is_group: bool = False, user_id: int = 10001):
         request_context = {}
         if is_group:
-            request_context = {"qq_delivery_context": {"is_group": True, "group_id": 123, "user_id": 456}}
+            request_context = {"qq_delivery_context": {"is_group": True, "group_id": 123, "user_id": user_id}}
         else:
             request_context = {"qq_delivery_context": {"is_group": False, "user_id": user_id}}
         return execute_tool_invocation(
@@ -132,25 +138,26 @@ class SatelliteChannelAccessTests(unittest.TestCase):
         )
 
     def test_group_message_rejected_for_volume(self) -> None:
-        result, envelope = self._dispatch(_invocation("system_volume", {"action": "get"}), is_group=True)
+        result, envelope = self._dispatch(_invocation("system_volume", {"action": "get"}), is_group=True, user_id=456)
         self.assertEqual(envelope.status, "error")
         self.assertEqual(result.stream_events[0]["status"], "blocked")
-        self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner_private_chat")
+        self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner")
         self.assertIn("群聊", result.followup_context)
 
     def test_group_message_rejected_for_media_control(self) -> None:
         result, envelope = self._dispatch(
             _invocation(SYSTEM_MEDIA_CONTROL_TOOL_SPEC.capability_id, {"action": "pause"}),
             is_group=True,
+            user_id=456,
         )
         self.assertEqual(envelope.status, "error")
-        self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner_private_chat")
+        self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner")
 
     def test_private_chat_not_rejected_by_channel(self) -> None:
         with patch.object(config, "MASTER_QQ", "10001"):
             result, envelope = self._dispatch(_invocation("system_volume", {"action": "get"}), is_group=False)
         # Not a group rejection; offline dispatch yields an unavailable result.
-        self.assertNotEqual(result.stream_events[0].get("reason"), "device_action_requires_owner_private_chat")
+        self.assertNotEqual(result.stream_events[0].get("reason"), "device_action_requires_owner")
 
     def test_non_owner_private_chat_is_rejected(self) -> None:
         with patch.object(config, "MASTER_QQ", "10001"):
@@ -159,14 +166,39 @@ class SatelliteChannelAccessTests(unittest.TestCase):
                 user_id=20002,
             )
         self.assertEqual(envelope.status, "error")
-        self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner_private_chat")
+        self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner")
         self.assertIn("不是来自已配置的主人账号", result.followup_context)
 
     def test_private_chat_fails_closed_when_owner_is_unconfigured(self) -> None:
         with patch.object(config, "MASTER_QQ", ""):
             result, envelope = self._dispatch(_invocation("system_volume", {"action": "get"}))
         self.assertEqual(envelope.status, "error")
-        self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner_private_chat")
+        self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner")
+
+    def test_owner_group_reaches_broker_for_reads_and_actions(self) -> None:
+        from companion_v01.capability_registry import BrokerExecutionResult
+        for tool, arguments in (
+            ("desktop_context_snapshot", {}),
+            ("system_volume", {"action": "get"}),
+            ("system_media_control", {"action": "pause"}),
+        ):
+            with self.subTest(tool=tool), patch.object(
+                self.engine.executor_broker, "execute",
+                return_value=BrokerExecutionResult(status="succeeded", reason="", data={"verified": True}),
+            ) as dispatch:
+                result, envelope = self._dispatch(_invocation(tool, arguments), is_group=True)
+                dispatch.assert_called_once()
+                self.assertEqual(envelope.status, "ok")
+                self.assertEqual(result.stream_events[0]["status"], "succeeded")
+
+    def test_group_missing_actor_or_owner_fails_closed_before_dispatch(self) -> None:
+        for owner, sender in (("10001", 0), ("", 10001), ("not-configured", 10001)):
+            with self.subTest(owner=owner, sender=sender), patch.object(config, "MASTER_QQ", owner), patch.object(
+                self.engine.executor_broker, "execute",
+            ) as dispatch:
+                result, _ = self._dispatch(_invocation("desktop_context_snapshot", {}), is_group=True, user_id=sender)
+                dispatch.assert_not_called()
+                self.assertEqual(result.stream_events[0]["reason"], "device_action_requires_owner")
 
 
 if __name__ == "__main__":

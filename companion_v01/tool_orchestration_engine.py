@@ -1274,12 +1274,12 @@ def _satellite_channel_rejection(
     invocation: ToolInvocation,
     request_context: dict[str, Any] | None,
 ) -> tuple[ToolExecutionResult, ToolResultEnvelope] | None:
-    """Reject device access outside the configured owner's QQ private chat.
+    """Allow QQ device access only for the authenticated owner sender.
 
-    The QQ delivery context marks group messages with ``is_group``; device
-    control must only run for the owner's private chat (or the desktop pet).
-    Non-QQ clients have no delivery context and pass. QQ requests fail closed
-    unless they are a private message from the configured owner account.
+    Group storage identity is not an authorization principal. The delivery
+    context is supplied by the QQ ingress, never by model tool arguments.
+    Owners may request access in either conversation kind; other members and
+    actorless continuations fail closed. Existing capability gates still apply.
     """
     delivery = request_context.get("qq_delivery_context") if isinstance(request_context, dict) else None
     if not isinstance(delivery, dict):
@@ -1287,10 +1287,10 @@ def _satellite_channel_rejection(
     is_group = bool(delivery.get("is_group"))
     owner_qq = str(getattr(config, "MASTER_QQ", "") or "").strip()
     sender_qq = str(delivery.get("user_id") or "").strip()
-    if not is_group and owner_qq.isdigit() and sender_qq == owner_qq:
+    if owner_qq.isdigit() and sender_qq == owner_qq:
         return None
     tool_id = spec.capability_id
-    reason = "device_action_requires_owner_private_chat"
+    reason = "device_action_requires_owner"
     event = {
         "type": "capability_execution_result",
         "tool_type": tool_id,
@@ -1298,7 +1298,7 @@ def _satellite_channel_rejection(
         "reason": reason,
     }
     feedback = (
-        "当前是群聊消息，不能读取或操控你的电脑；请让主人在私聊里提出后再执行，本次没有执行任何操作。"
+        "这条群聊消息不是来自已配置的主人账号，不能读取或操控绑定电脑；其他群成员不能继承主人的权限，本次没有执行任何操作。"
         if is_group
         else "这条私聊消息不是来自已配置的主人账号，不能读取或操控绑定电脑；本次没有执行任何操作。"
     )
@@ -1358,6 +1358,7 @@ def _satellite_permission_gate(
         request_context=dict(request_context or {}),
     )
     arguments = dict(invocation.arguments or {})
+    authorization_profile = authorization_profile_user_id(context)
     request = manual_permission_request(
         context=context,
         required=True,
@@ -1373,7 +1374,7 @@ def _satellite_permission_gate(
     decision = resolve_permission_for_profile(
         request,
         base_dir=base_dir,
-        profile_user_id=authorization_profile_user_id(context),
+        profile_user_id=authorization_profile,
         family_id="ops",
     )
     if decision.allowed:
@@ -1399,7 +1400,7 @@ def _satellite_permission_gate(
             resource="",
             device=device_id,
             fingerprint=fingerprint,
-            authorization_profile_user_id=profile_user_id,
+            authorization_profile_user_id=authorization_profile,
         )
         if grant is not None:
             return None
@@ -1411,6 +1412,7 @@ def _satellite_permission_gate(
             device_id=device_id,
             profile_user_id=profile_user_id,
             session_id=session_id,
+            authorization_profile_user_id=authorization_profile,
         )
         return _satellite_ask_result(spec, invocation, decision, request_id=request_id, fingerprint=fingerprint)
     return _satellite_ask_result(spec, invocation, decision, request_id="", fingerprint=fingerprint)
@@ -1425,6 +1427,7 @@ def _create_satellite_approval_request(
     device_id: str,
     profile_user_id: str,
     session_id: str,
+    authorization_profile_user_id: str,
 ) -> str:
     preview = dict(getattr(getattr(decision, "request", None), "args_preview", None) or {})
     result = approval_store.create_request(
@@ -1441,7 +1444,7 @@ def _create_satellite_approval_request(
             "payloadPreview": preview,
             "requestFingerprint": fingerprint,
             "deviceId": device_id,
-            "authorizationProfileUserId": profile_user_id,
+            "authorizationProfileUserId": authorization_profile_user_id,
         },
     )
     if not result.get("ok"):
