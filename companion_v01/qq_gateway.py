@@ -62,6 +62,7 @@ from .plugin_api import (
     PluginOutboundPlanSnapshot,
 )
 from .qq_poke_reactor import PokeEventReactor, PokeOutcome
+from .qq_miniapp import project_miniapp_result, validate_miniapp_params
 
 
 # Public compatibility alias; client_protocol owns the capability list.
@@ -3174,7 +3175,16 @@ class NapCatQQGateway:
                 "action": clean_action or "unknown",
                 "scope": scope,
             }
+        if clean_action == "get_mini_app_ark":
+            validation_error = validate_miniapp_params(resolved_params)
+            if validation_error:
+                return {
+                    "ok": False, "status": "invalid", "reason": validation_error,
+                    "action": clean_action, "scope": scope,
+                }
         payload = self._call_and_track_outbound(clean_action, resolved_params, timeout=timeout_seconds)
+        if clean_action == "get_mini_app_ark":
+            payload = project_miniapp_result(payload, raw=resolved_params.get("rawArkData") == "true")
         payload["scope"] = scope
         if selector_applied and selector_applied != "explicit_message_id":
             payload["message_selector_applied"] = selector_applied

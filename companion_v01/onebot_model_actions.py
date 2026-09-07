@@ -40,6 +40,12 @@ _ACTIONS = (
     ModelOneBotAction("delete_msg", "撤回一条消息。", "message_id", "write", owner_only=True),
     ModelOneBotAction("send_group_msg", "发送群消息，message 支持字符串或消息段数组。", "group_id, message", "write"),
     ModelOneBotAction("send_private_msg", "发送私聊消息，message 支持字符串或消息段数组。", "user_id, message", "write"),
+    ModelOneBotAction(
+        "get_mini_app_ark",
+        "生成小程序分享卡片，不发送消息；用 qq-miniapp-share Skill 获取用法。成功时 message 可原样交给发送接口；仍需检查发送回执。",
+        "title, desc, picUrl, jumpUrl; 模板 type=bili|weibo，或省略 type 并提供 iconUrl, appId, scene, templateType, businessType, verType, shareType, versionId, sdkId, withShareTicket；可选 webUrl, rawArkData；所有值为字符串",
+        "read",
+    ),
     ModelOneBotAction("get_group_msg_history", "读取群聊历史。", "group_id, count; 可选 message_seq, reverseOrder", "read"),
     ModelOneBotAction("get_friend_msg_history", "读取私聊历史。", "user_id, count; 可选 message_seq, reverseOrder", "read"),
     ModelOneBotAction(
@@ -227,6 +233,12 @@ def authorize_model_onebot_action(
         return True, "", "owner"
     if spec.owner_only:
         return False, "owner_required", "owner_only"
+    if action == "get_mini_app_ark":
+        # Generation has no recipient. Actual sends still use the normal scope
+        # checks below; it grants neither cross-chat access nor account control.
+        if int(user_id or 0) > 0 and (not is_group or int(group_id or 0) > 0):
+            return True, "", "current_conversation_generation"
+        return False, "conversation_context_missing", "none"
     if action == "get_forward_msg":
         forward_id = str(params.get("message_id") or "").strip()
         if forward_id and forward_id in verified_forward_ids:
