@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from PIL import Image
 
@@ -18,6 +20,8 @@ from companion_v01.prompt_profiles import PromptProfileRegistry
 from companion_v01.tool_handlers.attachments import InspectAttachmentToolHandler
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.turn_coordination import SteeringInput
+from companion_v01.routes.sessions import build_sessions_router
+from tests.test_backend_route_modules import FakeRuntimeMetrics, resolve_payload, resolve_query
 from tests.test_desktop_workspace_panel import _make_workspace_engine
 from tests.test_turn_mainline_contract import _Harness, _speech_output
 from tests.test_prompt_builder import _build_minimal_final
@@ -60,6 +64,31 @@ class DesktopCurrentAttachmentTests(unittest.TestCase):
         self.assertIn(item["attachment_handle"], result["context"])
         self.assertNotIn(str(self.root), result["context"])
         self.assertNotIn("storage_relpath", result["context"])
+
+    def test_session_history_hydrates_real_scoped_public_cards_without_visual_request(self):
+        own = self.import_file(profile="master", session="desktop")
+        foreign = self.import_file("foreign.png", profile="master", session="desktop", character="other")
+        self.engine.store.ensure_session(profile_user_id="master", session_id="desktop", character_pack_id="akane_v1")
+        self.engine.store.add_message(profile_user_id="master", session_id="desktop", role="user",
+            content="查看附件", timestamp=100, character_pack_id="akane_v1", source_id="history-input",
+            memory_metadata={"current_attachment_ids": [own["attachment_id"], foreign["attachment_id"], "missing"]})
+        app = FastAPI()
+        app.include_router(build_sessions_router(engine=self.engine, runtime_metrics=FakeRuntimeMetrics(),
+            log_event=lambda *a, **kw: None, resolve_identity_from_payload=resolve_payload,
+            resolve_identity_from_query=resolve_query))
+        client = TestClient(app)
+        for response in [client.post("/sessions/ensure", json={"user_id": "desktop", "real_user_id": "master", "character_pack_id": "akane_v1"}),
+                client.get("/sessions/messages?user_id=desktop&real_user_id=master&character_pack_id=akane_v1")]:
+            self.assertEqual(response.status_code, 200, response.text)
+            cards = response.json()["messages"][0]["attachments"]
+            self.assertEqual(cards[0]["attachment_id"], own["attachment_id"])
+            self.assertTrue(cards[0]["can_open"])
+            self.assertEqual(cards[1]["status"], "unavailable")
+            self.assertNotIn("handle", cards[1])
+            self.assertEqual(cards[2]["title"], "附件不可用")
+            self.assertNotIn("storage_relpath", str(cards))
+            self.assertNotIn(str(self.root), str(cards))
+        self.engine.vision_service.schedule_attachment_image_observation.assert_not_called()
 
     def test_exact_scope_rejects_foreign_character_profile_session_and_alias(self):
         own = self.import_file()

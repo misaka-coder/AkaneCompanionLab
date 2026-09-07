@@ -45,7 +45,13 @@ export function createPendingAttachments({ readScope, changed = () => {} }) {
     add,
     remove(id) { sync(); items = items.filter(item => item.attachmentId !== id); changed(); },
     take() { const key = sync(); const batch = { scope: key, items }; items = []; changed(); return batch; },
-    restore(batch) { return add(batch.items, batch.scope); },
+    restore(batch) {
+      if (sync() !== batch.scope) return false;
+      const existingIds = new Set(items.map(item => item.attachmentId));
+      const missing = batch.items.filter(item => !existingIds.has(item.attachmentId));
+      if (missing.length + items.length > 40) return false;
+      return add(batch.items, batch.scope);
+    },
   };
 }
 

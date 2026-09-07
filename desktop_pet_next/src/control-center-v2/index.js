@@ -76,6 +76,13 @@ bridge.subscribe((viewModel) => {
 });
 
 root.addEventListener("click", (event) => {
+  const fileButton = event.target.closest("[data-chat-file-action]");
+  if (fileButton) {
+    const card = fileButton.closest("[data-file-handle]");
+    if (!fileButton.disabled && card) void runAction("chat.fileAction", { action: fileButton.dataset.chatFileAction,
+      handle: card.dataset.fileHandle, itemType: card.dataset.fileType, title: card.dataset.fileTitle, format: card.dataset.fileFormat });
+    return;
+  }
   const attachmentButton = event.target.closest("[data-chat-attachment-remove], [data-chat-attachment-play]");
   if (attachmentButton) {
     const remove = attachmentButton.hasAttribute("data-chat-attachment-remove");

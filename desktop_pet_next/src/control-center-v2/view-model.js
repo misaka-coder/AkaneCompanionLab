@@ -54,6 +54,8 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
   const instanceLabel = text(petState.instanceId) || text(raw.controlCenterRuntime?.health?.data?.instance_id) || "本地实例";
   const chat = normalizeChatSession(raw.chatSession, {
     sessionId: text(petState.sessionId),
+    botId: text(petState.boundBotId),
+    characterPackId: text(petState.characterPackId),
     characterName: displayName,
     characterAvatar: portrait,
     runtime: raw.chatRuntime
@@ -126,6 +128,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "chat.attach": { available: connected && liveSnapshotStatus === "connected", reason: "请连接桌宠后添加附件" },
       "chat.removeAttachment": { available: liveSnapshotStatus === "connected", reason: "桌宠未连接" },
       "chat.playAttachment": { available: connected && liveSnapshotStatus === "connected", reason: "桌宠未连接" },
+      "chat.fileAction": { available: connected && liveSnapshotStatus === "connected", reason: "桌宠未连接" },
       "chat.stop": { available: connected && Boolean(active.sending || active.replyDisplayActive), reason: "当前没有进行中的回复" },
       "workspace.open": { available: true, reason: "" },
       "settings.selectBot": { available: connected && liveSnapshotStatus === "connected" && bots.items.length > 1, reason: connected ? "没有其他可切换的 Bot" : "桌宠尚未连接" },
@@ -341,7 +344,7 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
   const afterActive = asObject(after.active);
   const commandOutcome = observedActionOutcome(actionId, payload, after);
   if (commandOutcome && commandOutcome.ok === false) return true;
-  if (["chat.attach", "chat.removeAttachment", "chat.playAttachment"].includes(actionId)) return Boolean(commandOutcome?.ok);
+  if (["chat.attach", "chat.removeAttachment", "chat.playAttachment", "chat.fileAction"].includes(actionId)) return Boolean(commandOutcome?.ok);
   const observationCommand = SCREEN_OBSERVATION_COMMANDS[actionId];
   if (observationCommand) {
     if (!commandOutcome?.ok) return false;
@@ -438,6 +441,7 @@ export function observedActionOutcome(actionId, payload = {}, snapshot = {}) {
     "chat.attach": "attachChatFiles",
     "chat.removeAttachment": "removeChatAttachment",
     "chat.playAttachment": "playChatAttachment",
+    "chat.fileAction": "chatFileAction",
     "voice.test": "testTts",
     "voice.previewPlay": "previewTts",
     "character.previewEmotion": "previewEmotion",
@@ -733,7 +737,9 @@ function normalizeChatSession(value, options = {}) {
   const messagePage = asObject(source.message_page);
   const expectedSessionId = text(options.sessionId);
   const actualSessionId = text(session.session_id) || text(session.sessionId);
-  const matchesCurrentSession = !expectedSessionId || !actualSessionId || expectedSessionId === actualSessionId;
+  const matchesCurrentSession = (!expectedSessionId || !actualSessionId || expectedSessionId === actualSessionId)
+    && (!text(source.bot_id) || !text(options.botId) || text(source.bot_id) === text(options.botId))
+    && (!text(session.character_pack_id) || !text(options.characterPackId) || text(session.character_pack_id) === text(options.characterPackId));
   const messages = matchesCurrentSession
     ? (Array.isArray(source.messages) ? source.messages : [])
       .map((item) => normalizeChatMessage(item))
@@ -745,6 +751,9 @@ function normalizeChatSession(value, options = {}) {
       ? text(session.display_title) || text(session.displayTitle) || "当前对话"
       : "正在切换会话",
     messages,
+    outputs: matchesCurrentSession ? (Array.isArray(source.workspace_outputs) ? source.workspace_outputs : []).slice(0, 12)
+      .map(item => normalizeChatFile({ ...item, item_type: "generated" })) : [],
+    outputsStatus: matchesCurrentSession ? text(source.workspace_outputs_status) : "switching",
     totalCount: Math.max(messages.length, finiteNumber(session.message_count, messages.length)),
     history: {
       pageKnown: Object.keys(messagePage).length > 0,
@@ -773,7 +782,8 @@ function normalizeChatMessage(value) {
     role,
     content,
     timestamp: Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0,
-    intermediate: text(metadata.turn_role).toLowerCase() === "intermediate"
+    intermediate: text(metadata.turn_role).toLowerCase() === "intermediate",
+    attachments: (Array.isArray(source.attachments) ? source.attachments : []).slice(0, 40).map(normalizeChatFile)
   };
 }
 
@@ -811,6 +821,13 @@ function normalizeRecentOutputs(value) {
     detail: text(item?.subtitle) || text(item?.format) || text(item?.kind),
     status: text(item?.status) || "available"
   }));
+}
+
+function normalizeChatFile(item) {
+  return { handle: text(item?.handle), attachmentId: text(item?.attachment_id),
+    itemType: item?.item_type === "generated" ? "generated" : "attachment",
+    title: text(item?.title) || "附件", kind: text(item?.kind), format: text(item?.format),
+    status: text(item?.status) || "unavailable", canOpen: item?.can_open === true };
 }
 
 function normalizeAbilitiesRuntime(value, connected) {

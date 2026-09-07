@@ -1115,3 +1115,12 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+.chat-file-card { display: grid; gap: 6px; max-width: 100%; margin-top: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); overflow-wrap: anywhere; }
+.chat-file-card strong { font-size: 13px; }
+.chat-file-card small { font-size: 11px; opacity: .7; }
+.chat-file-card > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-file-card button { padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 11px; cursor: pointer; }
+.chat-file-card button:disabled { opacity: .45; cursor: default; }
+.chat-output-files { padding: 10px 0; }
+.chat-output-files h3 { margin: 0; font-size: 12px; font-weight: 500; }

@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ..desktop_pet_contract import build_desktop_pet_error_payload
+from ..desktop_pet_engine import desktop_message_attachment_cards
 from ..store import normalize_character_pack_id
 
 
@@ -130,6 +131,10 @@ def build_sessions_router(
         )
         has_more = len(rows) > page_limit
         messages = rows[-page_limit:]
+        messages = [{**message, "attachments": desktop_message_attachment_cards(
+            engine, message=message, profile_user_id=profile_user_id, session_id=session_id,
+            character_pack_id=character_pack_id if character_pack_id is not None else str(message.get("character_pack_id") or ""),
+        )} for message in messages]
         next_before_seq = int(messages[0].get("seq_no") or 0) if has_more and messages else None
         return messages, {
             "limit": page_limit,

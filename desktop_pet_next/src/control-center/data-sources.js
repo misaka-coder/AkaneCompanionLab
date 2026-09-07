@@ -68,6 +68,7 @@ const settingsCommandByActionId = Object.freeze({
   [CONTROL_CENTER_ACTIONS.chatAttach]: "attachChatFiles",
   [CONTROL_CENTER_ACTIONS.chatRemoveAttachment]: "removeChatAttachment",
   [CONTROL_CENTER_ACTIONS.chatPlayAttachment]: "playChatAttachment",
+  [CONTROL_CENTER_ACTIONS.chatFileAction]: "chatFileAction",
   [CONTROL_CENTER_ACTIONS.workspaceOpen]: "openWorkspace",
   [CONTROL_CENTER_ACTIONS.voiceTest]: "testTts",
   [CONTROL_CENTER_ACTIONS.voiceStop]: "stopTts",
@@ -389,7 +390,12 @@ export function createBackendControlCenterSource(options = {}) {
           return null;
         }
         lastChatSessionError = "";
-        return payload;
+        const workspace = await fetchJson(fetchImpl, buildBackendUrl(botBaseUrl, "/desktop-pet/workspace/summary", {
+          user_id: requestedSessionId, real_user_id: profileUserId, character_pack_id: requestedCharacterPackId, limit: 12, t: String(Date.now())
+        }));
+        return { ...payload, bot_id: boundBotId,
+          workspace_outputs: workspace.ok && Array.isArray(workspace.data?.sections?.outputs) ? workspace.data.sections.outputs : [],
+          workspace_outputs_status: workspace.ok ? "ready" : "unavailable" };
       } catch (error) {
         lastChatSessionError = `request-failed:${formatDataSourceError(error)}`;
         return null;

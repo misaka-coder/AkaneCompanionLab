@@ -49,8 +49,10 @@ export function renderChat(state) {
         <div class="chat-message-viewport" data-chat-viewport tabindex="0" aria-label="聊天记录">
           <div class="chat-message-list">
             ${renderHistoryLoader(chat, historyState, messages.length)}
-            ${messages.length ? messages.map((message) => renderMessage(message, chat, character)).join("") : renderEmptyChat(chat)}
+            ${messages.length ? messages.map((message) => renderMessage(message, chat, character, state)).join("") : renderEmptyChat(chat)}
             ${sending ? renderWorkingMessage(character, activity) : ""}
+            ${chat.outputs?.length ? `<section class="chat-output-files" aria-label="当前会话生成文件"><h3>当前会话生成文件（最近 ${chat.outputs.length} 个）</h3>${chat.outputs.map(item => renderChatFile(item, state)).join("")}<button type="button" data-action="workspace.open">打开完整工作台</button></section>` : ""}
+            ${chat.outputsStatus === "unavailable" ? `<small role="status">生成文件列表暂不可用，请刷新重试。</small>` : ""}
           </div>
           <button class="chat-new-message" type="button" data-chat-jump-latest hidden>有新消息 ↓</button>
         </div>
@@ -91,7 +93,7 @@ function renderHistoryLoader(chat, historyState, messageCount) {
   return `<div class="chat-history-loader is-complete"><span>已到这轮对话的最早消息</span></div>`;
 }
 
-function renderMessage(message, chat, character) {
+function renderMessage(message, chat, character, state) {
   const assistant = message.role === "assistant";
   const avatarStyle = assistant ? safeStyleUrl(chat.characterAvatar || character.visuals?.avatar) : "";
   const speaker = assistant ? chat.characterName || character.displayName || "桌宠" : "你";
@@ -101,8 +103,22 @@ function renderMessage(message, chat, character) {
       <div class="message-content">
         <div class="message-meta"><strong>${escapeHtml(speaker)}</strong><time>${escapeHtml(formatMessageTime(message.timestamp))}</time>${message.intermediate ? "<em>处理中</em>" : ""}</div>
         <p>${escapeHtml(message.content).replace(/\n/g, "<br>")}</p>
+        ${(message.attachments || []).map(item => renderChatFile(item, state)).join("")}
       </div>
     </article>`;
+}
+
+function renderChatFile(item, state) {
+  const actionState = state.actionStates?.["chat.fileAction"]?.phase;
+  const enabled = item.canOpen && item.handle && state.viewModel.actions?.["chat.fileAction"]?.available
+    && !["pressed", "pending"].includes(actionState);
+  const audio = item.kind === "audio" || /^(mp3|wav|flac|ogg|m4a|aac|opus)$/i.test(item.format);
+  const button = (action, label) => `<button type="button" data-chat-file-action="${action}"${enabled ? "" : " disabled"}>${label}</button>`;
+  return `<div class="chat-file-card" data-file-handle="${escapeHtml(item.handle)}" data-file-type="${escapeHtml(item.itemType)}"
+    data-file-title="${escapeHtml(item.title)}" data-file-format="${escapeHtml(item.format)}">
+    <strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.format || item.kind || "文件")} · ${item.canOpen ? "可用" : "暂不可用"}</small>
+    <div>${button(audio ? "play" : "open", audio ? "播放" : item.kind === "image" ? "查看图片" : "打开")}${button("reveal", "定位")}${button("save_desktop", "保存到桌面")}</div>
+  </div>`;
 }
 
 function renderWorkingMessage(character, activity) {

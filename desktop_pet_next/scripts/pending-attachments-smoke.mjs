@@ -50,10 +50,13 @@ const pending = draft.beginImport();
 assert.equal(await context.sendMessage("too soon"), false);
 assert.equal(sent.length, 2, "upload not ready must not send text without attachments");
 pending();
+draft.add(Array.from({ length: 40 }, (_, i) => ({ attachment_id: `full-${i}` })));
+assert.equal(draft.restore({ scope: draft.scope(), items: [{ attachmentId: "old-inflight", handle: "old" }] }), false);
+assert.equal(draft.list().length, 40, "failed restore cannot throw or discard newly composed attachments");
 
 const html = renderChat({ viewModel: { actions: { "chat.send": { available: true }, "chat.attach": { available: true } },
   activity: { phase: "using_tool" }, character: { displayName: "Akane" },
-  chat: { messages: [], pendingAttachments: [draft.list()[0] || { attachmentId: "x", ...file, kind: "audio" }] } }, actionStates: {} });
+  chat: { messages: [], pendingAttachments: [{ attachmentId: "x", ...file, kind: "audio" }] } }, actionStates: {} });
 assert.match(html, /<b>追加<\/b>/);
 assert.match(html, /<b>停止<\/b>/);
 assert.ok(!/<textarea[^>]*disabled/.test(html));

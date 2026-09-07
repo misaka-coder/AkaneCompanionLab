@@ -37,6 +37,7 @@ const OBSERVED_ACTION_IDS = new Set([
   "chat.attach",
   "chat.removeAttachment",
   "chat.playAttachment",
+  "chat.fileAction",
   "music.previous",
   "music.next",
   "music.togglePlayback",
@@ -469,7 +470,7 @@ export function createControlCenterBridge(options = {}) {
 
 async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, readCurrentSnapshot) {
   const startedAt = Date.now();
-  const timeoutMs = actionId === "chat.attach" ? 180_000 : actionId === "chat.playAttachment" ? 30_000 : actionId === "perception.screenVision.setEnabled" && payload.value
+  const timeoutMs = actionId === "chat.attach" ? 180_000 : actionId === "chat.fileAction" ? 60_000 : actionId === "chat.playAttachment" ? 30_000 : actionId === "perception.screenVision.setEnabled" && payload.value
     ? 60_000
     : voicePlaybackAction(actionId)
     ? VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS

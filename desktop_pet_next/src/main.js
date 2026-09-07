@@ -25,6 +25,7 @@ import { bindInstanceStorage } from "./instance-storage.js";
 import { botScopedPath, normalizeBotId } from "./bot-routing.js";
 import { createWorkspaceImportQueue } from "./workspace-import.js";
 import { createPendingAttachments, serializeBrowserAttachments } from "./pending-attachments.js";
+import { performChatFileAction } from "./chat-file-action.js";
 import {
   RealtimeVoiceCallResources,
   RealtimeVoiceCallSession,
@@ -2050,6 +2051,19 @@ async function handleSettingsCommand(payload) {
         at: Date.now()
       };
       void sendMessage(text);
+      break;
+    }
+    case "chatFileAction": {
+      try {
+        if (String(payload.draftToken || "") !== pendingAttachments.token()) throw new Error("attachment_scope_changed");
+        const result = await performChatFileAction(payload, { scope: attachmentDraftScope(), invoke,
+          play: playWorkspaceAudioItem, isPlaying: item => Boolean(musicPlaying && musicQueue[musicQueueIndex]?.workspaceHandle === item.handle
+            && musicQueue[musicQueueIndex]?.workspaceItemType === item.itemType) });
+        lastSettingsCommandResult = { command, operationId, ...result, at: Date.now() };
+      } catch (error) {
+        lastSettingsCommandResult = { command, operationId, ok: false, status: "failed", reason: friendlyErrorMessage(formatError(error)), at: Date.now() };
+      }
+      scheduleSettingsSnapshot();
       break;
     }
     case "attachChatFiles":
@@ -6967,7 +6981,9 @@ async function sendMessage(text) {
   if (proactiveWakeRunning) interruptReply({ announce: false });
   if (sending) {
     const accepted = await submitTurnSteer(trimmed, attachmentIds);
-    if (!accepted) pendingAttachments.restore(attachmentBatch);
+    if (!accepted && !pendingAttachments.restore(attachmentBatch) && pendingAttachments.scope() === attachmentBatch.scope) {
+      setRuntimeStatus("追加未成功；待发送区已满，原附件仍保留在工作台。", { mode: "error" });
+    }
     return accepted;
   }
   interruptReply({ announce: false });
@@ -7000,8 +7016,10 @@ async function sendMessage(text) {
   } catch (error) {
     if (!isTurnActive(turnToken)) return;
     restoreText = trimmed;
-    pendingAttachments.restore(attachmentBatch);
-    showError(isAbortLike(error) ? "请求超时" : formatError(error));
+    const restored = pendingAttachments.restore(attachmentBatch);
+    const attachmentNotice = !restored && pendingAttachments.scope() === attachmentBatch.scope
+      ? "；待发送区已满，原附件仍保留在工作台。" : "";
+    showError((isAbortLike(error) ? "请求超时" : formatError(error)) + attachmentNotice);
   } finally {
     markTurnLatency("turn-finished");
     if (isTurnActive(turnToken)) {

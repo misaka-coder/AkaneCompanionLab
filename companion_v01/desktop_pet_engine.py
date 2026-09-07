@@ -151,10 +151,10 @@ def import_desktop_pet_local_paths(
     }
 
 
-def prepare_desktop_turn_attachments(
+def resolve_desktop_attachment_refs(
     engine: Any, *, profile_user_id: str, session_id: str,
-    character_pack_id: str, attachment_ids: Any, chat_model_override: str = "",
-) -> dict[str, Any]:
+    character_pack_id: str, attachment_ids: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Resolve exact, scoped inbox IDs; never accept paths or fuzzy latest here."""
     ids = list(dict.fromkeys(
         value.strip() for value in attachment_ids
@@ -172,6 +172,29 @@ def prepare_desktop_turn_attachments(
             skipped.append({"attachment_id": attachment_id, "reason": "attachment_unavailable_in_scope"})
             continue
         items.append(item)
+    return items, skipped
+
+
+def desktop_message_attachment_cards(engine: Any, *, message: dict[str, Any],
+        profile_user_id: str, session_id: str, character_pack_id: str) -> list[dict[str, Any]]:
+    metadata = message.get("memory_metadata")
+    ids = metadata.get("current_attachment_ids") if isinstance(metadata, dict) else None
+    if not isinstance(ids, list) or not ids:
+        return []
+    items, skipped = resolve_desktop_attachment_refs(engine, profile_user_id=profile_user_id,
+        session_id=session_id, character_pack_id=character_pack_id, attachment_ids=ids)
+    return [desktop_workspace_attachment_card(item) for item in items] + [
+        {"attachment_id": entry["attachment_id"], "title": "附件不可用", "status": "unavailable",
+         "reason": entry["reason"], "can_open": False} for entry in skipped
+    ]
+
+
+def prepare_desktop_turn_attachments(
+    engine: Any, *, profile_user_id: str, session_id: str,
+    character_pack_id: str, attachment_ids: Any, chat_model_override: str = "",
+) -> dict[str, Any]:
+    items, skipped = resolve_desktop_attachment_refs(engine, profile_user_id=profile_user_id,
+        session_id=session_id, character_pack_id=character_pack_id, attachment_ids=attachment_ids)
     bound_ids = [str(item["attachment_id"]) for item in items]
     image_ids = [str(item["attachment_id"]) for item in items if item.get("kind") == "image"]
     prepared = engine.prepare_native_image_inputs(

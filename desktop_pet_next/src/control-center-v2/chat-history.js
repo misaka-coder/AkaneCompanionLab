@@ -1,6 +1,10 @@
 export function mergeChatSessions(current, incoming, options = {}) {
   if (!incoming || typeof incoming !== "object") return current || null;
   if (!current || typeof current !== "object" || chatSessionId(current) !== chatSessionId(incoming)) return incoming;
+  for (const [left, right] of [[current.bot_id, incoming.bot_id],
+    [current.session?.character_pack_id || current.character_pack_id, incoming.session?.character_pack_id || incoming.character_pack_id]]) {
+    if (left && right && left !== right) return incoming;
+  }
   const currentMessages = Array.isArray(current.messages) ? current.messages : [];
   const incomingMessages = Array.isArray(incoming.messages) ? incoming.messages : [];
   const byId = new Map();
