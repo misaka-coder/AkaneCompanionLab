@@ -27,6 +27,7 @@ import {
 import { modelServiceOperation, runModelServiceBridgeAction } from "./model-service.js";
 import { chatSessionId, createTrailingAsyncRefresh, mergeChatSessions } from "./chat-history.js";
 import { createQqSetupController, isQqSetupAction, QQ_SETUP_ACTIONS } from "./qq-setup.js";
+import { createChatImagePreviews } from "../control-center/chat-image-preview.js";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const OBSERVED_ACTION_IDS = new Set([
@@ -93,6 +94,22 @@ export function createControlCenterBridge(options = {}) {
   let liveSnapshotStatus = isTauri ? "connecting" : "not-applicable";
   let liveSnapshotError = "";
   let qqSetupRuntime = {};
+  let publishedViewModel = null;
+  const imagePreviews = createChatImagePreviews({
+    readScope: () => JSON.stringify([source?.backendUrl, source?.botId, runtimeSnapshot?.state?.backendUrl,
+      runtimeSnapshot?.state?.boundBotId, runtimeSnapshot?.state?.profileUserId,
+      runtimeSnapshot?.state?.sessionId, runtimeSnapshot?.state?.characterPackId]),
+    load: (item, signal) => {
+      const live = runtimeSnapshot?.state || {};
+      if ((live.boundBotId && live.boundBotId !== source?.botId)
+        || (live.profileUserId && live.profileUserId !== source?.profileUserId)
+        || (live.backendUrl && live.backendUrl.replace(/\/+$/, "") !== source?.backendUrl?.replace(/\/+$/, ""))) {
+        throw Error("preview_scope_changed");
+      }
+      return source.readChatImagePreview(item, { sessionId: live.sessionId, characterPackId: live.characterPackId }, signal);
+    },
+    changed: () => publish(),
+  });
   const qqSetup = createQqSetupController({ onChange(value) {
     qqSetupRuntime = value;
     publish();
@@ -135,6 +152,8 @@ export function createControlCenterBridge(options = {}) {
       liveSnapshotStatus,
       liveSnapshotError
     ), runtimeSnapshot);
+    viewModel.chat.previews = imagePreviews.snapshot();
+    publishedViewModel = viewModel;
     for (const listener of listeners) listener(viewModel);
   }
 
@@ -319,6 +338,7 @@ export function createControlCenterBridge(options = {}) {
   }
 
   function stop() {
+    imagePreviews.dispose();
     qqSetup.stop();
     pluginCatalogRefreshSequence += 1;
     pluginManagementRefreshSequence += 1;
@@ -332,7 +352,19 @@ export function createControlCenterBridge(options = {}) {
     listeners.clear();
   }
 
-  return { start, refresh, runAction, subscribe, stop, loadOlderChatMessages,
+  async function previewChatImage(item, action = "open") {
+    const candidates = [...(publishedViewModel?.chat?.pendingAttachments || []),
+      ...(publishedViewModel?.chat?.outputs || []),
+      ...(publishedViewModel?.chat?.messages || []).flatMap(message => message.attachments || [])];
+    const card = candidates.find(card => card.handle === item.handle && (card.itemType || "attachment") === item.itemType);
+    if (!card || !(card.kind === "image" || /^(png|jpe?g|webp|gif|bmp)$/i.test(card.format))) return;
+    if (action === "close") return imagePreviews.close(item);
+    if (action === "failed") return imagePreviews.failed(item);
+    if (!publishedViewModel?.shell.connected || !source?.readChatImagePreview) return;
+    return imagePreviews.open({ ...card, itemType: item.itemType });
+  }
+
+  return { start, refresh, runAction, subscribe, stop, loadOlderChatMessages, previewChatImage,
     onFileDrop(handler) { fileDropHandler = handler; } };
 
   async function publishPluginCatalog(requestSource, request, sequence) {

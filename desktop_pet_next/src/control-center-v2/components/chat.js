@@ -1,4 +1,5 @@
 import { escapeHtml, initial, safeStyleUrl } from "../dom.js";
+import { imagePreviewKey } from "../../control-center/chat-image-preview.js";
 
 export function renderChat(state) {
   const vm = state.viewModel;
@@ -60,7 +61,7 @@ export function renderChat(state) {
         <div class="chat-attachments" aria-label="待发送附件">
           ${(chat.pendingAttachments || []).map(item => `<div class="chat-attachment"><span>${escapeHtml(item.kind === "audio" ? "音频材料" : "附件")} · ${escapeHtml(item.title)}</span>
             ${item.kind === "audio" ? `<button type="button" data-chat-attachment-play="${escapeHtml(item.attachmentId)}">播放</button>` : ""}
-            <button type="button" data-chat-attachment-remove="${escapeHtml(item.attachmentId)}">移除</button></div>`).join("")}
+            <button type="button" data-chat-attachment-remove="${escapeHtml(item.attachmentId)}">移除</button>${renderImagePreview(item, state)}</div>`).join("")}
           ${chat.uploadingAttachments ? `<small role="status">正在接收附件…</small>` : ""}
         </div>
         <form class="chat-composer" data-chat-form>
@@ -118,7 +119,22 @@ function renderChatFile(item, state) {
     data-file-title="${escapeHtml(item.title)}" data-file-format="${escapeHtml(item.format)}">
     <strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.format || item.kind || "文件")} · ${item.canOpen ? "可用" : "暂不可用"}</small>
     <div>${button(audio ? "play" : "open", audio ? "播放" : item.kind === "image" ? "查看图片" : "打开")}${button("reveal", "定位")}${button("save_desktop", "保存到桌面")}</div>
+    ${renderImagePreview(item, state)}
   </div>`;
+}
+
+function renderImagePreview(item, state) {
+  if (!item.handle || !(item.kind === "image" || /^(png|jpe?g|webp|gif|bmp)$/i.test(item.format))) return "";
+  const preview = state.viewModel.chat?.previews?.[imagePreviewKey(item)] || {};
+  const attrs = `data-preview-handle="${escapeHtml(item.handle)}" data-preview-type="${escapeHtml(item.itemType || "attachment")}"`;
+  const button = (action, label, disabled = false) => `<button type="button" data-chat-image-preview="${action}" ${attrs}${disabled ? " disabled" : ""}>${label}</button>`;
+  if (preview.status === "ready" && /^blob:/i.test(preview.url)) {
+    return `<div class="chat-image-preview"><img src="${escapeHtml(preview.url)}" alt="${escapeHtml(item.title)}" ${attrs} decoding="async">${button("close", "收起预览")}</div>`;
+  }
+  if (preview.status === "loading") return `<div class="chat-image-preview" role="status">图片加载中… ${button("close", "取消")}</div>`;
+  const reason = { preview_too_large: "图片超过 8MB，请用打开查看", preview_format_unsupported: "该格式请用打开查看",
+    preview_timeout: "预览超时，可重试", preview_decode_failed: "图片无法解码，可重试" }[preview.reason] || "预览暂不可用，可重试或打开文件";
+  return `<div class="chat-image-preview">${preview.status === "failed" ? `<small role="status">${reason}</small>` : ""}${button("open", preview.status === "failed" ? "重试预览" : "在聊天中预览", !state.viewModel.shell?.connected)}</div>`;
 }
 
 function renderWorkingMessage(character, activity) {

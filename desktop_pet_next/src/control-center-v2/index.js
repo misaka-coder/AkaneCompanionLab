@@ -76,6 +76,12 @@ bridge.subscribe((viewModel) => {
 });
 
 root.addEventListener("click", (event) => {
+  const previewButton = event.target.closest("[data-chat-image-preview]");
+  if (previewButton) {
+    if (!previewButton.disabled) void bridge.previewChatImage({ handle: previewButton.dataset.previewHandle,
+      itemType: previewButton.dataset.previewType }, previewButton.dataset.chatImagePreview);
+    return;
+  }
   const fileButton = event.target.closest("[data-chat-file-action]");
   if (fileButton) {
     const card = fileButton.closest("[data-file-handle]");
@@ -397,6 +403,10 @@ root.addEventListener("paste", event => {
   const files = Array.from(event.clipboardData?.files || []);
   if (files.length) { event.preventDefault(); void runAction("chat.attach", { browserFiles: files }); }
 });
+root.addEventListener("error", event => {
+  if (event.target.matches?.("img[data-preview-handle]")) void bridge.previewChatImage({
+    handle: event.target.dataset.previewHandle, itemType: event.target.dataset.previewType }, "failed");
+}, true);
 root.addEventListener("dragover", event => {
   if (event.target.closest(".chat-workspace")) event.preventDefault();
 });

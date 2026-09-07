@@ -5,6 +5,7 @@ import {
   createNotImplementedActionResult
 } from "./action-router.js";
 import { SETTINGS_COMMAND_EVENT } from "./event-bridge.js";
+import { readChatImageBlob } from "./chat-image-preview.js";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);
@@ -238,6 +239,7 @@ export function createBackendControlCenterSource(options = {}) {
     backendUrl: baseUrl,
     instanceId: expectedInstanceId,
     botId: boundBotId,
+    profileUserId,
     get fallbackReason() {
       return lastFallbackReason;
     },
@@ -400,6 +402,14 @@ export function createBackendControlCenterSource(options = {}) {
         lastChatSessionError = `request-failed:${formatDataSourceError(error)}`;
         return null;
       }
+    },
+    async readChatImagePreview(item, overrides = {}, signal) {
+      const health = await ensureVerifiedBackend();
+      if (!health) throw Error("preview_backend_unavailable");
+      return readChatImageBlob({ fetchImpl, baseUrl: botBaseUrl, instanceId: health.data.instance_id,
+        profileUserId, sessionId: overrides.sessionId || sessionId,
+        characterPackId: overrides.characterPackId ?? characterPackId,
+        handle: item.handle, itemType: item.itemType || "attachment", signal });
     },
     async readChatHistoryPage(overrides = {}) {
       if (typeof fetchImpl !== "function") return null;

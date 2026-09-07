@@ -1124,3 +1124,6 @@ html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, 
 .chat-file-card button:disabled { opacity: .45; cursor: default; }
 .chat-output-files { padding: 10px 0; }
 .chat-output-files h3 { margin: 0; font-size: 12px; font-weight: 500; }
+.chat-image-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; font-size: 11px; }
+.chat-image-preview img { display: block; width: 100%; max-width: 380px; max-height: 250px; object-fit: contain; border-radius: 8px; background: var(--surface-soft); }
+.chat-attachment:has(.chat-image-preview) { flex-wrap: wrap; }

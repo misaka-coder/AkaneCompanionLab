@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import tempfile
+import base64
+import json
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +25,8 @@ from companion_v01.tool_handlers.attachments import InspectAttachmentToolHandler
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.turn_coordination import SteeringInput
 from companion_v01.routes.sessions import build_sessions_router
+from companion_v01.routes.desktop_pet import build_desktop_pet_router
+from companion_v01.artifact_broker import ArtifactBroker
 from tests.test_backend_route_modules import FakeRuntimeMetrics, resolve_payload, resolve_query
 from tests.test_desktop_workspace_panel import _make_workspace_engine
 from tests.test_turn_mainline_contract import _Harness, _speech_output
@@ -89,6 +95,24 @@ class DesktopCurrentAttachmentTests(unittest.TestCase):
             self.assertNotIn("storage_relpath", str(cards))
             self.assertNotIn(str(self.root), str(cards))
         self.engine.vision_service.schedule_attachment_image_observation.assert_not_called()
+
+    def test_real_artifact_download_is_accepted_by_production_chat_image_preview(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js required for desktop consumer integration")
+        item = self.import_file()
+        self.engine.artifact_broker = ArtifactBroker(instance_id="host", data_root=self.root)
+        app = FastAPI()
+        app.include_router(build_desktop_pet_router(engine=self.engine, config_module=SimpleNamespace(),
+            runtime_metrics=FakeRuntimeMetrics(), log_event=lambda *a, **kw: None,
+            resolve_identity_from_payload=resolve_payload, resolve_identity_from_query=resolve_query))
+        response = TestClient(app).get(f"/desktop-pet/workspace/attachments/{item['attachment_handle']}/content?user_id=s&real_user_id=u")
+        self.assertEqual(response.status_code, 200, response.text[:160])
+        result = subprocess.run([node, str(Path(__file__).resolve().parents[1] / "desktop_pet_next/scripts/chat-image-preview-smoke.mjs"), "--transfer"],
+            input=json.dumps({"handle": item["attachment_handle"], "instanceId": "host", "headers": dict(response.headers),
+                "body": base64.b64encode(response.content).decode("ascii"), "size": len(response.content)}),
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_exact_scope_rejects_foreign_character_profile_session_and_alias(self):
         own = self.import_file()
