@@ -28,8 +28,6 @@ async function main() {
   const root = detectCharacterPackRoot(entries);
   const sourcePackId = sanitizePackId(path.basename(root || path.basename(zipPath, ".zip")));
   const packId = sanitizePackId(options.as || sourcePackId);
-  const tempRoot = path.join(kitRoot, `.tmp_import_${process.pid}_${Date.now()}`);
-  const tempPackDir = path.join(tempRoot, packId);
   const destination = resolveInside(charactersDir, packId);
   const backupPath = resolveInside(
     charactersDir,
@@ -45,6 +43,11 @@ async function main() {
     assertRemovableDestination(charactersDir, destination);
   }
 
+  // The validated pack must be renamed on the destination volume. The kit
+  // may live on F: while an instance's writable library is on C:.
+  await fs.mkdir(charactersDir, { recursive: true });
+  const tempRoot = await fs.mkdtemp(path.join(charactersDir, ".tmp_import_"));
+  const tempPackDir = path.join(tempRoot, packId);
   try {
     await extractPackEntries({ entries, root, targetDir: tempPackDir });
     runValidator(tempPackDir);
@@ -220,7 +223,7 @@ function runValidator(targetDir) {
     stdio: "inherit"
   });
   if (result.status !== 0) {
-    process.exit(result.status || 1);
+    throw new Error("Character pack validation failed.");
   }
 }
 

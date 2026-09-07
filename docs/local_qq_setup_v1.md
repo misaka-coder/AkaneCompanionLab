@@ -35,6 +35,29 @@ pwsh -File .\start_akane_local_qq_test.ps1 -OpenQQSetup
 
 ## 边界与安全
 
+### 目录归属：先认实例，再找角色
+
+`start_akane_local_qq_test.bat` 对应 `local-qq-test`，默认资料根为
+`%LOCALAPPDATA%\Akane\local-qq-test-runtime`。启动输出会列出本次实际角色库；
+如果传了 `-DataRoot`，以输出为准。角色工坊「打开角色包目录」打开的也是这个实例的目录。
+
+| 位置 | 作用 | 是否影响当前本地 QQ |
+| --- | --- | --- |
+| 当前资料根 `characters/<角色ID>` | 当前实例安装并使用的角色包；日常编辑以这里为准 | 是，选择该角色后使用 |
+| 项目 `desktop_pet_creator_kit/characters` | 角色制作源包、示例，不是当前实例实时读取目录 | 否，需要明确导入 |
+| 当前资料根 `napcat/shell-v4.18.19` | 默认 NapCat 安装位置；也可由接入页选择其他可信安装 | 仅 QQ 接入，不放角色包 |
+| `%LOCALAPPDATA%\Akane\local-test-runtime` | 无 QQ 测试实例 | 否 |
+| `%LOCALAPPDATA%\Akane\satellite\personal` | 云端伴随桌面实例的本地资料 | 否 |
+| `%LOCALAPPDATA%\Akane\characters` / 旧 `F:\Akane\AkaneData` | 其他或历史启动配置的资料 | 不能据目录名称推定；以对应启动实例为准 |
+
+命名实例仅在首次空库时播种示例，不会持续合并制作目录，以免覆盖已编辑的角色。
+后来新增的塞西莉亚等角色需在**当前实例的角色工坊导入**。导入不切换角色、不搬迁记忆。
+命令行等价方式为 `node desktop_pet_creator_kit/scripts/import-character-pack.mjs <zip> --to <当前资料根>/characters`；
+不要省略 `--to`，省略时是导入制作工具目录。跨盘导入也先在目标盘暂存、验证，再原子移入。
+
+不要通过逐个复制到所有 `characters` 目录来找“哪个生效”，也不要未经核对清理旧目录。
+日常修改当前实例内的包；要回填制作源包时显式导出、核对版本，不能把两处都称为“当前包”。
+
 - UI 组件只渲染数据；通过既有动作路由、数据源与原生 `local_qq_setup` 命令执行本机动作。
 - Rust 主入口仅增加模块、命令注册和可选启动页分支；未改旧 Electron、兼容 settings 页、CSS、角色或提示词实现。
 - 原生命令只接受 settings 窗口，校验当前 host、所选 Bot、启动 Bot 与 loopback 后端绑定；
