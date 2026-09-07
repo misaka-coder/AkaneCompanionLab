@@ -48,6 +48,10 @@ QQ_ALLOW_STALE_EVENTS=false
 - `QQ_ONEBOT_HTTP_URL`：NapCat OneBot HTTP 地址。
 - `QQ_ONEBOT_CACHE_ROOTS`：可选的 OneBot 本地缓存可信根目录，多个目录用分号分隔。留空时不会读取
   `/get_image` 或 `/get_file` 返回的本地路径，只使用受限 base64 或后续安全 URL 下载路径。
+  本地启动器会开启 NapCat 的 `enableLocalFile2Url`，让已鉴权的文件接口直接返回 base64 内容；
+  这同时覆盖图片和普通文档，不要求逐个添加 QQ 图片、文件或临时缓存目录。
+  手工配置 NapCat 时也应开启此项。否则可能出现 NapCat 已下载文件、Akane 却只能尝试外部
+  下载链接的情况；本机代理的 fake-IP DNS 还可能使该链接被公网地址校验拒绝。
 - `QQ_BOT_QQ`：机器人 QQ，用于识别群聊里是否被 at。
 - `MASTER_QQ`：主创 QQ。该 QQ 的私聊会映射到 `master` 记忆身份。
 - `QQ_CHARACTER_PACK_ID`：QQ 文字聊天默认使用的 Creator Kit 角色包 id。留空时使用内置 Akane 人设；例如设为 `reimu` 后，QQ 每轮会把 `character_pack_id=reimu` 传给后端，角色包 persona 会进入 `qq_text` prompt，聊天记忆也会按该角色包隔离。

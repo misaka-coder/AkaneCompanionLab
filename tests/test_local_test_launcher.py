@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 import subprocess
 import tempfile
 import unittest
@@ -181,6 +182,36 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertIn("--source-users-data-root", source)
         self.assertIn("--destination-users-data-root", source)
         self.assertLess(source.index("seed_akane_local_capabilities.py"), source.index("initialize_akane_local_test_policy.py"))
+
+    def test_local_qq_setup_enables_attachment_bytes_without_shared_directories(self) -> None:
+        powershell = shutil.which("pwsh")
+        if not powershell:
+            self.skipTest("PowerShell 7 is unavailable")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "onebot.json"
+            config_path.write_text(json.dumps({
+                "network": {"httpServers": [], "httpClients": []},
+                "enableLocalFile2Url": False, "parseMultMsg": True,
+            }), encoding="utf-8")
+            runner = root / "configure.ps1"
+            runner.write_text('''param($Launcher, $ConfigPath)
+$ErrorActionPreference = "Stop"
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Launcher, [ref]$null, [ref]$null)
+$ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @("Write-AkaneUtf8Atomic", "Set-AkaneNapCatOneBotConfig")}, $false) | ForEach-Object { Invoke-Expression $_.Extent.Text }
+Set-AkaneNapCatOneBotConfig -ConfigPath $ConfigPath -ApiPort 3003 -HostPort 12001 -AccessToken "fixture-api-token" -WebhookSecret "fixture-webhook-token"
+''', encoding="utf-8")
+            completed = subprocess.run(
+                [powershell, "-NoProfile", "-File", str(runner), str(ROOT / "start_akane_local_qq_test.ps1"), str(config_path)],
+                capture_output=True, text=True, timeout=20, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            configured = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(configured["enableLocalFile2Url"])
+            self.assertTrue(configured["parseMultMsg"])
+            self.assertEqual(configured["network"]["httpServers"][0]["host"], "127.0.0.1")
+            self.assertEqual(configured["network"]["httpServers"][0]["token"], "fixture-api-token")
+            self.assertNotIn("fixture-api-token", completed.stdout)
 
     def test_capability_seed_adds_missing_entries_without_overwriting_instance_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

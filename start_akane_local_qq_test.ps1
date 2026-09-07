@@ -99,6 +99,11 @@ function Set-AkaneNapCatOneBotConfig {
     }
     $config.network.httpClients = $httpClients
 
+    # Ask the authenticated OneBot get_file/get_image APIs for bytes as well
+    # as paths. QQ caches may live outside Akane (or behind fake-IP DNS);
+    # receiving a QQ attachment must not require sharing those directories.
+    $config | Add-Member -NotePropertyName enableLocalFile2Url -NotePropertyValue $true -Force
+
     Write-AkaneUtf8Atomic -Path $ConfigPath -Content ($config | ConvertTo-Json -Depth 16)
 }
 

@@ -643,6 +643,45 @@ class AttachmentIngestTests(unittest.TestCase):
             self.assertEqual(saved_path.read_bytes(), payload_bytes)
             self.assertNotIn("/app/", str(saved_path).replace("\\", "/"))
 
+    def test_qq_document_reads_onebot_bytes_before_unreachable_download_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            content = b"# Character card\nA complete readable local document.\n"
+            store = MemoryStore(root / "db")
+            inbox = AttachmentInboxService(store=store)
+            service = AttachmentIngestService(
+                base_dir=root / "attachments", store=store,
+                attachment_service=inbox, vision_service=None,
+            )
+            with (
+                patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", ""),
+                patch.object(service._onebot_transport, "call", return_value=types.SimpleNamespace(
+                    ok=True, data={"base64": base64.b64encode(content).decode("ascii")},
+                )) as onebot,
+                patch.object(service, "_download_to_path", side_effect=AssertionError("must use OneBot bytes")) as download,
+            ):
+                service.ingest_qq_attachments(
+                    profile_user_id="master", session_id="qq_group_shared_1",
+                    attachments=[{
+                        "kind": "document", "file": "character.card.final.md",
+                        "origin_name": "character.card.final.md",
+                        "url": "https://198.18.0.1/opaque-download",
+                    }], timestamp=100,
+                )
+                item = self._wait_for_status(
+                    store, profile_user_id="master", session_id="qq_group_shared_1", status="ready",
+                )
+            onebot.assert_called_once()
+            self.assertEqual(onebot.call_args.args[0], "/get_file")
+            download.assert_not_called()
+            self.assertEqual((root / "attachments" / item["storage_relpath"]).read_bytes(), content)
+            material = inbox.read_section(
+                profile_user_id="master", session_id="qq_group_shared_1",
+                target=item["attachment_handle"], timestamp=101,
+            )
+            self.assertTrue(material.get("ok"), material)
+            self.assertIn("A complete readable local document", str(material))
+
     def test_private_locator_storage_failure_does_not_block_initial_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
