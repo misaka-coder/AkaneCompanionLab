@@ -8,6 +8,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+import config
+
+from .public_dns import PublicDnsError, resolve_public_dns
+
 
 HostResolver = Callable[[str, int], Iterable[str]]
 REMOTE_MEDIA_YTDLP_ALLOWED_HOSTS = (
@@ -39,6 +43,12 @@ class PublicUrlTarget:
     addresses: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ValidatedPublicPeer:
+    address: str
+    origin: str
+
+
 def validate_public_http_url(
     value: str,
     *,
@@ -59,16 +69,20 @@ def validate_public_http_url(
     if parsed.username is not None or parsed.password is not None:
         raise PublicUrlPolicyError("remote_url_credentials_forbidden")
     hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
-    if not hostname or "%" in hostname or hostname == "localhost" or hostname.endswith((".local", ".internal")):
+    if not hostname or "%" in hostname or hostname == "localhost" or hostname.endswith((".localhost", ".local", ".internal")):
         raise PublicUrlPolicyError("remote_url_host_forbidden")
-    effective_port = int(port or (443 if scheme == "https" else 80))
+    try:
+        hostname = hostname.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise PublicUrlPolicyError("remote_url_invalid") from exc
+    effective_port = int(port if port is not None else (443 if scheme == "https" else 80))
     if effective_port <= 0 or effective_port > 65535:
         raise PublicUrlPolicyError("remote_url_invalid")
 
     addresses = _resolved_addresses(
         hostname,
         effective_port,
-        resolver=resolver or resolve_host_addresses,
+        resolver=resolver or _resolve_public_host_addresses,
     )
     if not addresses:
         raise PublicUrlPolicyError("remote_url_dns_failed")
@@ -105,6 +119,25 @@ def resolve_host_addresses(hostname: str, port: int) -> tuple[str, ...]:
     return tuple(addresses)
 
 
+def _resolve_public_host_addresses(hostname: str, port: int) -> tuple[str, ...]:
+    addresses = resolve_host_addresses(hostname, port)
+    parsed = tuple(_canonical_address(ipaddress.ip_address(value)) for value in addresses)
+    synthetic_range = ipaddress.ip_network("198.18.0.0/15")
+    synthetic = tuple(address.version == 4 and address in synthetic_range for address in parsed)
+    if not any(synthetic):
+        return addresses
+    # Genuine private addresses, including mixed private/Fake-IP answers, remain
+    # rejected by the ordinary policy. IP literal URLs never enter this resolver.
+    if any(not fake and not _is_public_address(address) for address, fake in zip(parsed, synthetic)):
+        return addresses
+    if not bool(getattr(config, "PUBLIC_URL_DNS_FALLBACK_ENABLED", True)):
+        raise PublicUrlPolicyError("remote_url_synthetic_dns_address")
+    try:
+        return resolve_public_dns(hostname)
+    except PublicDnsError as exc:
+        raise PublicUrlPolicyError("remote_url_public_dns_unavailable") from exc
+
+
 def public_url_fingerprint(value: str) -> str:
     raw = str(value or "").strip()
     return f"url_sha256:{hashlib.sha256(raw.encode('utf-8', errors='replace')).hexdigest()}" if raw else ""
@@ -123,7 +156,7 @@ def public_url_display_origin(value: str) -> str:
     if scheme not in {"http", "https"} or parsed.username is not None or parsed.password is not None:
         return ""
     hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
-    if not hostname or "%" in hostname or hostname == "localhost" or hostname.endswith((".local", ".internal")):
+    if not hostname or "%" in hostname or hostname == "localhost" or hostname.endswith((".localhost", ".local", ".internal")):
         return ""
     try:
         literal = ipaddress.ip_address(hostname)
@@ -131,7 +164,7 @@ def public_url_display_origin(value: str) -> str:
         literal = None
     if literal is not None and not _is_public_address(literal):
         return ""
-    effective_port = int(port or (443 if scheme == "https" else 80))
+    effective_port = int(port if port is not None else (443 if scheme == "https" else 80))
     if effective_port <= 0 or effective_port > 65535:
         return ""
     return _origin(scheme=scheme, hostname=hostname, port=effective_port)
@@ -151,14 +184,30 @@ def validate_response_peer(response: Any, target: PublicUrlTarget) -> None:
     if connection is None:
         connection = getattr(raw, "_connection", None)
     sock = getattr(connection, "sock", None)
+    if sock is None:
+        # Pinned connections verify before sending HTTP bytes. A zero-body or
+        # Connection: close redirect may release its socket before Requests
+        # returns, so keep that verification rather than misreporting failure.
+        proof = getattr(raw, "_akane_public_peer", None)
+        if isinstance(proof, ValidatedPublicPeer) and proof.origin == target.origin:
+            validate_public_peer(proof.address, target)
+            return
     try:
         peer_value = sock.getpeername()[0] if sock is not None else ""
+    except (OSError, TypeError, ValueError) as exc:
+        raise PublicUrlPolicyError("remote_url_peer_unverifiable") from exc
+    validate_public_peer(peer_value, target)
+
+
+def validate_public_peer(peer_value: str, target: PublicUrlTarget) -> ValidatedPublicPeer:
+    try:
         peer = _canonical_address(ipaddress.ip_address(str(peer_value or "").strip()))
         allowed = {_canonical_address(ipaddress.ip_address(address)) for address in target.addresses}
     except (OSError, TypeError, ValueError) as exc:
         raise PublicUrlPolicyError("remote_url_peer_unverifiable") from exc
     if not _is_public_address(peer) or peer not in allowed:
         raise PublicUrlPolicyError("remote_url_peer_mismatch")
+    return ValidatedPublicPeer(str(peer), target.origin)
 
 
 def _resolved_addresses(hostname: str, port: int, *, resolver: HostResolver) -> tuple[str, ...]:

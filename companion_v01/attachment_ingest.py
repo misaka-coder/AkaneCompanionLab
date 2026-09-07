@@ -4,14 +4,11 @@ import base64
 import binascii
 import csv
 from dataclasses import dataclass, field
-import http.client
 import importlib.util
 import json
 import logging
 import mimetypes
 import shutil
-import socket
-import ssl
 import subprocess
 import time
 import re
@@ -28,6 +25,7 @@ from .background_tasks import BackgroundTaskRunner
 from .deployment_security import QQChannelRuntimeConfig
 from .onebot_transport import OneBotActionTransport
 from .image_materials import verified_file_image_media_type
+from .public_http import get_pinned_public_response
 from .public_url_policy import (
     HostResolver,
     PublicUrlPolicyError,
@@ -1152,65 +1150,26 @@ class AttachmentIngestService:
         headers: dict[str, str],
         timeout: float,
     ) -> tuple[int, str]:
-        parsed = urlparse(target.url)
-        request_target = parsed.path or "/"
-        if parsed.params:
-            request_target += f";{parsed.params}"
-        if parsed.query:
-            request_target += f"?{parsed.query}"
-        host_header = target.hostname
-        default_port = 443 if parsed.scheme == "https" else 80
-        if target.port != default_port:
-            host_header = f"{host_header}:{target.port}"
         safe_headers = {
             str(key).strip(): str(value).replace("\r", " ").replace("\n", " ").strip()
             for key, value in headers.items()
             if str(key).strip()
             and str(key).casefold() not in {"host", "connection", "cookie", "authorization", "proxy-authorization"}
         }
-        request_lines = [
-            f"GET {request_target} HTTP/1.1",
-            f"Host: {host_header}",
-            "Connection: close",
-            *(f"{key}: {value}" for key, value in safe_headers.items()),
-            "",
-            "",
-        ]
-        request_bytes = "\r\n".join(request_lines).encode("iso-8859-1", errors="replace")
-        last_error: Exception | None = None
-        for address in target.addresses:
-            raw_socket: socket.socket | None = None
-            active_socket: socket.socket | ssl.SSLSocket | None = None
-            response: http.client.HTTPResponse | None = None
-            try:
-                raw_socket = socket.create_connection(
-                    (address, target.port),
-                    timeout=max(0.25, timeout),
-                )
-                raw_socket.settimeout(max(0.25, timeout))
-                if parsed.scheme == "https":
-                    active_socket = ssl.create_default_context().wrap_socket(
-                        raw_socket,
-                        server_hostname=target.hostname,
-                    )
-                else:
-                    active_socket = raw_socket
-                active_socket.sendall(request_bytes)
-                response = http.client.HTTPResponse(active_socket)
-                response.begin()
-                return int(response.status or 0), str(response.getheader("Location") or "").strip()
-            except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
-                last_error = exc
-            finally:
-                if response is not None:
+        try:
+            with requests.Session() as session:
+                response = get_pinned_public_response(session, target, timeout=timeout, headers=safe_headers)
+                try:
+                    validate_response_peer(response, target)
+                    return int(response.status_code or 0), str(response.headers.get("Location") or "").strip()
+                finally:
                     response.close()
-                if active_socket is not None:
-                    active_socket.close()
-                elif raw_socket is not None:
-                    raw_socket.close()
-        if isinstance(last_error, (socket.timeout, TimeoutError)):
-            raise AttachmentMaterializationError("attachment_download_timeout") from last_error
-        raise AttachmentMaterializationError("remote_media_extract_failed") from last_error
+        except PublicUrlPolicyError as exc:
+            raise AttachmentMaterializationError(exc.code) from exc
+        except requests.Timeout as exc:
+            raise AttachmentMaterializationError("attachment_download_timeout") from exc
+        except requests.RequestException as exc:
+            raise AttachmentMaterializationError("remote_media_extract_failed") from exc
 
     def _fetch_public_json(
         self,
@@ -1229,15 +1188,7 @@ class AttachmentIngestService:
         )
         try:
             with requests.Session() as session:
-                session.trust_env = False
-                session.cookies.clear()
-                response = session.get(
-                    target.url,
-                    stream=True,
-                    timeout=timeout,
-                    headers=headers,
-                    allow_redirects=False,
-                )
+                response = get_pinned_public_response(session, target, timeout=timeout, headers=headers)
                 try:
                     validate_response_peer(response, target)
                     if int(response.status_code or 0) < 200 or int(response.status_code or 0) >= 300:
@@ -1668,6 +1619,9 @@ class AttachmentIngestService:
             "remote_url_credentials_forbidden": "这个链接包含账号或凭据，出于安全原因无法读取；请提供不含凭据的公开链接。",
             "remote_url_host_forbidden": "这个链接指向本机或内部主机，出于安全原因无法读取；请提供公开直链。",
             "remote_url_dns_failed": "这个链接的公开地址暂时无法解析，请检查链接或稍后重试。",
+            "remote_url_synthetic_dns_address": "本机 DNS 返回了代理虚拟地址，当前未启用公网解析兼容；这是访问环境问题，不代表你提供的是内网链接。",
+            "remote_url_public_dns_unavailable": "本机 DNS 返回了代理虚拟地址，但加密公网解析暂时失败；这是访问环境问题，尚未读取链接内容。",
+            "remote_url_request_target_mismatch": "请求目标与已校验的公网地址不一致，已停止读取。",
             "remote_url_private_address": "这个链接指向本机、局域网或内部地址，出于安全原因无法读取；请提供公开直链。",
             "remote_url_peer_unverifiable": "无法确认远端连接的公开地址，出于安全原因已停止读取。",
             "remote_url_peer_mismatch": "远端连接地址与预检查结果不一致，出于安全原因已停止读取。",
@@ -2089,17 +2043,12 @@ class AttachmentIngestService:
             current_target = self._validate_public_remote_url(url)
             redirect_count = 0
             with requests.Session() as session:
-                session.trust_env = False
                 while True:
                     if time.monotonic() > deadline:
                         raise AttachmentMaterializationError("attachment_download_timeout")
-                    session.cookies.clear()
-                    response = session.get(
-                        current_target.url,
-                        stream=True,
-                        timeout=timeout_value,
+                    response = get_pinned_public_response(
+                        session, current_target, timeout=min(timeout_value, max(0.25, deadline - time.monotonic())),
                         headers=request_headers,
-                        allow_redirects=False,
                     )
                     try:
                         validate_response_peer(response, current_target)
@@ -2743,6 +2692,9 @@ class AttachmentIngestService:
             "remote_url_credentials_forbidden",
             "remote_url_host_forbidden",
             "remote_url_dns_failed",
+            "remote_url_synthetic_dns_address",
+            "remote_url_public_dns_unavailable",
+            "remote_url_request_target_mismatch",
             "remote_url_private_address",
             "remote_url_peer_unverifiable",
             "remote_url_peer_mismatch",

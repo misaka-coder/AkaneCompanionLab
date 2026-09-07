@@ -105,11 +105,17 @@ class FakeHttpSession:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.cookies = FakeCookieJar()
         self.trust_env = True
+        self.adapters = {}
+
+    def mount(self, prefix, adapter):
+        self.adapters[prefix] = adapter
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        for adapter in self.adapters.values():
+            adapter.close()
         return False
 
     def get(self, url: str, **kwargs: Any) -> FakeStreamResponse:

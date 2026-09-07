@@ -398,6 +398,8 @@ class Settings(BaseSettings):
     BACKGROUND_ATTACHMENT_WORKERS: int = 3
 
     # === 远程媒体 (yt-dlp) ===
+    # 仅当系统 DNS 返回 Fake-IP 时，用加密公网 DNS 重新解析；不放行内网 IP。
+    PUBLIC_URL_DNS_FALLBACK_ENABLED: bool = True
     # Cookie 文件路径（需登录的平台）
     REMOTE_MEDIA_YTDLP_COOKIEFILE: str = ""
     # 自定义 User-Agent
@@ -660,6 +662,7 @@ def _apply_settings(s: Settings) -> None:
         QQ_TEXT_ATTACHMENT_MAX_READ_BYTES
     global BACKGROUND_DEFAULT_WORKERS, BACKGROUND_ATTACHMENT_WORKERS
     global REMOTE_MEDIA_YTDLP_COOKIEFILE
+    global PUBLIC_URL_DNS_FALLBACK_ENABLED
     global REMOTE_MEDIA_YTDLP_USER_AGENT, REMOTE_MEDIA_YTDLP_REFERER
     global WEB_IDENTITY_MODE, WEB_OWNER_PROFILE_USER_ID
     global RUN_MODE, AKANE_INSTANCE_ID, PERSONA_CONFIG_PATH, PERSONA_VARIANT
@@ -912,6 +915,7 @@ def _apply_settings(s: Settings) -> None:
 
     # === remote media ===
     REMOTE_MEDIA_YTDLP_COOKIEFILE = str(s.REMOTE_MEDIA_YTDLP_COOKIEFILE or "").strip()
+    PUBLIC_URL_DNS_FALLBACK_ENABLED = bool(s.PUBLIC_URL_DNS_FALLBACK_ENABLED)
     REMOTE_MEDIA_YTDLP_USER_AGENT = (
         str(s.REMOTE_MEDIA_YTDLP_USER_AGENT or "").strip()
         or Settings.model_fields["REMOTE_MEDIA_YTDLP_USER_AGENT"].default
