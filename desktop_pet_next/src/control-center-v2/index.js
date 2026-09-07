@@ -35,6 +35,7 @@ let voiceProfilePreviewAudio = null;
 let livePresentationPreferences = null;
 let framingDrag = null;
 let renderedPage = "";
+let renderedPerceptionScope = "";
 let setupExpanded = null;
 let setupCoreComplete = null;
 const pageScrollTop = new Map();
@@ -246,9 +247,22 @@ root.addEventListener("click", (event) => {
 });
 
 root.addEventListener("change", (event) => {
+  const perceptionChoice = event.target.closest("[data-perception-choice]");
+  if (perceptionChoice && !perceptionChoice.disabled) {
+    const value = perceptionChoice.dataset.valueType === "number" ? Number(perceptionChoice.value) : perceptionChoice.value;
+    perceptionChoice.blur();
+    void runAction(perceptionChoice.dataset.perceptionChoice, { value });
+    return;
+  }
   const botSelect = event.target.closest("[data-bound-bot-select]");
   if (botSelect && !botSelect.disabled) {
     void runAction("settings.selectBot", { value: botSelect.value, botId: botSelect.value });
+  }
+});
+
+root.addEventListener("focusout", (event) => {
+  if (event.target.matches("[data-perception-choice]")) {
+    queueMicrotask(() => render(store.getState()));
   }
 });
 
@@ -741,7 +755,18 @@ async function runModelAction(actionId) {
   return result;
 }
 
+function perceptionRenderScope(state) {
+  const vm = state.viewModel;
+  return JSON.stringify([state.activePage, vm?.shell?.instanceLabel, vm?.bots?.activeId,
+    vm?.character?.packId, vm?.chat?.sessionId, vm?.perception?.available, vm?.shell?.connected]);
+}
+
 function render(state) {
+  const nextPerceptionScope = perceptionRenderScope(state);
+  // A live snapshot must not destroy a native select while its menu is open.
+  // Changes of scope/availability still replace the old controls immediately.
+  if (nextPerceptionScope === renderedPerceptionScope && document.activeElement?.matches("[data-perception-choice]")) return;
+  renderedPerceptionScope = nextPerceptionScope;
   captureCapabilityUiState();
   const currentSetupCenter = root.querySelector(".setup-center");
   if (currentSetupCenter) setupExpanded = currentSetupCenter.open;

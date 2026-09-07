@@ -124,7 +124,7 @@ token 不写进仓库、命令行、prompt 或普通日志。隧道 PID 和无�
 
 - SSH tunnel 由 personal 一键入口自动建立，但当前仍依赖本机 SSH 配置中的 `akane-vps`；尚未做独立设备注册 UI 或系统登录自启动。
 - 托管可见浏览器 `browser_page` 在用户电脑执行；当前云端 runner 不能冒充用户电脑浏览器。
-- 本地视觉模型/图片识别。现有 `/desktop-pet/vision/clip` 是截图上传后由后端视觉模型识别，不是本地视觉 executor；云端缺少 vision provider 配置时它仍不可用。
+- 本地视觉模型/图片识别。屏幕帧通过当前 `/think` 的 `desktop_screen_frames` 交给配置的视觉模型直接回复，不是本地视觉 executor；旧 `/desktop-pet/vision/clip` 摘要链路已退役（410），详见 `desktop_screen_observation_direct_v1.md`。
 - 本地 Whisper/ASR 与 RVC 已改走 `akane_local_capability_host`；它们不冒充短任务 Satellite offer。
 - GPT-SoVITS 继续使用独立的本地 provider reverse tunnel。
 - FFmpeg、Demucs、DeepFilterNet、ComfyUI 和其他长任务。

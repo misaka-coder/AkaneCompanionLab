@@ -61,7 +61,6 @@ from .execution_specs import EXEC_TOOL_SPEC_BY_ID
 from .care_runtime import CareModulePort, normalize_desktop_care_config
 from .desktop_pet_character_resources import load_character_care_config
 from .desktop_music_timeline import DesktopMusicTimelineService
-from .desktop_screen_vision import DesktopScreenVisionWorkspace
 from .deployment_security import QQChannelRuntimeConfig
 from . import desktop_context_engine
 from .mode_profiles import ModeProfileRegistry
@@ -479,14 +478,8 @@ class AkaneMemoryEngine:
                 settings=self.settings,
                 config_module=config,
             )
-            self.desktop_screen_vision: DesktopScreenVisionWorkspace | None = DesktopScreenVisionWorkspace(
-                vision_service=self.vision_service,
-                max_ready_per_session=int(getattr(config, "DESKTOP_SCREEN_VISION_MAX_CLIPS", 5) or 5),
-                ttl_sec=int(getattr(config, "DESKTOP_SCREEN_VISION_TTL_SEC", 15 * 60) or (15 * 60)),
-            )
         else:
             self.vision_service = None
-            self.desktop_screen_vision = None
         self.attachment_ingest_service = AttachmentIngestService(
             base_dir=attachment_workspace_dir,
             store=self.store,
@@ -568,8 +561,6 @@ class AkaneMemoryEngine:
         self.gift_service.reset()
         if self.vision_service is not None:
             self.vision_service.reset()
-        if self.desktop_screen_vision is not None:
-            self.desktop_screen_vision.reset()
 
     def reload_model_services(
         self,
@@ -779,7 +770,7 @@ class AkaneMemoryEngine:
             except Exception:
                 failures.append("background_tasks_close_failed")
 
-        for name in ("desktop_screen_vision", "vision_service"):
+        for name in ("vision_service",):
             service = getattr(self, name, None)
             close = getattr(service, "close", None)
             if callable(close):
@@ -3142,111 +3133,6 @@ class AkaneMemoryEngine:
             activity=activity,
         )
 
-    def submit_desktop_screen_vision_clip(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        frames: list[dict[str, Any]],
-        foreground: dict[str, Any] | None = None,
-        captured_start_ts: int | None = None,
-        captured_end_ts: int | None = None,
-        mode: str = "",
-    ) -> dict[str, Any]:
-        if self.desktop_screen_vision is None:
-            return {"ok": False, "reason": "vision_disabled"}
-        return self.desktop_screen_vision.submit_clip(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            frames=frames,
-            foreground=foreground,
-            captured_start_ts=captured_start_ts,
-            captured_end_ts=captured_end_ts,
-            mode=mode,
-        )
-
-    def list_desktop_screen_vision_observations(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        limit: int = 3,
-        include_pending: bool = False,
-    ) -> list[dict[str, Any]]:
-        if self.desktop_screen_vision is None:
-            return []
-        return self.desktop_screen_vision.list_latest(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            limit=limit,
-            include_pending=include_pending,
-        )
-
-    def get_desktop_screen_vision_clip(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        clip_id: str,
-    ) -> dict[str, Any] | None:
-        if self.desktop_screen_vision is None:
-            return None
-        return self.desktop_screen_vision.get_clip(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            clip_id=clip_id,
-        )
-
-    def clear_desktop_screen_vision_observations(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str | None = None,
-    ) -> dict[str, Any]:
-        if self.desktop_screen_vision is None:
-            return {"ok": False, "reason": "vision_disabled"}
-        return self.desktop_screen_vision.clear(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        )
-
-    def build_desktop_screen_vision_context(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        limit: int = 3,
-    ) -> str:
-        if self.desktop_screen_vision is None:
-            return ""
-        return self.desktop_screen_vision.build_prompt_context(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            limit=limit,
-        )
-
-    def build_desktop_screen_vision_reaction(
-        self,
-        *,
-        profile_user_id: str,
-        session_id: str,
-        clip_id: str,
-    ) -> dict[str, Any]:
-        if self.desktop_screen_vision is None:
-            return {"ok": False, "reason": "vision_disabled"}
-        observation = self.desktop_screen_vision.get_clip(
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            clip_id=clip_id,
-        )
-        if not observation:
-            return {"ok": False, "skip": True, "reason": "not_found"}
-        if str(observation.get("status") or "") != "ready":
-            return {"ok": True, "skip": True, "reason": "not_ready", "clip": observation}
-        return self.desktop_screen_vision.build_reaction_with_llm(
-            llm=self.llm,
-            observation=observation,
-        )
 
     def _is_transient_user_turn(self, payload: dict[str, Any]) -> bool:
         from .engine_services.turn_context import is_transient_user_turn as _fn
@@ -5575,6 +5461,7 @@ class AkaneMemoryEngine:
                 user_message=user_message,
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
+                allow_deliberate_silence=bool(generation_context.get("allow_deliberate_silence")),
             )
             self._attach_native_reasoning_content(normalized, raw_result=result)
             if parse_fallback:
@@ -5971,6 +5858,7 @@ class AkaneMemoryEngine:
             user_message=user_message,
             domain_profile_id=domain_profile_id,
             capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
+            allow_deliberate_silence=bool(generation_context.get("allow_deliberate_silence")),
         )
         wrapped["_provider_output_raw"] = raw
         wrapped["_final_recovery"] = {"kind": "plain_text_wrap"}
@@ -6060,6 +5948,7 @@ class AkaneMemoryEngine:
             user_message=user_message,
             domain_profile_id=domain_profile_id,
             capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
+            allow_deliberate_silence=bool(generation_context.get("allow_deliberate_silence")),
         )
         raw_text = str(getattr(result, "raw_text", "") or "") or speech
         error = str(getattr(result, "error", "") or "").strip()
@@ -6612,6 +6501,7 @@ class AkaneMemoryEngine:
                 debug_enabled=bool(generation_context["debug_enabled"]),
                 domain_profile_id=domain_profile_id,
                 capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
+                allow_deliberate_silence=bool(generation_context.get("allow_deliberate_silence")),
             )
             self._attach_native_reasoning_content(
                 normalized,
@@ -6737,6 +6627,7 @@ class AkaneMemoryEngine:
                     debug_enabled=bool(generation_context["debug_enabled"]),
                     domain_profile_id=domain_profile_id,
                     capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
+                    allow_deliberate_silence=bool(generation_context.get("allow_deliberate_silence")),
                 )
                 self._attach_native_reasoning_content(normalized, raw_result=fallback_result)
                 self._attach_memory_annotation_truth(
@@ -6795,6 +6686,7 @@ class AkaneMemoryEngine:
                         debug_enabled=bool(generation_context["debug_enabled"]),
                         domain_profile_id=domain_profile_id,
                         capability_selection=generation_context.get(TOOL_CAPABILITY_SELECTION_FIELD),
+                        allow_deliberate_silence=bool(generation_context.get("allow_deliberate_silence")),
                     )
                     self._attach_native_reasoning_content(normalized, raw_result=uncached_result)
                     self._attach_memory_annotation_truth(
@@ -7294,6 +7186,7 @@ class AkaneMemoryEngine:
         user_message: str = "",
         domain_profile_id: str = "",
         capability_selection: Any = None,
+        allow_deliberate_silence: bool = False,
     ) -> dict[str, Any]:
         return final_output_engine.normalize_final_output(
             self,
@@ -7308,6 +7201,7 @@ class AkaneMemoryEngine:
             user_message=user_message,
             domain_profile_id=domain_profile_id,
             capability_selection=capability_selection,
+            allow_deliberate_silence=allow_deliberate_silence,
         )
 
     @staticmethod

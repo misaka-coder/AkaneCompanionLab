@@ -29,7 +29,6 @@ class InstanceWriterShutdownTests(unittest.TestCase):
         engine._close_status = None
         engine._embedding_reindex_stop = threading.Event()
         engine.background_tasks = _Closable()
-        engine.desktop_screen_vision = _Closable()
         engine.vision_service = _Closable()
         engine.compaction_service = _Closable()
         engine.memcore_manager = _Closable()

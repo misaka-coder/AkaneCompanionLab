@@ -268,15 +268,15 @@ ToolReadinessGate ─ short-lived status ─────────────
 speech_segments, tts, file_drop, tool_actions, audio_playback
 ```
 
-and conditionally `desktop_context` / `screen_vision`.
+and conditionally `desktop_context`. Screen images use the request-local `desktop_screen_frames` field without changing the stable capability declaration.
 
 None of these proves that RVC, faster-whisper, FFmpeg, DeepFilterNet, Playwright, a filesystem executor, or a browser executor is alive. M66 must keep `client_capabilities` as a presentation/input negotiation contract and use `CapabilityOffer` for actual execution.
 
 The screen/context chains are also client input, not executors:
 
 - `main.js::collectDesktopContextForTurn()` calls Tauri `get_desktop_context_snapshot`, optionally reads bounded clipboard text, and sends the result as `desktop_context` in `/think`.
-- Screen-vision direct mode uses `getDisplayMedia()`, compresses recent frames to JPEG data URLs, and sends them as `desktop_screen_frames` in the current `/think` request.
-- Screen-vision summary mode batches frames and posts `/desktop-pet/vision/clip`; `routes.desktop_pet.desktop_pet_submit_screen_vision_clip()` calls `engine.submit_desktop_screen_vision_clip()`, while latest/reaction/clear routes operate on that per-profile/session workspace.
+- Screen observation uses `getDisplayMedia()`, samples a configurable rolling window, and sends ordered frames or a time-labelled contact sheet plus latest frame as `desktop_screen_frames` in the current `/think` request. The configured vision model owns the normal character reply and may stay silent during proactive observation.
+- The former summary workspace and model pass are deleted. `/desktop-pet/vision/{clip,latest,reaction,clear}` are HTTP 410 migration adapters only; see `desktop_screen_observation_direct_v1.md`.
 
 These are user-granted observation/upload paths. `desktop_context` or `screen_vision` in `client_capabilities` means the client can supply/render that input contract; it must not make unrelated local tools ready. A future model-initiated screen capture would require its own reviewed ToolSpec, offer, policy, and approval rather than reusing this declaration.
 

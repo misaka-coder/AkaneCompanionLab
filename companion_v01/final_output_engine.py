@@ -59,6 +59,7 @@ def normalize_final_output(
     user_message: str = "",
     domain_profile_id: str = "",
     capability_selection: Any = None,
+    allow_deliberate_silence: bool = False,
 ) -> dict[str, Any]:
     client_context = client_context or engine._resolve_client_protocol_context({})
     manifest_service = (
@@ -68,8 +69,8 @@ def normalize_final_output(
     )
     raw_result = result if isinstance(result, dict) else {}
     normalized = dict(raw_result or {})
-    explicit_qq_silence = (
-        client_context.effective_mode == ClientMode.QQ_TEXT
+    explicit_silence = (
+        (client_context.effective_mode == ClientMode.QQ_TEXT or allow_deliberate_silence)
         and "speech" in raw_result
         and isinstance(raw_result.get("speech"), str)
         and not str(raw_result.get("speech") or "").strip()
@@ -145,7 +146,7 @@ def normalize_final_output(
     normalized.pop("speech_segments", None)
     speech, speech_segments = normalize_speech_payload(
         speech=normalized.get("speech"),
-        fallback_to_default=not explicit_qq_silence and not bool(
+        fallback_to_default=not explicit_silence and not bool(
             normalized.get("tool_call")
             or normalized.get(NATIVE_TOOL_CALL_FIELD)
             or normalized.get(NATIVE_TOOL_CALLS_FIELD)
@@ -153,7 +154,7 @@ def normalize_final_output(
     )
     normalized["speech"] = speech
     normalized["speech_segments"] = speech_segments
-    if explicit_qq_silence:
+    if explicit_silence:
         # This is a host-derived terminal fact, not a second provider protocol.
         # Missing/wrong-typed speech and damaged JSON never reach this marker.
         normalized["_deliberate_silence"] = True

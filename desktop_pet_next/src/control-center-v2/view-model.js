@@ -1,5 +1,6 @@
 import { MODEL_SERVICE_ACTIONS, normalizeModelServiceRuntime } from "./model-service.js";
 import { normalizeQqSetup, QQ_SETUP_ACTIONS } from "./qq-setup.js";
+import { SCREEN_OBSERVATION_COMMANDS, normalizeScreenObservationSettings } from "../screen-observation.js";
 
 const SUCCESS_STATUSES = new Set(["executed", "completed", "available", "connected", "configured", "already-playing", "already-paused", "already-stopped"]);
 
@@ -88,6 +89,17 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       completeness: finitePercent(characterRuntime.completeness)
     },
     activity,
+    perception: {
+      available: connected && Object.keys(petState).length > 0,
+      ...normalizeScreenObservationSettings(petState),
+      screenVisionEnabled: Boolean(petState.screenVisionEnabled),
+      proactiveWakeEnabled: Boolean(petState.proactiveWakeEnabled),
+      proactiveWakeIntervalSec: Number(petState.proactiveWakeIntervalSec) || 30,
+      status: text(active.screenVision) || "off",
+      error: text(active.screenVisionError),
+      bufferedFrames: Number(active.screenVisionFrameBufferSize) || 0,
+      evaluating: Boolean(active.proactiveWakeRunning)
+    },
     chat,
     bots,
     music,
@@ -107,7 +119,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       [QQ_SETUP_ACTIONS.openFolder]: { available: qqSetup.supported && !qqSetup.blocked && !qqSetup.busy && qqSetup.native.installed, reason: qqSetup.detail },
       "chat.new": { available: connected, reason: connected ? "" : "桌宠尚未连接" },
       "chat.send": {
-        available: connected && liveSnapshotStatus === "connected" && !Boolean(active.sending),
+        available: connected && liveSnapshotStatus === "connected" && (!active.sending || Boolean(active.proactiveWakeRunning)),
         reason: !connected ? "桌宠尚未连接" : liveSnapshotStatus !== "connected" ? "请在桌面端窗口中发送" : "正在回复，请稍后再发"
       },
       "chat.stop": { available: connected && Boolean(active.sending || active.replyDisplayActive), reason: "当前没有进行中的回复" },
@@ -200,6 +212,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       "voice.setWakeWord": voiceActionAvailability(voice.controlsAvailable),
       "voice.setWakeSensitivity": voiceActionAvailability(voice.controlsAvailable),
       "perception.runDiagnostics": voiceActionAvailability(system.controlsAvailable),
+      ...Object.fromEntries(Object.keys(SCREEN_OBSERVATION_COMMANDS).map((id) => [id, voiceActionAvailability(system.controlsAvailable)])),
       "advanced.setHitTestEnabled": voiceActionAvailability(system.controlsAvailable),
       "advanced.setHitboxOverlay": voiceActionAvailability(system.controlsAvailable),
       "advanced.resetWindow": voiceActionAvailability(system.controlsAvailable),
@@ -324,6 +337,13 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
   const afterActive = asObject(after.active);
   const commandOutcome = observedActionOutcome(actionId, payload, after);
   if (commandOutcome && commandOutcome.ok === false) return true;
+  const observationCommand = SCREEN_OBSERVATION_COMMANDS[actionId];
+  if (observationCommand) {
+    if (!commandOutcome?.ok) return false;
+    if (!observationCommand.field) return Number(afterActive.screenVisionBufferRevision) > Number(beforeActive.screenVisionBufferRevision || 0);
+    const actual = afterState[observationCommand.field];
+    return typeof actual === "number" ? numbersClose(actual, payload.value) : actual === payload.value;
+  }
 
   if (actionId === "chat.new") {
     const beforeSession = text(beforeState.sessionId);
@@ -409,7 +429,7 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
 export function observedActionOutcome(actionId, payload = {}, snapshot = {}) {
   const commandResult = asObject(asObject(snapshot).settingsCommandResult);
   const expectedOperationId = text(payload.operationId);
-  const expectedCommand = {
+  const expectedCommand = SCREEN_OBSERVATION_COMMANDS[actionId]?.command || {
     "chat.send": "sendChatMessage",
     "voice.test": "testTts",
     "voice.previewPlay": "previewTts",
@@ -755,6 +775,7 @@ function deriveActivity(runtimeSnapshot, connected) {
   const active = asObject(runtimeSnapshot.active);
   const mode = text(runtimeSnapshot.runtimeMode).toLowerCase();
   const status = text(runtimeSnapshot.runtimeStatus);
+  if (active.proactiveWakeRunning) return { phase: "observing", label: "正在评估是否开口" };
   if (active.sending) return { phase: mode.includes("tool") ? "using_tool" : "thinking", label: status || "正在处理请求" };
   if (active.speaking) return { phase: "delivering", label: status || "正在回应" };
   if (active.voiceInput === "processing") return { phase: "thinking", label: status || "正在识别语音" };

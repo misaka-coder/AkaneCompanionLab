@@ -52,6 +52,13 @@ import {
 import { segmentSpeechForDelivery } from "./speech-delivery.js";
 import { getBubbleSegmentDisplayDelay } from "./bubble-delivery.js";
 import {
+  MODERATE_PROACTIVE_PROMPT,
+  SCREEN_OBSERVATION_DEFAULTS,
+  ScreenObservationBuffer,
+  normalizeScreenObservationSettings,
+  packScreenObservation
+} from "./screen-observation.js";
+import {
   MEDIA_CONTROL_TARGETS,
   normalizeMediaControlAction,
   resolveActiveMediaControl,
@@ -97,21 +104,7 @@ const DESKTOP_CONTEXT_POLL_MS = 1500;
 const DESKTOP_CONTEXT_TURN_WAIT_MS = 280;
 const DESKTOP_CONTEXT_TURN_WAIT_FOCUSED_MS = 1200;
 const DESKTOP_CONTEXT_MAX_AGE_MS = 2 * 60 * 1000;
-const SCREEN_VISION_FRAME_INTERVAL_MS = 1500;
-const DEFAULT_SCREEN_VISION_FRAMES_PER_CLIP = 4;
-const SCREEN_VISION_MAX_EDGE = 960;
-const SCREEN_VISION_JPEG_QUALITY = 0.64;
-const SCREEN_VISION_SAMPLE_WIDTH = 32;
-const SCREEN_VISION_SAMPLE_HEIGHT = 18;
-const DEFAULT_SCREEN_VISION_INTERVAL_SEC = 25;
-const SCREEN_VISION_INTERVAL_MIN_SEC = 15;
-const SCREEN_VISION_INTERVAL_MAX_SEC = 600;
-const SCREEN_VISION_FRAME_COUNT_MIN = 1;
-const SCREEN_VISION_FRAME_COUNT_MAX = 5;
-const DEFAULT_SCREEN_VISION_MODE = "summary";
-const SCREEN_VISION_MODES = new Set(["summary", "direct"]);
-const SCREEN_VISION_DIFF_THRESHOLD = 10;
-const SCREEN_VISION_FORCE_AFTER_SKIPS = 2;
+const SCREEN_VISION_JPEG_QUALITY = 0.8;
 const PROACTIVE_WAKE_DEFAULT_SEC = 30;
 const PROACTIVE_WAKE_MIN_SEC = 15;
 const PROACTIVE_WAKE_MAX_SEC = 600;
@@ -161,12 +154,6 @@ const CARE_PASSIVE_TICK_MS = 60 * 1000;
 const CARE_DEFAULT_HUNGER_DECAY_PER_HOUR = 4;
 const CARE_DEFAULT_ENERGY_COST_PER_REPLY = 1;
 const CARE_DEFAULT_ENERGY_COST_PER_PROACTIVE = 0;
-const PROACTIVE_WAKE_STYLE_GUARD = [
-  "本轮是主动搭话，不是用户提问。",
-  "可以参考桌面线索，但不要把窗口标题或软件名当成必须回应的主题；只有标题时最多当背景。",
-  "优先轻短地陪一句、提醒一句，或自然问候；没有新线索也可以不围绕屏幕聊。",
-  "回复尽量短，1 到 2 个自然小气泡。"
-].join("\n");
 const SCALE_MIN = 0.75;
 const SCALE_MAX = 1.45;
 const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
@@ -217,11 +204,9 @@ const DEFAULT_STATE = {
   desktopContextEnabled: true,
   clipboardContextEnabled: false,
   screenVisionEnabled: false,
-  screenVisionMode: DEFAULT_SCREEN_VISION_MODE,
+  ...SCREEN_OBSERVATION_DEFAULTS,
   proactiveWakeEnabled: false,
   proactiveWakeIntervalSec: PROACTIVE_WAKE_DEFAULT_SEC,
-  screenVisionIntervalSec: DEFAULT_SCREEN_VISION_INTERVAL_SEC,
-  screenVisionFrameCount: DEFAULT_SCREEN_VISION_FRAMES_PER_CLIP,
   hitTestEnabled: true,
   hitboxOverlay: false,
   care: null,
@@ -582,6 +567,7 @@ function createCharacterRuntimeState(packId, profile, { seedFromCurrent = false 
 }
 
 function applyCharacterRuntimeState(packId, profile, options = {}) {
+  screenObservation.clear();
   const normalizedPackId = normalizeCharacterPackId(packId) || getActiveCharacterPackId();
   const map = ensureCharacterRuntimeMap();
   const key = getCharacterRuntimeKey(normalizedPackId);
@@ -741,16 +727,11 @@ let screenVisionTimer = 0;
 let screenVisionStream = null;
 let screenVisionVideo = null;
 let screenVisionCanvas = null;
-let screenVisionSampleCanvas = null;
-let screenVisionFrames = [];
-let screenVisionRecentFrames = [];
-let screenVisionLastSample = null;
-let screenVisionLastForegroundKey = "";
-let screenVisionLastSubmitAt = 0;
-let screenVisionSkippedClips = 0;
+const screenObservation = new ScreenObservationBuffer();
+let screenVisionCapturePending = null;
+let screenVisionCaptureRevision = 0;
 let screenVisionStatus = "off";
 let screenVisionError = "";
-let screenVisionActiveClipId = "";
 let backendRetryTimer = 0;
 let backendSwitchToken = 0;
 let backendSwitchPending = false;
@@ -770,6 +751,7 @@ const els = {
   close: document.querySelector("#close-window"),
   quickInput: document.querySelector("#quick-input"),
   openSettings: document.querySelector("#open-settings"),
+  screenShare: document.querySelector("#screen-share"),
   openWorkshop: document.querySelector("#open-workshop"),
   openWorkspace: document.querySelector("#open-workspace"),
   stopReply: document.querySelector("#stop-reply"),
@@ -1060,6 +1042,11 @@ function bindUi() {
   });
   els.openSettings.addEventListener("click", () => {
     void openPanelWindow();
+  });
+  els.screenShare.addEventListener("click", () => {
+    // Invoke in this trusted click stack: activation does not cross WebViews.
+    void setScreenVisionEnabled(!state.screenVisionEnabled);
+    closeMenu();
   });
   els.openWorkshop.addEventListener("click", () => {
     void openWorkshopWindow();
@@ -1629,7 +1616,7 @@ async function registerWindowListeners() {
     window.clearTimeout(idleJumpTimer);
     window.clearTimeout(musicEmotionRestoreTimer);
     stopPetPhysics({ restore: false, reschedule: false });
-    stopScreenVisionCapture({ clearRemote: false });
+    stopScreenVisionCapture();
     window.clearTimeout(backendRetryTimer);
     window.clearTimeout(transientEmotionTimer);
     window.clearTimeout(pluginAgentEventDrainTimer);
@@ -1860,9 +1847,17 @@ async function handleSettingsCommand(payload) {
       break;
     case "setScreenVisionEnabled":
       await setScreenVisionEnabled(Boolean(payload.value));
+      lastSettingsCommandResult = {
+        command,
+        ok: state.screenVisionEnabled === Boolean(payload.value),
+        status: state.screenVisionEnabled === Boolean(payload.value) ? "completed" : "failed",
+        reason: state.screenVisionEnabled === Boolean(payload.value) ? "" : screenVisionError || "screen_capture_unavailable",
+        operationId,
+        at: Date.now()
+      };
       break;
-    case "setScreenVisionMode":
-      setScreenVisionMode(payload.value);
+    case "setScreenVisionPacking":
+      setScreenObservationSetting("screenVisionPacking", payload.value);
       break;
     case "setProactiveWakeEnabled":
       setProactiveWakeEnabled(Boolean(payload.value));
@@ -1870,14 +1865,20 @@ async function handleSettingsCommand(payload) {
     case "setProactiveWakeIntervalSec":
       setProactiveWakeIntervalSec(Number(payload.value));
       break;
-    case "setScreenVisionIntervalSec":
-      setScreenVisionIntervalSec(Number(payload.value));
+    case "setScreenVisionSampleIntervalSec":
+      setScreenObservationSetting("screenVisionSampleIntervalSec", Number(payload.value));
+      break;
+    case "setScreenVisionWindowSec":
+      setScreenObservationSetting("screenVisionWindowSec", Number(payload.value));
+      break;
+    case "setScreenVisionMaxEdge":
+      setScreenObservationSetting("screenVisionMaxEdge", Number(payload.value));
       break;
     case "setScreenVisionFrameCount":
-      setScreenVisionFrameCount(Number(payload.value));
+      setScreenObservationSetting("screenVisionFrameCount", Number(payload.value));
       break;
     case "clearScreenVision":
-      await clearScreenVisionWorkspace();
+      clearScreenVisionWorkspace();
       break;
     case "setRestoreLatestOnStartup":
       setRestoreLatestOnStartup(Boolean(payload.value));
@@ -1985,6 +1986,7 @@ async function handleSettingsCommand(payload) {
         scheduleSettingsSnapshot();
         break;
       }
+      if (proactiveWakeRunning) interruptReply({ announce: false });
       if (sending) {
         lastSettingsCommandResult = {
           command,
@@ -2163,12 +2165,9 @@ function buildSettingsSnapshot() {
       desktopContextEnabled: state.desktopContextEnabled,
       clipboardContextEnabled: state.clipboardContextEnabled,
       screenVisionEnabled: state.screenVisionEnabled,
-      screenVisionMode: state.screenVisionMode,
+      ...normalizeScreenObservationSettings(state),
       proactiveWakeEnabled: state.proactiveWakeEnabled,
       proactiveWakeIntervalSec: state.proactiveWakeIntervalSec,
-      screenVisionIntervalSec: state.screenVisionIntervalSec,
-      screenVisionFrameCount: state.screenVisionFrameCount,
-      recommendedScreenVisionIntervalSec: recommendedScreenVisionIntervalSec(state.proactiveWakeIntervalSec),
       hitTestEnabled: state.hitTestEnabled,
       hitboxOverlay: state.hitboxOverlay,
       voiceSpeed: state.voiceSpeed,
@@ -2217,10 +2216,9 @@ function buildSettingsSnapshot() {
       musicPlaying,
       musicPaused,
       screenVision: screenVisionStatus,
-      screenVisionMode: state.screenVisionMode,
-      screenVisionClipId: screenVisionActiveClipId,
       screenVisionError,
-      screenVisionFrameBufferSize: screenVisionRecentFrames.length,
+      screenVisionFrameBufferSize: screenObservation.snapshot(screenObservationScope(), state).length,
+      screenVisionBufferRevision: screenObservation.revision,
       proactiveWake: state.proactiveWakeEnabled ? "enabled" : "off",
       proactiveWakeRunning,
       proactiveWakeLastAt,
@@ -2281,7 +2279,7 @@ function buildCurrentExpressionSnapshot() {
 }
 
 function normalizeState(value) {
-  const incoming = value ?? {};
+  const { screenVisionMode: _retiredMode, screenVisionIntervalSec: _retiredInterval, ...incoming } = value ?? {};
   const scale = clamp(Number(incoming.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
   const _legacySize = isLegacyWindowSize(incoming.width, incoming.height, scale);
   const instanceId = String(incoming.instanceId || "").trim() || LOCAL_DEFAULT_INSTANCE_ID;
@@ -2314,16 +2312,10 @@ function normalizeState(value) {
       incoming.clipboardContextEnabled ?? DEFAULT_STATE.clipboardContextEnabled
     ),
     screenVisionEnabled: Boolean(incoming.screenVisionEnabled ?? DEFAULT_STATE.screenVisionEnabled),
-    screenVisionMode: normalizeScreenVisionMode(incoming.screenVisionMode ?? DEFAULT_STATE.screenVisionMode),
+    ...normalizeScreenObservationSettings(incoming),
     proactiveWakeEnabled: Boolean(incoming.proactiveWakeEnabled ?? DEFAULT_STATE.proactiveWakeEnabled),
     proactiveWakeIntervalSec: normalizeProactiveWakeIntervalSec(
       incoming.proactiveWakeIntervalSec ?? DEFAULT_STATE.proactiveWakeIntervalSec
-    ),
-    screenVisionIntervalSec: normalizeScreenVisionIntervalSec(
-      incoming.screenVisionIntervalSec ?? DEFAULT_STATE.screenVisionIntervalSec
-    ),
-    screenVisionFrameCount: normalizeScreenVisionFrameCount(
-      incoming.screenVisionFrameCount ?? DEFAULT_STATE.screenVisionFrameCount
     ),
     hitTestEnabled: Boolean(incoming.hitTestEnabled ?? DEFAULT_STATE.hitTestEnabled),
     hitboxOverlay: Boolean(incoming.hitboxOverlay ?? DEFAULT_STATE.hitboxOverlay),
@@ -2384,29 +2376,8 @@ function normalizePositiveInteger(value) {
   return Math.round(number);
 }
 
-function normalizeScreenVisionMode(value) {
-  const mode = String(value || DEFAULT_SCREEN_VISION_MODE).trim().toLowerCase();
-  return SCREEN_VISION_MODES.has(mode) ? mode : DEFAULT_SCREEN_VISION_MODE;
-}
-
 function normalizeProactiveWakeIntervalSec(value) {
   return Math.round(clamp(Number(value || PROACTIVE_WAKE_DEFAULT_SEC), PROACTIVE_WAKE_MIN_SEC, PROACTIVE_WAKE_MAX_SEC));
-}
-
-function normalizeScreenVisionIntervalSec(value) {
-  return Math.round(
-    clamp(Number(value || DEFAULT_SCREEN_VISION_INTERVAL_SEC), SCREEN_VISION_INTERVAL_MIN_SEC, SCREEN_VISION_INTERVAL_MAX_SEC)
-  );
-}
-
-function normalizeScreenVisionFrameCount(value) {
-  return Math.round(
-    clamp(
-      Number(value || DEFAULT_SCREEN_VISION_FRAMES_PER_CLIP),
-      SCREEN_VISION_FRAME_COUNT_MIN,
-      SCREEN_VISION_FRAME_COUNT_MAX
-    )
-  );
 }
 
 function normalizeMusicPlayMode(value) {
@@ -2421,12 +2392,6 @@ function normalizeBooleanSetting(value, fallback = false) {
   if (text === "true" || text === "1") return true;
   if (text === "false" || text === "0") return false;
   return Boolean(fallback);
-}
-
-function recommendedScreenVisionIntervalSec(wakeIntervalSec) {
-  const raw = normalizeProactiveWakeIntervalSec(wakeIntervalSec) * 0.75;
-  const rounded = Math.round(raw / 5) * 5;
-  return normalizeScreenVisionIntervalSec(rounded);
 }
 
 function isLegacyWindowSize(width, height, scale) {
@@ -2661,37 +2626,25 @@ async function setScreenVisionEnabled(enabled) {
   state.screenVisionEnabled = Boolean(enabled);
   screenVisionError = "";
   if (state.screenVisionEnabled) {
+    const revision = screenVisionCaptureRevision;
     screenVisionStatus = "starting";
     setRuntimeStatus("正在请求屏幕权限", { mode: "idle" });
     const started = await ensureScreenVisionCapture();
+    if (revision !== screenVisionCaptureRevision || !state.screenVisionEnabled) return;
     if (started) {
       scheduleScreenVisionCapture({ immediate: true });
-      setRuntimeStatus("看屏幕已开启", { mode: "idle" });
+      setRuntimeStatus("看屏幕已开启 · 连续画面直接交给视觉模型", { mode: "idle" });
     } else {
       state.screenVisionEnabled = false;
-      await clearScreenVisionWorkspace({ quiet: true });
+      clearScreenVisionWorkspace({ quiet: true });
       setRuntimeStatus(`看屏幕开启失败：${screenVisionError || "未获得屏幕权限"}`, { mode: "error" });
     }
   } else {
+    if (proactiveWakeRunning) interruptReply({ announce: false });
     stopScreenVisionCapture();
-    await clearScreenVisionWorkspace({ quiet: true });
     setRuntimeStatus("看屏幕已关闭", { mode: "idle" });
   }
   scheduleSave(0);
-  scheduleSettingsSnapshot();
-}
-
-function setScreenVisionMode(value) {
-  state.screenVisionMode = normalizeScreenVisionMode(value);
-  screenVisionLastSubmitAt = 0;
-  screenVisionSkippedClips = 0;
-  scheduleSave(0);
-  setRuntimeStatus(
-    state.screenVisionMode === "direct"
-      ? `看屏幕模式：${getProfileIdentityText("name", CHARACTER_NAME)} 直看最近截图`
-      : "看屏幕模式：先整理屏幕印象",
-    { mode: "idle" }
-  );
   scheduleSettingsSnapshot();
 }
 
@@ -2700,11 +2653,12 @@ function setProactiveWakeEnabled(enabled) {
   if (state.proactiveWakeEnabled) {
     proactiveWakeNextAllowedAt = Date.now() + getProactiveWakeIntervalMs();
     scheduleProactiveWake({ immediate: false });
-    setRuntimeStatus("主动搭话已开启", { mode: "idle" });
+    setRuntimeStatus("适度主动已开启 · 模型可选择安静", { mode: "idle" });
   } else {
     window.clearTimeout(proactiveWakeTimer);
     proactiveWakeTimer = 0;
     proactiveWakeNextAllowedAt = 0;
+    if (proactiveWakeRunning) interruptReply({ announce: false });
     proactiveWakeRunning = false;
     setRuntimeStatus("主动搭话已关闭", { mode: "idle" });
   }
@@ -2715,33 +2669,19 @@ function setProactiveWakeEnabled(enabled) {
 function setProactiveWakeIntervalSec(value) {
   state.proactiveWakeIntervalSec = normalizeProactiveWakeIntervalSec(value);
   proactiveWakeNextAllowedAt = Date.now() + getProactiveWakeIntervalMs();
-  const recommended = recommendedScreenVisionIntervalSec(state.proactiveWakeIntervalSec);
-  if (!Number.isFinite(Number(state.screenVisionIntervalSec))) {
-    state.screenVisionIntervalSec = recommended;
-  }
   scheduleSave(0);
   scheduleProactiveWake({ immediate: false });
-  setRuntimeStatus(`主动搭话间隔：${state.proactiveWakeIntervalSec} 秒`, { mode: "idle" });
+  setRuntimeStatus(`主动观察评估间隔：${state.proactiveWakeIntervalSec} 秒（不强制开口）`, { mode: "idle" });
   scheduleSettingsSnapshot();
 }
 
-function setScreenVisionIntervalSec(value) {
-  state.screenVisionIntervalSec = normalizeScreenVisionIntervalSec(value);
+function setScreenObservationSetting(key, value) {
+  const normalized = normalizeScreenObservationSettings({ ...state, [key]: value });
+  Object.assign(state, normalized);
+  screenObservation.clear();
+  if (state.screenVisionEnabled) scheduleScreenVisionCapture({ immediate: true });
   scheduleSave(0);
-  setRuntimeStatus(`视觉摘要间隔：${state.screenVisionIntervalSec} 秒`, { mode: "idle" });
-  scheduleSettingsSnapshot();
-}
-
-function setScreenVisionFrameCount(value) {
-  state.screenVisionFrameCount = normalizeScreenVisionFrameCount(value);
-  if (screenVisionFrames.length > state.screenVisionFrameCount) {
-    screenVisionFrames = screenVisionFrames.slice(-state.screenVisionFrameCount);
-  }
-  if (screenVisionRecentFrames.length > state.screenVisionFrameCount) {
-    screenVisionRecentFrames = screenVisionRecentFrames.slice(-state.screenVisionFrameCount);
-  }
-  scheduleSave(0);
-  setRuntimeStatus(`屏幕帧数：${state.screenVisionFrameCount} 张`, { mode: "idle" });
+  setRuntimeStatus("屏幕观察配置已保存，下次采样生效", { mode: "idle" });
   scheduleSettingsSnapshot();
 }
 
@@ -5547,6 +5487,7 @@ async function resetVisuals() {
 
 async function startNewSession() {
   interruptReply({ announce: false });
+  screenObservation.clear();
   state.sessionId = generateSessionId();
   persistCurrentCharacterRuntimeState();
   lastTurnSignature = "";
@@ -6584,275 +6525,166 @@ async function collectClipboardContext() {
   }
 }
 
+function screenObservationScope() {
+  const scope = JSON.stringify([state.backendUrl, state.boundBotId, getProfileUserId(), getCurrentCharacterPackId(), state.sessionId]);
+  if (screenObservation.scope && screenObservation.scope !== scope) screenObservation.clear();
+  return scope;
+}
+
 function scheduleScreenVisionCapture({ immediate = false } = {}) {
   window.clearTimeout(screenVisionTimer);
   screenVisionTimer = 0;
-  if (!isTauriRuntime || !state.screenVisionEnabled) {
-    screenVisionStatus = state.screenVisionEnabled ? screenVisionStatus : "off";
-    return;
-  }
-
-  const delay = immediate ? 0 : SCREEN_VISION_FRAME_INTERVAL_MS;
+  if (!isTauriRuntime || !state.screenVisionEnabled) return;
+  const delay = immediate ? 0 : normalizeScreenObservationSettings(state).screenVisionSampleIntervalSec * 1000;
   screenVisionTimer = window.setTimeout(async () => {
     screenVisionTimer = 0;
-    await captureScreenVisionFrame();
-    scheduleScreenVisionCapture();
+    try {
+      await captureScreenVisionFrame();
+    } catch (error) {
+      screenVisionStatus = "error";
+      screenVisionError = formatError(error).slice(0, 160);
+      scheduleSettingsSnapshot();
+    } finally {
+      scheduleScreenVisionCapture();
+    }
   }, delay);
 }
 
 async function ensureScreenVisionCapture() {
-  if (screenVisionStream && screenVisionVideo) {
-    screenVisionStatus = "watching";
-    return true;
-  }
+  if (screenVisionStream && screenVisionVideo) return true;
+  if (screenVisionCapturePending) return screenVisionCapturePending;
   if (!navigator.mediaDevices?.getDisplayMedia) {
     screenVisionStatus = "unsupported";
     screenVisionError = "当前 WebView 不支持屏幕捕获";
     return false;
   }
-  try {
-    screenVisionStream = await navigator.mediaDevices.getDisplayMedia({
-      audio: false,
-      video: {
-        frameRate: { ideal: 2, max: 4 },
-        width: { max: 1280 },
-        height: { max: 720 }
+  const revision = screenVisionCaptureRevision;
+  const pending = (async () => {
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      if (!state.screenVisionEnabled || revision !== screenVisionCaptureRevision) {
+        stream.getTracks().forEach((track) => track.stop());
+        return false;
       }
-    });
-    const [track] = screenVisionStream.getVideoTracks();
-    if (track) {
-      track.addEventListener("ended", () => {
-        stopScreenVisionCapture({ clearRemote: true });
+      const video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      await video.play();
+      if (!state.screenVisionEnabled || revision !== screenVisionCaptureRevision) {
+        stream.getTracks().forEach((track) => track.stop());
+        return false;
+      }
+      screenVisionStream = stream;
+      screenVisionVideo = video;
+      screenVisionCanvas = document.createElement("canvas");
+      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        if (screenVisionStream !== stream) return;
         state.screenVisionEnabled = false;
+        stopScreenVisionCapture();
         scheduleSave(0);
         scheduleSettingsSnapshot();
       });
+      screenVisionStatus = "watching";
+      screenVisionError = "";
+      return true;
+    } catch (error) {
+      stream?.getTracks().forEach((track) => track.stop());
+      if (revision === screenVisionCaptureRevision) {
+        screenVisionStatus = "error";
+        screenVisionError = error?.name === "InvalidStateError"
+          ? "请在桌宠弹出的快捷菜单点击「屏幕共享」后选择共享区域（需要采集窗口中的点击授权）"
+          : formatError(error).slice(0, 160);
+        if (error?.name === "InvalidStateError") showScreenCaptureActivationPrompt();
+      }
+      return false;
     }
-    screenVisionVideo = document.createElement("video");
-    screenVisionVideo.muted = true;
-    screenVisionVideo.playsInline = true;
-    screenVisionVideo.srcObject = screenVisionStream;
-    await screenVisionVideo.play();
-    screenVisionCanvas = document.createElement("canvas");
-    screenVisionSampleCanvas = document.createElement("canvas");
-    screenVisionStatus = "watching";
-    screenVisionError = "";
-    return true;
-  } catch (error) {
-    screenVisionStatus = "error";
-    screenVisionError = formatError(error).slice(0, 160);
-    stopScreenVisionCapture({ clearRemote: false });
-    return false;
+  })();
+  screenVisionCapturePending = pending;
+  try {
+    return await pending;
+  } finally {
+    if (screenVisionCapturePending === pending) screenVisionCapturePending = null;
   }
+}
+
+function showScreenCaptureActivationPrompt() {
+  showMenu({ x: window.innerWidth - 20, y: 40, source: "pointer" });
+  if (isTauriRuntime) void currentWindow.setFocus().catch(() => {});
 }
 
 async function captureScreenVisionFrame() {
   if (!state.screenVisionEnabled) return;
-  if (!(await ensureScreenVisionCapture())) return;
-  if (!screenVisionVideo?.videoWidth || !screenVisionVideo?.videoHeight) return;
-
-  const frame = readCompressedScreenVisionFrame();
-  if (!frame) return;
-  const frameCount = normalizeScreenVisionFrameCount(state.screenVisionFrameCount);
-  pushScreenVisionRecentFrame(frame, frameCount);
-  if (state.screenVisionMode === "direct") {
-    screenVisionStatus = "watching";
-    scheduleSettingsSnapshot(120);
+  const revision = screenVisionCaptureRevision;
+  const scope = screenObservationScope();
+  if (!(await ensureScreenVisionCapture())) {
+    if (revision === screenVisionCaptureRevision) {
+      state.screenVisionEnabled = false;
+      screenObservation.clear();
+      scheduleSave(0);
+      scheduleSettingsSnapshot();
+    }
     return;
   }
-  screenVisionFrames.push(frame);
-  if (screenVisionFrames.length > frameCount) {
-    screenVisionFrames = screenVisionFrames.slice(-frameCount);
-  }
-  if (screenVisionFrames.length < frameCount) return;
-
-  const now = Date.now();
-  if (now - screenVisionLastSubmitAt < state.screenVisionIntervalSec * 1000) return;
-  await maybeSubmitScreenVisionClip();
-}
-
-function pushScreenVisionRecentFrame(frame, frameCount = normalizeScreenVisionFrameCount(state.screenVisionFrameCount)) {
+  if (!state.screenVisionEnabled || revision !== screenVisionCaptureRevision || scope !== screenObservationScope()) return;
+  if (!screenVisionVideo?.videoWidth || !screenVisionVideo?.videoHeight) return;
+  const frame = readCompressedScreenVisionFrame();
   if (!frame) return;
-  screenVisionRecentFrames.push(frame);
-  if (screenVisionRecentFrames.length > frameCount) {
-    screenVisionRecentFrames = screenVisionRecentFrames.slice(-frameCount);
-  }
+  screenObservation.push(frame, scope, state);
+  screenVisionStatus = "watching";
+  screenVisionError = "";
+  scheduleSettingsSnapshot(120);
 }
 
-function latestDesktopScreenFramesForThink() {
-  if (!state.screenVisionEnabled || state.screenVisionMode !== "direct") return [];
-  const frameCount = normalizeScreenVisionFrameCount(state.screenVisionFrameCount);
-  return screenVisionRecentFrames.slice(-frameCount).map((frame) => ({
-    captured_at: frame.captured_at,
-    width: frame.width,
-    height: frame.height,
-    data_url: frame.data_url
-  }));
+async function latestDesktopScreenFramesForThink() {
+  if (!state.screenVisionEnabled) return [];
+  const scope = screenObservationScope();
+  const revision = screenObservation.revision;
+  const frames = screenObservation.snapshot(scope, state);
+  const packed = await packScreenObservation(frames, state);
+  if (!state.screenVisionEnabled || scope !== screenObservationScope() || revision !== screenObservation.revision) return [];
+  return packed;
 }
 
 function readCompressedScreenVisionFrame() {
   const sourceWidth = screenVisionVideo.videoWidth;
   const sourceHeight = screenVisionVideo.videoHeight;
   if (!sourceWidth || !sourceHeight) return null;
-  const scale = Math.min(1, SCREEN_VISION_MAX_EDGE / Math.max(sourceWidth, sourceHeight));
+  const maxEdge = normalizeScreenObservationSettings(state).screenVisionMaxEdge;
+  const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
   const width = Math.max(1, Math.round(sourceWidth * scale));
   const height = Math.max(1, Math.round(sourceHeight * scale));
   screenVisionCanvas.width = width;
   screenVisionCanvas.height = height;
   const ctx = screenVisionCanvas.getContext("2d", { alpha: false });
-  if (!ctx) return null;
+  if (!ctx) throw new Error("screen_canvas_unavailable");
   ctx.drawImage(screenVisionVideo, 0, 0, width, height);
-
-  const sample = sampleScreenVisionFrame(screenVisionCanvas);
-  const dataUrl = screenVisionCanvas.toDataURL("image/jpeg", SCREEN_VISION_JPEG_QUALITY);
   return {
-    captured_at: Math.floor(Date.now() / 1000),
+    captured_at: Date.now() / 1000,
     width,
     height,
-    data_url: dataUrl,
-    sample
+    data_url: screenVisionCanvas.toDataURL("image/jpeg", SCREEN_VISION_JPEG_QUALITY)
   };
 }
 
-function sampleScreenVisionFrame(sourceCanvas) {
-  screenVisionSampleCanvas.width = SCREEN_VISION_SAMPLE_WIDTH;
-  screenVisionSampleCanvas.height = SCREEN_VISION_SAMPLE_HEIGHT;
-  const sampleCtx = screenVisionSampleCanvas.getContext("2d", { alpha: false });
-  if (!sampleCtx) return [];
-  sampleCtx.drawImage(sourceCanvas, 0, 0, SCREEN_VISION_SAMPLE_WIDTH, SCREEN_VISION_SAMPLE_HEIGHT);
-  const data = sampleCtx.getImageData(0, 0, SCREEN_VISION_SAMPLE_WIDTH, SCREEN_VISION_SAMPLE_HEIGHT).data;
-  const sample = [];
-  for (let i = 0; i < data.length; i += 4) {
-    sample.push(Math.round((data[i] + data[i + 1] + data[i + 2]) / 3));
-  }
-  return sample;
-}
-
-async function maybeSubmitScreenVisionClip() {
-  if (screenVisionStatus === "uploading" || screenVisionStatus === "observing") {
-    return;
-  }
-  const frames = screenVisionFrames.slice(-normalizeScreenVisionFrameCount(state.screenVisionFrameCount));
-  const first = frames[0];
-  const last = frames[frames.length - 1];
-  const foreground = normalizeForegroundContext(lastDesktopForeground) || emptyForegroundContext("unavailable");
-  const foregroundKey = `${foreground.process_name}|${foreground.title}`;
-  const diff = screenVisionLastSample ? sampleDifference(screenVisionLastSample, last.sample) : 100;
-  const foregroundChanged = foregroundKey && foregroundKey !== screenVisionLastForegroundKey;
-  const shouldSubmit =
-    foregroundChanged ||
-    diff >= SCREEN_VISION_DIFF_THRESHOLD ||
-    screenVisionSkippedClips >= SCREEN_VISION_FORCE_AFTER_SKIPS;
-
-  if (!shouldSubmit) {
-    screenVisionSkippedClips += 1;
-    screenVisionFrames = frames.slice(-1);
-    screenVisionStatus = "quiet";
-    scheduleSettingsSnapshot(120);
-    return;
-  }
-
-  screenVisionLastSample = last.sample;
-  screenVisionLastForegroundKey = foregroundKey;
-  screenVisionLastSubmitAt = Date.now();
-  screenVisionSkippedClips = 0;
-  screenVisionStatus = "uploading";
-  scheduleSettingsSnapshot(120);
-
-  try {
-    const response = await backendFetch(buildBackendEndpointUrl("screen_vision_clip", "/desktop-pet/vision/clip", { t: Date.now() }), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-      connectTimeout: 20_000,
-      body: JSON.stringify({
-        user_id: state.sessionId,
-        real_user_id: getProfileUserId(),
-        ...buildBackendCharacterContext(),
-        mode: "background",
-        foreground,
-        captured_start_ts: first.captured_at,
-        captured_end_ts: last.captured_at,
-        frames: frames.map((frame) => ({
-          captured_at: frame.captured_at,
-          width: frame.width,
-          height: frame.height,
-          data_url: frame.data_url
-        }))
-      })
-    });
-    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
-    const payload = await response.json();
-    screenVisionActiveClipId = String(payload?.clip?.clip_id || "");
-    screenVisionStatus = "watching";
-    screenVisionError = "";
-  } catch (error) {
-    screenVisionStatus = "error";
-    screenVisionError = formatError(error).slice(0, 160);
-  } finally {
-    screenVisionFrames = frames.slice(-1);
-    scheduleSettingsSnapshot();
-  }
-}
-
-function sampleDifference(left, right) {
-  if (!Array.isArray(left) || !Array.isArray(right) || !left.length || left.length !== right.length) return 100;
-  let total = 0;
-  for (let i = 0; i < left.length; i += 1) {
-    total += Math.abs(Number(left[i] || 0) - Number(right[i] || 0));
-  }
-  return total / left.length;
-}
-
-function stopScreenVisionCapture({ clearRemote = true } = {}) {
+function stopScreenVisionCapture() {
+  screenVisionCaptureRevision += 1;
   window.clearTimeout(screenVisionTimer);
   screenVisionTimer = 0;
-  if (screenVisionStream) {
-    for (const track of screenVisionStream.getTracks()) {
-      try {
-        track.stop();
-      } catch {
-        // Ignore capture cleanup errors.
-      }
-    }
-  }
+  const stream = screenVisionStream;
   screenVisionStream = null;
+  stream?.getTracks().forEach((track) => track.stop());
   screenVisionVideo = null;
   screenVisionCanvas = null;
-  screenVisionSampleCanvas = null;
-  screenVisionFrames = [];
-  screenVisionRecentFrames = [];
-  screenVisionLastSample = null;
-  screenVisionLastForegroundKey = "";
-  screenVisionSkippedClips = 0;
+  screenObservation.clear();
   screenVisionStatus = "off";
-  screenVisionActiveClipId = "";
-  if (clearRemote) {
-    void clearScreenVisionWorkspace({ quiet: true });
-  }
 }
 
-async function clearScreenVisionWorkspace({ quiet = false } = {}) {
-  screenVisionActiveClipId = "";
-  try {
-    await backendFetch(buildBackendEndpointUrl("screen_vision_clear", "/desktop-pet/vision/clear", { t: Date.now() }), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-      connectTimeout: 5000,
-      body: JSON.stringify({
-        user_id: state.sessionId,
-        real_user_id: getProfileUserId(),
-        ...buildBackendCharacterContext(),
-        scope: "session"
-      })
-    });
-    if (!quiet) setRuntimeStatus("屏幕印象已清空", { mode: "idle" });
-  } catch (error) {
-    if (!quiet) setRuntimeStatus(`清空失败：${formatError(error)}`, { mode: "error" });
-  } finally {
-    scheduleSettingsSnapshot();
-  }
+function clearScreenVisionWorkspace({ quiet = false } = {}) {
+  screenObservation.clear();
+  if (!quiet) setRuntimeStatus("最近屏幕画面已清空", { mode: "idle" });
+  scheduleSettingsSnapshot();
 }
 
 function normalizeForegroundContext(value) {
@@ -6909,6 +6741,7 @@ function interruptReply({ announce = false, reason = "user_stopped_reply" } = {}
   }
   activeTurnToken += 1;
   sending = false;
+  proactiveWakeRunning = false;
 
   if (hasRealtimeVoiceCallPlayback() || hasRealtimeVoiceCallCommittedTurn()) {
     void cancelRealtimeVoiceCallResponse(reason);
@@ -7046,6 +6879,7 @@ async function sendMessage(text) {
   if (!trimmed) return;
 
   rememberInputHistory(trimmed);
+  if (proactiveWakeRunning) interruptReply({ announce: false });
   if (sending) {
     await submitTurnSteer(trimmed);
     return;
@@ -7235,6 +7069,7 @@ function canStartProactiveWake() {
 
 async function sendProactiveWake() {
   const turnToken = ++activeTurnToken;
+  let didReply = false;
   activeTurnLatencyTrace = createTurnLatencyTrace("proactive", turnToken);
   const startedAt = Date.now();
   proactiveWakeLastAt = startedAt;
@@ -7255,28 +7090,35 @@ async function sendProactiveWake() {
       if (!healthy) return;
     }
     if (!isTurnActive(turnToken)) return;
+    const desktopScreenFrames = await latestDesktopScreenFramesForThink();
+    if (!isTurnActive(turnToken)) return;
+    if (state.screenVisionEnabled && !desktopScreenFrames.length) {
+      screenVisionStatus = screenVisionError ? "error" : "waiting";
+      scheduleSettingsSnapshot();
+      return;
+    }
     const stream = sendThinkStream(buildProactiveWakeMessage(), turnToken, {
       turnKind: "desktop_pet_proactive",
       transientUserMessage: true,
-      desktopScreenFrames: latestDesktopScreenFramesForThink()
+      desktopScreenFrames
     });
-    await processThinkStream(stream, turnToken);
+    didReply = await processThinkStream(stream, turnToken, { backgroundObservation: true });
     proactiveWakeLastAt = startedAt;
   } catch (error) {
     if (!isTurnActive(turnToken) || isAbortLike(error)) return;
     setRuntimeStatus(`主动搭话暂时失败：${formatError(error)}`, { mode: "error" });
   } finally {
     markTurnLatency("turn-finished");
-    proactiveWakeRunning = false;
     if (isTurnActive(turnToken)) {
+      proactiveWakeRunning = false;
       sending = false;
-      if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+      if (didReply && state.currentEmotion === resolveEmotionEntry("thinking").id) {
         setRestingPetEmotion();
       }
-      if (!els.bubble.classList.contains("visible")) {
+      if (didReply && !els.bubble.classList.contains("visible")) {
         setPetMotion("idle");
       }
-      scheduleMusicEmotionRestore();
+      if (didReply) scheduleMusicEmotionRestore();
       updateActivityControls();
       scheduleSettingsSnapshot();
     }
@@ -7289,7 +7131,7 @@ function buildProactiveWakeMessage() {
     "proactiveWakePrompt",
     "主人暂时没有说话。你像坐在旁边陪他一样，自然地轻声搭一句话。"
   );
-  return `${prompt}\n\n${PROACTIVE_WAKE_STYLE_GUARD}`;
+  return `角色搭话风格参考（不代表必须开口）：\n${prompt}\n\n${MODERATE_PROACTIVE_PROMPT}`;
 }
 
 async function* readNdjsonEvents(response) {
@@ -7372,7 +7214,26 @@ async function* sendThinkStream(message, turnToken, options = {}) {
   } else {
     markTurnLatency("lyrics-hydration-background");
   }
-  if (!isTurnActive(turnToken)) return;
+  if (!isTurnActive(turnToken)) {
+    window.clearTimeout(timeoutId);
+    if (thinkController === controller) thinkController = null;
+    return;
+  }
+  let desktopScreenFrames;
+  try {
+    desktopScreenFrames = Array.isArray(options.desktopScreenFrames)
+      ? options.desktopScreenFrames
+      : await latestDesktopScreenFramesForThink();
+  } catch (error) {
+    window.clearTimeout(timeoutId);
+    if (thinkController === controller) thinkController = null;
+    throw error;
+  }
+  if (!isTurnActive(turnToken)) {
+    window.clearTimeout(timeoutId);
+    if (thinkController === controller) thinkController = null;
+    return;
+  }
   const requestPayload = attachDesktopCareContext({
     user_id: state.sessionId,
     real_user_id: getProfileUserId(),
@@ -7385,7 +7246,7 @@ async function* sendThinkStream(message, turnToken, options = {}) {
     client_capabilities: buildClientCapabilities(),
     current_visual: buildCurrentVisual(),
     desktop_context: desktopContext,
-    desktop_screen_frames: Array.isArray(options.desktopScreenFrames) ? options.desktopScreenFrames : [],
+    desktop_screen_frames: desktopScreenFrames,
     desktop_activity: buildDesktopMusicActivity()
   }, buildDesktopCareContext(), getCareFeatureStatus());
   const requestInit = {
@@ -7422,7 +7283,7 @@ async function* sendThinkStream(message, turnToken, options = {}) {
   }
 }
 
-async function processThinkStream(stream, turnToken) {
+async function processThinkStream(stream, turnToken, { backgroundObservation = false } = {}) {
   let partialSpeech = "";
   let rendered = false;
   let streamErrored = false;
@@ -7435,11 +7296,11 @@ async function processThinkStream(stream, turnToken) {
 
     if (type === "turn_start") {
       markTurnLatency("stream-turn-start");
-      if (!rendered) {
+      if (!rendered && !backgroundObservation) {
         showThinking();
       }
     } else if (type === "ui") {
-      applyPayloadEmotion(event);
+      if (!backgroundObservation || rendered) applyPayloadEmotion(event);
     } else if (type === "speech_chunk") {
       const chunk = String(event?.text || "");
       if (chunk) {
@@ -7478,6 +7339,10 @@ async function processThinkStream(stream, turnToken) {
       setRuntimeStatus(text, { mode: "working" });
     } else if (type === "final" || type === "final_ui") {
       const payload = event?.payload || event;
+      if (payload?._deliberate_silence) {
+        partialSpeech = "";
+        continue;
+      }
       const canonicalSpeech = String(payload?.speech || payload?.text || "").trim();
       const finalSegments = canonicalSpeech
         ? splitSpeechText(canonicalSpeech)
@@ -7536,6 +7401,7 @@ function renderPayload(
   } = {}
 ) {
   if (!payload || typeof payload !== "object") return false;
+  if (payload._deliberate_silence) return false;
   applyPayloadCareSnapshot(payload, { source });
   applyPayloadEmotion(payload, { persist: persistEmotion });
   applyPayloadActivity(payload);
@@ -8043,7 +7909,6 @@ function normalizeSegments(value) {
 function buildClientCapabilities() {
   const capabilities = [...BASE_CAPABILITIES, AUDIO_PLAYBACK_CAPABILITY];
   if (state.desktopContextEnabled) capabilities.push("desktop_context");
-  if (state.screenVisionEnabled && state.screenVisionMode === "summary") capabilities.push("screen_vision");
   return capabilities;
 }
 

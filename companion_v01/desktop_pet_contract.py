@@ -45,10 +45,6 @@ DESKTOP_PET_ENDPOINTS = {
     "care_action": "/desktop-pet/care/action",
     "care_snapshot": "/desktop-pet/care/snapshot",
     "care_action": "/desktop-pet/care/action",
-    "screen_vision_clip": "/desktop-pet/vision/clip",
-    "screen_vision_latest": "/desktop-pet/vision/latest",
-    "screen_vision_reaction": "/desktop-pet/vision/reaction",
-    "screen_vision_clear": "/desktop-pet/vision/clear",
     "music_lyrics": "/capabilities/music/lyrics",
 }
 

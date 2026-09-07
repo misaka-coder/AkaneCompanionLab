@@ -257,7 +257,7 @@ class VisionObservationServiceTests(unittest.TestCase):
         self.assertEqual(card["concrete_details"], ["页面中央是手写解题过程", "右上角有红色标记"])
         self.assertEqual(card["uncertainty"], ["小字看不清"])
 
-    def test_screen_clip_uses_responses_image_input_for_responses_protocol(self) -> None:
+    def test_shared_vision_request_uses_responses_image_input(self) -> None:
         temp_dir, root = self._build_assets_root()
         self.addCleanup(temp_dir.cleanup)
 
@@ -300,10 +300,10 @@ class VisionObservationServiceTests(unittest.TestCase):
             responses=SimpleNamespace(create=create_response),
         )
 
-        observation = service.analyze_screen_clip(
-            frames=[{"data_url": "data:image/png;base64,abc"}],
-            context={"foreground": {"title": "Akane"}},
-        )
+        observation = json.loads(service._request_vision_text(
+            system_text="一双眼睛", user_text="看看这张图片",
+            image_urls=["data:image/png;base64,abc"], temperature=0.2,
+        ))
 
         self.assertEqual(observation["summary"], "一位猫耳少女正闭着眼打瞌睡。")
         self.assertEqual(len(calls), 1)

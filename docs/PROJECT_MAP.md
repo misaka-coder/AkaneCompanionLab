@@ -70,7 +70,7 @@ Each file builds a FastAPI `APIRouter` with a `build_*_router()` function.
 |------|--------|-------------------|
 | `routes/core.py` | `/resource-manifest`, `/capabilities`, `/character-packs` | Resource manifest + capability listing |
 | `routes/think.py` | `/think`, `/think_once` | Think endpoints: dialogue, streaming, tool orchestration. Also `build_think_response_stream`. |
-| `routes/desktop_pet.py` | `/desktop-pet/health`, `/desktop-pet/diagnostics`, `/desktop-pet/workspace/summary`, `/desktop-pet/workspace/*`, `/desktop-pet/music/*`, `/desktop-pet/screen-vision/*`, `/desktop-pet/vision-observation` | All desktop-pet-specific health, diagnostics, workspace panel, music timeline, screen vision. |
+| `routes/desktop_pet.py` | `/desktop-pet/health`, `/desktop-pet/diagnostics`, `/desktop-pet/workspace/summary`, `/desktop-pet/workspace/*`, `/desktop-pet/music/*` | Desktop-pet health, diagnostics, workspace panel and music timeline. Retired screen-summary `/desktop-pet/vision/*` routes return 410; real screen images enter `/think`. |
 | `routes/voice.py` | `/tts`, `/asr` | TTS synthesis, ASR recognition |
 | `routes/gifts.py` | `/gifts/*` | Gift asset upload, listing, delivery |
 | `routes/qq.py` | `/qq/*` | QQ gateway (NapCat) integration |
@@ -154,7 +154,7 @@ Each file owns a specific business domain. Most are classes instantiated by `Aka
 | `companion_v01/desktop_pet_contract.py` | **Contract constants.** `DESKTOP_PET_CONTRACT_VERSION`, `DESKTOP_PET_DEFAULT_OUTFIT`, `DESKTOP_PET_DEFAULT_EMOTION`, capability and endpoint lists. `build_desktop_pet_diagnostics_payload` — assembles the diagnostics response from engine state. `decorate_resource_manifest_for_desktop_pet` — decorates resource manifest with client-specific fields. |
 | `companion_v01/desktop_pet_engine.py` | Desktop-pet-specific engine functions: audio attachment ingest, workspace panel building, local path import, file URL decoration. Workspace audio dedup: `dedupe_desktop_workspace_audio_attachment_cards()` (ready-priority, origin-name+file-size+file-ext matching), `find_existing_desktop_audio_attachment_duplicate()`. |
 | `companion_v01/desktop_context_engine.py` | Desktop context gathering: active window, clipboard (safely, no content in snapshot), file system events. |
-| `companion_v01/desktop_screen_vision.py` | `DesktopScreenVisionWorkspace`. Screen capture pipeline: frame capture, diff detection, OCR, vision model observation. |
+| `desktop_pet_next/src/screen-observation.js` | Direct temporal screen input: bounded client buffer, ordered frames/contact sheet plus latest frame. Current `/think` uses the normal character/vision turn. Legacy summary workspace deleted; see `desktop_screen_observation_direct_v1.md`. |
 | `companion_v01/desktop_music_timeline.py` | `DesktopMusicTimelineService`. Music timeline management: queue, lyrics, progress, mode. |
 | `companion_v01/vision_service.py` | Vision model service: image analysis, description generation. |
 | `companion_v01/vision_observation_router.py` | Routes vision observations to the right handler (screen vision, gift images, etc.). |

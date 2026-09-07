@@ -16,6 +16,7 @@ import {
   createControlCenterRuntimeSnapshot
 } from "../control-center/data-sources.js";
 import { bindInstanceStorage, getInstanceStorageItem } from "../instance-storage.js";
+import { SCREEN_OBSERVATION_COMMANDS } from "../screen-observation.js";
 import {
   createControlCenterViewModel,
   isObservedActionConfirmation,
@@ -27,6 +28,7 @@ import { createQqSetupController, isQqSetupAction, QQ_SETUP_ACTIONS } from "./qq
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const OBSERVED_ACTION_IDS = new Set([
+  ...Object.keys(SCREEN_OBSERVATION_COMMANDS),
   "chat.new",
   "chat.send",
   "chat.stop",
@@ -445,7 +447,9 @@ export function createControlCenterBridge(options = {}) {
 
 async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, readCurrentSnapshot) {
   const startedAt = Date.now();
-  const timeoutMs = voicePlaybackAction(actionId)
+  const timeoutMs = actionId === "perception.screenVision.setEnabled" && payload.value
+    ? 60_000
+    : voicePlaybackAction(actionId)
     ? VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS
     : MEDIA_CONTROL_ACTION_IDS.has(actionId)
       ? MUSIC_PLAYBACK_CONFIRM_TIMEOUT_MS

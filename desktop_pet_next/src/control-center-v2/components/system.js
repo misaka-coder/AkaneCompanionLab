@@ -1,6 +1,7 @@
 import { escapeHtml } from "../dom.js";
 import { actionPhase, renderActionButton } from "./action-button.js";
 import { renderQqSetup } from "./qq-setup.js";
+import { renderPerception } from "./perception.js";
 
 export function renderSystem(state) {
   const vm = state.viewModel;
@@ -8,6 +9,7 @@ export function renderSystem(state) {
   if (!system?.available) {
     return `
       ${renderQqSetup(state)}
+      ${renderPerception(state)}
       <section class="empty-state glass-panel">
         <span aria-hidden="true">⌁</span>
         <h2>还没有可用的诊断数据</h2>
@@ -36,6 +38,7 @@ export function renderSystem(state) {
 
       <div class="system-layout">
         <div class="system-main-column">
+          ${renderPerception(state)}
           <section class="system-panel glass-panel">
             <div class="system-panel-head"><div><p class="eyebrow">SERVICE CHECKS</p><h3>服务连接</h3></div><span class="mini-chip">最近一次读取</span></div>
             ${system.services.length ? `<div class="system-service-list">${system.services.map(renderService).join("")}</div>` : renderInlineEmpty("后端没有返回服务检查结果")}

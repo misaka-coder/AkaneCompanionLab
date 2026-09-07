@@ -1169,6 +1169,10 @@ def prepare_context(
     generation_context["prompt_profile"] = prompt_profile.to_public_dict()
     generation_context["domain_profile"] = domain_profile.to_public_dict()
     generation_context["prompt_scope"] = normalized_prompt_scope
+    # Host-only normalization flag: never a second prompt profile/cache family.
+    generation_context["allow_deliberate_silence"] = bool(
+        current_input_transient and client_context.effective_mode == ClientMode.DESKTOP_PET
+    )
     execution_receipts = getattr(capability_selection, "execution_receipts", {})
     if isinstance(execution_receipts, dict) and execution_receipts:
         generation_context[TOOL_EXECUTION_RECEIPTS_FIELD] = {

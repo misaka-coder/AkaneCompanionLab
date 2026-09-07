@@ -605,78 +605,25 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(captured, {})
 
-    def test_desktop_pet_router_handles_screen_vision_workspace(self) -> None:
-        runtime = FakeRuntimeMetrics()
-        stored: list[dict[str, Any]] = []
-
-        def submit_clip(**kwargs):
-            clip = {
-                "clip_id": "screen-1",
-                "status": "pending",
-                "frame_count": len(kwargs.get("frames") or []),
-            }
-            stored.append(clip)
-            return clip
-
-        def list_latest(**_kwargs):
-            return list(stored)
-
-        def clear(**_kwargs):
-            count = len(stored)
-            stored.clear()
-            return {"ok": True, "removed": count}
-
-        engine = SimpleNamespace(
-            submit_desktop_screen_vision_clip=submit_clip,
-            list_desktop_screen_vision_observations=list_latest,
-            get_desktop_screen_vision_clip=lambda **_kwargs: stored[0] if stored else None,
-            build_desktop_screen_vision_reaction=lambda **_kwargs: {
-                "ok": True,
-                "speech": "刚刚这一下挺有意思的。",
-                "emotion": "开心",
-                "skip": False,
-            },
-            clear_desktop_screen_vision_observations=clear,
-        )
+    def test_desktop_pet_router_retires_screen_summary_endpoints(self) -> None:
         app = FastAPI()
-        app.include_router(
-            build_desktop_pet_router(
-                engine=engine,
-                config_module=SimpleNamespace(DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES=1024),
-                runtime_metrics=runtime,
-                log_event=lambda *_args, **_kwargs: None,
-                resolve_identity_from_query=resolve_query,
-                resolve_identity_from_payload=resolve_payload,
-            )
-        )
+        app.include_router(build_desktop_pet_router(
+            engine=SimpleNamespace(),
+            config_module=SimpleNamespace(DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES=1024),
+            runtime_metrics=FakeRuntimeMetrics(),
+            log_event=lambda *_args, **_kwargs: None,
+            resolve_identity_from_query=resolve_query,
+            resolve_identity_from_payload=resolve_payload,
+        ))
         client = TestClient(app)
+        for method, endpoint in [("POST", "clip"), ("GET", "latest"), ("POST", "reaction"), ("POST", "clear")]:
+            with self.subTest(endpoint=endpoint):
+                response = client.request(method, "/desktop-pet/vision/" + endpoint)
+                self.assertEqual(response.status_code, 410)
+                self.assertFalse(response.json()["ok"])
+                self.assertEqual(response.json()["reason"], "desktop_screen_summary_retired")
+                self.assertEqual(response.json()["replacement"], "think.desktop_screen_frames")
 
-        submit_response = client.post(
-            "/desktop-pet/vision/clip",
-            json={
-                "user_id": "desktop",
-                "real_user_id": "master",
-                "frames": [{"data_url": "data:image/jpeg;base64,abc"}],
-            },
-        )
-        latest_response = client.get("/desktop-pet/vision/latest?user_id=desktop&real_user_id=master")
-        reaction_response = client.post(
-            "/desktop-pet/vision/reaction",
-            json={"user_id": "desktop", "real_user_id": "master", "clip_id": "screen-1"},
-        )
-        clear_response = client.post(
-            "/desktop-pet/vision/clear",
-            json={"user_id": "desktop", "real_user_id": "master"},
-        )
-
-        self.assertEqual(submit_response.status_code, 200)
-        self.assertEqual(submit_response.json()["clip"]["clip_id"], "screen-1")
-        self.assertEqual(latest_response.status_code, 200)
-        self.assertEqual(latest_response.json()["items"][0]["frame_count"], 1)
-        self.assertEqual(reaction_response.status_code, 200)
-        self.assertEqual(reaction_response.json()["speech"], "刚刚这一下挺有意思的。")
-        self.assertEqual(clear_response.status_code, 200)
-        self.assertEqual(clear_response.json()["removed"], 1)
 
     def test_gifts_router_validates_upload_filename_and_lists_assets(self) -> None:
         runtime = FakeRuntimeMetrics()

@@ -19,12 +19,6 @@ def build_turn_extra_user_context(
         str(source.get("extra_context") or ""),
         build_desktop_context_prompt(source.get("desktop_context"), client_context),
         build_desktop_care_prompt(source.get("desktop_care"), client_context),
-        build_desktop_screen_vision_prompt(
-            engine,
-            client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-        ),
         build_desktop_activity_prompt(
             engine,
             source.get("desktop_activity") or source.get("current_activity"),
@@ -342,28 +336,6 @@ def describe_desktop_care_vitality(
     return "身体状态平稳，按当前对话自然回应"
 
 
-def build_desktop_screen_vision_prompt(
-    engine: Any,
-    client_context: ClientProtocolContext | None,
-    *,
-    profile_user_id: str = "",
-    session_id: str = "",
-) -> str:
-    if (
-        client_context is None
-        or client_context.effective_mode != ClientMode.DESKTOP_PET
-        or not client_context.has_capability(ClientCapability.SCREEN_VISION)
-        or not profile_user_id
-        or not session_id
-    ):
-        return ""
-    builder = getattr(engine, "build_desktop_screen_vision_context", None)
-    if builder is None:
-        return ""
-    try:
-        return str(builder(profile_user_id=profile_user_id, session_id=session_id, limit=3) or "").strip()
-    except Exception:
-        return ""
 
 
 def sanitize_desktop_context_text(value: Any, limit: int) -> str:
