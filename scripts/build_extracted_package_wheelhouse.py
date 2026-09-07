@@ -13,6 +13,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.package_release_versions import expected_package_version
+
 EXPECTED_VERSION = "0.1.0"
 
 
@@ -58,7 +62,7 @@ def _load_project(path: Path) -> dict[str, object]:
     return project if isinstance(project, dict) else {}
 
 
-def _assert_source_manifest(spec: PackageSpec, source_root: Path) -> Path:
+def _assert_source_manifest(spec: PackageSpec, source_root: Path, *, local_runtime: bool = False) -> Path:
     package_root = source_root / spec.name
     pyproject = package_root / "pyproject.toml"
     if not pyproject.is_file():
@@ -74,13 +78,19 @@ def _assert_source_manifest(spec: PackageSpec, source_root: Path) -> Path:
     project = _load_project(pyproject)
     if project.get("name") != spec.name:
         raise RuntimeError(f"{spec.name}:project_name_mismatch")
-    if project.get("version") != EXPECTED_VERSION:
+    if project.get("version") != expected_package_version(spec.name):
         raise RuntimeError(f"{spec.name}:project_version_mismatch:{project.get('version')}")
 
     for path in package_root.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in RELEASE_TEXT_SUFFIXES:
             continue
         if any(part in IGNORED_SOURCE_PARTS for part in path.relative_to(package_root).parts):
+            continue
+        # Local launch installs wheels, not source distributions or development examples.
+        # Retain complete source-tree checks for the normal release build.
+        if local_runtime and path.relative_to(package_root).parts[0] not in {
+            spec.wheel_prefix, "pyproject.toml", "README.md", "LICENSE", "MANIFEST.in"
+        }:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore").lower().replace("\\\\", "\\")
         if any(root in text for root in ("f:/akane", "f:\\akane", "f:/cache", "f:\\cache")):
@@ -91,7 +101,7 @@ def _assert_source_manifest(spec: PackageSpec, source_root: Path) -> Path:
 
 
 def _wheel_for(spec: PackageSpec, output_dir: Path) -> Path:
-    matches = sorted(output_dir.glob(f"{spec.wheel_prefix}-{EXPECTED_VERSION}-*.whl"))
+    matches = sorted(output_dir.glob(f"{spec.wheel_prefix}-{expected_package_version(spec.name)}-*.whl"))
     if len(matches) != 1:
         raise RuntimeError(f"{spec.name}:expected_one_wheel:found_{len(matches)}")
     return matches[0]
@@ -103,8 +113,21 @@ def _assert_wheel_metadata(spec: PackageSpec, wheel: Path, source_root: Path) ->
         if len(metadata_names) != 1:
             raise RuntimeError(f"{spec.name}:wheel_metadata_missing_or_ambiguous")
         metadata = archive.read(metadata_names[0]).decode("utf-8")
+        for member in archive.namelist():
+            parts = Path(member).parts
+            if any(part in {".research-runs", "research_pilot"} for part in parts):
+                raise RuntimeError(f"{spec.name}:wheel_contains_research_artifact")
+            if Path(member).suffix.lower() not in RELEASE_TEXT_SUFFIXES:
+                continue
+            text = archive.read(member).decode("utf-8", errors="ignore").lower().replace("\\\\", "\\")
+            if any(root in text for root in ("f:/akane", "f:\\akane", "f:/cache", "f:\\cache")):
+                raise RuntimeError(f"{spec.name}:wheel_contains_machine_path:{member}")
 
     normalized = metadata.replace("\\", "/").lower()
+    from email.parser import Parser
+    headers = Parser().parsestr(metadata)
+    if headers.get("Name") != spec.name or headers.get("Version") != expected_package_version(spec.name):
+        raise RuntimeError(f"{spec.name}:wheel_identity_mismatch")
     forbidden = (
         "requires-dist: ../",
         "requires-dist: file:",
@@ -125,7 +148,8 @@ def _sha256(path: Path) -> str:
 
 
 def build_wheelhouse(
-    *, source_root: Path, output_dir: Path, download_runtime: bool, reuse_internal: bool = False
+    *, source_root: Path, output_dir: Path, download_runtime: bool, reuse_internal: bool = False,
+    local_runtime: bool = False,
 ) -> dict[str, object]:
     source_root = source_root.resolve()
     output_dir = output_dir.resolve()
@@ -138,7 +162,7 @@ def build_wheelhouse(
 
     built: list[dict[str, str]] = []
     for spec in PACKAGES:
-        package_root = _assert_source_manifest(spec, source_root)
+        package_root = _assert_source_manifest(spec, source_root, local_runtime=local_runtime)
         if not reuse_internal:
             _run(
                 [
@@ -153,7 +177,7 @@ def build_wheelhouse(
             )
         wheel = _wheel_for(spec, output_dir)
         _assert_wheel_metadata(spec, wheel, source_root)
-        built.append({"name": spec.name, "version": EXPECTED_VERSION, "file": wheel.name, "sha256": _sha256(wheel)})
+        built.append({"name": spec.name, "version": expected_package_version(spec.name), "file": wheel.name, "sha256": _sha256(wheel)})
 
     if download_runtime:
         runtime_requirements = ROOT / "requirements-runtime.txt"
@@ -196,6 +220,11 @@ def main() -> int:
         help="Build only Akane-owned wheels; the result cannot bootstrap Akane offline.",
     )
     parser.add_argument(
+        "--local-runtime",
+        action="store_true",
+        help="Audit wheel runtime sources and wheel contents; leave non-packaged research/examples untouched.",
+    )
+    parser.add_argument(
         "--reuse-internal",
         action="store_true",
         help="Reuse and re-audit existing internal wheels before downloading the runtime closure.",
@@ -211,6 +240,7 @@ def main() -> int:
             output_dir=args.output_dir,
             download_runtime=not args.internal_only,
             reuse_internal=args.reuse_internal,
+            local_runtime=args.local_runtime,
         )
     except (OSError, RuntimeError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:
         print(f"AKANE_PACKAGE_WHEELHOUSE_FAILED:{exc}")

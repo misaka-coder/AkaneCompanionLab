@@ -11,6 +11,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.package_release_versions import expected_package_version
+
 AKANE_PARENT = ROOT.parent
 EXPECTED_VERSION = "0.1.0"
 
@@ -130,8 +134,9 @@ def _audit_package(spec: PackageSpec, *, allow_dirty: bool) -> list[str]:
         project = _load_pyproject(pyproject_path)
         if project.get("name") != spec.name:
             errors.append(f"{spec.name}:project_name_mismatch:{project.get('name')!r}")
-        if project.get("version") != EXPECTED_VERSION:
-            errors.append(f"{spec.name}:version_not_{EXPECTED_VERSION}:{project.get('version')!r}")
+        expected = expected_package_version(spec.name)
+        if project.get("version") != expected:
+            errors.append(f"{spec.name}:version_not_{expected}:{project.get('version')!r}")
 
     lock_path = package_root / "uv.lock"
     if lock_path.is_file():
@@ -186,7 +191,7 @@ def _audit_akane_runtime_dependencies() -> list[str]:
     for spec in PACKAGES:
         if not spec.runtime_dependency:
             continue
-        pin = f"{spec.name}=={EXPECTED_VERSION}".lower()
+        pin = f"{spec.name}=={expected_package_version(spec.name)}".lower()
         if pin not in requirements:
             errors.append(f"akane:requirements_missing_exact_pin:{pin}")
         if spec.name not in checker_text:

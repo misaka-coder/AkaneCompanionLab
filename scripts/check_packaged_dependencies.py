@@ -12,9 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from companion_v01.distribution_artifacts import audit_distribution_artifact
-
-
-EXPECTED_VERSION = "0.1.0"
+from scripts.package_release_versions import expected_package_version
 
 
 @dataclass(frozen=True)
@@ -89,7 +87,7 @@ def audit_installed_packages() -> tuple[list[dict[str, str]], list[str]]:
 
         artifact = audit_distribution_artifact(dist)
         version = artifact.version
-        if version != EXPECTED_VERSION:
+        if version != expected_package_version(spec.distribution):
             errors.append(f"{spec.distribution}:version_mismatch:{version}")
         if not artifact.ok:
             errors.append(f"{spec.distribution}:{artifact.reason}")
@@ -144,7 +142,7 @@ def main() -> int:
     installed, errors = audit_installed_packages()
     payload = {
         "ok": not errors,
-        "expected_version": EXPECTED_VERSION,
+        "expected_versions": {spec.distribution: expected_package_version(spec.distribution) for spec in PACKAGES},
         "package_count": len(PACKAGES),
         "installed": installed,
         "errors": errors,
@@ -158,7 +156,7 @@ def main() -> int:
     else:
         print("AKANE_PACKAGED_DEPENDENCIES_OK")
         print(f"packages: {len(installed)}")
-        print(f"version: {EXPECTED_VERSION}")
+        print("versions: exact requirements-packages.txt pins")
     return 0 if not errors else 1
 
 

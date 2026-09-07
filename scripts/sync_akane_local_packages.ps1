@@ -20,6 +20,7 @@ function Get-AkaneLocalPackageFingerprint {
         throw "local_package_builder_missing"
     }
     $entries.Add([System.IO.File]::ReadAllText($builder))
+    $entries.Add([System.IO.File]::ReadAllText((Join-Path $ProjectRoot "scripts\package_release_versions.py")))
     $packageNames = New-Object System.Collections.Generic.List[string]
     foreach ($rawLine in [System.IO.File]::ReadAllLines($requirements)) {
         $line = ([string]$rawLine).Trim()
@@ -94,6 +95,9 @@ channel_ready = callable(getattr(MessageChain, 'render_text_with_mentions', None
 resolved_chain_ready = isinstance(getattr(QuotedMessage, 'mentions', None), property) and isinstance(getattr(ForwardNode, 'mentions', None), property)
 raise SystemExit(0 if required <= names and channel_ready and resolved_chain_ready else 1)
 "@ 2>$null
+    if ($LASTEXITCODE -ne 0) { return $false }
+    # Verify actual V6 authorship, not just the package version or exported names.
+    & $PythonPath (Join-Path $PSScriptRoot "check_memcore_runtime_contract.py") 2>$null | Out-Null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -152,7 +156,7 @@ function Sync-AkaneLocalPackages {
     & $python (Join-Path $resolvedProject "scripts\build_extracted_package_wheelhouse.py") `
         --source-root $sourceRoot `
         --output-dir $wheelhouse `
-        --internal-only | Out-Host
+        --internal-only --local-runtime | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "local_package_wheelhouse_build_failed"
     }

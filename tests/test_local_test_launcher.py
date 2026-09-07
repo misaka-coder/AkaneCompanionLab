@@ -154,6 +154,7 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertIn("render_text_with_mentions", source)
         self.assertIn("QuotedMessage, 'mentions'", source)
         self.assertIn("Test-AkaneLocalPackagesCurrent", source)
+        self.assertIn("check_memcore_runtime_contract.py", source)
 
     def test_skip_package_sync_still_validates_runtime_contracts(self) -> None:
         for launcher_name in ("start_akane_local_test.ps1", "start_akane_local_qq_test.ps1"):

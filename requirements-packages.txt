@@ -11,5 +11,5 @@ promptpack-core==0.1.0
 capcore-provider-native-tools==0.1.0
 capcore-provider-openai==0.1.0
 capcore-provider-anthropic==0.1.0
-memcore==0.1.0
+memcore==0.1.0+chatv6.1
 voicecore==0.1.0

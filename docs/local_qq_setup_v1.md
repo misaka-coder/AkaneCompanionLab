@@ -14,6 +14,10 @@
 pwsh -File .\start_akane_local_qq_test.ps1 -OpenQQSetup
 ```
 
+也可双击 `start_akane_local_qq_test.bat`；该入口默认打开接入页，失败时保留报错窗口。
+它不同于 `start_akane_local_test.bat`：后者使用 `11999` 端口且关闭 QQ，供不接 QQ 的本地桌宠测试。
+两个入口都不连接云端 Bot，但已配置的远程模型服务仍需要联网。
+
 默认本地测试配置的后端端口为 `12001`，OneBot 为 `3003`。
 没有绑定本地 QQ 启动配置的桌宠会明确提示缺少配置，不猜测账号或使用云端密钥。
 启动脚本仍负责原有的本地实例初始化与依赖契约检查，不因为此次 UI 改动跳过这些检查。
