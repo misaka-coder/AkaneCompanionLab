@@ -2,12 +2,43 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, UnidentifiedImageError
 
 SUPPORTED_IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
+MAX_FILE_IMAGE_PIXELS = 40 * 1024 * 1024
+
+
+def verified_file_image_media_type(source_path: Path) -> str:
+    """Classify an already-authorized materialized file by validated pixels.
+
+    No filename/MIME promotion, fetching, conversion or modification. Unknown
+    signatures stay ordinary files; broken/oversized image candidates fail with
+    stable reasons instead of being sent to a vision provider.
+    """
+    with source_path.open("rb") as stream:
+        media_type = sniff_supported_image_media_type(stream.read(16))
+    if not media_type:
+        return ""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(source_path) as image:
+                if image.width * image.height > MAX_FILE_IMAGE_PIXELS:
+                    raise ValueError("image_pixel_limit")
+                image.verify()
+            with Image.open(source_path) as image:
+                image.seek(0)
+                image.load()
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise ValueError("image_pixel_limit") from exc
+    except (OSError, SyntaxError, UnidentifiedImageError) as exc:
+        raise ValueError("image_content_invalid") from exc
+    return media_type
 
 
 def sniff_supported_image_media_type(image_bytes: bytes) -> str:
@@ -151,8 +182,7 @@ class SessionImageMaterialResolver:
                     "title": effective_material.title,
                     "media_type": effective_material.media_type,
                     "data_url": (
-                        f"data:{effective_material.media_type};base64,"
-                        f"{base64.b64encode(image_bytes).decode('ascii')}"
+                        f"data:{effective_material.media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
                     ),
                 }
             )

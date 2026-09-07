@@ -701,7 +701,18 @@ class AttachmentInboxService:
             waiting = False
             for attachment_id in normalized_ids:
                 item = latest.get(attachment_id)
-                if not isinstance(item, dict) or str(item.get("kind") or "").strip().lower() != "image":
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("kind") or "").strip().lower()
+                if kind in {"file", "document"}:
+                    # File segments may contain images. The materializer commits
+                    # storage and byte-verified kind together; don't decide from
+                    # the initial filename/MIME while that operation is pending.
+                    if item.get("status") == "pending_observation" and not item.get("storage_relpath"):
+                        waiting = True
+                        break
+                    continue
+                if kind != "image":
                     continue
                 source_path = self._resolve_storage_path(item)
                 if source_path is not None and source_path.exists() and source_path.is_file():

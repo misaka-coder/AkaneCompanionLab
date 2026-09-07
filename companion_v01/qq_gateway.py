@@ -3457,6 +3457,7 @@ class NapCatQQGateway:
                 "source_message_id": attachment.source_message_id,
                 "source_event_id": attachment.source_event_id,
                 "segment_index": attachment.segment_index,
+                "segment_type": attachment.segment_type,
             }
             metadata = attachment.metadata_dict()
             for key in (

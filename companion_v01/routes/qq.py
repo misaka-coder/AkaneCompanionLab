@@ -3442,10 +3442,30 @@ def build_qq_router(
             )
             pending_image_ids = _qq_pending_image_attachment_ids(attachments_registered, wait_result)
             kinds_by_id = wait_result.get("kinds_by_id") if isinstance(wait_result.get("kinds_by_id"), dict) else {}
+            native_images: list[dict[str, Any]] = []
+            native_prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
+            if callable(native_prepare) and any(kind == "image" for kind in kinds_by_id.values()):
+                native_result = await asyncio.to_thread(
+                    native_prepare,
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    attachment_ids=attachment_ids,
+                    chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
+                    timeout_seconds=0.0,
+                )
+                native_images = [
+                    dict(item) for item in list(native_result.get("images") or [])
+                    if isinstance(item, dict) and str(item.get("data_url") or "").startswith("data:image/")
+                ][:5]
+                native_ids = {str(item.get("attachment_id") or "") for item in native_images}
+                pending_image_ids = [item_id for item_id in pending_image_ids if item_id not in native_ids]
+            else:
+                native_ids = set()
             failed_image_ids = [
                 str(item or "").strip()
                 for item in list(wait_result.get("failed") or [])
                 if str(item or "").strip() and str(kinds_by_id.get(str(item or "").strip()) or "").lower() == "image"
+                and str(item) not in native_ids
             ]
             if pending_image_ids or failed_image_ids:
                 failure_send_result = await asyncio.to_thread(
@@ -3471,7 +3491,8 @@ def build_qq_router(
                 return
 
             effective_message_override = (
-                message_override.strip() or "用户刚刚发送了一张图片。请只根据【本轮 QQ 图片内容】中的视觉摘要自然回应。"
+                message_override.strip() or str(getattr(context, "clean_message", "") or "").strip()
+                or "用户刚刚发送了一张图片。请只根据本轮实际提供的图片或视觉摘要自然回应。"
             )
             turn_payload = _prepare_qq_turn_payload(
                 context=context,
@@ -3486,6 +3507,8 @@ def build_qq_router(
             )
             if attachment_ids:
                 turn_payload["qq_current_attachment_ids"] = list(attachment_ids)
+            if native_images:
+                turn_payload["native_user_images"] = native_images
             turn_result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
             send_result = dict(
                 turn_result.get("send_result") or {"ok": False, "reason": "missing_send_result", "results": []}
@@ -4713,7 +4736,8 @@ def build_qq_router(
                     part for part in (_qq_turn_extra_context_note, quoted_context_note) if part
                 )
 
-            if context.is_group and not qq_gateway.is_group_vision_enabled(context.group_id):
+            images_allowed = not context.is_group or qq_gateway.is_group_vision_enabled(context.group_id)
+            if not images_allowed:
                 attachments = list(context.attachments or [])
                 allowed_attachments = [
                     item
@@ -4721,10 +4745,14 @@ def build_qq_router(
                     if not (isinstance(item, dict) and str(item.get("kind") or "").strip().lower() == "image")
                 ]
                 blocked_image_count = len(attachments) - len(allowed_attachments)
-                if blocked_image_count:
+                if blocked_image_count or any(
+                    isinstance(item, dict) and str(item.get("kind") or "") in {"file", "document"}
+                    for item in allowed_attachments
+                ):
                     context = replace(context, attachments=allowed_attachments)
                     vision_disabled_note = (
-                        "【本群识图设置】本群已关闭图片识别；本轮图片没有进入视觉分析或附件工作台。"
+                        "【本群识图设置】本群已关闭图片识别；包括以文件发送的图片，本轮未送入视觉分析。"
+                        "文件可能只登记基本信息，不代表已看过图片内容。"
                         "不要声称看到了图片；如果用户询问图片内容，请简短说明本群识图已关闭。"
                     )
                     _qq_turn_extra_context_note = "\n".join(
@@ -4747,6 +4775,7 @@ def build_qq_router(
                     attachments=_with_qq_sender_context(list(context.attachments), context),
                     character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
                     timestamp=int(event.get("time") or time.time()),
+                    observe_images=images_allowed,
                 )
                 attachment_ids = [
                     str(item.get("attachment_id") or "").strip()
@@ -4789,7 +4818,11 @@ def build_qq_router(
                         isinstance(item, dict) and str(item.get("kind") or "").strip().lower() == "image"
                         for item in list(context.attachments or [])
                     )
-                    if has_image_attachment:
+                    may_contain_file_image = any(
+                        isinstance(item, dict) and str(item.get("kind") or "").strip().lower() in {"file", "document"}
+                        for item in list(context.attachments or [])
+                    )
+                    if images_allowed and (has_image_attachment or may_contain_file_image):
                         native_prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
                         native_result: dict[str, Any] = {}
                         if callable(native_prepare):
@@ -4822,7 +4855,7 @@ def build_qq_router(
                                 skipped_count=len(list(native_result.get("skipped") or [])),
                                 native_status=str(native_result.get("status") or "ready"),
                             )
-                        else:
+                        elif has_image_attachment:
                             schedule_followup(
                                 _run_qq_image_vision_followup(
                                     context=context,
@@ -4865,7 +4898,30 @@ def build_qq_router(
                             attachment_ids=attachment_ids,
                             timeout_seconds=_qq_attachment_ready_wait_seconds(context, config_module),
                         )
-                        pending_image_ids = _qq_pending_image_attachment_ids([], attachment_wait_result)
+                        # A file can finish byte classification during this
+                        # wait, after the first native-image attempt returned.
+                        settled_kinds = attachment_wait_result.get("kinds_by_id") or {}
+                        native_prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
+                        if images_allowed and callable(native_prepare) and any(
+                            kind == "image" for kind in settled_kinds.values()
+                        ):
+                            native_result = await asyncio.to_thread(
+                                native_prepare,
+                                profile_user_id=context.profile_user_id,
+                                session_id=context.session_id,
+                                attachment_ids=attachment_ids,
+                                chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
+                                timeout_seconds=0.0,
+                            )
+                            _qq_native_user_images = [
+                                dict(item) for item in list(native_result.get("images") or [])
+                                if isinstance(item, dict) and str(item.get("data_url") or "").startswith("data:image/")
+                            ][:5]
+                        pending_image_ids = (
+                            _qq_pending_image_attachment_ids([], attachment_wait_result) if images_allowed else []
+                        )
+                        native_ids = {str(item.get("attachment_id") or "") for item in _qq_native_user_images}
+                        pending_image_ids = [item_id for item_id in pending_image_ids if item_id not in native_ids]
                         if pending_image_ids:
                             schedule_followup(
                                 _run_qq_image_vision_followup(

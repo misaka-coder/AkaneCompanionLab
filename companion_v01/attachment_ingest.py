@@ -27,6 +27,7 @@ from .attachment_inbox import AttachmentInboxService
 from .background_tasks import BackgroundTaskRunner
 from .deployment_security import QQChannelRuntimeConfig
 from .onebot_transport import OneBotActionTransport
+from .image_materials import verified_file_image_media_type
 from .public_url_policy import (
     HostResolver,
     PublicUrlPolicyError,
@@ -478,16 +479,22 @@ class AttachmentIngestService:
             relpath = workspace_uri or self._storage_relpath(source_path)
             mime_type = str(payload.get("mime_type") or mimetypes.guess_type(str(source_path))[0] or "").strip()
             file_ext = source_path.suffix.lower()
-            self.store.update_attachment_inbox_item(
+            kind = str(item.get("kind") or "").strip().lower()
+            if kind in {"document", "file"}:
+                verified_mime = verified_file_image_media_type(source_path)
+                if verified_mime:
+                    kind, mime_type = "image", verified_mime
+            item = self.store.update_attachment_inbox_item(
                 profile_user_id=str(item.get("profile_user_id") or ""),
                 session_id=str(item.get("session_id") or ""),
                 attachment_id=str(item.get("attachment_id") or ""),
+                kind=kind,
                 storage_relpath=relpath,
                 mime_type=mime_type,
                 file_ext=file_ext,
                 file_size=source_path.stat().st_size if source_path.exists() else 0,
                 updated_at=timestamp,
-            )
+            ) or {**item, "kind": kind, "mime_type": mime_type, "storage_relpath": relpath, "file_ext": file_ext}
             self._mark_private_source_attempt(
                 item=item,
                 payload=payload,
@@ -496,7 +503,6 @@ class AttachmentIngestService:
                 clear_locator=True,
             )
 
-            kind = str(item.get("kind") or "").strip().lower()
             if kind == "image" and self.vision_service is not None and bool(payload.get("_observe_image", True)):
                 scheduled = self.vision_service.schedule_attachment_image_observation(
                     attachment={
@@ -2157,6 +2163,19 @@ class AttachmentIngestService:
         base_detail: dict[str, Any] = {}
         if attachment_id:
             base_detail["attachment_id"] = attachment_id
+        if str(item.get("kind") or "") == "image":
+            return {
+                "summary_title": title,
+                "short_hint": "图片文件已接收；本次未进行视觉分析，不代表已看过图片内容。",
+                "detail": {
+                    **base_detail,
+                    "summary": "图片文件已接收，未分析像素内容。",
+                    "file_kind": "image",
+                    "mime_type": mime_type,
+                    "file_size": file_size,
+                    "vision_status": "not_requested",
+                },
+            }
         if suffix in DOCUMENT_SUFFIXES:
             card = self._build_document_card(
                 source_path=source_path,
@@ -2650,6 +2669,12 @@ class AttachmentIngestService:
             payload.get("sender_label") or payload.get("qq_sender_label") or payload.get("source_sender_label")
         )
         detail: dict[str, Any] = {}
+        segment_type = str(payload.get("segment_type") or "").strip()
+        if segment_type in {"file", "image", "record", "voice", "video"}:
+            detail["qq_source_segment_type"] = segment_type
+        quoted_message_id = str(payload.get("quoted_message_id") or "").strip()
+        if quoted_message_id:
+            detail["qq_quoted_message_id"] = quoted_message_id[:200]
         if sender_label:
             detail["qq_sender_label"] = sender_label
         sender_id = str(payload.get("sender_id") or payload.get("user_id") or "").strip()
@@ -2703,6 +2728,8 @@ class AttachmentIngestService:
         text = str(error or "").strip()
         lowered = text.lower()
         stable_codes = {
+            "image_content_invalid",
+            "image_pixel_limit",
             "attachment_materialization_failed",
             "attachment_source_unavailable",
             "attachment_trusted_local_missing",
@@ -2770,6 +2797,10 @@ class AttachmentIngestService:
             )
         if lowered == "attachment_vision_unavailable":
             return "图片已接收，但视觉模型暂时不可用。建议：稍后重试，或先用文字描述需要关注的内容。"
+        if lowered == "image_content_invalid":
+            return "文件含有图片标记，但图像数据未通过校验；未提交视觉分析，请重新导出或发送原图。"
+        if lowered == "image_pixel_limit":
+            return "图片像素尺寸超过安全读取上限；未提交视觉分析，请缩小尺寸后重发。"
         if lowered == "attachment_download_timeout":
             return (
                 f"{kind_label}下载超时（可能是网络波动或文件较大）。"

@@ -274,6 +274,15 @@ def write_valid_cutout_workflow(base_dir: str | Path, profile_user_id: str = "ma
 
 
 class BackendRouteModuleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These route fixtures use Akane as their test account name and count
+        # delivery requests. Login lookup/cache/failure behavior has dedicated
+        # coverage in test_qq_nickname_addressing; don't make route tests contact a
+        # real account or consume a send-response stub as get_login_info.
+        nickname = patch.object(NapCatQQGateway, "_resolve_bot_nickname", return_value="Akane")
+        nickname.start()
+        self.addCleanup(nickname.stop)
+
     def test_public_health_exposes_only_safe_instance_binding_identity(self) -> None:
         instance_runtime = SimpleNamespace(
             public_health_snapshot=lambda: {

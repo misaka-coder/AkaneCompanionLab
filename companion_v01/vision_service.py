@@ -16,6 +16,7 @@ from services.llm_client import build_llm_client
 
 from .resource_manifest import ResourceManifest
 from .model_image_inputs import model_image_blocks
+from .image_materials import sniff_supported_image_media_type
 from .runtime_settings import BotSettingsView
 from .store import MemoryStore
 
@@ -806,7 +807,7 @@ class VisionObservationService:
         if len(image_bytes) > max_bytes:
             raise RuntimeError(f"图像过大，当前限制为 {max_bytes} bytes。")
 
-        media_type = self._guess_media_type(target.source_path)
+        media_type = sniff_supported_image_media_type(image_bytes) or self._guess_media_type(target.source_path)
         image_url = f"data:{media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
         raw_text = self._request_vision_text(
             system_text=self._build_system_instruction(target),

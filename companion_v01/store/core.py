@@ -2733,6 +2733,7 @@ class MemoryStore:
         profile_user_id: str,
         session_id: str,
         attachment_id: str,
+        kind: str | None = None,
         status: str | None = None,
         summary_title: str | None = None,
         short_hint: str | None = None,
@@ -2753,6 +2754,11 @@ class MemoryStore:
 
         fields: list[str] = []
         params: list[Any] = []
+        if kind is not None:
+            # Keep the original stable attachment id/handle when bytes refine
+            # an incoming file's media kind after materialization.
+            fields.append("kind = ?")
+            params.append(self._normalize_attachment_kind(kind))
         if status is not None:
             fields.append("status = ?")
             params.append(self._normalize_attachment_status(status))
