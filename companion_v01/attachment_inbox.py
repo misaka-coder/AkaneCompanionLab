@@ -334,6 +334,7 @@ class AttachmentInboxService:
         *,
         profile_user_id: str,
         session_id: str,
+        kind: str = "any",
     ) -> str:
         """Render the active material handles without repeating their contents.
 
@@ -349,6 +350,7 @@ class AttachmentInboxService:
             statuses=list(ACTIVE_ATTACHMENT_STATUSES),
             limit=None,
         )
+        items = self._filter_items_by_target_kind(items, "", kind)
         ready_remote_sources = {
             str(item.get("source_event_id") or "").strip()
             for item in items
@@ -370,7 +372,7 @@ class AttachmentInboxService:
 
         lines = [
             "attachment.workspace",
-            "以下是当前会话可按 handle 使用的原始材料索引；内容未在这里展开，需要时使用材料工具读取。",
+            "以下是当前会话可按 handle 使用的材料索引（含历史材料）；请核对发送者、加入时间及来源消息，内容需用材料工具读取。",
         ]
         for item in visible_items:
             handle = self._safe_prompt_label(item.get("attachment_handle") or item.get("attachment_id"))
@@ -386,6 +388,16 @@ class AttachmentInboxService:
             ]
             if name:
                 fields.append("name=" + json.dumps(name, ensure_ascii=False))
+            detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+            source_fields = {
+                "sender": self._sender_label(item),
+                "sender_id": self._safe_prompt_label(detail.get("qq_sender_id")),
+                "added_at": self._format_time_anchor(item.get("created_at")),
+                "source_message_id": self._safe_prompt_label(item.get("source_message_id")),
+            }
+            for key, value in source_fields.items():
+                if value:
+                    fields.append(key + "=" + json.dumps(value, ensure_ascii=False))
             if status == "failed":
                 reason = self._safe_prompt_label(self._readable_failure_message(item))
                 if reason:
@@ -471,6 +483,7 @@ class AttachmentInboxService:
             activity_context = self.build_activity_prompt_context(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
+                kind=kind,
             )
             return {
                 "ok": True,

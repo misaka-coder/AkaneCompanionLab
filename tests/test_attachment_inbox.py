@@ -17,6 +17,56 @@ from companion_v01.tool_runtime import (
 
 
 class AttachmentInboxTests(unittest.TestCase):
+    def test_inspect_all_filters_kind_and_exposes_stable_source_not_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = AttachmentInboxService(store=MemoryStore(Path(temp_dir)))
+            for kind, sender, sender_id, timestamp in (
+                ("image", "Alice", "10003", 100),
+                ("image", "Bob", "10004", 200),
+                ("document", "Alice", "10003", 300),
+            ):
+                service.create_pending(
+                    profile_user_id="user", session_id="session", source="qq", kind=kind,
+                    source_message_id=f"message-{timestamp}", timestamp=timestamp,
+                    detail={"qq_sender_label": sender, "qq_sender_id": sender_id, "summary": "PRIVATE BODY"},
+                    storage_relpath="private/hidden.bin",
+                )
+            handler = InspectAttachmentToolHandler(attachment_service=service)
+            result = handler.execute(
+                call=handler.normalize_call({"type": "inspect_attachment", "target": "all", "kind": "image"}),
+                context=ToolExecutionContext(
+                    profile_user_id="user", session_id="session", now_ts=400, visual_payload={},
+                ),
+            )
+            prompt = result.followup_context
+            self.assertIn("handle=img_001", prompt)
+            self.assertIn("handle=img_002", prompt)
+            self.assertNotIn("kind=document", prompt)
+            self.assertIn('sender="Alice"', prompt)
+            self.assertIn('sender="Bob"', prompt)
+            self.assertIn('sender_id="10003"', prompt)
+            self.assertIn('source_message_id="message-100"', prompt)
+            self.assertIn('added_at="' + service._format_time_anchor(100) + '"', prompt)
+            self.assertNotIn("PRIVATE BODY", prompt)
+            self.assertNotIn("private/hidden", prompt)
+            self.assertEqual(result.stream_events, [])
+            for kind in ("image", "img"):
+                before = service.inspect_attachment(
+                    profile_user_id="user", session_id="session", target="all", kind=kind,
+                )["followup_context"]
+                service.inspect_attachment(
+                    profile_user_id="user", session_id="session", target="img_001", timestamp=900,
+                )
+                after = service.inspect_attachment(
+                    profile_user_id="user", session_id="session", target="all", kind=kind,
+                )["followup_context"]
+                self.assertIn('added_at="' + service._format_time_anchor(100) + '"', before)
+                self.assertIn('added_at="' + service._format_time_anchor(100) + '"', after)
+            empty = service.inspect_attachment(
+                profile_user_id="user", session_id="other", target="all", kind="image",
+            )
+            self.assertNotIn("img_001", empty["followup_context"])
+
     def test_activity_prompt_is_complete_short_index_without_material_contents(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))
