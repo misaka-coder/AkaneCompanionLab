@@ -188,7 +188,16 @@ class DocumentPluginTests(unittest.IsolatedAsyncioTestCase):
                 profile_user_id="owner",
                 session_id="session",
             )
-            schema = json.dumps(build_openai_native_tool_specs(handlers), sort_keys=True)
+            tools = build_openai_native_tool_specs(handlers)
+            schema = json.dumps(tools, sort_keys=True)
+            if installed:
+                for operation in ("compose", "revise"):
+                    tool = next(item for item in tools if item["_akane_capability_id"] == CAPABILITIES[operation])
+                    row = tool["function"]["parameters"]["properties"]["table_rows"]["items"]
+                    self.assertEqual(row["type"], "array")
+                    self.assertEqual(row["minItems"], 1)
+                    self.assertEqual(row["maxItems"], 50)
+                    self.assertEqual(set(row["items"]["type"]), {"string", "number", "boolean", "null"})
             for retired in ("compose_file", "revise_generated_file", "apply_style_to_existing_file"):
                 self.assertNotIn(retired, handlers)
                 self.assertNotIn(retired, prompt)

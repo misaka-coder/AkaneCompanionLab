@@ -15,7 +15,7 @@ class PackageReleaseVersionTests(unittest.TestCase):
         for spec in builder.PACKAGES:
             self.assertTrue(versions.expected_package_version(spec.name))
         self.assertEqual(versions.expected_package_version("memcore"), "0.1.0+chatv6.1")
-        self.assertEqual(versions.expected_package_version("capcore"), "0.1.0")
+        self.assertEqual(versions.expected_package_version("capcore"), "0.1.1")
 
     def test_source_manifest_rejects_old_memcore_and_accepts_pinned_v6(self):
         with tempfile.TemporaryDirectory() as temporary:
