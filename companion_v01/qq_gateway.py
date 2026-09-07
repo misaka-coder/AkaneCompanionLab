@@ -387,7 +387,10 @@ class QQMessageContext:
         memory_message = (
             self.message_chain.render_text_with_mentions(
                 mention_labels=mention_labels,
-                bot_label="Akane",
+                bot_label=next(
+                    (mention.display_name for mention in self.mentions if mention.is_bot and mention.display_name),
+                    "助手",
+                ),
             )
             if self.message_chain.parts
             else self.clean_message
@@ -537,8 +540,10 @@ class NapCatQQGateway:
         self._reply_reference_ledger = ReplyReferenceLedger(max_claims=4096)
         self._bound_default_character_pack_id = _safe_character_pack_id(default_character_pack_id)
         self._wake_words = _normalize_qq_wake_words(wake_words)
-        self._wake_word_search_re = _compile_qq_wake_word_search(self._wake_words)
-        self._wake_word_prefix_re = _compile_qq_wake_word_prefix(self._wake_words)
+        self._bot_nickname = ""
+        self._bot_nickname_status = "not_checked"
+        self._bot_nickname_refresh_at = 0.0
+        self._bot_nickname_lock = threading.RLock()
         self.poke_reactor = poke_reactor or PokeEventReactor()
         require_self_id = self._channel_config.require_self_id if self._channel_config is not None else False
         self._event_admission = OneBotEventAdmission(
@@ -784,6 +789,7 @@ class NapCatQQGateway:
                 "status": "account_identity_unknown",
                 "reason": "OneBot 未返回实际登录 QQ，无法确认账号身份。",
             }
+        self._resolve_bot_nickname(login_result=login_result)
         status_result = self._onebot_transport.call("get_status", timeout=5)
         if not status_result.ok:
             return self._self_check_failure(status_result.code, status_result.public_reason)
@@ -807,6 +813,9 @@ class NapCatQQGateway:
             "status": "connected",
             "bot_qq": str(user_id),
             "nickname": str(nickname),
+            "wake_word_mode": "configured" if self._wake_words else "qq_nickname",
+            "wake_word_status": "configured" if self._wake_words else self._bot_nickname_status,
+            "wake_words": list(self._wake_words or ((self._bot_nickname,) if self._bot_nickname else ())),
             "checks": {
                 "bridge_enabled": True,
                 "url_reachable": True,
@@ -1129,7 +1138,7 @@ class NapCatQQGateway:
         inbound_result = normalize_inbound_event(
             event,
             bot_account_id=self.bot_qq,
-            wake_words=self._wake_words,
+            wake_words=self._effective_wake_words() if is_group else self._wake_words,
         )
         inbound = inbound_result.message
         if inbound is None:
@@ -1336,7 +1345,7 @@ class NapCatQQGateway:
         )
         if not identity.ok:
             raise ValueError(identity.reason)
-        parsed = normalize_inbound_event(event, bot_account_id=self.bot_qq, wake_words=self._wake_words)
+        parsed = normalize_inbound_event(event, bot_account_id=self.bot_qq, wake_words=self._effective_wake_words())
         inbound = parsed.message
         if inbound is None:
             raise ValueError("queued_context_invalid_event")
@@ -2614,7 +2623,7 @@ class NapCatQQGateway:
         text = str(message or "").strip()
         if not text:
             return ""
-        match = self._wake_word_prefix_re.match(text)
+        match = _compile_qq_wake_word_prefix(self._effective_wake_words()).match(text)
         if not match:
             return text
         return text[match.end() :].strip()
@@ -3468,7 +3477,7 @@ class NapCatQQGateway:
         return onebot_message_mentions_bot(event, raw_message, bot_account_id=self.bot_qq)
 
     def message_mentions_wake_word(self, clean_message: str) -> bool:
-        return bool(self._wake_word_search_re.search(str(clean_message or "")))
+        return bool(_compile_qq_wake_word_search(self._effective_wake_words()).search(str(clean_message or "")))
 
     def resolve_identity(self, *, user_id: int, group_id: int = 0) -> tuple[str, str]:
         user_text = str(user_id or "")
@@ -3514,7 +3523,7 @@ class NapCatQQGateway:
         mentions: tuple[MentionRef, ...],
         group_id: int,
     ) -> tuple[MentionRef, ...]:
-        if not mentions or not group_id:
+        if not mentions:
             return tuple(mentions)
         resolved: list[MentionRef] = []
         for mention in mentions:
@@ -3522,7 +3531,7 @@ class NapCatQQGateway:
             target_id = self._safe_int(target_text)
             display_name = str(mention.display_name or "").strip()
             if mention.is_bot:
-                resolved.append(mention)
+                resolved.append(replace(mention, display_name=self._resolve_bot_nickname() or "助手"))
                 continue
             cache_key = self._sender_label_cache_key(group_id=group_id, user_id=target_id)
             if display_name and cache_key:
@@ -3544,6 +3553,43 @@ class NapCatQQGateway:
                 )
             )
         return tuple(resolved)
+
+    def _resolve_bot_nickname(self, *, login_result: Any = None) -> str:
+        """Use the bound login identity, never sender-controlled mention labels.
+
+        Refresh at most once a minute. Failed/invalid refreshes clear the old
+        name and briefly back off; explicit mentions remain usable.
+        """
+        if not self.bridge_enabled or not self.bot_qq:
+            return ""
+        with self._bot_nickname_lock:
+            if login_result is None and time.monotonic() < self._bot_nickname_refresh_at:
+                return self._bot_nickname
+            self._bot_nickname = ""
+            self._bot_nickname_refresh_at = time.monotonic() + 15.0
+            result = login_result if login_result is not None else self._onebot_transport.call("get_login_info", timeout=2)
+            if not result.ok:
+                self._bot_nickname_status = result.code or "login_lookup_failed"
+                return ""
+            if str(result.data.get("user_id") or "").strip() != str(self.bot_qq):
+                self._bot_nickname_status = "account_identity_mismatch"
+                return ""
+            nickname = str(result.data.get("nickname") or "").strip()
+            try:
+                words = _normalize_qq_wake_words((nickname,))
+            except ValueError:
+                self._bot_nickname_status = "invalid_login_nickname"
+                return ""
+            self._bot_nickname = words[0]
+            self._bot_nickname_status = "resolved"
+            self._bot_nickname_refresh_at = time.monotonic() + 60.0
+            return self._bot_nickname
+
+    def _effective_wake_words(self) -> tuple[str, ...]:
+        if self._wake_words:
+            return self._wake_words
+        nickname = self._resolve_bot_nickname()
+        return (nickname,) if nickname else ()
 
     @staticmethod
     def _project_mention_evidence(mentions: tuple[MentionRef, ...]) -> list[dict[str, Any]]:

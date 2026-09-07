@@ -102,6 +102,9 @@ class QQGatewayTests(unittest.TestCase):
         self.bot_qq_patcher.start()
         self.addCleanup(self.master_qq_patcher.stop)
         self.addCleanup(self.bot_qq_patcher.stop)
+        # These legacy behavior fixtures use a QQ account named Akane. The
+        # real login lookup, refresh and failure paths have dedicated tests.
+        self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_nickname", return_value="Akane"))
 
     def test_restore_admitted_passive_media_preserves_binding_without_readmission(self) -> None:
         gateway = NapCatQQGateway()

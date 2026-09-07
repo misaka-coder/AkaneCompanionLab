@@ -94,8 +94,6 @@ class BotConfig:
         _safe_id(self.bot_id, field="bot_id")
         _bool(self.enabled, field="enabled")
         _display_name(self.display_name, field="display_name")
-        if not self.wake_words:
-            object.__setattr__(self, "wake_words", (self.display_name,))
         object.__setattr__(self, "wake_words", _wake_words(self.wake_words, field="wake_words"))
         _optional_safe_id(self.character_pack_id, field="character_pack_id")
         _safe_id(self.memory_space_id, field="memory_space_id")
@@ -165,7 +163,7 @@ def parse_bot_config(payload: Any, *, field_prefix: str = "bot") -> BotConfig:
     enabled = _bool(payload.get("enabled", True), field=f"{field_prefix}.enabled")
     display_name = _display_name(payload.get("display_name", bot_id), field=f"{field_prefix}.display_name")
     wake_words = _wake_words(
-        payload.get("wake_words", [display_name]),
+        payload.get("wake_words", []),
         field=f"{field_prefix}.wake_words",
     )
     character_pack_id = _optional_safe_id(
@@ -352,7 +350,7 @@ def bot_config_from_instance_context(context: Any) -> BotConfig:
             )
             for item in raw_plugins
         ),
-        wake_words=("Akane",),
+        wake_words=(),
         source="instance_adapter",
     )
 
@@ -400,7 +398,7 @@ def _wake_words(value: Any, *, field: str) -> tuple[str, ...]:
         raw_items = value
     else:
         _fail("wake_words_must_be_array", field=field)
-    if not raw_items or len(raw_items) > 8:
+    if len(raw_items) > 8:
         _fail("invalid_wake_words", field=field)
     normalized: list[str] = []
     seen: set[str] = set()

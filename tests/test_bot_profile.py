@@ -102,6 +102,7 @@ enabled = true
         self.assertEqual(profile.default_bot_id, "bot-a")
         self.assertEqual([bot.bot_id for bot in profile.enabled_bots], ["bot-a", "bot-b"])
         bot_a = profile.require("bot-a")
+        self.assertEqual(bot_a.wake_words, ())
         context = instance_context_from_bot_config(bot_a)
         self.assertEqual(context.instance_id, "bot-a")
         self.assertEqual(context.character_pack_id, "akane_v1")
