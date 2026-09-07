@@ -10,6 +10,7 @@ from memcore import build_memory_metadata_instruction, coerce_memory_metadata
 
 from .persona_config import PersonaConfig
 from .prompt_blocks import CURRENT_ASSISTANT_STATE_MARKER, build_scene_static_system_prompt
+from .tool_execution_policy import tool_parallel_prompt
 
 
 MEMORY_TIME_ANCHOR_RULES = """
@@ -215,6 +216,7 @@ class PromptBuilder:
         format_addendum = (
             mode_prompt
             + f"\n\n{ATTRIBUTION_RULES}\n\n{MEMORY_STATUS_RULES}\n\n{TOOL_CONTEXT_STABLE_RULES}\n\n{INTERNAL_DISCLOSURE_RULES}"
+            + f"\n\n{tool_parallel_prompt()}"
         )
         # The active persona is runtime state, not a stable system-prefix rule.
         # Keeping it in the first system message made one persona transition

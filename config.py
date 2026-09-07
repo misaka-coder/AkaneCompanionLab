@@ -4,6 +4,7 @@ import os
 import re
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from akane_paths import ensure_akane_data_paths, has_explicit_akane_data_root
 
@@ -303,6 +304,8 @@ class Settings(BaseSettings):
     PUBLIC_DAILY_LIMIT_MESSAGE: str = "今日体验名额已满，明天再来看看 Akane 吧。"
 
     # === 工具调用 & 后台任务 ===
+    # 每个工具批同时执行的只读调用数；不是提交数、后台任务数或子代理数。
+    TOOL_MAX_PARALLEL: int = Field(default=10, ge=1, le=64)
     # 可选的单回合工具批次硬上限。0=不限制；正数才启用。并行批次按一轮计算。
     TOOL_ROUND_HARD_LIMIT: int = 0
     # 有限硬上限剩余这么多轮时，解释一次续作记录与 MemCore 结算语义；0=关闭提醒。
@@ -626,6 +629,7 @@ def _apply_settings(s: Settings) -> None:
     global PUBLIC_GUARD_ENABLED, MAX_CONCURRENT_THINKS, DAILY_THINK_LIMIT
     global PUBLIC_BUSY_MESSAGE, PUBLIC_DAILY_LIMIT_MESSAGE, TOOL_ROUND_HARD_LIMIT
     global TOOL_ROUND_WARNING_REMAINING
+    global TOOL_MAX_PARALLEL
     global ENABLE_NATIVE_TOOL_DECISION
     global NATIVE_TOOL_DECISION_ALLOWLIST
     global WEB_SEARCH_MCP_TIMEOUT_SECONDS, CHAT_MODEL_DECISION_MAX_ATTEMPTS
@@ -818,6 +822,7 @@ def _apply_settings(s: Settings) -> None:
         or "今日体验名额已满，明天再来看看 Akane 吧。"
     )
     TOOL_ROUND_HARD_LIMIT = max(0, int(s.TOOL_ROUND_HARD_LIMIT))
+    TOOL_MAX_PARALLEL = int(s.TOOL_MAX_PARALLEL)
     TOOL_ROUND_WARNING_REMAINING = max(0, int(s.TOOL_ROUND_WARNING_REMAINING))
     ENABLE_NATIVE_TOOL_DECISION = bool(s.ENABLE_NATIVE_TOOL_DECISION)
     NATIVE_TOOL_DECISION_ALLOWLIST = str(s.NATIVE_TOOL_DECISION_ALLOWLIST or "*").strip()

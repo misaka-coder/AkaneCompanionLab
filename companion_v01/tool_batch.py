@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .tool_handlers.core import ToolExecutionResult
 from .tool_invocation import TOOL_INVOCATION_ID_FIELD
+from .tool_execution_policy import tool_parallel_limit
 
 
 logger = logging.getLogger("akane.tool_batch")
@@ -80,12 +81,13 @@ def execute_tool_batch(
 
     results = []
     reads = []
+    parallel_limit = tool_parallel_limit()
 
     def flush():
         if len(reads) == 1:
             results.append(run(reads[0]))
         elif reads:
-            with ThreadPoolExecutor(max_workers=min(4, len(reads)), thread_name_prefix="akane-tool") as pool:
+            with ThreadPoolExecutor(max_workers=min(parallel_limit, len(reads)), thread_name_prefix="akane-tool") as pool:
                 futures = [pool.submit(copy_context().run, run, call) for call in reads]
                 results.extend(future.result() for future in futures)
         reads.clear()

@@ -339,6 +339,7 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("PUBLIC_DAILY_LIMIT_MESSAGE", _PUB, SCOPE_RESTART_CLIENT, "每日限额提示语（用户可见）"),
     # 工具调用
     _s("TOOL_ROUND_HARD_LIMIT", _TOOL, SCOPE_RUNTIME, "可选的单回合工具批次硬上限；0=不限制"),
+    _s("TOOL_MAX_PARALLEL", _TOOL, SCOPE_RESTART, "每批只读工具的实际并发数（1–64）；超额排队，执行器与模型提示共用；不是后台任务/子代理上限"),
     _s("TOOL_ROUND_WARNING_REMAINING", _TOOL, SCOPE_RUNTIME, "有限工具轮接近上限时的一次性续作提醒阈值；0=关闭"),
     _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认开启；不支持的 provider 才回退兼容路径）"),
     _s("WEB_SEARCH_MCP_TIMEOUT_SECONDS", _TOOL, SCOPE_RESTART_CLIENT, "AnySearch MCP 单次调用超时（秒）"),

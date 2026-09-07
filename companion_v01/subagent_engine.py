@@ -17,6 +17,7 @@ from .subagent_runtime import SubagentRunResult, SubagentStartRequest
 from .subagent_policy import task_capability_selection
 from .tool_handlers.core import TaskExecutionScope
 from .tool_batch import execute_tool_batch
+from .tool_execution_policy import tool_parallel_prompt
 from .task_work import TaskWork
 from .tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, NATIVE_REASONING_CONTENT_FIELD, TOOL_INVOCATION_ID_FIELD
 from . import tool_orchestration_engine as orchestration
@@ -170,7 +171,7 @@ class EngineSubagentDriver:
                     return self._result(request, "cancelled", reason="subagent_cancelled_between_steps",
                                         artifacts=tuple(artifacts.values()))
                 response = llm.call_chat_json_result(
-                    system_prompt=TASK_SYSTEM_PROMPT,
+                    system_prompt=TASK_SYSTEM_PROMPT + "\n\n" + tool_parallel_prompt(),
                     user_prompt=task_prompt,
                     fallback={}, native_tools=tools, post_user_turns=history,
                     user_images=model_images or None,

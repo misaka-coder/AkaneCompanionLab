@@ -103,6 +103,8 @@ class SubagentEngineTests(unittest.TestCase):
         self.assertEqual(history[1]["tool_call_id"], "call_child_search")
         self.assertIn("ok", history[1]["content"])
         self.assertEqual(first["system_prompt"], second["system_prompt"])
+        from companion_v01.tool_execution_policy import tool_parallel_prompt
+        self.assertIn(tool_parallel_prompt(), first["system_prompt"])
         parent = self.engine.memcore_manager.build_context_projection(
             provider_profile="openai_chat", profile_user_id="alice", session_id="parent", character_pack_id="",
         )
