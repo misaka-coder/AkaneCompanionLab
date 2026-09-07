@@ -99,6 +99,24 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertEqual(start.status, EXEC_STATUS_FAILED)
         self.assertEqual(start.exit_code, 7)
 
+    @unittest.skipUnless(os.name == "nt", "PowerShell object output regression")
+    def test_windows_flushes_selected_file_properties_before_exit(self) -> None:
+        (self.workspace / "download-check.msi").write_bytes(b"partial-download")
+        executor = self._executor()
+        classic = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        for shell in dict.fromkeys((executor.windows_shell_path, str(classic))):
+            with self.subTest(shell=shell):
+                executor.windows_shell_path = shell
+                start = executor.run(
+                    owner=self.owner,
+                    command="$p='download-check.msi'; if(Test-Path -LiteralPath $p) { Get-Item -LiteralPath $p | Select-Object FullName,Length } else { 'installer_not_present' }",
+                    initial_wait_seconds=5,
+                )
+                self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+                self.assertEqual(start.exit_code, 0)
+                self.assertIn("download-check.msi", start.stdout)
+                self.assertIn("16", start.stdout)
+
     @unittest.skipUnless(os.name == "nt", "Windows PowerShell default-shell regression")
     def test_windows_default_shell_is_the_disclosed_powershell(self) -> None:
         executor = self._executor()

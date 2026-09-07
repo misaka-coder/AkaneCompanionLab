@@ -762,6 +762,8 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
     if status == EXEC_STATUS_COMPLETED:
         output = _format_execution_output(stdout=data["stdout"], stderr=data["stderr"])
         markers = [f"[exit code: 0; run_id={run_id}]"]
+        if not (data["stdout"].strip() or data["stderr"].strip()):
+            markers.append(_SILENT_COMPLETED_HINT)
         if reason == "output_compacted":
             markers.append(f"[output compacted; output_ref={output_ref or 'unavailable'}]")
         if run_start.next_cursor:
@@ -780,6 +782,7 @@ def map_exec_run_outcome(run_start: ExecRunStart) -> ExecMappedResult:
             output,
             [
                 marker,
+                *([_SILENT_RUNNING_HINT] if not (data["stdout"].strip() or data["stderr"].strip()) else []),
                 f"[next: exec_status(run_id={run_id}, cursor={run_start.next_cursor}, wait_seconds=30) or exec_cancel]",
             ],
         )
@@ -968,12 +971,15 @@ def execute_exec_status(
             safe_tail,
             [
                 marker,
+                *([_SILENT_RUNNING_HINT] if not safe_tail.strip() else []),
                 f"[next: exec_status(run_id={clean_run_id}, cursor={status_result.next_cursor}, wait_seconds=30) or exec_cancel]",
             ],
         )
         return ExecMappedResult("ok", status, safe_reason, feedback, data, event)
     if status == EXEC_STATUS_COMPLETED:
         markers = [f"[exit code: 0; run_id={clean_run_id}]"]
+        if not safe_tail.strip():
+            markers.append(_SILENT_COMPLETED_HINT)
         if status_result.next_cursor:
             markers.append(
                 f"[output continues: exec_status(run_id={clean_run_id}, cursor={status_result.next_cursor})]"
@@ -1025,6 +1031,16 @@ def execute_exec_status(
         data,
         {**event, "reason": clean_reason},
     )
+
+
+_SILENT_RUNNING_HINT = (
+    "[运行中，暂无新输出；不等于停滞或没有下载。继续查询状态；"
+    "不要仅因无输出取消或重复启动。进度只能来自实际文件大小、日志或程序状态。]"
+)
+_SILENT_COMPLETED_HINT = (
+    "[命令已结束，本页无输出；退出码 0 不证明文件存在、不存在或安装可用。"
+    "先核验目标文件大小/完整性及程序可用性，再报告任务结果。]"
+)
 
 
 def _format_execution_output(*, stdout: Any = "", stderr: Any = "") -> str:

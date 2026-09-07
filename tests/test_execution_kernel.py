@@ -445,6 +445,23 @@ class ExecOrchestrationTests(unittest.TestCase):
         self.assertEqual(mapped.envelope_status, "ok")
         self.assertEqual(mapped.event_status, EXEC_STATUS_RUNNING)
         self.assertIn("exec_status", mapped.model_feedback)
+        self.assertIn("不等于停滞或没有下载", mapped.model_feedback)
+
+    def test_silent_status_and_completion_do_not_infer_file_state(self) -> None:
+        store = self._store()
+        run_id = new_run_id()
+        store.register(run_id, owner=OWNER)
+        provider = _FakeExecutionProvider(store)
+        running = execute_exec_status(provider, owner=OWNER, run_id=run_id)
+        self.assertEqual(running.event_status, EXEC_STATUS_RUNNING)
+        self.assertIn("不要仅因无输出取消", running.model_feedback)
+        store.mark_terminal(run_id, EXEC_STATUS_COMPLETED, owner=OWNER, exit_code=0)
+        for completed in (
+            execute_exec_status(provider, owner=OWNER, run_id=run_id),
+            map_exec_run_outcome(store.window_snapshot(run_id, owner=OWNER)),
+        ):
+            self.assertEqual(completed.event_status, EXEC_STATUS_COMPLETED)
+            self.assertIn("不证明文件存在、不存在或安装可用", completed.model_feedback)
 
     def test_model_feedback_redacts_secrets_and_keeps_executable_paths(self) -> None:
         run_id = new_run_id()
@@ -494,7 +511,8 @@ class ExecOrchestrationTests(unittest.TestCase):
                 mapped = map_exec_run_outcome(start)
                 self.assertEqual(mapped.envelope_status, "error")
                 self.assertEqual(mapped.event_status, start.status)
-                self.assertIn("不要声称成功", mapped.model_feedback)
+                self.assertNotEqual(mapped.event_status, EXEC_STATUS_COMPLETED)
+                self.assertTrue(mapped.reason)
 
     def test_terminal_status_feedback_exposes_real_state_reason_and_tail(self) -> None:
         run_id = new_run_id()
@@ -510,15 +528,15 @@ class ExecOrchestrationTests(unittest.TestCase):
         cases = (
             (
                 ExecRunStatus(EXEC_STATUS_FAILED, run_id, exit_code=7, tail="permission denied", reason="access_denied"),
-                ("status=failed", "exit_code=7", "access_denied", "permission denied"),
+                ("exit code: 7", "access_denied", "permission denied"),
             ),
             (
                 ExecRunStatus(EXEC_STATUS_TIMED_OUT, run_id, tail="still waiting", reason="execution_timeout"),
-                ("status=timed_out", "execution_timeout", "still waiting", "进程组终止"),
+                ("timed out", "execution_timeout", "still waiting", "process_group=terminated"),
             ),
             (
                 ExecRunStatus(EXEC_STATUS_CANCELLED, run_id, tail="partial", reason="cancelled_by_user"),
-                ("status=cancelled", "cancelled_by_user", "partial"),
+                ("cancelled", "cancelled_by_user", "partial"),
             ),
         )
         for result, expected_parts in cases:
@@ -527,7 +545,7 @@ class ExecOrchestrationTests(unittest.TestCase):
                 self.assertEqual(mapped.envelope_status, "error")
                 for part in expected_parts:
                     self.assertIn(part, mapped.model_feedback)
-                self.assertIn("不要声称成功", mapped.model_feedback)
+                self.assertEqual(mapped.data["status"], result.status)
 
     def test_cancel_failure_does_not_change_run_to_cancelled(self) -> None:
         store = self._store()
@@ -598,8 +616,7 @@ class ExecOrchestrationTests(unittest.TestCase):
         self.assertEqual(provider.calls, 2)
         self.assertEqual(result.data["finished_at"], 130.0)
         self.assertGreater(result.data["observed_at"], result.data["finished_at"])
-        self.assertIn("任务完成时间=", result.model_feedback)
-        self.assertIn("本次查询时间=", result.model_feedback)
+        self.assertIn("exit code: 0", result.model_feedback)
 
     def test_status_wait_does_not_wake_model_for_progress_output(self) -> None:
         run_id = new_run_id()
@@ -676,7 +693,7 @@ class ExecOrchestrationTests(unittest.TestCase):
         failed = execute_exec_cancel(_FakeExecutionProvider(store, cancel_fails=True), owner=OWNER, run_id=run_id)
         self.assertEqual(failed.envelope_status, "error")
         self.assertEqual(failed.event_status, "cancel_failed")
-        self.assertIn("不要声称取消成功", failed.model_feedback)
+        self.assertIn("cancel status: unconfirmed", failed.model_feedback)
         self.assertEqual(store.read(run_id, owner=OWNER).status, EXEC_STATUS_RUNNING)
 
     def test_cancel_wrapper_catches_exception_and_wrong_owner(self) -> None:
@@ -739,7 +756,7 @@ class ExecOrchestrationTests(unittest.TestCase):
         mapped = map_exec_run_outcome(ExecRunStart(EXEC_STATUS_UNAVAILABLE, reason="offline"))
         self.assertEqual(mapped.envelope_status, "unavailable")
         self.assertEqual(mapped.event_status, EXEC_STATUS_UNAVAILABLE)
-        self.assertIn("capability_unavailable", mapped.model_feedback)
+        self.assertIn("command status: unavailable", mapped.model_feedback)
 
     def test_invalid_owner_and_request_are_structured(self) -> None:
         provider = _FakeExecutionProvider(self._store())

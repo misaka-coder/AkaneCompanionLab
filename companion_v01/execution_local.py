@@ -873,7 +873,10 @@ class TrustedLocalExecutor(ExecutionProvider):
             "$__akaneNativeExitCode=$global:LASTEXITCODE; "
             "if (-not $__akaneCommandSucceeded) { "
             "if ($null -ne $__akaneNativeExitCode) { exit [int]$__akaneNativeExitCode }; "
-            "exit 1 }; exit 0"
+            # Let successful scripts end naturally: PowerShell defers table
+            # formatting, and an explicit exit 0 discards pending object rows
+            # (for example Get-Item | Select-Object FullName,Length).
+            "exit 1 }"
         )
         return [
             self.windows_shell_path,

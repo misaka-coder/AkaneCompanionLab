@@ -186,6 +186,9 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
         "短命令直接返回终态，仍在运行时返回 run_id，之后用 exec_status 或 exec_cancel。"
         "input_resources 用于暂存现有材料，output_globs 用于登记生成资源；精确路径约束见对应参数。"
         "根据 status、exit_code、stdout、stderr、reason 和 recommended_action 判断真实结果。"
+        "长任务暂无输出不等于停滞；不要仅据此取消或重复启动。下载前确定目标目录，"
+        "仅按实际字节数/日志报告进度；结束后核验文件完整性或程序可用性，不凭退出码推断安装成功。"
+        "安装依赖前核对实际解释器、已有环境及版本约束，优先复用兼容环境；工作目录不等于 Python 环境。"
     ),
     input_schema={
         "type": "object",
