@@ -345,6 +345,38 @@ class QQMessageContext:
     def forward_refs(self) -> tuple[ForwardRef, ...]:
         return self.inbound_message.forwards if self.inbound_message is not None else ()
 
+    @property
+    def verified_forward_ids(self) -> tuple[str, ...]:
+        """Only forward references bound to this turn or its verified quote."""
+        conversation_kind = "group" if self.is_group else "private"
+        conversation_id = str(self.target_id)
+        if not self.target_id or (self.is_group and self.group_id != self.target_id):
+            return ()
+        source_ids = {self.source_message_id} if self.source_message_id else set()
+        quote = self.reply_reference or {}
+        if (
+            quote.get("message_id")
+            and quote.get("conversation_kind") == conversation_kind
+            and str(quote.get("conversation_id")) == conversation_id
+        ):
+            source_ids.add(str(quote.get("message_id") or ""))
+        ids = {
+            str(ref.get("forward_id") or "").strip()
+            for ref in self.forward_references
+            if ref.get("source_message_id") and ref.get("source_message_id") in source_ids
+            and ref.get("conversation_kind") == conversation_kind
+            and str(ref.get("conversation_id")) == conversation_id
+        }
+        inbound = self.inbound_message
+        if (
+            inbound is not None
+            and inbound.event_id == self.source_message_id
+            and inbound.conversation.kind == conversation_kind
+            and inbound.conversation.id == conversation_id
+        ):
+            ids.update(ref.forward_id for ref in inbound.forwards)
+        return tuple(sorted(value for value in ids if value))
+
     def to_turn_payload(self) -> dict[str, Any]:
         message = self.clean_message
         mention_labels = {
@@ -454,6 +486,14 @@ class QQMessageContext:
         }
         if self.reply_reference:
             payload["reply_reference"] = dict(self.reply_reference)
+        if self.forward_references:
+            # Delivery/queued tool context needs source proofs, not duplicate node bodies.
+            payload["forward_references"] = [
+                {key: item[key] for key in (
+                    "forward_id", "source_message_id", "conversation_kind", "conversation_id",
+                ) if key in item}
+                for item in self.forward_references
+            ]
         if self.is_group and self.user_id:
             payload["actor_stable_id"] = f"qq:{self.user_id}"
             if self.actor_profile_user_id:
@@ -1348,6 +1388,9 @@ class NapCatQQGateway:
             source_message_id=str(value.get("source_message_id") or value.get("sourceMessageId") or "").strip(),
             reply_reference=(
                 dict(value.get("reply_reference")) if isinstance(value.get("reply_reference"), dict) else None
+            ),
+            forward_references=tuple(
+                dict(item) for item in list(value.get("forward_references") or []) if isinstance(item, dict)
             ),
         )
 
@@ -2875,8 +2918,21 @@ class NapCatQQGateway:
         attachments = self._legacy_attachments(result.message.attachments if result.message is not None else ())
         status = result.status
         quoted_message: dict[str, Any] | None = None
+        forward_evidence: dict[str, Any] = {}
         if result.ok and result.message is not None:
             message = result.message
+            if message.chain.forwards:
+                # The package has already validated quote scope and parsed its
+                # ordered chain. Reuse the same forward resolver, without a
+                # second parser or another model-visible lookup step.
+                quoted_inbound = replace(
+                    inbound, event_id=message.message_id, actor=message.actor,
+                    conversation=message.conversation, chain=message.chain, timestamp=message.timestamp,
+                )
+                forward_evidence = self.resolve_forward_message_evidence(
+                    event, context=replace(context, inbound_message=quoted_inbound),
+                )
+                attachments.extend(forward_evidence.get("attachments") or [])
             status = "resolved"
             actor_id = str(message.actor.id or "").strip()
             bot_account_id = str(inbound.bot_account_id or event.get("self_id") or self.bot_qq or "").strip()
@@ -2906,6 +2962,8 @@ class NapCatQQGateway:
         }
         if result.reason:
             payload["reason"] = result.reason
+        if forward_evidence:
+            payload["forwards"] = list(forward_evidence.get("forwards") or [])
         if result.message is not None or inbound.reply_to is not None:
             payload["message_id"] = (
                 result.message.message_id
@@ -2969,6 +3027,9 @@ class NapCatQQGateway:
             )
             entry: dict[str, Any] = {
                 "source_part_id": source_part_ids.get(forward_ref.forward_id, ""),
+                "source_message_id": inbound.event_id,
+                "conversation_kind": inbound.conversation.kind,
+                "conversation_id": inbound.conversation.id,
                 "forward_id": forward_ref.forward_id,
                 "ok": bool(result.ok),
                 "status": str(result.status or ""),
@@ -3094,6 +3155,7 @@ class NapCatQQGateway:
             user_id=int(context.user_id or 0),
             source_message_id=str(context.source_message_id or ""),
             message_selector_applied=selector_applied,
+            verified_forward_ids=context.verified_forward_ids,
         )
         if not allowed:
             return {

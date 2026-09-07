@@ -39,10 +39,9 @@ _ACTIONS = (
     ModelOneBotAction("get_friend_msg_history", "读取私聊历史。", "user_id, count; 可选 message_seq, reverseOrder", "read"),
     ModelOneBotAction(
         "get_forward_msg",
-        "展开一条合并转发消息；参数值必须是合并转发回执中的 forward_id/res_id，不是普通 QQ message_id。",
+        "展开当前消息或已验证同会话引用中的合并转发；参数值必须是回执中的 forward_id/res_id，不是普通 QQ message_id。",
         "message_id=forward_id/res_id",
         "read",
-        owner_only=True,
     ),
     ModelOneBotAction("send_group_forward_msg", "向群聊发送合并转发；nodes 可引用真实消息或构造内容。", "group_id, messages", "write"),
     ModelOneBotAction("send_private_forward_msg", "向私聊发送合并转发；nodes 可引用真实消息或构造内容。", "user_id, messages", "write"),
@@ -109,6 +108,7 @@ def model_onebot_capabilities() -> dict[str, Any]:
             "same_conversation": "ordinary participants may use same-group or same-private chat interactions",
             "context_defaults": "current group, current private peer, current sender or current message may be inferred when unambiguous",
             "message_selectors": "current_message, replied_message, or recent_bot_message(position=N) resolve real message ids in the current conversation",
+            "forward_reads": "non-owner reads require a host-verified forward_id from the current message or its same-conversation quote",
             "cross_conversation": "requires the configured Akane owner",
             "owner_only": "message recall, global contact/history discovery and other explicitly marked actions",
             "excluded": "credentials, account exit, friend deletion, kick/ban and group/account administration",
@@ -206,6 +206,7 @@ def authorize_model_onebot_action(
     user_id: int,
     source_message_id: str,
     message_selector_applied: str = "",
+    verified_forward_ids: tuple[str, ...] = (),
 ) -> tuple[bool, str, str]:
     """Authorize one action against the triggering QQ conversation.
 
@@ -221,6 +222,11 @@ def authorize_model_onebot_action(
         return True, "", "owner"
     if spec.owner_only:
         return False, "owner_required", "owner_only"
+    if action == "get_forward_msg":
+        forward_id = str(params.get("message_id") or "").strip()
+        if forward_id and forward_id in verified_forward_ids:
+            return True, "", "current_conversation_forward"
+        return False, "forward_source_unverified", "current_conversation_forward"
 
     current_group = str(int(group_id or 0)) if is_group and int(group_id or 0) > 0 else ""
     current_user = str(int(user_id or 0)) if int(user_id or 0) > 0 else ""

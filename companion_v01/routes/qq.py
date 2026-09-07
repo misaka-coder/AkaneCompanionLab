@@ -405,7 +405,10 @@ def _qq_structured_forward_references(payload: dict[str, Any]) -> tuple[dict[str
             continue
         entry = {
             key: item[key]
-            for key in ("source_part_id", "forward_id", "ok", "status", "reason", "node_count")
+            for key in (
+                "source_part_id", "source_message_id", "conversation_kind", "conversation_id",
+                "forward_id", "ok", "status", "reason", "node_count",
+            )
             if key in item
         }
         entry["nodes"] = [dict(node) for node in list(item.get("nodes") or []) if isinstance(node, dict)]
@@ -4661,6 +4664,9 @@ def build_qq_router(
             reply_reference = _qq_quoted_message_reference(quoted_payload)
             if reply_reference:
                 context = replace(context, reply_reference=reply_reference)
+            quoted_forwards = _qq_structured_forward_references(quoted_payload)
+            if quoted_forwards:
+                context = replace(context, forward_references=context.forward_references + quoted_forwards)
             quoted_attachments = [
                 dict(item) for item in list(quoted_payload.get("attachments") or []) if isinstance(item, dict)
             ]

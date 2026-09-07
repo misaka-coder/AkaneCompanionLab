@@ -49,7 +49,7 @@ description: 规划复杂 QQ OneBot 工作流：读取历史、构造或转发�
 
 `content` 必须是消息段数组。`uin` 通常决定头像，`name` 决定节点显示名；客户端最终表现以 OneBot 回执和实际 QQ 渲染为准。
 
-展开已有合并转发时，`get_forward_msg` 的字段名虽然叫 `message_id`，值必须填写合并转发消息回执中的 `forward_id`/`res_id`；普通 QQ 消息的数字 `message_id` 不能用于展开。先用 `get_msg` 或历史读取拿到合并转发段里的真实 ID，再调用展开动作。
+展开已有合并转发时，`get_forward_msg` 的字段名虽然叫 `message_id`，值必须填写回执中的 `forward_id`/`res_id`，不是普通 QQ 消息的数字 `message_id`。当前消息及已验证同会话引用中的转发由宿主自动展开；已有节点直接使用，失败时可用该来源中的真实转发 ID 重试。普通成员传入没有本轮来源的 ID 会得到 `forward_source_unverified`；请让对方直接发送或引用那条转发，不要反复猜 ID 或误称需要主人开放所有权限。主人发起的历史/跨会话工作流仍须先读取真实回执再展开。
 
 ## 常见消息段
 
