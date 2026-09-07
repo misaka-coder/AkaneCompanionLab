@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { serializeBrowserAttachments } from "../pending-attachments.js";
 
 import { createControlCenterActionRouter } from "../control-center/action-router.js";
 import {
@@ -32,6 +34,9 @@ const OBSERVED_ACTION_IDS = new Set([
   "chat.new",
   "chat.send",
   "chat.stop",
+  "chat.attach",
+  "chat.removeAttachment",
+  "chat.playAttachment",
   "music.previous",
   "music.next",
   "music.togglePlayback",
@@ -74,6 +79,8 @@ export function createControlCenterBridge(options = {}) {
   let rawSnapshot = null;
   let runtimeSnapshot = null;
   let disposeRuntimeListener = null;
+  let disposeFileDropListener = null;
+  let fileDropHandler = null;
   let refreshPromise = null;
   let chatHistoryLoadPromise = null;
   let chatRefreshTimer = 0;
@@ -150,6 +157,9 @@ export function createControlCenterBridge(options = {}) {
           scheduleChatRefresh();
         });
         await emitMainEvent(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" });
+        disposeFileDropListener = await getCurrentWindow().onDragDropEvent(event => {
+          if (event.payload.type === "drop") fileDropHandler?.(event.payload.paths || []);
+        });
       } catch (error) {
         disposeRuntimeListener?.();
         disposeRuntimeListener = null;
@@ -245,6 +255,15 @@ export function createControlCenterBridge(options = {}) {
       return { ok: false, status: "not-available", actionId, reason: "control_center_bridge_not_started" };
     }
     const beforeRuntimeSnapshot = runtimeSnapshot;
+    if (actionId.startsWith("chat.")) payload = { ...payload, draftToken: payload.draftToken || runtimeSnapshot?.attachmentDraftToken || "" };
+    if (actionId === "chat.attach" && payload.browserFiles) {
+      try {
+        const { browserFiles, ...rest } = payload;
+        payload = { ...rest, files: await serializeBrowserAttachments(browserFiles) };
+      } catch (error) {
+        return { ok: false, status: "failed", reason: String(error?.message || error) };
+      }
+    }
     if (isQqSetupAction(actionId)) return qqSetup.run(actionId);
     const actionPayload = OBSERVED_ACTION_IDS.has(actionId)
       ? { ...payload, operationId: createActionOperationId(actionId) }
@@ -307,10 +326,13 @@ export function createControlCenterBridge(options = {}) {
     chatRefreshTimer = 0;
     disposeRuntimeListener?.();
     disposeRuntimeListener = null;
+    disposeFileDropListener?.();
+    disposeFileDropListener = null;
     listeners.clear();
   }
 
-  return { start, refresh, runAction, subscribe, stop, loadOlderChatMessages };
+  return { start, refresh, runAction, subscribe, stop, loadOlderChatMessages,
+    onFileDrop(handler) { fileDropHandler = handler; } };
 
   async function publishPluginCatalog(requestSource, request, sequence) {
     const result = await request;
@@ -447,7 +469,7 @@ export function createControlCenterBridge(options = {}) {
 
 async function waitForRuntimeConfirmation(actionId, payload, beforeSnapshot, readCurrentSnapshot) {
   const startedAt = Date.now();
-  const timeoutMs = actionId === "perception.screenVision.setEnabled" && payload.value
+  const timeoutMs = actionId === "chat.attach" ? 180_000 : actionId === "chat.playAttachment" ? 30_000 : actionId === "perception.screenVision.setEnabled" && payload.value
     ? 60_000
     : voicePlaybackAction(actionId)
     ? VOICE_PLAYBACK_CONFIRM_TIMEOUT_MS

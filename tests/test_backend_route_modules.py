@@ -769,6 +769,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "actor_stable_id": "desktop:owner",
                     "source_message_id": "desktop-message-1",
                     "message": "把刚才那一步改一下",
+                    "current_attachment_ids": ["opaque-current-file"],
                     "timestamp": 1_784_016_100,
                 },
             )
@@ -781,6 +782,8 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(item.status, "claimed")
             self.assertEqual(offered[0]["receipt_claim_token"], item.claim_token)
             self.assertEqual(item.source_event_id, "desktop-message-1")
+            self.assertEqual(offered[0]["current_attachment_ids"], ["opaque-current-file"])
+            self.assertEqual(item.payload["turn_payload"]["current_attachment_ids"], ["opaque-current-file"])
 
     def test_recovered_desktop_work_uses_normal_turn_and_satellite_frame(self) -> None:
         async def exercise(database_path: Path) -> None:

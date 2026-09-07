@@ -23,11 +23,15 @@ import "./styles.css";
 const root = document.querySelector("#app");
 const store = createControlCenterStore(createInitialControlCenterState({ activePage: initialPageFromLocation() }));
 const bridge = createControlCenterBridge();
+bridge.onFileDrop(paths => {
+  if (store.getState().activePage === "chat") void runAction("chat.attach", { paths });
+});
 let chatDraft = "";
 let chatScrollTop = 0;
 let chatWasAtBottom = true;
 let lastChatMessageId = "";
 let renderedChatSessionId = "";
+let renderedChatScope = "";
 let chatPrependAnchor = null;
 let voicePreviewDraft = "";
 let wakeWordDraft = "";
@@ -72,6 +76,14 @@ bridge.subscribe((viewModel) => {
 });
 
 root.addEventListener("click", (event) => {
+  const attachmentButton = event.target.closest("[data-chat-attachment-remove], [data-chat-attachment-play]");
+  if (attachmentButton) {
+    const remove = attachmentButton.hasAttribute("data-chat-attachment-remove");
+    void runAction(remove ? "chat.removeAttachment" : "chat.playAttachment", {
+      attachmentId: remove ? attachmentButton.dataset.chatAttachmentRemove : attachmentButton.dataset.chatAttachmentPlay,
+    });
+    return;
+  }
   const olderMessagesButton = event.target.closest("button[data-chat-load-older]");
   if (olderMessagesButton && !olderMessagesButton.disabled) {
     void loadOlderChatHistory();
@@ -361,7 +373,7 @@ root.addEventListener("submit", (event) => {
   event.preventDefault();
   const input = form.querySelector("[data-chat-input]");
   const text = String(input?.value || chatDraft).trim();
-  if (!text) return;
+  if (!text && !(store.getState().viewModel?.chat?.pendingAttachments || []).length) return;
   chatDraft = text;
   void runAction("chat.send", { text }).then((result) => {
     if (result?.ok) chatDraft = "";
@@ -371,6 +383,21 @@ root.addEventListener("submit", (event) => {
       if (!result?.ok) latestInput.focus();
     }
   });
+});
+
+root.addEventListener("paste", event => {
+  if (!event.target.closest("[data-chat-input]")) return;
+  const files = Array.from(event.clipboardData?.files || []);
+  if (files.length) { event.preventDefault(); void runAction("chat.attach", { browserFiles: files }); }
+});
+root.addEventListener("dragover", event => {
+  if (event.target.closest(".chat-workspace")) event.preventDefault();
+});
+root.addEventListener("drop", event => {
+  if (!event.target.closest(".chat-workspace")) return;
+  event.preventDefault();
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (files.length) void runAction("chat.attach", { browserFiles: files });
 });
 
 function capabilityFormPayload(form, actionId) {
@@ -776,7 +803,9 @@ function render(state) {
   const currentPageViewport = root.querySelector(".ccv2-scroll:not(.is-chat)");
   if (currentPageViewport && renderedPage) pageScrollTop.set(renderedPage, currentPageViewport.scrollTop);
   const nextChatSessionId = String(state.viewModel?.chat?.sessionId || "");
-  const chatSessionChanged = Boolean(renderedChatSessionId && nextChatSessionId && renderedChatSessionId !== nextChatSessionId);
+  const nextChatScope = JSON.stringify([state.viewModel?.shell?.instanceLabel, state.viewModel?.bots?.activeId,
+    state.viewModel?.character?.packId, nextChatSessionId]);
+  const chatSessionChanged = Boolean(renderedChatScope && nextChatScope !== renderedChatScope);
   const currentViewport = root.querySelector("[data-chat-viewport]");
   if (currentViewport && !chatSessionChanged) {
     chatScrollTop = currentViewport.scrollTop;
@@ -787,9 +816,12 @@ function render(state) {
     chatWasAtBottom = true;
     lastChatMessageId = "";
     chatPrependAnchor = null;
+    chatDraft = "";
   }
   const currentInput = root.querySelector("[data-chat-input]");
-  if (currentInput) chatDraft = currentInput.value;
+  const inputSelection = !chatSessionChanged && currentInput && document.activeElement === currentInput
+    ? { start: currentInput.selectionStart, end: currentInput.selectionEnd } : null;
+  if (currentInput && !chatSessionChanged) chatDraft = currentInput.value;
   const currentVoicePreview = root.querySelector("[data-voice-preview-input]");
   if (currentVoicePreview) voicePreviewDraft = currentVoicePreview.value;
   const currentWakeWord = root.querySelector("[data-wake-word-input]");
@@ -812,7 +844,13 @@ function render(state) {
   applyPresentationPreferences(livePresentationPreferences || state.presentationPreferences);
 
   const nextInput = root.querySelector("[data-chat-input]");
-  if (nextInput) nextInput.value = chatDraft;
+  if (nextInput) {
+    nextInput.value = chatDraft;
+    if (inputSelection && !nextInput.disabled) {
+      nextInput.focus({ preventScroll: true });
+      nextInput.setSelectionRange(inputSelection.start, inputSelection.end);
+    }
+  }
   const nextVoicePreview = root.querySelector("[data-voice-preview-input]");
   if (nextVoicePreview) nextVoicePreview.value = voicePreviewDraft;
   const nextWakeWord = root.querySelector("[data-wake-word-input]");
@@ -845,6 +883,7 @@ function render(state) {
   }
   lastChatMessageId = nextLastId;
   renderedChatSessionId = nextChatSessionId;
+  renderedChatScope = nextChatScope;
 }
 
 function captureCapabilityUiState() {

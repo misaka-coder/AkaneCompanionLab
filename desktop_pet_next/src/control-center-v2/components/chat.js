@@ -12,7 +12,8 @@ export function renderChat(state) {
   const portraitStyle = safeStyleUrl(character.visuals?.portrait || chat.characterAvatar);
   const sendState = state.actionStates["chat.send"];
   const sending = sendState?.phase === "pressed" || sendState?.phase === "pending" || activity.phase === "thinking" || activity.phase === "using_tool";
-  const canSend = Boolean(vm.actions?.["chat.send"]?.available) && !sending;
+  const canSend = Boolean(vm.actions?.["chat.send"]?.available) && !["pressed", "pending"].includes(sendState?.phase);
+  const canCompose = Boolean(vm.actions?.["chat.attach"]?.available || vm.actions?.["chat.send"]?.available);
   const messages = Array.isArray(chat.messages) ? chat.messages : [];
   const historyState = state.chatHistory || {};
 
@@ -54,14 +55,22 @@ export function renderChat(state) {
           <button class="chat-new-message" type="button" data-chat-jump-latest hidden>有新消息 ↓</button>
         </div>
 
+        <div class="chat-attachments" aria-label="待发送附件">
+          ${(chat.pendingAttachments || []).map(item => `<div class="chat-attachment"><span>${escapeHtml(item.kind === "audio" ? "音频材料" : "附件")} · ${escapeHtml(item.title)}</span>
+            ${item.kind === "audio" ? `<button type="button" data-chat-attachment-play="${escapeHtml(item.attachmentId)}">播放</button>` : ""}
+            <button type="button" data-chat-attachment-remove="${escapeHtml(item.attachmentId)}">移除</button></div>`).join("")}
+          ${chat.uploadingAttachments ? `<small role="status">正在接收附件…</small>` : ""}
+        </div>
         <form class="chat-composer" data-chat-form>
           <div class="composer-input-wrap">
-            <textarea data-chat-input rows="1" placeholder="和 ${escapeHtml(character.displayName || "桌宠")} 说点什么……" aria-label="输入消息"${canSend ? "" : " disabled"}></textarea>
-            <small>Enter 发送 · Shift + Enter 换行</small>
+            <textarea data-chat-input rows="1" placeholder="和 ${escapeHtml(character.displayName || "桌宠")} 说点什么……" aria-label="输入消息"${canCompose ? "" : " disabled"}></textarea>
+            <small>Enter ${sending ? "追加" : "发送"} · Shift + Enter 换行 · 可拖入文件或粘贴图片</small>
+            <button class="composer-attach" type="button" data-action="chat.attach"${vm.actions?.["chat.attach"]?.available ? "" : " disabled"}>＋ 添加附件</button>
           </div>
-          ${sending
-            ? `<button class="composer-send is-stop" type="button" data-action="chat.stop"><span>■</span><b>停止</b></button>`
-            : `<button class="composer-send" type="submit"${canSend ? "" : " disabled"}><span>➤</span><b>${sendState?.phase === "confirmed" ? "已发送" : "发送"}</b></button>`}
+          <div class="composer-actions">
+            <button class="composer-send" type="submit"${canSend ? "" : " disabled"}><span>➤</span><b>${sending ? "追加" : "发送"}</b></button>
+            ${sending ? `<button class="composer-send is-stop" type="button" data-action="chat.stop"><span>■</span><b>停止</b></button>` : ""}
+          </div>
         </form>
         ${!canSend && !sending ? `<p class="composer-hint">${escapeHtml(vm.actions?.["chat.send"]?.reason || "聊天发送暂不可用")}</p>` : ""}
       </section>

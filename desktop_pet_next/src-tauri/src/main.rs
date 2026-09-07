@@ -1543,6 +1543,16 @@ async fn verified_workspace_base_url(
 // M66-D: Import dropped files by reading bytes locally and uploading to the
 // backend via multipart POST. Absolute paths never leave the Tauri process.
 #[tauri::command]
+async fn choose_workspace_files(app: AppHandle) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().blocking_pick_files().unwrap_or_default().into_iter()
+            .map(|file| file.into_path().map(|path| path.to_string_lossy().into_owned())
+                .map_err(|_| "selected_file_unavailable".to_string()))
+            .collect::<Result<Vec<_>, _>>()
+    }).await.map_err(|_| "file_picker_failed".to_string())?
+}
+
+#[tauri::command]
 async fn import_dropped_files(
     app: AppHandle,
     backend_url: String,
@@ -6918,6 +6928,7 @@ fn main() {
             export_file_to_desktop,
             open_workspace_item,
             import_dropped_files,
+            choose_workspace_files,
             apply_window_state,
             set_visual_scale,
             set_always_on_top,

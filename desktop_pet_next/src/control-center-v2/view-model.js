@@ -100,7 +100,8 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       bufferedFrames: Number(active.screenVisionFrameBufferSize) || 0,
       evaluating: Boolean(active.proactiveWakeRunning)
     },
-    chat,
+    chat: { ...chat, pendingAttachments: Array.isArray(live.pendingAttachments) ? live.pendingAttachments : [],
+      uploadingAttachments: Number(live.attachmentUploadCount) || 0 },
     bots,
     music,
     recentOutputs: outputs,
@@ -119,9 +120,12 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
       [QQ_SETUP_ACTIONS.openFolder]: { available: qqSetup.supported && !qqSetup.blocked && !qqSetup.busy && qqSetup.native.installed, reason: qqSetup.detail },
       "chat.new": { available: connected, reason: connected ? "" : "桌宠尚未连接" },
       "chat.send": {
-        available: connected && liveSnapshotStatus === "connected" && (!active.sending || Boolean(active.proactiveWakeRunning)),
-        reason: !connected ? "桌宠尚未连接" : liveSnapshotStatus !== "connected" ? "请在桌面端窗口中发送" : "正在回复，请稍后再发"
+        available: connected && liveSnapshotStatus === "connected" && !Number(live.attachmentUploadCount),
+        reason: !connected ? "桌宠尚未连接" : liveSnapshotStatus !== "connected" ? "请在桌面端窗口中发送" : "附件正在接收，完成后再发送"
       },
+      "chat.attach": { available: connected && liveSnapshotStatus === "connected", reason: "请连接桌宠后添加附件" },
+      "chat.removeAttachment": { available: liveSnapshotStatus === "connected", reason: "桌宠未连接" },
+      "chat.playAttachment": { available: connected && liveSnapshotStatus === "connected", reason: "桌宠未连接" },
       "chat.stop": { available: connected && Boolean(active.sending || active.replyDisplayActive), reason: "当前没有进行中的回复" },
       "workspace.open": { available: true, reason: "" },
       "settings.selectBot": { available: connected && liveSnapshotStatus === "connected" && bots.items.length > 1, reason: connected ? "没有其他可切换的 Bot" : "桌宠尚未连接" },
@@ -337,6 +341,7 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
   const afterActive = asObject(after.active);
   const commandOutcome = observedActionOutcome(actionId, payload, after);
   if (commandOutcome && commandOutcome.ok === false) return true;
+  if (["chat.attach", "chat.removeAttachment", "chat.playAttachment"].includes(actionId)) return Boolean(commandOutcome?.ok);
   const observationCommand = SCREEN_OBSERVATION_COMMANDS[actionId];
   if (observationCommand) {
     if (!commandOutcome?.ok) return false;
@@ -355,8 +360,7 @@ export function isObservedActionConfirmation(actionId, beforeSnapshot, afterSnap
     return (
       text(commandResult.command) === "sendChatMessage" &&
       (!text(payload.operationId) || text(commandResult.operationId) === text(payload.operationId)) &&
-      text(commandResult.status) === "accepted" &&
-      Boolean(afterActive.sending)
+      text(commandResult.status) === "accepted" && Boolean(commandResult.ok)
     );
   }
   if (actionId === "chat.stop") {
@@ -431,6 +435,9 @@ export function observedActionOutcome(actionId, payload = {}, snapshot = {}) {
   const expectedOperationId = text(payload.operationId);
   const expectedCommand = SCREEN_OBSERVATION_COMMANDS[actionId]?.command || {
     "chat.send": "sendChatMessage",
+    "chat.attach": "attachChatFiles",
+    "chat.removeAttachment": "removeChatAttachment",
+    "chat.playAttachment": "playChatAttachment",
     "voice.test": "testTts",
     "voice.previewPlay": "previewTts",
     "character.previewEmotion": "previewEmotion",

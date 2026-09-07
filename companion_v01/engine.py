@@ -1367,6 +1367,7 @@ class AkaneMemoryEngine:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        prepared_attachments: dict[str, Any] | None = None,
     ) -> tuple[list[str], list[str]]:
         applied_source_ids: list[str] = []
         failed_source_ids: list[str] = []
@@ -1376,6 +1377,9 @@ class AkaneMemoryEngine:
             timestamp = int(getattr(steer, "timestamp", 0) or time.time())
             if not source_id or not content:
                 continue
+            attachments = (prepared_attachments or {}).get(source_id) or {}
+            if attachments.get("context"):
+                content = self._merge_extra_user_context(content, attachments["context"])
             steer_record = self.store.add_message(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
@@ -1385,6 +1389,8 @@ class AkaneMemoryEngine:
                 timestamp=timestamp,
                 semantic_tags=extract_semantic_tags(content),
                 source_id=source_id,
+                memory_metadata={"current_attachment_ids": attachments["attachment_ids"]}
+                if attachments else None,
             )
             self._upsert_raw_record(steer_record)
             recent_raw_for_turn.append(steer_record)
@@ -4303,9 +4309,20 @@ class AkaneMemoryEngine:
             if not control_snapshot and turn_control_id and turn_coordinator is not None:
                 control_snapshot = dict(turn_coordinator.drain(turn_control_id) or {})
             pending_steers = list(control_snapshot.get("steers") or [])
+            steer_attachments = {}
+            if client_context.effective_mode == ClientMode.DESKTOP_PET:
+                for steer in pending_steers:
+                    ids = getattr(steer, "current_attachment_ids", None)
+                    if ids is not None:
+                        steer_attachments[steer.source_id] = desktop_pet_engine.prepare_desktop_turn_attachments(
+                            self, profile_user_id=profile_user_id, session_id=session_id,
+                            character_pack_id=turn_character_pack_id, attachment_ids=list(ids),
+                            chat_model_override=chat_model_override,
+                        )
             if bool(control_snapshot.get("stop_requested")):
                 if pending_steers:
                     recorded_before_stop, failed_before_stop = self._record_turn_steering_inputs(
+                        prepared_attachments=steer_attachments,
                         steers=pending_steers,
                         turn_id=memcore_turn_id,
                         recent_raw_for_turn=recent_raw_for_turn,
@@ -4393,6 +4410,7 @@ class AkaneMemoryEngine:
                 return stopped_output
             if pending_steers:
                 applied_source_ids, failed_source_ids = self._record_turn_steering_inputs(
+                    prepared_attachments=steer_attachments,
                     steers=pending_steers,
                     turn_id=memcore_turn_id,
                     recent_raw_for_turn=recent_raw_for_turn,
@@ -4416,6 +4434,11 @@ class AkaneMemoryEngine:
                         pending_steers,
                         applied_source_ids=applied_source_ids,
                     )
+                    for source_id in applied_source_ids:
+                        attachments = steer_attachments.get(source_id)
+                        if attachments is not None:
+                            payload["current_attachment_ids"] = attachments["attachment_ids"]
+                            steer_images = self._merge_model_image_inputs(attachments["images"], steer_images)
                     if steer_images:
                         turn_user_images = self._merge_model_image_inputs(steer_images, turn_user_images)
                         turn_execution_target = self._upgrade_turn_execution_target_for_images(

@@ -559,6 +559,7 @@ def build_think_router(
                 timestamp=int(payload.get("timestamp") or time.time()),
                 actor_display_name=payload.get("actor_display_name"),
                 channel="desktop_pet",
+                current_attachment_ids=payload.get("current_attachment_ids"),
             )
             status_code = 202 if result.get("ok") else (409 if result.get("status") == "finalizing" else 404)
             return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
@@ -580,6 +581,7 @@ def build_think_router(
             source_id=f"steer_{item_id}",
             receipt_item_id=item_id,
             receipt_claim_token=str(reservation.get("claim_token") or ""),
+            current_attachment_ids=payload.get("current_attachment_ids"),
         )
         if result.get("ok"):
             return JSONResponse(result, status_code=202, headers={"Cache-Control": "no-store"})

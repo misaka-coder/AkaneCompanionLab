@@ -24,6 +24,7 @@ import {
 import { bindInstanceStorage } from "./instance-storage.js";
 import { botScopedPath, normalizeBotId } from "./bot-routing.js";
 import { createWorkspaceImportQueue } from "./workspace-import.js";
+import { createPendingAttachments, serializeBrowserAttachments } from "./pending-attachments.js";
 import {
   RealtimeVoiceCallResources,
   RealtimeVoiceCallSession,
@@ -707,15 +708,20 @@ let workspaceMusicRecommendations = [];
 let workspaceAudioCatalog = [];
 let workspaceMusicRecommendationsRefreshTimer = 0;
 let workspaceMusicRecommendationsLoading = false;
-const enqueueWorkspaceImport = createWorkspaceImportQueue({
-  readScope: () => ({
+function attachmentDraftScope() {
+  return {
     backendUrl: state.backendUrl,
     botId: state.boundBotId,
     sessionId: state.sessionId,
     realUserId: getProfileUserId(),
     characterPackId: String(state.characterPackId || "").trim(),
-  }),
-  run: (paths, scope) => invoke("import_dropped_files", {
+  };
+}
+const pendingAttachments = createPendingAttachments({ readScope: attachmentDraftScope,
+  changed: () => { renderPendingAttachments(); scheduleSettingsSnapshot(); } });
+const enqueueWorkspaceImport = createWorkspaceImportQueue({
+  readScope: attachmentDraftScope,
+  run: (paths, scope) => typeof paths[0] === "object" ? uploadClipboardAttachments(paths, scope) : invoke("import_dropped_files", {
     paths,
     backendUrl: scope.backendUrl,
     botId: scope.botId,
@@ -992,6 +998,17 @@ function bindUi() {
   els.chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
     submitChatInput();
+  });
+  els.chatInput.addEventListener("paste", (event) => {
+    const files = Array.from(event.clipboardData?.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    const scope = pendingAttachments.scope();
+    void serializeBrowserAttachments(files).then(async (values) => {
+      if (pendingAttachments.scope() !== scope) return;
+      await importClipboardAttachments(values);
+      showChatInput();
+    }).catch(error => setRuntimeStatus(formatError(error), { mode: "error" }));
   });
   els.chatForm.addEventListener("pointermove", () => {
     scheduleChatInputAutoHide();
@@ -1991,7 +2008,13 @@ async function handleSettingsCommand(payload) {
       await startNewSession();
       break;
     case "sendChatMessage": {
-      const text = String(payload.value ?? payload.text ?? "").trim();
+      if (pendingAttachments.importing() || (payload.draftToken && String(payload.draftToken) !== pendingAttachments.token())) {
+        lastSettingsCommandResult = { command, operationId, ok: false, status: "failed",
+          reason: pendingAttachments.importing() ? "attachments_uploading" : "attachment_scope_changed", at: Date.now() };
+        scheduleSettingsSnapshot();
+        break;
+      }
+      const text = String(payload.value ?? payload.text ?? "").trim() || (pendingAttachments.list().length ? "请查看这些附件。" : "");
       if (!text) {
         lastSettingsCommandResult = {
           command,
@@ -2006,11 +2029,12 @@ async function handleSettingsCommand(payload) {
       }
       if (proactiveWakeRunning) interruptReply({ announce: false });
       if (sending) {
+        const accepted = await sendMessage(text);
         lastSettingsCommandResult = {
           command,
-          ok: false,
-          status: "busy",
-          reason: "reply_in_progress",
+          ok: Boolean(accepted),
+          status: accepted ? "accepted" : "failed",
+          reason: accepted ? "" : "steer_not_accepted",
           operationId,
           at: Date.now()
         };
@@ -2026,6 +2050,34 @@ async function handleSettingsCommand(payload) {
         at: Date.now()
       };
       void sendMessage(text);
+      break;
+    }
+    case "attachChatFiles":
+    case "removeChatAttachment":
+    case "playChatAttachment": {
+      try {
+        if (String(payload.draftToken || "") !== pendingAttachments.token()) throw new Error("attachment_scope_changed");
+        let result = { ok: true, status: "completed" };
+        if (command === "attachChatFiles") {
+          const token = pendingAttachments.token();
+          const paths = payload.files ? null : (Array.isArray(payload.paths) ? payload.paths : await invoke("choose_workspace_files"));
+          if (token !== pendingAttachments.token()) throw new Error("attachment_scope_changed");
+          if (paths && !paths.length) result = { ok: false, status: "cancelled", reason: "picker_cancelled" };
+          else result = payload.files ? await importClipboardAttachments(payload.files) : await importDroppedFilesToWorkspace(paths);
+        } else {
+          const item = pendingAttachments.list().find(item => item.attachmentId === payload.attachmentId);
+          if (!item) throw new Error("attachment_not_in_draft");
+          if (command === "removeChatAttachment") pendingAttachments.remove(item.attachmentId);
+          else {
+            await playWorkspaceAudioItem(item);
+            result = { ok: Boolean(musicPlaying && musicQueue[musicQueueIndex]?.workspaceHandle === item.handle), status: "completed" };
+          }
+        }
+        lastSettingsCommandResult = { command, operationId, ok: Boolean(result.ok), status: result.status || (result.ok ? "completed" : "failed"), reason: result.reason || "", at: Date.now() };
+      } catch (error) {
+        lastSettingsCommandResult = { command, operationId, ok: false, status: "failed", reason: friendlyErrorMessage(formatError(error)), at: Date.now() };
+      }
+      scheduleSettingsSnapshot();
       break;
     }
     case "reloadResources":
@@ -2153,6 +2205,7 @@ async function broadcastSettingsSnapshot() {
 }
 
 function buildSettingsSnapshot() {
+  renderPendingAttachments();
   const activeOutfit = getActiveOutfit();
   const emotions = getActiveEmotions();
   const issues = buildResourceIssues(activeOutfit, emotions);
@@ -2223,6 +2276,9 @@ function buildSettingsSnapshot() {
       retrying: Boolean(backendRetryTimer)
     },
     runtimeStatus: els.status.textContent || "",
+    pendingAttachments: pendingAttachments.list(),
+    attachmentDraftToken: pendingAttachments.token(),
+    attachmentUploadCount: pendingAttachments.importing(),
     runtimeMode,
     active: {
       sending,
@@ -2773,10 +2829,10 @@ function renderEmotionGrid() {
 }
 
 function showChatInput() {
-  if (sending) return;
   cancelLocalClick();
   closeMenu();
   els.chatForm.hidden = false;
+  renderPendingAttachments();
   autoResizeChatInput();
   scheduleChatInputAutoHide();
   scheduleNativeHitTestSync({ force: true });
@@ -4839,7 +4895,11 @@ function collectHitRegions() {
 
   addElementHitRegion(regions, els.toggle, "debug-toggle");
   addElementHitRegion(regions, els.close, "close-button");
-  if (!els.chatForm.hidden) addElementHitRegion(regions, els.chatForm, "chat-form");
+  if (!els.chatForm.hidden) {
+    addElementHitRegion(regions, els.chatForm, "chat-form");
+    const attachments = document.querySelector("#pending-attachments");
+    if (attachments && !attachments.hidden) addElementHitRegion(regions, attachments, "pending-attachments");
+  }
   if (!els.menu.hidden) addElementHitRegion(regions, els.menu, "debug-menu");
 
   return regions;
@@ -6893,14 +6953,22 @@ function finishTurnLatencyTrace(turnToken) {
 }
 
 async function sendMessage(text) {
-  const trimmed = String(text || "").trim();
+  if (pendingAttachments.importing()) {
+    restoreFailedInput(String(text || ""));
+    setRuntimeStatus("附件正在接收，完成后再发送。", { mode: "working" });
+    return false;
+  }
+  const trimmed = String(text || "").trim() || (pendingAttachments.list().length ? "请查看这些附件。" : "");
   if (!trimmed) return;
+  const attachmentBatch = pendingAttachments.take();
+  const attachmentIds = attachmentBatch.items.map(item => item.attachmentId);
 
   rememberInputHistory(trimmed);
   if (proactiveWakeRunning) interruptReply({ announce: false });
   if (sending) {
-    await submitTurnSteer(trimmed);
-    return;
+    const accepted = await submitTurnSteer(trimmed, attachmentIds);
+    if (!accepted) pendingAttachments.restore(attachmentBatch);
+    return accepted;
   }
   interruptReply({ announce: false });
   const turnToken = ++activeTurnToken;
@@ -6925,12 +6993,14 @@ async function sendMessage(text) {
       if (!healthy) throw new Error("后端未连接");
     }
     if (!isTurnActive(turnToken)) return;
-    const stream = sendThinkStream(trimmed, turnToken);
+    if (pendingAttachments.scope() !== attachmentBatch.scope) return;
+    const stream = sendThinkStream(trimmed, turnToken, { attachmentIds });
     const rendered = await processThinkStream(stream, turnToken);
     if (!rendered) throw new Error("未收到回复");
   } catch (error) {
     if (!isTurnActive(turnToken)) return;
     restoreText = trimmed;
+    pendingAttachments.restore(attachmentBatch);
     showError(isAbortLike(error) ? "请求超时" : formatError(error));
   } finally {
     markTurnLatency("turn-finished");
@@ -6959,7 +7029,7 @@ function createDesktopSourceMessageId() {
     : `desktop:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 }
 
-function buildTurnControlPayload(message = "") {
+function buildTurnControlPayload(message = "", attachmentIds = []) {
   return {
     user_id: state.sessionId,
     real_user_id: getProfileUserId(),
@@ -6967,6 +7037,7 @@ function buildTurnControlPayload(message = "") {
     actor_display_name: "",
     source_message_id: createDesktopSourceMessageId(),
     message: String(message || "").trim(),
+    current_attachment_ids: attachmentIds,
     timestamp: Math.floor(Date.now() / 1000),
     client_mode: CLIENT_MODE,
     client_capabilities: buildClientCapabilities(),
@@ -6976,14 +7047,14 @@ function buildTurnControlPayload(message = "") {
   };
 }
 
-async function postTurnControl(action, message = "") {
+async function postTurnControl(action, message = "", attachmentIds = []) {
   const response = await backendFetch(
     buildBackendEndpointUrl(`think_${action}`, `/think/${action}`, { t: Date.now() }),
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify(buildTurnControlPayload(message))
+      body: JSON.stringify(buildTurnControlPayload(message, attachmentIds))
     }
   );
   let result = {};
@@ -6995,9 +7066,9 @@ async function postTurnControl(action, message = "") {
   return { response, result };
 }
 
-async function submitTurnSteer(message) {
+async function submitTurnSteer(message, attachmentIds = []) {
   try {
-    const { response, result } = await postTurnControl("steer", message);
+    const { response, result } = await postTurnControl("steer", message, attachmentIds);
     if (!response.ok || !result?.ok) {
       restoreFailedInput(message);
       const reason = String(result?.reason || "active_turn_unavailable");
@@ -7258,6 +7329,7 @@ async function* sendThinkStream(message, turnToken, options = {}) {
     source_message_id: createDesktopSourceMessageId(),
     message,
     turn_kind: String(options.turnKind || ""),
+    ...(Array.isArray(options.attachmentIds) ? { current_attachment_ids: options.attachmentIds } : {}),
     transient_user_message: Boolean(options.transientUserMessage),
     client_mode: CLIENT_MODE,
     character_pack_id: getCurrentCharacterPackId(),
@@ -8192,40 +8264,23 @@ function showFileDropHint() {
 async function handleDroppedFiles(paths) {
   const files = Array.isArray(paths) ? paths.map((item) => String(item || "")).filter(Boolean) : [];
   if (!files.length) return;
-  const items = buildDroppedAudioItems(files);
-
-  if (items.length) {
-    runDroppedWorkspaceImportInBackground(files, { audioCount: items.length, totalCount: files.length });
-    setRuntimeStatus(items.length > 1 ? `收到 ${items.length} 首音乐，正在准备播放` : "音乐收到，正在准备播放", {
-      mode: "music"
-    });
-    if (!sending && !replyDisplayActive) {
-      showBubbleText(files.length > items.length ? "音乐先放起来，其他文件我后台收进手边。" : "音乐先放起来，手边我后台整理。", {
-        transient: true,
-        durationMs: 1800,
-        kind: "music"
-      });
-    }
-    await yieldToUiForDrop();
-    await addDroppedAudioFiles(items);
-    return;
-  }
-
+  setRuntimeStatus("正在接收附件…", { mode: sending ? "working" : "idle" });
   try {
     const importResult = await importDroppedFilesToWorkspace(files);
     if (importResult?.status === "cancelled") return;
-    const imported = Number(importResult?.imported || 0);
+    const imported = Array.isArray(importResult?.items) ? importResult.items.length : Number(importResult?.imported || 0);
     if (imported > 0) {
-      const skipped = Number(importResult?.skipped_count || 0);
+      const skipped = (importResult?.skipped || []).filter(item => item.reason !== "duplicate_source").length;
       setRuntimeStatus(
-        skipped > 0 ? `已放进手边：${imported} 个文件，跳过 ${skipped} 个` : `已放进手边：${imported} 个文件`,
+        skipped > 0 ? `待发送：${imported} 个附件，跳过 ${skipped} 个` : `待发送：${imported} 个附件`,
         { mode: "idle" }
       );
-      showBubbleText(imported > 1 ? `收到 ${imported} 个文件，放到手边了。` : "文件收到啦，放到手边了。", {
+      if (!sending && !replyDisplayActive) showBubbleText(`收到 ${imported} 个附件，可以补充问题后发送。音频不会自动播放。`, {
         transient: true,
         durationMs: 2400,
         kind: "status"
       });
+      showChatInput();
       return;
     }
 
@@ -8246,36 +8301,6 @@ async function handleDroppedFiles(paths) {
   }
 }
 
-function runDroppedWorkspaceImportInBackground(files, { audioCount = 0, totalCount = 0 } = {}) {
-  const task = importDroppedFilesToWorkspace(files);
-  void task.then((importResult) => {
-    if (importResult?.status === "cancelled") return;
-    const imported = Number(importResult?.imported || 0);
-    if (!imported) return;
-    const skipped = Number(importResult?.skipped_count || 0);
-    const hasExtraFiles = Number(totalCount || 0) > Number(audioCount || 0);
-    const suffix = skipped > 0 ? `，跳过 ${skipped} 个` : "";
-    setRuntimeStatus(
-      hasExtraFiles
-        ? `音乐播放中，另外 ${imported} 个文件已放进手边${suffix}`
-        : `音乐播放中，文件已后台放进手边${suffix}`,
-      { mode: "music" }
-    );
-  }).catch((error) => {
-    setRuntimeStatus(`手边后台导入失败，音乐播放不受影响：${friendlyErrorMessage(formatError(error))}`, { mode: "music" });
-  });
-}
-
-function yieldToUiForDrop() {
-  return new Promise((resolve) => {
-    if (typeof window.requestAnimationFrame === "function") {
-      window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
-      return;
-    }
-    window.setTimeout(resolve, 0);
-  });
-}
-
 // M66-D: importDroppedFilesToWorkspace now delegates to Tauri import_dropped_files.
 // Absolute paths are read locally in Rust and uploaded as bytes; they never
 // reach the backend as path strings. Requires /import-file multipart endpoint.
@@ -8284,19 +8309,94 @@ async function importDroppedFilesToWorkspace(paths) {
     ? paths.map((item) => String(item || "").trim()).filter(Boolean)
     : [];
   if (!normalizedPaths.length) return { ok: false, reason: "no_paths", imported: 0 };
+  return importAttachmentEntries(normalizedPaths);
+}
+
+async function importClipboardAttachments(files) {
+  if (!Array.isArray(files) || !files.length) return { ok: false, reason: "no_files" };
+  return importAttachmentEntries(files);
+}
+
+async function importAttachmentEntries(entries) {
   if (!state.sessionId) {
     state.sessionId = generateSessionId();
     scheduleSave(0);
     scheduleSettingsSnapshot();
     void ensureBackendSession();
   }
-  const result = await enqueueWorkspaceImport(normalizedPaths);
-  if (result?.status === "cancelled") return result;
-  if (!result?.ok && !Number(result?.imported || 0)) {
-    throw new Error(summarizeWorkspaceImportSkipped(result) || result?.reason || "没有可导入的文件");
+  const draftScope = pendingAttachments.scope();
+  const finishImport = pendingAttachments.beginImport();
+  try {
+    const result = await enqueueWorkspaceImport(entries);
+    if (result?.status === "cancelled") return result;
+    if (!result?.ok && !Number(result?.imported || 0)) {
+      throw new Error(summarizeWorkspaceImportSkipped(result) || result?.reason || "没有可导入的文件");
+    }
+    pendingAttachments.add(result.items, draftScope);
+    await notifyWorkspaceRefresh();
+    return result;
+  } finally {
+    finishImport();
   }
-  await notifyWorkspaceRefresh();
-  return result;
+}
+
+async function uploadClipboardAttachments(files, scope) {
+  if (files.length > 40) throw new Error("too_many_files");
+  const form = new FormData();
+  form.append("user_id", scope.sessionId);
+  form.append("session_id", scope.sessionId);
+  form.append("real_user_id", scope.realUserId);
+  form.append("character_pack_id", scope.characterPackId);
+  let total = 0;
+  for (const file of files) {
+    const dataUrl = String(file?.dataUrl || "");
+    const match = /^data:([^;,]*);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+    if (!match || match[2].length > 12 * 1024 * 1024) throw new Error("invalid_clipboard_file");
+    const raw = atob(match[2]);
+    total += raw.length;
+    if (raw.length > 8 * 1024 * 1024 || total > 20 * 1024 * 1024) throw new Error("clipboard_files_too_large");
+    form.append("files", new Blob([Uint8Array.from(raw, ch => ch.charCodeAt(0))], { type: match[1] || "application/octet-stream" }), String(file.name || "clipboard.png"));
+  }
+  const url = new URL(botScopedPath(scope.botId, "/desktop-pet/workspace/import-file"), `${scope.backendUrl.replace(/\/+$/, "")}/`);
+  const response = await backendFetch(url.toString(), { method: "POST", body: form, cache: "no-store", connectTimeout: 30_000 });
+  if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+  return response.json();
+}
+
+function renderPendingAttachments() {
+  const container = document.querySelector("#pending-attachments");
+  if (!container) return;
+  const items = pendingAttachments.list();
+  container.replaceChildren();
+  container.hidden = !items.length && !pendingAttachments.importing();
+  if (pendingAttachments.importing()) {
+    const status = document.createElement("div");
+    status.textContent = "正在接收附件…";
+    status.className = "pending-attachment";
+    container.append(status);
+  }
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "pending-attachment";
+    const label = document.createElement("span");
+    label.textContent = `${item.kind === "audio" ? "音频材料" : "附件"} · ${item.title}`;
+    label.title = item.title;
+    row.append(label);
+    if (item.kind === "audio") {
+      const play = document.createElement("button");
+      play.type = "button";
+      play.textContent = "播放";
+      play.addEventListener("click", () => { void playWorkspaceAudioItem(item); });
+      row.append(play);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "移除";
+    remove.addEventListener("click", () => pendingAttachments.remove(item.attachmentId));
+    row.append(remove);
+    container.append(row);
+  }
+  scheduleNativeHitTestSync();
 }
 
 function buildWorkspaceAudioSourceId(itemType, handle) {

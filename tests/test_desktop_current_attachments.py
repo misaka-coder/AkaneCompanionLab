@@ -17,6 +17,7 @@ from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.prompt_profiles import PromptProfileRegistry
 from companion_v01.tool_handlers.attachments import InspectAttachmentToolHandler
 from companion_v01.tool_handlers.core import ToolExecutionContext
+from companion_v01.turn_coordination import SteeringInput
 from tests.test_desktop_workspace_panel import _make_workspace_engine
 from tests.test_turn_mainline_contract import _Harness, _speech_output
 from tests.test_prompt_builder import _build_minimal_final
@@ -42,6 +43,7 @@ class DesktopCurrentAttachmentTests(unittest.TestCase):
             profile_user_id=profile, session_id=session, paths=[str(source)],
             character_pack_id=character)
         self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["items"][0]["attachment_id"], result["attachments"][0]["attachment_id"])
         return result["attachments"][0]
 
     def prepare(self, ids, **kwargs):
@@ -131,6 +133,51 @@ class DesktopCurrentAttachmentTests(unittest.TestCase):
         self.assertEqual(keys[0], keys[1])
         self.assertEqual(payloads[0]["messages"][:prefix_length], payloads[1]["messages"][:prefix_length])
         self.assertNotEqual(payloads[0]["messages"][prefix_length:], payloads[1]["messages"][prefix_length:])
+
+    def test_desktop_steer_resolves_real_attachment_at_safe_boundary(self):
+        item = self.import_file()
+        harness = _Harness([_speech_output("处理中"), _speech_output("已看到新图片")], client_mode=ClientMode.DESKTOP_PET)
+        harness.store.get_attachment_inbox_item = self.engine.store.get_attachment_inbox_item
+        harness.engine.prepare_native_image_inputs = self.engine.prepare_native_image_inputs
+        class Coordinator:
+            done = False
+            def drain(self, token):
+                if self.done:
+                    return {"ok": True, "steers": []}
+                self.done = True
+                return {"ok": True, "steers": [SteeringInput(source_id="attached-steer", content="再看这个",
+                    timestamp=100, actor_id="desktop:u", channel="desktop_pet", current_attachment_ids=(item["attachment_id"],))]}
+            def begin_finalization(self, token):
+                return {"ok": True, "status": "finalizing", "steers": []}
+        harness.engine.turn_coordinator = Coordinator()
+        events = harness.run_stream(harness.payload(user_id="s", real_user_id="u", _turn_control_id="control"))
+        self.assertTrue(any(event["type"] == "turn_steer_applied" for event in events))
+        self.assertEqual(harness.script.generation_kwargs[1]["user_images"][0]["attachment_id"], item["attachment_id"])
+        record = next(record for record in harness.store.messages if record["source_id"] == "attached-steer")
+        self.assertIn(item["attachment_handle"], record["content"])
+        self.assertEqual(record["memory_metadata"]["current_attachment_ids"], [item["attachment_id"]])
+
+    def test_audio_reimport_reuses_exact_content_only_in_same_character(self):
+        import wave
+        source = self.root / "recording.wav"
+        def write_audio(sample):
+            with wave.open(str(source), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(8000)
+                audio.writeframes(sample * 800)
+        def ingest(character):
+            return self.engine.import_desktop_pet_local_paths(profile_user_id="u", session_id="s",
+                paths=[str(source)], character_pack_id=character)
+        write_audio(b"\0\0")
+        first = ingest("akane_v1")
+        reused = ingest("akane_v1")
+        self.assertEqual(reused["imported"], 0)
+        self.assertTrue(reused["items"][0]["reused"])
+        self.assertEqual(reused["items"][0]["attachment_id"], first["items"][0]["attachment_id"])
+        self.assertEqual(ingest("other")["imported"], 1)
+        write_audio(b"\1\0")
+        self.assertEqual(ingest("akane_v1")["imported"], 1)
 
 
 if __name__ == "__main__":

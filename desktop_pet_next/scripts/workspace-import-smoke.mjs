@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import { createWorkspaceImportQueue } from "../src/workspace-import.js";
+import { createPendingAttachments } from "../src/pending-attachments.js";
 
 const main = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const workspace = fs.readFileSync(new URL("../src/workspace.js", import.meta.url), "utf8");
@@ -34,12 +35,15 @@ const context = {
   showBubbleText() {}, friendlyErrorMessage: (value) => value,
   formatError: (error) => error.message || String(error),
   buildDroppedAudioItems: () => [],
+  sending: false, replyDisplayActive: false, showChatInput() {},
 };
 vm.createContext(context);
+vm.runInContext(between(main, "function attachmentDraftScope()", "const pendingAttachments ="), context);
+context.pendingAttachments = createPendingAttachments({ readScope: context.attachmentDraftScope });
 vm.runInContext(between(main, "const enqueueWorkspaceImport =", "\n});") + "\n});", context);
 vm.runInContext(between(main, "async function importDroppedFilesToWorkspace(", "function buildWorkspaceAudioSourceId("), context);
 vm.runInContext(between(main, "function summarizeWorkspaceImportSkipped(", "async function notifyWorkspaceRefresh("), context);
-vm.runInContext(between(main, "async function handleDroppedFiles(", "function runDroppedWorkspaceImportInBackground("), context);
+vm.runInContext(between(main, "async function handleDroppedFiles(", "// M66-D: importDroppedFilesToWorkspace"), context);
 
 const first = deferred();
 response = () => first.promise;
@@ -58,6 +62,12 @@ await assert.rejects(context.importDroppedFilesToWorkspace(["bad.txt"]), /native
 response = async () => ({ ok: true, imported: 1, skipped_count: 1, skipped: [{ reason: "empty_file" }] });
 await context.handleDroppedFiles(["good.txt", "empty.txt"]);
 assert.ok(statuses.at(-1).includes("跳过 1 个"));
+response = async () => ({ ok: true, imported: 1, skipped_count: 1, skipped: [{ reason: "duplicate_source" }],
+  items: [{ attachment_id: "audio-id", handle: "aud_1", kind: "audio", reused: true }] });
+await context.handleDroppedFiles(["same.wav"]);
+assert.match(statuses.at(-1), /待发送：1 个附件/);
+assert.ok(!statuses.at(-1).includes("跳过"), "reused audio is accepted, not reported as unsupported or skipped");
+assert.equal(context.pendingAttachments.list()[0].attachmentId, "audio-id");
 response = async () => ({ ok: false, imported: 0, skipped_count: 1, skipped: [{ reason: "empty_file" }] });
 await assert.rejects(context.importDroppedFilesToWorkspace(["empty.txt"]), /文件是空的/);
 

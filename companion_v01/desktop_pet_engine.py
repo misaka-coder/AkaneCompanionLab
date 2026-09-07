@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import hashlib
 import time
 from pathlib import Path
 from typing import Any
@@ -96,6 +97,7 @@ def import_desktop_pet_local_paths(
             if kind == "audio":
                 existing = find_existing_desktop_audio_attachment_duplicate(
                     engine, profile_user_id=profile_user_id, session_id=session_id, path=path,
+                    character_pack_id=character_pack_id,
                 )
                 if existing is not None:
                     skipped.append({
@@ -105,6 +107,7 @@ def import_desktop_pet_local_paths(
                         "origin_name": path.name,
                     })
                     duplicate_count += 1
+                    imported_cards.append({**desktop_workspace_attachment_card(existing), "reused": True})
                     continue
             item = service.ingest_local_file(
                 profile_user_id=profile_user_id,
@@ -127,6 +130,9 @@ def import_desktop_pet_local_paths(
                 }
             )
             continue
+        if item.get("status") == "failed":
+            skipped.append({"path": str(path), "reason": "material_processing_failed"})
+            continue
         imported_items.append(item)
         imported_cards.append(desktop_workspace_attachment_card(item))
 
@@ -135,7 +141,7 @@ def import_desktop_pet_local_paths(
         "source": "desktop_pet",
         "mode": "explicit_local_paths",
         "recursive": bool(recursive),
-        "imported": len(imported_cards),
+        "imported": len(imported_items),
         "duplicate_count": duplicate_count,
         "skipped_count": len(skipped),
         "items": imported_cards,
@@ -198,6 +204,7 @@ def find_existing_desktop_audio_attachment_duplicate(
     profile_user_id: str,
     session_id: str,
     path: Path,
+    character_pack_id: str = "",
 ) -> dict[str, Any] | None:
     service = engine._get_attachment_ingest_service()
     if service is None:
@@ -212,6 +219,9 @@ def find_existing_desktop_audio_attachment_duplicate(
     file_size = path.stat().st_size if path.is_file() else 0
     ext = path.suffix.lower().lstrip(".")
     for item in items:
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        if str(detail.get("character_pack_id") or "") != character_pack_id:
+            continue
         if str(item.get("kind") or "").strip().lower() != "audio":
             continue
         existing_name = str(item.get("origin_name") or "").strip()
@@ -222,6 +232,12 @@ def find_existing_desktop_audio_attachment_duplicate(
         existing_ext = str(item.get("file_ext") or "").strip().lower().lstrip(".")
         if existing_ext != ext:
             continue
+        stored_path = engine._get_attachment_inbox_service().resolve_storage_path(item)
+        if stored_path is None or not stored_path.is_file():
+            continue
+        with path.open("rb") as incoming, stored_path.open("rb") as stored:
+            if hashlib.file_digest(incoming, "sha256").digest() != hashlib.file_digest(stored, "sha256").digest():
+                continue
         return item
     return None
 
@@ -736,6 +752,7 @@ def desktop_workspace_attachment_card(item: dict[str, Any]) -> dict[str, Any]:
     status = str(item.get("status") or "").strip().lower()
     return {
         "item_type": "attachment",
+        "attachment_id": str(item.get("attachment_id") or ""),
         "id": handle,
         "handle": handle,
         "title": title,

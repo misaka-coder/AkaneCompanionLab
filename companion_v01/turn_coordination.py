@@ -32,6 +32,7 @@ class SteeringInput:
     native_user_images: tuple[dict[str, Any], ...] = ()
     receipt_item_id: str = ""
     receipt_claim_token: str = ""
+    current_attachment_ids: tuple[str, ...] | None = None
 
 
 @dataclass(slots=True)
@@ -187,6 +188,7 @@ class TurnCoordinator:
         source_id: Any = "",
         receipt_item_id: Any = "",
         receipt_claim_token: Any = "",
+        current_attachment_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         text = str(content or "").strip()
         actor = str(actor_id or "").strip()
@@ -230,6 +232,10 @@ class TurnCoordinator:
                 native_user_images=safe_images,
                 receipt_item_id=str(receipt_item_id or "").strip(),
                 receipt_claim_token=str(receipt_claim_token or "").strip(),
+                current_attachment_ids=tuple(dict.fromkeys(
+                    value.strip() for value in current_attachment_ids
+                    if isinstance(value, str) and value.strip() and len(value) <= 120
+                ))[:40] if isinstance(current_attachment_ids, list) else None,
             )
             active.pending.append(item)
             return {

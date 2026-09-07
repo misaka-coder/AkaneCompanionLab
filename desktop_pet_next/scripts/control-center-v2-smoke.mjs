@@ -500,7 +500,7 @@ assert.equal(viewModel.chat.messages.length, 3);
 assert.equal(viewModel.chat.messages[2].intermediate, true);
 assert.equal(viewModel.chat.history.hasMore, true);
 assert.equal(viewModel.chat.history.nextBeforeSeq, 1);
-assert.equal(viewModel.actions["chat.send"].available, false);
+assert.equal(viewModel.actions["chat.send"].available, true, "busy tasks accept steering input");
 assert.equal(viewModel.actions["chat.stop"].available, true);
 assert.equal(viewModel.actions["character.openWorkshop"].available, true);
 assert.equal(viewModel.actions["character.selectPack"].available, true);
