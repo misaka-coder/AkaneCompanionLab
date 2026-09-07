@@ -49,6 +49,11 @@ const qqBackendActionIds = new Set([
   CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck
 ]);
 const tauriInvokeOnlyActionIds = new Set([
+  CONTROL_CENTER_ACTIONS.qqSetupDetect,
+  CONTROL_CENTER_ACTIONS.qqSetupSelect,
+  CONTROL_CENTER_ACTIONS.qqSetupStart,
+  CONTROL_CENTER_ACTIONS.qqSetupOpenLogin,
+  CONTROL_CENTER_ACTIONS.qqSetupOpenFolder,
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter,
   CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileClearCurrentCharacter,
   CONTROL_CENTER_ACTIONS.abilitiesSkillsOpenFolder,
@@ -1241,6 +1246,15 @@ async function runTauriControlCenterAction(actionId, payload, context, options) 
   }
 
   try {
+    if (actionId.startsWith("qq.setup.")) {
+      if (typeof bridge.invoke !== "function") return { ok: false, status: "not-available", reason: "desktop_required", refresh: false };
+      const result = await bridge.invoke("local_qq_setup", { request: {
+        action: actionId.slice("qq.setup.".length),
+        backendUrl: normalizeBackendBaseUrl(options.baseUrl || DEFAULT_BACKEND_URL),
+        botId: String(options.botId || options.petState?.boundBotId || options.petState?.instanceId || "")
+      } });
+      return { ...result, ok: result?.ok === true, actionId, refresh: false };
+    }
     if (actionId === CONTROL_CENTER_ACTIONS.abilitiesProviderVoiceProfileAssignToCurrentCharacter) {
       return await runTauriCharacterVoiceProfileAssignment(payload, context, options, bridge);
     }

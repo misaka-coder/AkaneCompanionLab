@@ -3334,6 +3334,21 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         self.addCleanup(self.master_qq_patcher.stop)
         self.addCleanup(self.bot_qq_patcher.stop)
 
+    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    def test_self_check_never_substitutes_configured_qq_for_missing_login_identity(self) -> None:
+        from unittest.mock import Mock
+
+        for actual in (None, "", 0, "not-an-account"):
+            with self.subTest(actual=actual):
+                response = Mock(status_code=200)
+                response.json.return_value = {"status": "ok", "retcode": 0, "data": {"user_id": actual}}
+                with patch("companion_v01.onebot_transport.requests.Session.request", return_value=response):
+                    result = NapCatQQGateway().self_check()
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["status"], "account_identity_unknown")
+                self.assertNotIn("bot_qq", result)
+
     @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", False)
     def test_self_check_returns_bridge_disabled_when_not_enabled(self) -> None:
         gateway = NapCatQQGateway()

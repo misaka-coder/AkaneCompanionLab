@@ -8,6 +8,7 @@ param(
     [string]$NapCatRoot = "",
     [switch]$SkipPackageSync,
     [switch]$SkipDesktop,
+    [switch]$OpenQQSetup,
     [switch]$ReuseBackend,
     [switch]$NoBuild,
     [switch]$Dev
@@ -228,6 +229,11 @@ $resolvedNapCatRoot = if ([string]::IsNullOrWhiteSpace($NapCatRoot)) {
     [System.IO.Path]::GetFullPath($NapCatRoot)
 }
 $oneBotConfig = Join-Path $resolvedNapCatRoot "config\onebot11_$BotQQ.json"
+$env:AKANE_NAPCAT_ROOT = $resolvedNapCatRoot
+if ($OpenQQSetup) {
+    $env:AKANE_OPEN_SETTINGS_ON_START = "true"
+    $env:AKANE_OPEN_QQ_SETUP = "true"
+}
 Set-AkaneNapCatOneBotConfig `
     -ConfigPath $oneBotConfig `
     -ApiPort $OneBotPort `

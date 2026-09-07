@@ -631,7 +631,8 @@ systemThemeQuery?.addEventListener?.("change", () => applyPresentationPreference
 ));
 
 void bridge.start().catch((error) => {
-  store.patch({ phase: "failed", error: friendlyError(error), viewModel: null });
+  // Keep the explicitly disconnected snapshot: local QQ recovery must work while the backend is down.
+  store.patch({ phase: "failed", error: friendlyError(error) });
 });
 
 window.addEventListener("beforeunload", () => {

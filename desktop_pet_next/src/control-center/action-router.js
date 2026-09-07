@@ -72,6 +72,11 @@ export const CONTROL_CENTER_ACTIONS = Object.freeze({
   abilitiesWorkflowFileImport: "abilities.workflow.file.import",
   abilitiesWorkflowValidate: "abilities.workflow.validate",
   abilitiesQqSelfCheck: "abilities.qq.selfCheck",
+  qqSetupDetect: "qq.setup.detect",
+  qqSetupSelect: "qq.setup.select",
+  qqSetupStart: "qq.setup.start",
+  qqSetupOpenLogin: "qq.setup.openLogin",
+  qqSetupOpenFolder: "qq.setup.openFolder",
   advancedProbeClickThrough: "advanced.probeClickThrough",
   advancedResetWindow: "advanced.resetWindow",
   advancedToggleWebgl: "advanced.toggleWebgl",
@@ -157,7 +162,12 @@ export const CONTROL_CENTER_BRIDGED_ACTION_IDS = Object.freeze([
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowConfigSave,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowFileImport,
   CONTROL_CENTER_ACTIONS.abilitiesWorkflowValidate,
-  CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck
+  CONTROL_CENTER_ACTIONS.abilitiesQqSelfCheck,
+  CONTROL_CENTER_ACTIONS.qqSetupDetect,
+  CONTROL_CENTER_ACTIONS.qqSetupSelect,
+  CONTROL_CENTER_ACTIONS.qqSetupStart,
+  CONTROL_CENTER_ACTIONS.qqSetupOpenLogin,
+  CONTROL_CENTER_ACTIONS.qqSetupOpenFolder
 ]);
 
 const bridgedActionIds = new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS);

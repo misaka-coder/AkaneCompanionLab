@@ -737,6 +737,12 @@ class NapCatQQGateway:
             return self._self_check_failure(login_result.code, login_result.public_reason)
         user_id = login_result.data.get("user_id") or ""
         nickname = login_result.data.get("nickname") or ""
+        if not str(user_id).isdigit() or int(str(user_id)) <= 0:
+            return {
+                "ok": False,
+                "status": "account_identity_unknown",
+                "reason": "OneBot 未返回实际登录 QQ，无法确认账号身份。",
+            }
         status_result = self._onebot_transport.call("get_status", timeout=5)
         if not status_result.ok:
             return self._self_check_failure(status_result.code, status_result.public_reason)
@@ -758,7 +764,7 @@ class NapCatQQGateway:
         return {
             "ok": True,
             "status": "connected",
-            "bot_qq": str(user_id) if user_id else self.bot_qq,
+            "bot_qq": str(user_id),
             "nickname": str(nickname),
             "checks": {
                 "bridge_enabled": True,

@@ -1,4 +1,5 @@
 import { MODEL_SERVICE_ACTIONS, normalizeModelServiceRuntime } from "./model-service.js";
+import { normalizeQqSetup, QQ_SETUP_ACTIONS } from "./qq-setup.js";
 
 const SUCCESS_STATUSES = new Set(["executed", "completed", "available", "connected", "configured", "already-playing", "already-paused", "already-stopped"]);
 
@@ -48,6 +49,7 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
     characterWarnings: warnings,
     voice
   });
+  const qqSetup = normalizeQqSetup(raw.qqSetupRuntime, liveSnapshotStatus !== "not-applicable", raw.backendUrl);
   const instanceLabel = text(petState.instanceId) || text(raw.controlCenterRuntime?.health?.data?.instance_id) || "本地实例";
   const chat = normalizeChatSession(raw.chatSession, {
     sessionId: text(petState.sessionId),
@@ -95,8 +97,14 @@ export function createControlCenterViewModel(rawSnapshot, runtimeSnapshot = null
     voice,
     setup,
     system,
+    qqSetup,
     abilityLabels: Array.isArray(runtime.abilities) ? runtime.abilities.map(text).filter(Boolean) : [],
     actions: {
+      [QQ_SETUP_ACTIONS.detect]: { available: qqSetup.supported && !qqSetup.busy, reason: qqSetup.detail },
+      [QQ_SETUP_ACTIONS.select]: { available: qqSetup.supported && !qqSetup.blocked && !qqSetup.busy && !qqSetup.native.starting, reason: qqSetup.detail },
+      [QQ_SETUP_ACTIONS.start]: { available: qqSetup.supported && !qqSetup.blocked && !qqSetup.busy && qqSetup.native.installed && !qqSetup.native.starting, reason: qqSetup.detail },
+      [QQ_SETUP_ACTIONS.openLogin]: { available: qqSetup.supported && !qqSetup.blocked && !qqSetup.busy && qqSetup.native.webuiReady, reason: qqSetup.detail },
+      [QQ_SETUP_ACTIONS.openFolder]: { available: qqSetup.supported && !qqSetup.blocked && !qqSetup.busy && qqSetup.native.installed, reason: qqSetup.detail },
       "chat.new": { available: connected, reason: connected ? "" : "桌宠尚未连接" },
       "chat.send": {
         available: connected && liveSnapshotStatus === "connected" && !Boolean(active.sending),

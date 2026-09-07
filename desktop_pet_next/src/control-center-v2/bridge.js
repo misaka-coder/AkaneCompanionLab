@@ -23,6 +23,7 @@ import {
 } from "./view-model.js";
 import { modelServiceOperation, runModelServiceBridgeAction } from "./model-service.js";
 import { chatSessionId, createTrailingAsyncRefresh, mergeChatSessions } from "./chat-history.js";
+import { createQqSetupController, isQqSetupAction, QQ_SETUP_ACTIONS } from "./qq-setup.js";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
 const OBSERVED_ACTION_IDS = new Set([
@@ -81,6 +82,11 @@ export function createControlCenterBridge(options = {}) {
   let lastChatRuntimeSignature = "";
   let liveSnapshotStatus = isTauri ? "connecting" : "not-applicable";
   let liveSnapshotError = "";
+  let qqSetupRuntime = {};
+  const qqSetup = createQqSetupController({ onChange(value) {
+    qqSetupRuntime = value;
+    publish();
+  } });
   const refreshChatSession = createTrailingAsyncRefresh(async () => {
     const requestedSessionId = liveChatSessionId();
     const chatSession = await readChatSessionForRuntime();
@@ -115,7 +121,7 @@ export function createControlCenterBridge(options = {}) {
   function publish() {
     if (!rawSnapshot) return;
     const viewModel = createControlCenterViewModel(withBridgeStatus(
-      withLiveRuntime(rawSnapshot, runtimeSnapshot),
+      withLiveRuntime({ ...rawSnapshot, qqSetupRuntime }, runtimeSnapshot),
       liveSnapshotStatus,
       liveSnapshotError
     ), runtimeSnapshot);
@@ -126,6 +132,11 @@ export function createControlCenterBridge(options = {}) {
     const sourceOptions = await createSourceOptions({ isTauri });
     source = createControlCenterDataSource(sourceOptions);
     actionRouter = createControlCenterActionRouter({ dataSource: source });
+    rawSnapshot = source.readInitialState();
+    qqSetup.bind(source);
+    // Local recovery remains visible even while the backend is stopped.
+    publish();
+    if (isTauri) void qqSetup.run(QQ_SETUP_ACTIONS.detect);
 
     if (isTauri) {
       try {
@@ -188,6 +199,8 @@ export function createControlCenterBridge(options = {}) {
       ]);
       if (!next) {
         const reason = source.getFallbackReason?.() || source.fallbackReason || "snapshot_unavailable";
+        rawSnapshot = { ...requestSource.readInitialState(), fallbackReason: String(reason) };
+        publish();
         throw new Error(String(reason));
       }
       rawSnapshot = {
@@ -213,7 +226,7 @@ export function createControlCenterBridge(options = {}) {
       void publishPluginMarket(requestSource, pluginMarketPromise, pluginMarketSequence);
       await refreshChatSession();
       return createControlCenterViewModel(withBridgeStatus(
-        withLiveRuntime(rawSnapshot, runtimeSnapshot),
+        withLiveRuntime({ ...rawSnapshot, qqSetupRuntime }, runtimeSnapshot),
         liveSnapshotStatus,
         liveSnapshotError
       ), runtimeSnapshot);
@@ -230,6 +243,7 @@ export function createControlCenterBridge(options = {}) {
       return { ok: false, status: "not-available", actionId, reason: "control_center_bridge_not_started" };
     }
     const beforeRuntimeSnapshot = runtimeSnapshot;
+    if (isQqSetupAction(actionId)) return qqSetup.run(actionId);
     const actionPayload = OBSERVED_ACTION_IDS.has(actionId)
       ? { ...payload, operationId: createActionOperationId(actionId) }
       : payload;
@@ -256,6 +270,8 @@ export function createControlCenterBridge(options = {}) {
       const sourceOptions = await createSourceOptions({ isTauri });
       source = createControlCenterDataSource(sourceOptions);
       actionRouter = createControlCenterActionRouter({ dataSource: source });
+      qqSetup.bind(source);
+      if (isTauri) void qqSetup.run(QQ_SETUP_ACTIONS.detect);
     }
     if (result.refresh) {
       if (isTauri) {
@@ -281,6 +297,7 @@ export function createControlCenterBridge(options = {}) {
   }
 
   function stop() {
+    qqSetup.stop();
     pluginCatalogRefreshSequence += 1;
     pluginManagementRefreshSequence += 1;
     pluginMarketRefreshSequence += 1;

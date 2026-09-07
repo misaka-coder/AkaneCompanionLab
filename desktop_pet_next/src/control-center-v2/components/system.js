@@ -1,11 +1,13 @@
 import { escapeHtml } from "../dom.js";
 import { actionPhase, renderActionButton } from "./action-button.js";
+import { renderQqSetup } from "./qq-setup.js";
 
 export function renderSystem(state) {
   const vm = state.viewModel;
   const system = vm?.system;
   if (!system?.available) {
     return `
+      ${renderQqSetup(state)}
       <section class="empty-state glass-panel">
         <span aria-hidden="true">⌁</span>
         <h2>还没有可用的诊断数据</h2>
@@ -21,6 +23,7 @@ export function renderSystem(state) {
         ${renderActionButton(state, vm, "perception.runDiagnostics", "↻", "重新检查", "primary")}
       </div>
 
+      ${renderQqSetup(state)}
       <section class="system-health-hero glass-panel is-${escapeHtml(system.overallTone)}">
         <div class="system-health-mark"><span>${system.overallTone === "good" ? "✓" : system.overallTone === "warning" ? "!" : "×"}</span></div>
         <div><p class="eyebrow">CURRENT HEALTH</p><h3>${escapeHtml(system.overallLabel)}</h3><p>${escapeHtml(system.overallDetail)}</p></div>

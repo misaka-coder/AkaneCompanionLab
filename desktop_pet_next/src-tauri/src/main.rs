@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod local_qq_setup;
+
 use std::{
     collections::{HashMap, VecDeque},
     fs,
@@ -4163,6 +4165,9 @@ fn settings_window_url_for(open_model_settings: bool) -> &'static str {
 }
 
 fn settings_window_url() -> &'static str {
+    if env_flag_enabled("AKANE_OPEN_QQ_SETUP") {
+        return "control-center-lab.html?page=system";
+    }
     settings_window_url_for(env_flag_enabled("AKANE_OPEN_MODEL_SETTINGS"))
 }
 
@@ -6818,6 +6823,7 @@ fn main() {
             save_pet_state,
             verify_backend_instance,
             backend_admin_request,
+            local_qq_setup::local_qq_setup,
             manage_project_workspaces,
             bind_project_directory,
             pick_local_plugin_path,
