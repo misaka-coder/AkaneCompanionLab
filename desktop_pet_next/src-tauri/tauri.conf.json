@@ -33,7 +33,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPCACHE/audio/**", "$LOCALDATA/Akane/characters/**"]
+        "scope": ["$LOCALDATA/Akane/characters/**"]
       }
     }
   },

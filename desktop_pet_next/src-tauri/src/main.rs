@@ -1298,6 +1298,8 @@ fn export_file_to_desktop_blocking(
 #[tauri::command]
 async fn open_workspace_item(
     app: AppHandle,
+    backend_url: String,
+    bot_id: String,
     handle: String,
     item_type: String,
     action: String,
@@ -1322,9 +1324,7 @@ async fn open_workspace_item(
     ) {
         return Err("unknown_workspace_action".to_string());
     }
-    let backend = runtime_backend_url();
-    let mut content_url =
-        reqwest::Url::parse(&backend).map_err(|_| "backend_url_invalid".to_string())?;
+    let mut content_url = verified_workspace_base_url(&app, &backend_url, &bot_id).await?;
     {
         let mut segments = content_url
             .path_segments_mut()
@@ -1501,10 +1501,52 @@ fn _extract_content_disposition_filename(response: &reqwest::Response) -> Option
     None
 }
 
+fn workspace_base_url(
+    state: &PetState,
+    bound_backend: &str,
+    requested_backend: &str,
+    requested_bot: &str,
+) -> Result<reqwest::Url, String> {
+    if normalize_backend_url(requested_backend) != normalize_backend_url(bound_backend)
+        || requested_bot != state.bound_bot_id
+        || !is_safe_instance_id(requested_bot)
+    {
+        return Err("workspace_binding_changed".to_string());
+    }
+    let mut url = reqwest::Url::parse(bound_backend)
+        .map_err(|_| "backend_url_invalid".to_string())?;
+    let mut segments = url.path_segments_mut()
+        .map_err(|_| "backend_url_invalid".to_string())?;
+    segments.pop_if_empty();
+    segments.extend(["api", "bots", requested_bot]);
+    drop(segments);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+async fn verified_workspace_base_url(
+    app: &AppHandle,
+    requested_backend: &str,
+    requested_bot: &str,
+) -> Result<reqwest::Url, String> {
+    let state = load_pet_state(app.clone())?;
+    let backend = current_bound_backend_url(&state);
+    let url = workspace_base_url(&state, &backend, requested_backend, requested_bot)?;
+    let verification = verify_backend_instance_url(&backend).await;
+    if !verification.ok {
+        return Err("backend_instance_verification_failed".to_string());
+    }
+    Ok(url)
+}
+
 // M66-D: Import dropped files by reading bytes locally and uploading to the
 // backend via multipart POST. Absolute paths never leave the Tauri process.
 #[tauri::command]
 async fn import_dropped_files(
+    app: AppHandle,
+    backend_url: String,
+    bot_id: String,
     paths: Vec<String>,
     user_id: String,
     session_id: String,
@@ -1517,11 +1559,9 @@ async fn import_dropped_files(
     if paths.len() > MAX_WORKSPACE_IMPORT_FILES {
         return Ok(serde_json::json!({"ok": false, "reason": "too_many_files"}));
     }
-    let backend = runtime_backend_url();
-    let import_url = format!(
-        "{}/desktop-pet/workspace/import-file",
-        backend.trim_end_matches('/')
-    );
+    let mut import_url = verified_workspace_base_url(&app, &backend_url, &bot_id).await?;
+    import_url.path_segments_mut().map_err(|_| "backend_url_invalid".to_string())?
+        .extend(["desktop-pet", "workspace", "import-file"]);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
@@ -1531,41 +1571,56 @@ async fn import_dropped_files(
     let mut total_bytes = 0u64;
     for raw_path in &paths {
         let path = canonical_existing_path(raw_path).unwrap_or_default();
+        let file_name = Path::new(raw_path)
+            .file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string();
         if path.as_os_str().is_empty() || !path.is_file() {
-            skipped_items.push(serde_json::json!({"reason": "not_found"}));
+            skipped_items.push(serde_json::json!({"file_name": file_name, "reason": "not_found"}));
             continue;
         }
-        let metadata = fs::metadata(&path).map_err(|e| format!("file_metadata: {}", e))?;
+        let metadata = match fs::metadata(&path) {
+            Ok(value) => value,
+            Err(_) => {
+                skipped_items.push(serde_json::json!({"file_name": file_name, "reason": "file_read_failed"}));
+                continue;
+            }
+        };
         if metadata.len() == 0 {
-            skipped_items.push(serde_json::json!({"reason": "empty_file"}));
+            skipped_items.push(serde_json::json!({"file_name": file_name, "reason": "empty_file"}));
             continue;
         }
         if metadata.len() > MAX_WORKSPACE_FILE_BYTES
             || total_bytes.saturating_add(metadata.len()) > MAX_WORKSPACE_IMPORT_TOTAL_BYTES
         {
-            skipped_items.push(serde_json::json!({"reason": "file_too_large"}));
+            skipped_items.push(serde_json::json!({"file_name": file_name, "reason": "file_too_large"}));
             continue;
         }
         total_bytes = total_bytes.saturating_add(metadata.len());
-        let bytes = fs::read(&path).map_err(|e| format!("read_file: {}", e))?;
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file")
-            .to_string();
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+        let bytes = match fs::read(&path) {
+            Ok(value) => value,
+            Err(_) => {
+                skipped_items.push(serde_json::json!({"file_name": file_name, "reason": "file_read_failed"}));
+                continue;
+            }
+        };
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.clone());
         let form = reqwest::multipart::Form::new()
             .text("user_id", user_id.clone())
             .text("session_id", session_id.clone())
             .text("real_user_id", real_user_id.clone())
             .text("character_pack_id", character_pack_id.clone())
             .part("files", part);
-        let response = client
-            .post(&import_url)
+        let response = match client
+            .post(import_url.clone())
             .multipart(form)
             .send()
             .await
-            .map_err(|e| format!("upload_failed: {}", e))?;
+        {
+            Ok(value) => value,
+            Err(_) => {
+                skipped_items.push(serde_json::json!({"file_name": file_name, "reason": "upload_failed"}));
+                continue;
+            }
+        };
         let status = response.status();
         let body: serde_json::Value = response
             .json()
@@ -1578,6 +1633,7 @@ async fn import_dropped_files(
                 .unwrap_or(false)
         {
             skipped_items.push(serde_json::json!({
+                "file_name": file_name,
                 "reason": body.get("reason").and_then(serde_json::Value::as_str).unwrap_or("upload_rejected")
             }));
             continue;
@@ -1585,12 +1641,23 @@ async fn import_dropped_files(
         if let Some(items) = body.get("items").and_then(serde_json::Value::as_array) {
             imported_items.extend(items.iter().cloned());
         }
+        if let Some(skipped) = body.get("skipped").and_then(serde_json::Value::as_array) {
+            for item in skipped {
+                skipped_items.push(serde_json::json!({
+                    "file_name": file_name,
+                    "reason": item.get("reason").and_then(serde_json::Value::as_str).unwrap_or("import_failed")
+                }));
+            }
+        }
     }
     Ok(serde_json::json!({
         "ok": !imported_items.is_empty(),
-        "reason": if imported_items.is_empty() { "all_paths_invalid" } else { "" },
+        "reason": if imported_items.is_empty() {
+            skipped_items.first().and_then(|v| v.get("reason")).and_then(serde_json::Value::as_str).unwrap_or("no_files")
+        } else { "" },
         "imported": imported_items.len(),
         "items": imported_items,
+        "skipped_count": skipped_items.len(),
         "skipped": skipped_items,
     }))
 }
@@ -6786,6 +6853,14 @@ fn main() {
                 .allow_directory(&characters_dir, true)
                 .map_err(|error| error.to_string())?;
 
+            // Audio preparation writes into the instance-owned cache, not
+            // Tauri's former application cache. Only this managed subtree is
+            // readable through asset URLs; dropped source directories stay private.
+            let audio_cache_dir = desktop_runtime_cache_dir("attachments/audio")?;
+            app.asset_protocol_scope()
+                .allow_directory(&audio_cache_dir, true)
+                .map_err(|error| error.to_string())?;
+
             start_desktop_satellite(app.handle().clone());
 
             #[cfg(windows)]
@@ -6987,6 +7062,19 @@ mod tests {
         assert_eq!(normalize_plugin_picker_kind(" source "), Some("source"));
         assert_eq!(normalize_plugin_picker_kind("WHEEL"), Some("wheel"));
         assert_eq!(normalize_plugin_picker_kind("zip"), None);
+    }
+
+    #[test]
+    fn workspace_urls_follow_verified_backend_and_selected_bot() {
+        let mut state = PetState::default();
+        state.bound_bot_id = "bot-b".to_string();
+        let base = "http://127.0.0.1:12001";
+        let url = workspace_base_url(&state, base, base, "bot-b").unwrap();
+        assert_eq!(url.as_str(), "http://127.0.0.1:12001/api/bots/bot-b");
+        assert!(workspace_base_url(&state, base, base, "bot-a").is_err());
+        assert!(workspace_base_url(&state, base, "http://127.0.0.1:9999", "bot-b").is_err());
+        state.bound_bot_id = "../other".to_string();
+        assert!(workspace_base_url(&state, base, base, "../other").is_err());
     }
 
     #[test]

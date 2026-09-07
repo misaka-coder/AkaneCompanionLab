@@ -213,10 +213,25 @@ class CapabilityFabricRepairTests(unittest.TestCase):
             self.assertEqual(captured[0]["profile_user_id"], "alice")
             self.assertEqual(captured[0]["session_id"], "same-session")
             self.assertTrue(captured[0]["exists_during_import"])
+            self.assertEqual(captured[0]["path"].name, "note.txt")
             self.assertFalse(captured[0]["path"].exists())
             self.assertEqual(oversized.json()["reason"], "file_too_large")
             self.assertEqual(too_many.status_code, 413)
             self.assertEqual(too_many.json()["reason"], "too_many_files")
+
+            def reject_import(**kwargs):
+                return {"ok": False, "skipped": [{"reason": "unsupported_type", "absolute_path": kwargs["paths"][0]}]}
+
+            engine.import_desktop_pet_local_paths = reject_import
+            rejected = client.post(
+                "/desktop-pet/workspace/import-file",
+                data={"user_id": "same-session", "real_user_id": "alice"},
+                files=[("files", ("skip.exe", b"no", "application/octet-stream"))],
+            ).json()
+            self.assertFalse(rejected["ok"])
+            self.assertEqual(rejected["reason"], "unsupported_type")
+            self.assertEqual(rejected["skipped_count"], 1)
+            self.assertEqual(rejected["skipped"], [{"file_name": "skip.exe", "reason": "unsupported_type"}])
 
     def test_artifact_content_preserves_profile_identity_and_instance_headers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

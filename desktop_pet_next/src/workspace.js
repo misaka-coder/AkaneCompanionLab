@@ -786,12 +786,14 @@ async function invokeWorkspaceItemAction(item, action) {
   if (!sessionId) throw new Error("会话还没准备好");
   return invoke("open_workspace_item", {
     handle,
-    item_type: workspaceRouteType(item),
+    backendUrl: state.backendUrl,
+    botId: state.boundBotId,
+    itemType: workspaceRouteType(item),
     action: String(action || "").trim(),
-    user_id: sessionId,
-    session_id: sessionId,
-    real_user_id: String(state?.profileUserId || PROFILE_USER_ID),
-    file_name: buildWorkspaceExportFileName(item)
+    userId: sessionId,
+    sessionId,
+    realUserId: String(state?.profileUserId || PROFILE_USER_ID),
+    fileName: buildWorkspaceExportFileName(item)
   });
 }
 

@@ -248,7 +248,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("els.bubbleText.scrollTop = 0", main_source)
         self.assertIn("function displayReplyBubbleText(text, { speaking = true } = {})", main_source)
         self.assertIn("function getSegmentDisplayDelay(text)", main_source)
-        self.assertIn("if (!rendered) {\n        showThinking();", main_source)
+        self.assertIn("if (!rendered && !backgroundObservation) {\n        showThinking();", main_source)
         self.assertIn("queueStreamedReplySegment(text, turnToken)", main_source)
         self.assertIn("rendered = true;", main_source)
         self.assertIn('if (!rendered && bubbleKind === "thinking")', main_source)

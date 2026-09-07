@@ -357,7 +357,11 @@ def build_desktop_pet_router(
             request_dir = Path(tempfile.mkdtemp(prefix="import_", dir=staging_root))
             for index, upload in enumerate(files):
                 file_name = safe_workspace_upload_filename(upload.filename)
-                tmp_path = request_dir / f"{index:03d}_{file_name}"
+                # Isolate equal names without turning our staging prefix into
+                # the user-visible attachment name or duplicate-detection key.
+                item_dir = request_dir / f"{index:03d}"
+                item_dir.mkdir()
+                tmp_path = item_dir / file_name
                 file_bytes = 0
                 rejected_reason = ""
                 with tmp_path.open("xb") as tmp:
@@ -398,6 +402,12 @@ def build_desktop_pet_router(
                     if isinstance(item, dict):
                         item.pop("absolute_path", None)
                         imported_items.append(item)
+                for skipped in list(result.get("skipped") or []):
+                    if isinstance(skipped, dict):
+                        skipped_items.append({
+                            "file_name": file_name,
+                            "reason": str(skipped.get("reason") or "import_failed"),
+                        })
         finally:
             for upload in files:
                 await upload.close()
@@ -414,6 +424,7 @@ def build_desktop_pet_router(
                 "reason": "" if imported_items else (skipped_items[0]["reason"] if skipped_items else "no_files"),
                 "imported": len(imported_items),
                 "items": imported_items,
+                "skipped_count": len(skipped_items),
                 "skipped": skipped_items,
             },
             headers={"Cache-Control": "no-store"},

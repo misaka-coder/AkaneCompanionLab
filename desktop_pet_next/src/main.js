@@ -23,6 +23,7 @@ import {
 } from "./character-profile.js";
 import { bindInstanceStorage } from "./instance-storage.js";
 import { botScopedPath, normalizeBotId } from "./bot-routing.js";
+import { createWorkspaceImportQueue } from "./workspace-import.js";
 import {
   RealtimeVoiceCallResources,
   RealtimeVoiceCallSession,
@@ -706,7 +707,24 @@ let workspaceMusicRecommendations = [];
 let workspaceAudioCatalog = [];
 let workspaceMusicRecommendationsRefreshTimer = 0;
 let workspaceMusicRecommendationsLoading = false;
-let workspaceImporting = false;
+const enqueueWorkspaceImport = createWorkspaceImportQueue({
+  readScope: () => ({
+    backendUrl: state.backendUrl,
+    botId: state.boundBotId,
+    sessionId: state.sessionId,
+    realUserId: getProfileUserId(),
+    characterPackId: String(state.characterPackId || "").trim(),
+  }),
+  run: (paths, scope) => invoke("import_dropped_files", {
+    paths,
+    backendUrl: scope.backendUrl,
+    botId: scope.botId,
+    userId: scope.sessionId,
+    sessionId: scope.sessionId,
+    realUserId: scope.realUserId,
+    characterPackId: scope.characterPackId,
+  }),
+});
 let voiceInputState = "idle";
 let voiceRecorder = null;
 let voiceStream = null;
@@ -7812,12 +7830,14 @@ async function handleDesktopFileDeliveryEvent(event) {
 
   const workspaceItemParams = {
     handle,
-    item_type: itemType,
+    backendUrl: state.backendUrl,
+    botId: state.boundBotId,
+    itemType,
     action,
-    user_id: state.sessionId || "",
-    session_id: state.sessionId || "",
-    real_user_id: getProfileUserId(),
-    file_name: buildDesktopDeliveryFileName(fileRef) || "",
+    userId: state.sessionId || "",
+    sessionId: state.sessionId || "",
+    realUserId: getProfileUserId(),
+    fileName: buildDesktopDeliveryFileName(fileRef) || "",
   };
 
   if (action === "open") {
@@ -8193,6 +8213,7 @@ async function handleDroppedFiles(paths) {
 
   try {
     const importResult = await importDroppedFilesToWorkspace(files);
+    if (importResult?.status === "cancelled") return;
     const imported = Number(importResult?.imported || 0);
     if (imported > 0) {
       const skipped = Number(importResult?.skipped_count || 0);
@@ -8228,6 +8249,7 @@ async function handleDroppedFiles(paths) {
 function runDroppedWorkspaceImportInBackground(files, { audioCount = 0, totalCount = 0 } = {}) {
   const task = importDroppedFilesToWorkspace(files);
   void task.then((importResult) => {
+    if (importResult?.status === "cancelled") return;
     const imported = Number(importResult?.imported || 0);
     if (!imported) return;
     const skipped = Number(importResult?.skipped_count || 0);
@@ -8261,36 +8283,20 @@ async function importDroppedFilesToWorkspace(paths) {
   const normalizedPaths = Array.isArray(paths)
     ? paths.map((item) => String(item || "").trim()).filter(Boolean)
     : [];
-  if (!normalizedPaths.length) return null;
-  if (workspaceImporting) return null;
-  workspaceImporting = true;
-  try {
-    const sessionId = state.sessionId || generateSessionId();
-    if (!state.sessionId) {
-      state.sessionId = sessionId;
-      scheduleSave(0);
-      scheduleSettingsSnapshot();
-      void ensureBackendSession();
-    }
-    const result = await tauriCall(
-      "import_dropped_files",
-      {
-        paths: normalizedPaths,
-        user_id: sessionId,
-        session_id: sessionId,
-        real_user_id: getProfileUserId(),
-        character_pack_id: String(state.characterPackId || "").trim(),
-      },
-      { quiet: false }
-    );
-    if (!result?.ok && !Number(result?.imported || 0)) {
-      throw new Error(result?.reason || "没有可导入的文件");
-    }
-    await notifyWorkspaceRefresh();
-    return result;
-  } finally {
-    workspaceImporting = false;
+  if (!normalizedPaths.length) return { ok: false, reason: "no_paths", imported: 0 };
+  if (!state.sessionId) {
+    state.sessionId = generateSessionId();
+    scheduleSave(0);
+    scheduleSettingsSnapshot();
+    void ensureBackendSession();
   }
+  const result = await enqueueWorkspaceImport(normalizedPaths);
+  if (result?.status === "cancelled") return result;
+  if (!result?.ok && !Number(result?.imported || 0)) {
+    throw new Error(summarizeWorkspaceImportSkipped(result) || result?.reason || "没有可导入的文件");
+  }
+  await notifyWorkspaceRefresh();
+  return result;
 }
 
 function buildWorkspaceAudioSourceId(itemType, handle) {
@@ -8356,12 +8362,14 @@ async function stageWorkspaceItem({ itemType, handle, title = "", format = "" })
     "open_workspace_item",
     {
       handle: String(handle || "").trim(),
-      item_type: itemType === "generated" ? "generated" : "attachments",
+      itemType: itemType === "generated" ? "generated" : "attachments",
       action: "stage",
-      user_id: sessionId,
-      session_id: sessionId,
-      real_user_id: getProfileUserId(),
-      file_name: fileName
+      backendUrl: state.backendUrl,
+      botId: state.boundBotId,
+      userId: sessionId,
+      sessionId,
+      realUserId: getProfileUserId(),
+      fileName
     },
     { quiet: true }
   );
@@ -8379,6 +8387,11 @@ function summarizeWorkspaceImportSkipped(payload) {
     empty_file: "文件是空的",
     file_too_large: "文件太大了",
     not_found: "没有找到这个路径",
+    file_read_failed: "文件无法读取，可能已被移动或正在被占用",
+    upload_failed: "上传失败，请检查后端连接后重试",
+    upload_rejected: "后端没有接受这个文件",
+    duplicate_source: "这个音频已经在手边了，没有重复导入",
+    total_too_large: "这批文件总大小超出上限",
     directory_scan_limit: "这个文件夹太大了，先挑具体文件给我",
     max_files_reached: "一次给的文件有点多，已经达到上限"
   };

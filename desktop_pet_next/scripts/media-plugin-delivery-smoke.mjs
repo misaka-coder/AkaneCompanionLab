@@ -13,7 +13,7 @@ const calls = [], statuses = [], bubbles = [];
 let refreshes = 0, nativeResult = {};
 const scope = vm.createContext({
   desktopFileDeliveryHandled: new Set(),
-  state: { sessionId: "session" },
+  state: { sessionId: "session", backendUrl: "http://127.0.0.1:12001", boundBotId: "bot-a" },
   getProfileUserId: () => "owner",
   notifyWorkspaceRefresh: async () => { refreshes += 1; },
   tauriCall: async (...args) => { calls.push(args); return nativeResult; },
@@ -34,11 +34,13 @@ await scope.handleDesktopFileDeliveryEvent(event);
 assert.equal(calls.length, 1);
 assert.equal(calls[0][0], "open_workspace_item");
 assert.equal(calls[0][1].handle, event.file.handle);
-assert.equal(calls[0][1].item_type, "generated");
-assert.equal(calls[0][1].real_user_id, "owner");
-assert.equal(calls[0][1].session_id, "session");
+assert.equal(calls[0][1].itemType, "generated");
+assert.equal(calls[0][1].realUserId, "owner");
+assert.equal(calls[0][1].sessionId, "session");
+assert.equal(calls[0][1].botId, "bot-a");
+assert.equal(calls[0][1].backendUrl, "http://127.0.0.1:12001");
 assert(!Object.hasOwn(calls[0][1], "path"));
-assert(calls[0][1].file_name.endsWith("." + (process.argv[2] || "mp3")));
+assert(calls[0][1].fileName.endsWith("." + (process.argv[2] || "mp3")));
 assert.equal(bubbles.at(-1)[1].kind, "status");
 await scope.handleDesktopFileDeliveryEvent(event);
 assert.equal(calls.length, 1, "duplicate completion must not open twice");
