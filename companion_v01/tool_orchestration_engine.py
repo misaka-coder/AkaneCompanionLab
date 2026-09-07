@@ -657,7 +657,8 @@ def validate_tool_invocation(
         if not invocation.execution_receipt:
             return ValidationResult.fail(
                 "not_available",
-                "用户绑定的桌面执行器当前不在线或没有提供这项能力，本次没有执行任何本地动作。",
+                "绑定的桌面设备本轮没有提供可用的执行凭据（可能未启动桌宠、断线、未授权或能力不匹配），本次没有执行桌面动作。"
+                "这不代表群聊禁止操作，也不代表其他执行工具不可用；请依据本轮实际提供的工具及其执行位置继续判断。",
             )
         return ValidationResult.success()
 

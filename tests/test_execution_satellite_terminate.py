@@ -288,6 +288,33 @@ class SatelliteApprovalGateTests(unittest.TestCase):
 
 
 class SatelliteTerminateDispatchTests(unittest.TestCase):
+    def test_owner_group_uses_actor_policy_and_reaches_terminate_broker(self) -> None:
+        import config
+        from companion_v01.capability_registry import BrokerExecutionResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = _engine(Path(tmp))
+            save_capability_approval_modes(
+                base_dir=Path(tmp), profile_user_id="master",
+                modes={"ops": "trusted_auto_allow", "extensions": "trusted_auto_allow"},
+            )
+            with patch.object(config, "MASTER_QQ", "10001"), patch.object(
+                engine.executor_broker, "execute",
+                return_value=BrokerExecutionResult(status="succeeded", reason="", data={"verified": True}),
+            ) as dispatch:
+                result, envelope = execute_tool_invocation(
+                    engine, invocation=_invocation(1234),
+                    profile_user_id="qq_group_shared_1", session_id="qq_group_shared_1",
+                    character_pack_id="", visual_payload={}, now_ts=0,
+                    request_context={
+                        "actor_profile_user_id": "master",
+                        "qq_delivery_context": {"is_group": True, "group_id": 1, "user_id": 10001},
+                    },
+                )
+            dispatch.assert_called_once()
+            self.assertEqual(envelope.status, "ok")
+            self.assertEqual(result.stream_events[0]["status"], "succeeded")
+
     def test_execute_tool_invocation_ask_path_returns_ask_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -321,6 +348,8 @@ class SatelliteTerminateDispatchTests(unittest.TestCase):
             self.assertEqual(envelope.status, "error")
             self.assertEqual(result.stream_events[0]["status"], "unavailable")
             self.assertEqual(result.stream_events[0]["reason"], "not_available")
+            self.assertIn("不代表群聊禁止操作", result.followup_context)
+            self.assertIn("本轮实际提供的工具及其执行位置", result.followup_context)
             self.assertEqual(
                 engine.approval_store.list_requests(profile_user_id="alice")["approvalRequests"],
                 [],

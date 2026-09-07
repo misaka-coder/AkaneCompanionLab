@@ -141,7 +141,7 @@ def build_builtin_tool_handlers(
         "web_search": WebSearchToolHandler(
             config_base_dir=capability_config_base_dir,
         ),
-        "open_browser": OpenBrowserToolHandler(),
+        "open_browser": OpenBrowserToolHandler(offer_source=capability_offer_source),
         "desktop_context_snapshot": DesktopSatelliteToolHandler(
             tool_id="desktop_context_snapshot",
             offer_source=capability_offer_source,

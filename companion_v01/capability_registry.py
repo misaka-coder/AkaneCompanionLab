@@ -1965,7 +1965,7 @@ class CapabilityRegistry:
                 modes=(ClientMode.DESKTOP_PET,),
                 tools=EXEC_TOOL_NAMES,
                 light_hint=(
-                    "桌宠本机执行：project_inspect、workspace_write、workspace_patch 与 exec_run 共用 cwd，"
+                    "执行宿主上的命令与项目工具：project_inspect、workspace_write、workspace_patch 与 exec_run 共用 cwd，"
                     "可在已发现的真实目录读取、修改、构建和测试；manage_project_workspace 的 create/open/select 设置当前项目，"
                     "之后四个工具省略 cwd 时会继续在该项目工作。"
                     "exec_status 查询长命令进度，exec_cancel 停止命令。"

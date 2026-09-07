@@ -41,6 +41,22 @@ class OpenBrowserToolHandler(BaseToolHandler):
     tool_type = "open_browser"
     policy_accepted_native_tool = True
 
+    def __init__(self, *, offer_source: Any = None) -> None:
+        self._offer_source = offer_source
+
+    def capability_status(self, **_kwargs: Any) -> dict[str, Any]:
+        if self._offer_source is None:
+            return {"enabled": False, "status": "unavailable", "reason": "satellite_not_configured"}
+        try:
+            ready = self._offer_source.resolve_receipt(self.tool_spec()) is not None
+        except Exception:
+            ready = False
+        return {
+            "enabled": ready,
+            "status": "ready" if ready else "unavailable",
+            "reason": "" if ready else "satellite_offline",
+        }
+
     def tool_spec(self):
         return OPEN_BROWSER_TOOL_SPEC
 

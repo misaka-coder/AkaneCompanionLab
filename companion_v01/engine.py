@@ -9241,6 +9241,10 @@ class AkaneMemoryEngine:
             f"project: {json.dumps(project, ensure_ascii=False)}\n"
             f"workspace_id: {workspace_id or 'none'}\n"
             f"access: filesystem={filesystem}; absolute_cwd={absolute_cwd}; runtime={runtime}; script_shell={script_shell}\n"
+            "exec_run/status/cancel 操作的是此执行宿主，不依赖桌宠窗口在线；桌面工具操作的是绑定的桌面设备，两者可能不是同一台机器。"
+            "停止自己启动的命令用 exec_cancel(run_id)；处理宿主上的其他进程可用 exec_run 先查进程再操作。"
+            "某个专用工具不可用不等于宿主不能执行，仍可在用户授权范围内使用本轮提供的宿主命令工具。"
+            "用户指向另一台电脑时先明确执行位置，不要把桌面设备的 PID 直接用于宿主命令。\n"
             "普通环境与 PATH 按宿主继承，凭据类和 Akane 内部变量除外；依赖缓存共享，项目依赖遵循清单与锁文件。"
             f"{credential_context}"
         )

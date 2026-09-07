@@ -28,6 +28,7 @@ from companion_v01.deployment_security import AdminWriteAuth
 from companion_v01.desktop_satellite import DesktopSatelliteService
 from companion_v01.desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.local_capability_catalog import _build_backend_tool_entries
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
 from companion_v01.routes.satellite import build_satellite_router
 from companion_v01.settings_catalog import MANAGED_DEPLOYMENT, get_spec
@@ -170,6 +171,10 @@ class CapabilityFabricM66Tests(unittest.TestCase):
             clock=clock,
         )
         registry = CapabilityRegistry(offer_source=service)
+        browser_handler = OpenBrowserToolHandler(offer_source=service)
+        def browser_status():
+            return _build_backend_tool_entries({"open_browser": browser_handler})[0]
+        self.assertEqual(browser_status()["status"], "unavailable")
         offline = registry.select(
             CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET),
             intent_text="请用浏览器打开这个网页 https://example.com",
@@ -189,6 +194,8 @@ class CapabilityFabricM66Tests(unittest.TestCase):
                 self.assertEqual(hello["instance_id"], "instance-a")
                 websocket.send_json(_registration("instance-a"))
                 websocket.receive_json()
+
+                self.assertEqual(browser_status()["status"], "ready")
 
                 for mode in (ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT):
                     selection = registry.select(CapabilitySnapshot(client_mode=mode))
@@ -223,6 +230,8 @@ class CapabilityFabricM66Tests(unittest.TestCase):
                 self.assertEqual(native[0]["function"]["parameters"], OPEN_BROWSER_TOOL_SPEC.input_schema)
 
         clock.value += 31
+        self.assertEqual(browser_status()["status"], "unavailable")
+        self.assertEqual(browser_status()["reason"], "satellite_offline")
         self.assertNotIn(
             "open_browser",
             registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT)).tool_names,
