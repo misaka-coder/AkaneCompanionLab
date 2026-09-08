@@ -61,7 +61,8 @@ from .plugin_api import (
     PluginOutboundPlanSnapshot,
 )
 from .qq_poke_reactor import PokeEventReactor, PokeOutcome
-from .qq_miniapp import project_miniapp_result, validate_miniapp_params
+from .qq_miniapp import MiniappCardStore, project_miniapp_result, validate_miniapp_params
+from .qq_bilibili_share import BilibiliShareError, resolve_bilibili_share
 
 
 # Public compatibility alias; client_protocol owns the capability list.
@@ -533,6 +534,7 @@ class NapCatQQGateway:
             require_self_id=False,
         )
         self._onebot_transport = OneBotActionTransport(transport_config)
+        self._miniapp_cards = MiniappCardStore()
         self._reply_reference_ledger = ReplyReferenceLedger(max_claims=4096)
         self._bound_default_character_pack_id = _safe_character_pack_id(default_character_pack_id)
         # Legacy config supplies optional command prefixes, never admission.
@@ -3169,7 +3171,37 @@ class NapCatQQGateway:
                 "action": clean_action or "unknown",
                 "scope": scope,
             }
+        if clean_action in {"send_group_msg", "send_private_msg"} and "card_ref" in resolved_params:
+            allowed_fields = {"card_ref", "group_id" if clean_action == "send_group_msg" else "user_id"}
+            if set(resolved_params) - allowed_fields:
+                return {"ok": False, "status": "invalid", "reason": "miniapp_card_params_conflict",
+                        "action": clean_action, "scope": scope}
+            target_id = resolved_params.get("group_id") if clean_action == "send_group_msg" else resolved_params.get("user_id")
+            store = self.__dict__.setdefault("_miniapp_cards", MiniappCardStore())
+            send_params = {key: value for key, value in resolved_params.items() if key != "card_ref"}
+            payload = store.send(
+                resolved_params["card_ref"], scope=self._miniapp_card_scope(context),
+                target=(clean_action, str(target_id)),
+                sender=lambda message: self._call_and_track_outbound(
+                    clean_action, {**send_params, "message": message}, timeout=timeout_seconds),
+            )
+            payload["scope"] = scope
+            return payload
         if clean_action == "get_mini_app_ark":
+            if "source" in resolved_params:
+                if set(resolved_params) - {"source", "type"} or resolved_params.get("type", "bili") != "bili":
+                    return {"ok": False, "status": "invalid", "reason": "miniapp_source_params_conflict",
+                            "action": clean_action, "scope": scope}
+                started = time.monotonic()
+                try:
+                    resolved_params = resolve_bilibili_share(resolved_params["source"], timeout=min(10.0, timeout_seconds))
+                except BilibiliShareError as exc:
+                    return {"ok": False, "status": "unavailable", "reason": exc.reason,
+                            "action": clean_action, "scope": scope}
+                timeout_seconds -= time.monotonic() - started
+                if timeout_seconds <= 0:
+                    return {"ok": False, "status": "unavailable", "reason": "bilibili_metadata_timeout",
+                            "action": clean_action, "scope": scope}
             validation_error = validate_miniapp_params(resolved_params)
             if validation_error:
                 return {
@@ -3179,12 +3211,27 @@ class NapCatQQGateway:
         payload = self._call_and_track_outbound(clean_action, resolved_params, timeout=timeout_seconds)
         if clean_action == "get_mini_app_ark":
             payload = project_miniapp_result(payload, raw=resolved_params.get("rawArkData") == "true")
+            if payload.get("ok") and payload.get("message"):
+                store = self.__dict__.setdefault("_miniapp_cards", MiniappCardStore())
+                ref = store.put(self._miniapp_card_scope(context), payload["message"])
+                # Keep raw provider data internal. Models get one send handle,
+                # not two competing ways to copy and mutate the same card.
+                payload = ({"ok": True, "status": "success", "action": clean_action,
+                            "stage": "generated", "card_ref": ref, "expires_in_seconds": 900,
+                            "title": resolved_params["title"], "web_url": resolved_params.get("webUrl", "")}
+                           if ref else {"ok": False, "status": "unavailable", "action": clean_action,
+                                        "reason": "miniapp_card_capacity_reached"})
         payload["scope"] = scope
         if selector_applied and selector_applied != "explicit_message_id":
             payload["message_selector_applied"] = selector_applied
         if defaults_applied:
             payload["defaults_applied"] = list(defaults_applied)
         return payload
+
+    @staticmethod
+    def _miniapp_card_scope(context: QQMessageContext) -> tuple:
+        return (bool(context.is_group), int(context.group_id if context.is_group else context.user_id),
+                int(context.user_id), context.session_id, context.character_pack_id)
 
     @staticmethod
     def _onebot_conversation_key(*, is_group: bool, target_id: Any) -> str:

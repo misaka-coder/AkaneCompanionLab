@@ -1,13 +1,18 @@
 """Host validation and model-result projection for NapCat miniapp generation.
 
-NapCat owns templates/signing. This module neither fetches links nor builds a
-second card implementation; the generated Ark is passed unchanged to JSON send.
+NapCat owns templates/signing. The host keeps generated Ark behind scoped,
+short-lived handles so the model need not copy signed JSON into a send call.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import copy
 import json
+import threading
+import time
+import uuid
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -134,3 +139,58 @@ def project_miniapp_result(payload: dict[str, Any], *, raw: bool = False) -> dic
     if not raw:
         result["message"] = [{"type": "json", "data": {"data": serialized}}]
     return result
+
+
+class MiniappCardStore:
+    """Per-Bot ephemeral cards, scoped to their actor/conversation/character.
+
+    Sending claims a handle once, including ambiguous failures. A repeated call
+    returns its real receipt, never a second external action. Restart expires all
+    handles; persistent retry/replay is deliberately not supported.
+    """
+
+    def __init__(self, *, ttl: float = 900.0, capacity: int = 128, clock=time.monotonic):
+        self._clock = clock
+        self._ttl = ttl
+        self._capacity = capacity
+        self._cards: dict[str, dict[str, Any]] = {}
+        self._lock = threading.RLock()
+
+    def put(self, scope: tuple, message: list) -> str:
+        with self._lock:
+            now = self._clock()
+            self._cards = {key: value for key, value in self._cards.items() if value['expires'] > now}
+            if len(self._cards) >= self._capacity:
+                return ""
+            ref = "miniapp_" + uuid.uuid4().hex
+            self._cards[ref] = {"scope": scope, "expires": now + self._ttl,
+                                "message": copy.deepcopy(message), "target": None, "receipt": None}
+            return ref
+
+    def send(self, ref: Any, *, scope: tuple, target: tuple,
+             sender: Callable[[list], dict[str, Any]]) -> dict[str, Any]:
+        def failure(reason):
+            return {"ok": False, "status": "unavailable", "reason": reason, "action": target[0]}
+
+        with self._lock:
+            card = self._cards.get(ref) if isinstance(ref, str) else None
+            if card is None or card["expires"] <= self._clock():
+                return failure("miniapp_card_expired_or_unknown")
+            if card["scope"] != scope:
+                return failure("miniapp_card_scope_mismatch")
+            if card["target"] is not None:
+                if card["target"] != target:
+                    return failure("miniapp_card_already_used")
+                if card["receipt"] is None:
+                    return failure("miniapp_card_send_in_progress")
+                return {**copy.deepcopy(card["receipt"]), "duplicate_suppressed": True}
+            card["target"] = target
+            message = card.pop("message")
+        outcome = failure("miniapp_card_delivery_unknown")
+        try:
+            outcome = sender(message)
+            return outcome
+        finally:
+            # Exceptions also consume the handle: an external send may have run.
+            with self._lock:
+                card["receipt"] = copy.deepcopy(outcome)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import tempfile
 import unittest
 from dataclasses import replace
@@ -17,7 +18,7 @@ from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
 from companion_v01.onebot_transport import OneBotActionTransport
 from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01.qq_miniapp import project_miniapp_result, validate_miniapp_params
+from companion_v01.qq_miniapp import MiniappCardStore, project_miniapp_result, validate_miniapp_params
 from companion_v01.qq_tool_delivery import QQToolDeliveryPort
 from companion_v01.skill_runtime import SkillRegistry
 from companion_v01.tool_handlers.core import ToolExecutionContext
@@ -153,8 +154,9 @@ class MiniappWorkflowTests(unittest.TestCase):
         self.assertEqual(data["scope"], "current_conversation_generation")
         self.assertEqual(generated.stream_events, [])
         self.assertFalse(generated.finish_turn)
-        self.assertEqual(json.loads(data["message"][0]["data"]["data"]), ARK)
-        self.assertEqual(data["data"]["data"], ARK)
+        self.assertTrue(data["card_ref"].startswith("miniapp_"))
+        self.assertNotIn("message", data)
+        self.assertNotIn("data", data)
         self.assertEqual(self.session.calls[0][2]["json"], PARAMS)
         self.assertEqual(self.session.calls[0][0], "POST")
         self.assertFalse(self.session.calls[0][2]["allow_redirects"])
@@ -163,11 +165,14 @@ class MiniappWorkflowTests(unittest.TestCase):
         self.assertEqual(len(self.session.calls), 1)  # No auto send.
 
         self.session.response = {"status": "ok", "retcode": 0, "data": {"message_id": 77}}
-        sent, receipt = self.call("send_group_msg", {"message": data["message"]}, finish_turn=True)
+        sent, receipt = self.call("send_group_msg", {"card_ref": data["card_ref"]}, finish_turn=True)
         self.assertTrue(sent.finish_turn)
         self.assertEqual(receipt["data"]["message_id"], 77)
         self.assertEqual(sent.stream_events[0]["type"], "qq_visible_action_receipt")
-        self.assertEqual(self.session.calls[1][2]["json"], {"group_id": 20001, "message": data["message"]})
+        sent_params = self.session.calls[1][2]["json"]
+        self.assertEqual(sent_params["group_id"], 20001)
+        self.assertEqual(json.loads(sent_params["message"][0]["data"]["data"]), ARK)
+        self.assertNotIn("card_ref", sent_params)
 
     def test_weibo_and_custom_use_same_endpoint_without_rewriting(self):
         custom = {key: value for key, value in PARAMS.items() if key != "type"}
@@ -195,7 +200,7 @@ class MiniappWorkflowTests(unittest.TestCase):
     def test_generation_does_not_grant_cross_conversation_send(self):
         _, generated = self.call()
         for action, target in (("send_group_msg", {"group_id": 29999}), ("send_private_msg", {"user_id": 10003})):
-            _, result = self.call(action, {**target, "message": generated["message"]})
+            _, result = self.call(action, {**target, "card_ref": generated["card_ref"]})
             self.assertEqual(result["status"], "forbidden")
         self.assertEqual(len(self.session.calls), 1)
 
@@ -203,7 +208,7 @@ class MiniappWorkflowTests(unittest.TestCase):
         self.context.request_context["qq_delivery_context"].update(is_group=False, target_id=10002, group_id=0)
         _, generated = self.call()
         self.session.response = {"status": "ok", "retcode": 0, "data": {"message_id": 78}}
-        _, result = self.call("send_private_msg", {"message": generated["message"]})
+        _, result = self.call("send_private_msg", {"card_ref": generated["card_ref"]})
         self.assertTrue(result["ok"])
         self.assertEqual(self.session.calls[-1][2]["json"]["user_id"], 10002)
 
@@ -211,7 +216,7 @@ class MiniappWorkflowTests(unittest.TestCase):
         self.context.request_context["qq_delivery_context"]["user_id"] = 10001
         _, generated = self.call()
         self.session.response = {"status": "ok", "retcode": 0, "data": {"message_id": 79}}
-        _, result = self.call("send_group_msg", {"group_id": 29999, "message": generated["message"]})
+        _, result = self.call("send_group_msg", {"group_id": 29999, "card_ref": generated["card_ref"]})
         self.assertTrue(result["ok"])
         self.assertEqual(result["scope"], "owner")
 
@@ -269,7 +274,7 @@ class MiniappWorkflowTests(unittest.TestCase):
     def test_send_failure_after_generation_does_not_finish_or_auto_fallback(self):
         _, generated = self.call()
         self.session.response = {"status": "failed", "retcode": 100, "data": {}}
-        result, data = self.call("send_group_msg", {"message": generated["message"]}, finish_turn=True)
+        result, data = self.call("send_group_msg", {"card_ref": generated["card_ref"]}, finish_turn=True)
         self.assertFalse(data["ok"])
         self.assertFalse(result.finish_turn)
         self.assertEqual(result.stream_events, [])
@@ -284,6 +289,119 @@ class MiniappWorkflowTests(unittest.TestCase):
         self.assertEqual(data["data"]["data"], raw)
         self.assertNotIn("message", data)
         self.assertFalse(result.finish_turn)
+
+    def test_source_resolution_uses_real_public_boundary_then_sends_original_ark(self):
+        from tests.test_qq_bilibili_share import BVID, PublicResponse, public_target
+        with patch('companion_v01.qq_bilibili_share.validate_public_http_url', side_effect=public_target), \
+             patch('companion_v01.qq_bilibili_share.get_pinned_public_response',
+                   side_effect=lambda _s, target, **_: PublicResponse(target)):
+            _, generated = self.call(params={'source': BVID})
+        self.assertTrue(generated['ok'])
+        self.assertEqual(generated['title'], '真实视频标题')
+        self.assertNotIn('fixture-signature', json.dumps(generated))
+        self.assertEqual(self.session.calls[0][2]['json']['jumpUrl'], 'pages/video/video.html?avid=170001')
+        self.assertNotIn('source', self.session.calls[0][2]['json'])
+        self.session.response = {'status': 'ok', 'retcode': 0, 'data': {'message_id': 88}}
+        result, receipt = self.call('send_group_msg', {'card_ref': generated['card_ref']}, finish_turn=True)
+        self.assertTrue(result.finish_turn)
+        self.assertEqual(receipt['data']['message_id'], 88)
+        self.assertEqual(json.loads(self.session.calls[-1][2]['json']['message'][0]['data']['data']), ARK)
+
+    def test_source_failure_never_calls_napcat_or_falls_back_to_invented_metadata(self):
+        from tests.test_qq_bilibili_share import BVID, PublicResponse, public_target
+        with patch('companion_v01.qq_bilibili_share.validate_public_http_url', side_effect=public_target), \
+             patch('companion_v01.qq_bilibili_share.get_pinned_public_response',
+                   side_effect=lambda _s, target, **_: PublicResponse(target, status=412)):
+            result, receipt = self.call(params={'source': BVID}, finish_turn=True)
+        self.assertFalse(result.finish_turn)
+        self.assertEqual(receipt['reason'], 'bilibili_metadata_rate_limited')
+        self.assertFalse(self.session.calls)
+        _, receipt = self.call(params={'source': BVID, 'picUrl': 'https://example.com/fake.png'})
+        self.assertEqual(receipt['reason'], 'miniapp_source_params_conflict')
+
+    def test_repeated_send_returns_real_receipt_without_second_message(self):
+        _, generated = self.call()
+        self.session.response = {'status': 'ok', 'retcode': 0, 'data': {'message_id': 99}}
+        _, first = self.call('send_group_msg', {'card_ref': generated['card_ref']})
+        _, again = self.call('send_group_msg', {'card_ref': generated['card_ref']})
+        self.assertTrue(again['duplicate_suppressed'])
+        self.assertEqual(again['data'], first['data'])
+        self.assertEqual(len(self.session.calls), 2)
+
+    def test_send_timeout_consumes_handle_and_does_not_blindly_retry(self):
+        _, generated = self.call()
+        self.session.response = requests.Timeout('sensitive')
+        _, first = self.call('send_group_msg', {'card_ref': generated['card_ref']})
+        _, again = self.call('send_group_msg', {'card_ref': generated['card_ref']})
+        self.assertFalse(first['ok'])
+        self.assertEqual(again['code'], 'timeout')
+        self.assertTrue(again['duplicate_suppressed'])
+        self.assertEqual(len(self.session.calls), 2)
+
+    def test_card_ref_is_not_usable_by_another_actor_or_character(self):
+        _, generated = self.call()
+        delivery = self.context.request_context['qq_delivery_context']
+        original = dict(delivery)
+        for changes in ({'user_id': 10003}, {'character_pack_id': 'another_character'}):
+            delivery.update(changes)
+            _, failed = self.call('send_group_msg', {'card_ref': generated['card_ref']})
+            self.assertEqual(failed['reason'], 'miniapp_card_scope_mismatch')
+            delivery.clear(); delivery.update(original)
+        _, failed = self.call('send_group_msg', {'card_ref': generated['card_ref'], 'message': 'rewrite'})
+        self.assertEqual(failed['reason'], 'miniapp_card_params_conflict')
+        self.assertEqual(len(self.session.calls), 1)
+
+    def test_expired_unknown_and_new_runtime_handles_do_not_send(self):
+        now = [0]
+        self.gateway._miniapp_cards = MiniappCardStore(ttl=1, clock=lambda: now[0])
+        _, generated = self.call()
+        now[0] = 2
+        for ref in (generated['card_ref'], 'made_up', [], None):
+            _, failed = self.call('send_group_msg', {'card_ref': ref})
+            self.assertEqual(failed['reason'], 'miniapp_card_expired_or_unknown')
+        self.gateway._miniapp_cards = MiniappCardStore()
+        _, failed = self.call('send_group_msg', {'card_ref': generated['card_ref']})
+        self.assertFalse(failed['ok'])
+        self.assertEqual(len(self.session.calls), 1)
+
+
+class MiniappCardStoreTests(unittest.TestCase):
+    def test_concurrent_duplicate_only_sends_once_and_preserves_exact_bytes(self):
+        store = MiniappCardStore()
+        message = [{'type': 'json', 'data': {'data': json.dumps(ARK, indent=2)}}]
+        ref = store.put(('scope',), message)
+        original = message[0]['data']['data']
+        message[0]['data']['data'] = 'mutated caller'
+        entered, finish = threading.Event(), threading.Event()
+        results = []
+        def sender(value):
+            self.assertEqual(value[0]['data']['data'], original)
+            entered.set()
+            self.assertTrue(finish.wait(3))
+            return {'ok': True, 'status': 'success', 'data': {'message_id': 1}}
+        thread = threading.Thread(target=lambda: results.append(store.send(ref, scope=('scope',), target=('send_group_msg', '1'), sender=sender)))
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(3))
+            blocked = store.send(ref, scope=('scope',), target=('send_group_msg', '1'), sender=lambda _: self.fail('duplicate send'))
+            self.assertEqual(blocked['reason'], 'miniapp_card_send_in_progress')
+        finally:
+            finish.set(); thread.join(4)
+        self.assertEqual(len(results), 1)
+        blocked = store.send(ref, scope=('scope',), target=('send_group_msg', '2'), sender=lambda _: self.fail('different target'))
+        self.assertEqual(blocked['reason'], 'miniapp_card_already_used')
+
+    def test_capacity_is_bounded_and_sender_exception_is_not_retried(self):
+        store = MiniappCardStore(capacity=1)
+        ref = store.put(('scope',), [])
+        self.assertEqual(store.put(('scope',), []), '')
+        def fail(_):
+            raise RuntimeError('uncertain external effect')
+        with self.assertRaises(RuntimeError):
+            store.send(ref, scope=('scope',), target=('send_group_msg', '1'), sender=fail)
+        again = store.send(ref, scope=('scope',), target=('send_group_msg', '1'), sender=lambda _: self.fail('retry'))
+        self.assertEqual(again['reason'], 'miniapp_card_delivery_unknown')
+        self.assertTrue(again['duplicate_suppressed'])
 
 
 class MiniappValidationTests(unittest.TestCase):
