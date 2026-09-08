@@ -130,6 +130,8 @@ class PluginEventSilenceTests(unittest.TestCase):
             "【不推送】没有新增信息。",
             "【暂不推送】证据不足。",
             "[暂时不推送]研究过程",
+            "【暂不作为确定事实推送】数据尚未核实。",
+            "[不作为已核实消息推送]只作为内部核验线索。",
             "【财经快讯｜10:18】\n【暂不推送】证据不足。",
         ):
             with self.subTest(text=text):
@@ -149,6 +151,7 @@ class PluginEventSilenceTests(unittest.TestCase):
         for text, single_message in (
             ("【暂不推送】是你问到的标签。", False),
             ("公告中的“【暂不推送】”指该平台的设置。", True),
+            ("【不良资产风险通知】公布了新的资产处置数据。", True),
         ):
             with self.subTest(text=text):
                 frame, gateway, result = self._deliver(text, single_message=single_message)
