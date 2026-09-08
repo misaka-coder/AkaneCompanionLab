@@ -25,6 +25,7 @@ from companion_v01.care_runtime import CareModulePort
 from companion_v01.capability_registry import ExecutorBroker
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
+from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.host_jobs import HostJobStore
 from companion_v01.host_workflow_jobs import HostWorkflowJobRuntime, WorkflowJobAssetStore
 from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
@@ -2646,7 +2647,12 @@ class BackendRouteModuleTests(unittest.TestCase):
 
     def test_qq_router_resolves_quoted_group_image_into_native_multimodal_chat(self) -> None:
         runtime = FakeRuntimeMetrics()
-        gateway = NapCatQQGateway()
+        # Do not depend on the developer/production process .env enabling QQ.
+        gateway = NapCatQQGateway(channel_config=QQChannelRuntimeConfig(
+            enabled=True, profile_ref="quoted-image-test", bot_id=str(QQ_BOT_FIXTURE_ID),
+            onebot_http_url="http://127.0.0.1:3001", webhook_secret="", onebot_access_token="",
+            require_self_id=True, require_webhook_auth=False,
+        ))
         ingest_calls: list[dict[str, Any]] = []
         process_calls: list[dict[str, Any]] = []
         log_calls: list[tuple[str, dict[str, Any]]] = []
