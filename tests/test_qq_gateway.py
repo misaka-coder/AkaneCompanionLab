@@ -448,7 +448,7 @@ class QQGatewayTests(unittest.TestCase):
         payload = context.to_turn_payload()
 
         self.assertEqual(payload["source_message_id"], "multi-mention-1")
-        self.assertEqual(payload["memory_message"], "@助手（本群昵称：Akane） 帮我问问 @天为 明天去不去")
+        self.assertEqual(payload["memory_message"], "@Akane 帮我问问 @天为 明天去不去")
         self.assertEqual(
             [item["actor_id"] for item in payload["message_addressing"]["mentions"]],
             ["assistant", f"qq:{QQ_THIRD_USER_FIXTURE_ID}"],
@@ -497,7 +497,7 @@ class QQGatewayTests(unittest.TestCase):
             {"actor_id": "assistant", "display_name": ""},
         )
 
-    def test_group_wake_word_triggers_response_without_at(self) -> None:
+    def test_group_text_name_does_not_trigger_response_without_at(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -513,9 +513,9 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(context.should_respond)
-        self.assertFalse(context.should_record)
-        self.assertEqual(context.reason, "group_wake_word")
+        self.assertFalse(context.should_respond)
+        self.assertTrue(context.should_record)
+        self.assertEqual(context.reason, "group_passive_observed")
 
     def test_wake_word_prefix_can_trigger_fixed_commands(self) -> None:
         gateway = NapCatQQGateway()

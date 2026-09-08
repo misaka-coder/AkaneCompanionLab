@@ -56,11 +56,11 @@ QQ_ALLOW_STALE_EVENTS=false
 - `MASTER_QQ`：主创 QQ。该 QQ 的私聊会映射到 `master` 记忆身份。
 - `QQ_CHARACTER_PACK_ID`：QQ 文字聊天默认使用的 Creator Kit 角色包 id。留空时使用内置 Akane 人设；例如设为 `reimu` 后，QQ 每轮会把 `character_pack_id=reimu` 传给后端，角色包 persona 会进入 `qq_text` prompt，聊天记忆也会按该角色包隔离。
 - `QQ_GROUP_PLAINTEXT_ENABLED`：旧兼容项。
-- `QQ_GROUP_ATTENTION_MODE`：普通群消息注意力模式。`off` 不观察普通消息；`engaged` 仅在 Akane 刚刚成功参与后的窗口内判断；`adaptive` 还允许非活跃期的低频环境观察。三种模式都不影响 @、唤醒词、控制指令和回复 Akane。
+- `QQ_GROUP_ATTENTION_MODE`：普通群消息注意力模式。`off` 不观察普通消息；`engaged` 仅在 Akane 刚刚成功参与后的窗口内判断；`adaptive` 还允许非活跃期的低频环境观察。三种模式都不影响 @、控制指令和回复 Akane；群聊文字唤醒已关闭。
 - `QQ_GROUP_ATTENTION_TTL_SECONDS`：Akane 成功向群里交付回复后，普通消息可继续触发注意力判断的时长，默认 `120` 秒。
 - `QQ_GROUP_ATTENTION_DELAY_SECONDS`：第一条普通消息写入 MemCore 后，到一次注意力判断之间的固定等待，默认 `10` 秒。期间新消息照常入库，但不会重置这个截止时间。
 - `QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS`：`adaptive` 模式在非活跃期观察一次但未参与后，再次允许观察前的冷却，默认 `60` 秒。没有新消息时不会创建定时请求。
-- 未 @、未使用唤醒词、也未回复 Akane 的群图片只会完成素材注册并写入 MemCore，不会追加到正在执行的工具轮，也不会单独唤醒 Akane。后续明确要求“看看刚才的图”时，模型可通过时间线中的真实素材句柄调用 `load_material`。
+- 未 @、也未回复 Akane 的群图片只会完成素材注册并写入 MemCore，不会追加到正在执行的工具轮，也不会单独唤醒 Akane。后续明确要求“看看刚才的图”时，模型可通过时间线中的真实素材句柄调用 `load_material`。
 - `QQ_ATTACHMENT_DEBOUNCE_SECONDS`：明确发给 Akane 的连发图片/文件使用短防抖窗口，窗口内较早事件只入库不触发回复，最后一个事件统一进入当前请求，默认 `1.2` 秒。
 - `QQ_ATTACHMENT_READY_WAIT_SECONDS`：附件入库后，主回复最多等待文件解析完成的秒数，默认 `8` 秒。QQ 图片会自动提升到 `VISION_REQUEST_TIMEOUT + 5` 的等待窗口，尽量保证首轮回复就能看到视觉摘要；超时后仍会回复，但 Prompt 会显示仍有附件在处理中。
 - `QQ_REPLY_SEGMENT_DELAY_SECONDS`：`speech_segments` 分多条发到 QQ 时，每条之间的象征性停顿秒数，默认 `0.8`，最大 `3.0`。
@@ -95,10 +95,12 @@ GET http://127.0.0.1:9999/api/qq/napcat/status
 
 群聊：
 
-- at 机器人或消息里包含 `Akane` 唤醒词时一定请求模型并形成正常回复；引用 Akane 先前消息时也会请求模型，但模型可以判断无需继续插话。
-- 没有触发词的普通群消息先由“被动群记忆策略”决定是否写入当前群聊记忆；注意力调度只保存会话键和固定截止时间，请求模型时读取同一份 MemCore 投影，不复制一份聊天摘要。
+- 真实 @ 按 Bot QQ 账号 ID 接收；引用 Akane 先前消息仍按既有引用规则处理。模型可根据语境选择回复、动作或静默，不强制输出文字。
+- 群聊文字唤醒已关闭：Akane、群显示名、QQ 昵称和显式别名均不再直接启动回复。旧 Bot 配置 `wake_words` 只兼容命令前缀，自检的有效唤醒词为空。
+- 当前群身份仅在执行模型回合时提供一次：群 ID、Bot QQ 账号和单一实际群显示名（群名片优先、为空时用 QQ 昵称）。查询失败不编造名字，不改写历史；见 [群身份修复](qq_group_identity_trigger_repair_20260908.md)。
+- 普通群消息先由“被动群记忆策略”决定是否写入当前群聊记忆；注意力调度只保存会话键和固定截止时间，请求模型时读取同一份 MemCore 投影，不复制一份聊天摘要。
 - `QQ_GROUP_PASSIVE_MEMORY_MODE` 支持 `all`（默认全部记录）、`denylist`（排除名单群）和 `off`（不记录任何背景群消息）；历史 `allowlist/whitelist` 值会迁移为 `all`，避免名单漏配导致背景历史静默丢失。`QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS` 仅用于 denylist，支持逗号、分号或空白分隔。
-- 该策略只过滤无人触发 Akane 时的背景聊天；@、唤醒词和其他正常回复轮仍会写入群聊 Raw 并按正常阈值压缩。
+- 该策略只过滤无人触发 Akane 时的背景聊天；@ 和其他正常回复轮仍会写入群聊 Raw 并按正常阈值压缩。
 - 默认 `engaged` 模式会在 Akane 成功回复后的活跃窗口内，为普通消息创建一次注意力判断；`/listen off|engaged|adaptive|status` 可由群主、管理员或主人 QQ 按群修改。
 - 普通消息的等待是单次固定截止时间，不是尾随防抖；后续消息不会不断推迟请求。没有新消息时也没有周期性模型调用。
 - @ 之后会为同一个发送者打开一个短暂的“附件缓冲窗口”；在窗口内补发的图片/文件可以不再次 @，用于适配手机端不能边 @ 边发图的限制。

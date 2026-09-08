@@ -85,6 +85,7 @@ class BotConfig:
     care_enabled: bool
     qq: BotQQChannelConfig
     plugins: tuple[BotPluginSelection, ...]
+    # Read-compatible name: QQ uses these only as optional command prefixes.
     wake_words: tuple[str, ...] = ()
     source: str = "bot_profile"
 
@@ -262,7 +263,6 @@ def parse_bot_host_profile(payload: Any) -> BotHostProfile:
     bots = tuple(parse_bot_config(item, field_prefix=f"bots.{index}") for index, item in enumerate(raw_bots))
     bot_ids: set[str] = set()
     memory_spaces: set[str] = set()
-    qq_wake_words: list[tuple[str, str]] = []
     for index, bot in enumerate(bots):
         if bot.bot_id in bot_ids:
             _fail("duplicate_bot_id", field=f"bots.{index}.bot_id")
@@ -270,13 +270,6 @@ def parse_bot_host_profile(payload: Any) -> BotHostProfile:
             _fail("duplicate_memory_space_id", field=f"bots.{index}.memory_space_id")
         bot_ids.add(bot.bot_id)
         memory_spaces.add(bot.memory_space_id)
-        if bot.enabled and bot.qq.enabled:
-            for wake_word in bot.wake_words:
-                normalized_wake_word = wake_word.casefold()
-                for _other_bot_id, other_wake_word in qq_wake_words:
-                    if _qq_wake_words_overlap(normalized_wake_word, other_wake_word):
-                        _fail("overlapping_qq_wake_word", field=f"bots.{index}.wake_words")
-                qq_wake_words.append((bot.bot_id, normalized_wake_word))
 
     enabled_ids = {bot.bot_id for bot in bots if bot.enabled}
     if not enabled_ids:
@@ -414,17 +407,6 @@ def _wake_words(value: Any, *, field: str) -> tuple[str, ...]:
         seen.add(key)
         normalized.append(wake_word)
     return tuple(normalized)
-
-
-def _qq_wake_words_overlap(left: str, right: str) -> bool:
-    def searches(wake_word: str, text: str) -> bool:
-        pattern = re.compile(
-            rf"(?<![A-Za-z0-9]){re.escape(wake_word)}(?![A-Za-z0-9])",
-            re.IGNORECASE,
-        )
-        return pattern.search(text) is not None
-
-    return searches(left, right) or searches(right, left)
 
 
 def _fail(reason: str, *, field: str = "", status: str = "invalid_config") -> None:

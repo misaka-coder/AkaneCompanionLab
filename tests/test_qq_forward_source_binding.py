@@ -229,7 +229,9 @@ class QQForwardSourceBindingTests(unittest.TestCase):
                 log_event=lambda *_args, **_kwargs: None,
             )
         )
-        response = TestClient(app).post("/api/qq/napcat/event", json=self._event())
+        event = self._event()
+        event["message"].append({"type": "at", "data": {"qq": "10001"}})
+        response = TestClient(app).post("/api/qq/napcat/event", json=event)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(processed), 1, response.json())
         payload = processed[0]

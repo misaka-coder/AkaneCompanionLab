@@ -263,7 +263,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
         self.assertEqual(engine_b.turns, [])
         mocked_post.assert_called_once()
 
-    def test_per_bot_wake_words_do_not_cross_trigger_or_match_account_suffix(self) -> None:
+    def test_configured_names_do_not_wake_either_bot(self) -> None:
         _app, _engine_a, _engine_b, gateway_a, gateway_b = self._app()
         base_event = {
             "post_type": "message",
@@ -284,8 +284,8 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(context_a.should_respond)
-        self.assertEqual(context_a.reason, "group_wake_word")
+        self.assertFalse(context_a.should_respond)
+        self.assertEqual(context_a.reason, "group_passive_observed")
         self.assertFalse(context_b.should_respond)
         self.assertEqual(context_b.reason, "group_passive_observed")
         self.assertFalse(suffix_context.should_respond)

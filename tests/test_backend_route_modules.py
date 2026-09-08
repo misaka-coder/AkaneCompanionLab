@@ -2223,7 +2223,10 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "user_id": QQ_USER_FIXTURE_ID,
                     "group_id": QQ_GROUP_FIXTURE_ID,
                     "message_id": "workspace-soft-delete-1",
-                    "message": "Akane 删除工作台",
+                    "message": [
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": " 删除工作台"}},
+                    ],
                 },
             )
 
@@ -2782,7 +2785,11 @@ class BackendRouteModuleTests(unittest.TestCase):
             process_calls[0]["message_addressing"]["reply_reference"]["mentions"],
             [{"actor_id": "qq:40004", "display_name": "天为", "is_assistant": False}],
         )
-        self.assertEqual(mocked_post.call_count, 3)
+        actions = [call.args[1].rsplit("/", 1)[-1] for call in mocked_post.call_args_list]
+        self.assertEqual(actions.count("get_group_member_info"), 2)  # Own identity and sender label.
+        self.assertEqual(actions.count("get_msg"), 1)
+        self.assertEqual(actions.count("send_group_msg"), 1)
+        self.assertEqual(len(actions), 4)
         quoted_logs = [payload for name, payload in log_calls if name == "qq_quoted_attachments_resolved"]
         self.assertEqual(
             quoted_logs,

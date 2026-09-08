@@ -42,9 +42,9 @@ class QQNicknameAddressingTests(unittest.TestCase):
     def test_legacy_adapter_does_not_supply_fixed_wake_word(self):
         self.assertEqual(bot_config_from_instance_context(SimpleNamespace(instance_id="test")).wake_words, ())
 
-    def test_automatic_nickname_wakes_but_product_name_does_not(self):
+    def test_group_nickname_and_product_name_do_not_wake(self):
         gateway = self.gateway()
-        self.assertEqual(gateway.build_message_context(self.event("塞西莉亚，在吗")).reason, "group_wake_word")
+        self.assertEqual(gateway.build_message_context(self.event("塞西莉亚，在吗")).reason, "group_passive_observed")
         self.assertFalse(gateway.build_message_context(self.event("Akane 在吗", message_id="2")).should_respond)
         self.assertEqual(self.transport.call_count, 1)
         self.assertEqual(gateway._strip_wake_word_command_prefix("塞西莉亚，当前角色"), "当前角色")
@@ -56,7 +56,8 @@ class QQNicknameAddressingTests(unittest.TestCase):
         self.assertEqual(other.to_turn_payload()["message_addressing"]["primary_target"]["actor_id"], "qq:40004")
         own = gateway.build_message_context(self.event("你好", targets=("10001", "40004"), message_id="2"))
         self.assertEqual(own.reason, "group_mention")
-        self.assertIn("@助手（本群昵称：塞西莉亚）", own.to_turn_payload()["memory_message"])
+        self.assertIn("@塞西莉亚", own.to_turn_payload()["memory_message"])
+        self.assertNotIn("本群昵称", own.to_turn_payload()["memory_message"])
         self.assertTrue(own.to_turn_payload()["message_addressing"]["explicit_assistant_mention"])
 
     def test_failed_lookup_backs_off_and_keeps_explicit_mentions(self):
@@ -72,24 +73,24 @@ class QQNicknameAddressingTests(unittest.TestCase):
     def test_group_card_and_self_identity_reach_turn_payload(self):
         gateway = self.gateway()
         self.transport.side_effect = [
-            self.login,
             SimpleNamespace(
                 ok=True, data={"user_id": 10001, "group_id": 30003, "card": "天为", "nickname": "山城高岭"}
             ),
+            self.login,
         ]
         context = gateway.build_message_context(self.event("？", targets=("10001",)))
         payload = context.to_turn_payload()
         self.assertEqual(context.reason, "group_mention")
-        self.assertEqual(payload["memory_message"], "@助手（本群昵称：天为） ？")
+        self.assertEqual(payload["memory_message"], "@天为 ？")
         addressing = payload["message_addressing"]
         self.assertTrue(addressing["explicit_assistant_mention"])
         self.assertEqual(addressing["primary_target"], {"actor_id": "assistant", "display_name": ""})
         self.assertEqual(addressing["mentions"][0]["display_name"], "天为")
         self.assertTrue(addressing["mentions"][0]["is_assistant"])
         self.assertEqual(gateway._project_mention_evidence(context.mentions)[0]["display_name"], "天为")
-        self.transport.assert_called_with(
-            "get_group_member_info", {"group_id": 30003, "user_id": 10001, "no_cache": True}, timeout=2
-        )
+        self.assertIn("你在本群的显示名：天为", gateway.build_group_identity_context(30003))
+        self.assertNotIn("山城高岭", gateway.build_group_identity_context(30003))
+        self.assertEqual(self.transport.call_count, 2)
 
     def test_group_cards_are_isolated_refreshed_and_identity_checked(self):
         gateway = self.gateway()
@@ -128,35 +129,36 @@ class QQNicknameAddressingTests(unittest.TestCase):
 
     def test_nickname_refresh_and_account_mismatch_do_not_keep_stale_alias(self):
         gateway = self.gateway()
-        self.assertEqual(gateway._effective_wake_words(), ("塞西莉亚",))
+        self.assertEqual(gateway._effective_command_prefixes(), ("塞西莉亚",))
         self.login.data["nickname"] = "新昵称"
         gateway._bot_nickname_refresh_at = 0
-        self.assertEqual(gateway._effective_wake_words(), ("新昵称",))
-        self.assertFalse(gateway.message_mentions_wake_word("塞西莉亚 在吗"))
+        self.assertEqual(gateway._effective_command_prefixes(), ("新昵称",))
+        self.assertEqual(gateway._strip_wake_word_command_prefix("塞西莉亚，当前角色"), "塞西莉亚，当前角色")
         self.login.data["user_id"] = 40004
         gateway._bot_nickname_refresh_at = 0
-        self.assertEqual(gateway._effective_wake_words(), ())
+        self.assertEqual(gateway._effective_command_prefixes(), ())
         self.assertEqual(gateway._bot_nickname_status, "account_identity_mismatch")
 
-    def test_configured_aliases_override_automatic_nickname(self):
+    def test_configured_aliases_only_supply_command_prefixes(self):
         gateway = self.gateway(("小塞",))
-        self.assertTrue(gateway.message_mentions_wake_word("小塞 在吗"))
-        self.assertFalse(gateway.message_mentions_wake_word("塞西莉亚 在吗"))
+        self.assertEqual(gateway._strip_wake_word_command_prefix("小塞，当前角色"), "当前角色")
+        self.assertEqual(gateway._strip_wake_word_command_prefix("塞西莉亚，当前角色"), "塞西莉亚，当前角色")
+        self.assertFalse(gateway.build_message_context(self.event("小塞 在吗")).should_respond)
         self.transport.assert_not_called()
 
-    def test_invalid_nickname_never_becomes_a_wake_word(self):
+    def test_invalid_nickname_never_becomes_a_command_prefix(self):
         for nickname in ("", "x" * 33, "bad\nname"):
             gateway = self.gateway()
             self.login.data["nickname"] = nickname
-            self.assertEqual(gateway._effective_wake_words(), ())
+            self.assertEqual(gateway._effective_command_prefixes(), ())
             self.assertEqual(gateway._bot_nickname_status, "invalid_login_nickname")
 
-    def test_self_check_reports_real_wake_mode_without_a_second_login_request(self):
+    def test_self_check_reports_text_wake_disabled(self):
         gateway = self.gateway()
         self.transport.side_effect = [self.login, SimpleNamespace(ok=True, data={"online": True})]
         result = gateway.self_check()
         self.assertTrue(result["ok"])
-        self.assertEqual(result["wake_word_mode"], "qq_nickname")
-        self.assertEqual(result["wake_words"], ["塞西莉亚"])
-        self.assertEqual(result["wake_word_status"], "resolved")
+        self.assertEqual(result["wake_word_mode"], "disabled")
+        self.assertEqual(result["wake_words"], [])
+        self.assertEqual(result["wake_word_status"], "disabled")
         self.assertEqual(self.transport.call_count, 2)

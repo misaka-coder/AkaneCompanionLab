@@ -26,7 +26,6 @@ from channelcore_onebot import (
     build_message_action,
     build_upload_file_action,
     compile_wake_word_prefix as _compile_qq_wake_word_prefix,
-    compile_wake_word_search as _compile_qq_wake_word_search,
     message_mentions_bot as onebot_message_mentions_bot,
     normalize_inbound_event,
     validate_onebot_identity,
@@ -382,11 +381,7 @@ class QQMessageContext:
         message = self.clean_message
         mention_labels = {
             str(mention.target_id or "").strip(): (
-                f"助手（本群昵称：{mention.display_name}）"
-                if mention.is_bot and self.is_group and mention.display_name and mention.display_name != "助手"
-                else "助手"
-                if mention.is_bot
-                else str(mention.display_name or "").strip()
+                str(mention.display_name or "").strip() or ("助手" if mention.is_bot else "")
             )
             for mention in self.mentions
             if str(mention.target_id or "").strip()
@@ -394,10 +389,7 @@ class QQMessageContext:
         memory_message = (
             self.message_chain.render_text_with_mentions(
                 mention_labels=mention_labels,
-                bot_label=next(
-                    (mention.display_name for mention in self.mentions if mention.is_bot and mention.display_name),
-                    "助手",
-                ),
+                bot_label="助手",
             )
             if self.message_chain.parts
             else self.clean_message
@@ -457,15 +449,12 @@ class QQMessageContext:
             if addressed_to_assistant
             else (
                 {
-                    "actor_id": reply_actor_id,
-                    "display_name": reply_actor_name,
-                }
-                if reply_actor_id
-                else {
                     "actor_id": str(mentions[0].get("actor_id") or ""),
                     "display_name": str(mentions[0].get("display_name") or ""),
                 }
-                if len(mentions) == 1
+                if len(mentions) == 1 and mentions[0]["actor_id"] != "qq:all"
+                else {"actor_id": reply_actor_id, "display_name": reply_actor_name}
+                if not mentions and reply_actor_id
                 else {}
             )
         )
@@ -546,7 +535,8 @@ class NapCatQQGateway:
         self._onebot_transport = OneBotActionTransport(transport_config)
         self._reply_reference_ledger = ReplyReferenceLedger(max_claims=4096)
         self._bound_default_character_pack_id = _safe_character_pack_id(default_character_pack_id)
-        self._wake_words = _normalize_qq_wake_words(wake_words)
+        # Legacy config supplies optional command prefixes, never admission.
+        self._command_prefixes = _normalize_qq_wake_words(wake_words)
         self._bot_nickname = ""
         self._bot_nickname_status = "not_checked"
         self._bot_nickname_refresh_at = 0.0
@@ -821,9 +811,9 @@ class NapCatQQGateway:
             "status": "connected",
             "bot_qq": str(user_id),
             "nickname": str(nickname),
-            "wake_word_mode": "configured" if self._wake_words else "qq_nickname",
-            "wake_word_status": "configured" if self._wake_words else self._bot_nickname_status,
-            "wake_words": list(self._wake_words or ((self._bot_nickname,) if self._bot_nickname else ())),
+            "wake_word_mode": "disabled",
+            "wake_word_status": "disabled",
+            "wake_words": [],
             "checks": {
                 "bridge_enabled": True,
                 "url_reachable": True,
@@ -1146,7 +1136,7 @@ class NapCatQQGateway:
         inbound_result = normalize_inbound_event(
             event,
             bot_account_id=self.bot_qq,
-            wake_words=self._effective_wake_words() if is_group else self._wake_words,
+            wake_words=(),
         )
         inbound = inbound_result.message
         if inbound is None:
@@ -1178,7 +1168,6 @@ class NapCatQQGateway:
         sender_label = inbound.actor.display_name or self.resolve_sender_label(event=event, user_id=user_id)
         if sender_label:
             self.sender_label_cache[self._sender_label_cache_key(group_id=group_id, user_id=user_id)] = sender_label
-        mentions_wake_word = inbound.mentioned_wake_word
         character_pack_id = self.resolve_character_pack_id(session_id)
         reply_mode = self.resolve_reply_mode(session_id)
         chat_model_override = self.resolve_chat_model_override(session_id)
@@ -1201,8 +1190,6 @@ class NapCatQQGateway:
         elif is_group:
             if mentions_bot:
                 group_reason = "group_mention"
-            elif mentions_wake_word:
-                group_reason = "group_wake_word"
             else:
                 suppress_passive_image = bool(has_group_image and not group_vision_enabled)
                 unbound_group_image = bool(has_group_image)
@@ -1277,7 +1264,7 @@ class NapCatQQGateway:
         inbound_result = normalize_inbound_event(
             event,
             bot_account_id=self.bot_qq,
-            wake_words=self._wake_words,
+            wake_words=(),
         )
         inbound = inbound_result.message
         if inbound is None:
@@ -1353,7 +1340,7 @@ class NapCatQQGateway:
         )
         if not identity.ok:
             raise ValueError(identity.reason)
-        parsed = normalize_inbound_event(event, bot_account_id=self.bot_qq, wake_words=self._effective_wake_words())
+        parsed = normalize_inbound_event(event, bot_account_id=self.bot_qq, wake_words=())
         inbound = parsed.message
         if inbound is None:
             raise ValueError("queued_context_invalid_event")
@@ -2631,7 +2618,7 @@ class NapCatQQGateway:
         text = str(message or "").strip()
         if not text:
             return ""
-        match = _compile_qq_wake_word_prefix(self._effective_wake_words()).match(text)
+        match = _compile_qq_wake_word_prefix(self._effective_command_prefixes()).match(text)
         if not match:
             return text
         return text[match.end() :].strip()
@@ -3494,9 +3481,6 @@ class NapCatQQGateway:
     def message_mentions_bot(self, event: dict[str, Any], raw_message: str) -> bool:
         return onebot_message_mentions_bot(event, raw_message, bot_account_id=self.bot_qq)
 
-    def message_mentions_wake_word(self, clean_message: str) -> bool:
-        return bool(_compile_qq_wake_word_search(self._effective_wake_words()).search(str(clean_message or "")))
-
     def resolve_identity(self, *, user_id: int, group_id: int = 0) -> tuple[str, str]:
         user_text = str(user_id or "")
         if group_id:
@@ -3549,7 +3533,7 @@ class NapCatQQGateway:
             target_id = self._safe_int(target_text)
             display_name = str(mention.display_name or "").strip()
             if mention.is_bot:
-                resolved.append(replace(mention, display_name=self._resolve_bot_group_label(group_id) or "助手"))
+                resolved.append(replace(mention, display_name=self._resolve_bot_group_label(group_id)))
                 continue
             cache_key = self._sender_label_cache_key(group_id=group_id, user_id=target_id)
             if display_name and cache_key:
@@ -3592,7 +3576,9 @@ class NapCatQQGateway:
                 # Some OneBot implementations omit group_id in this response.
                 returned_group = result.data.get("group_id")
                 if returned_group is None or str(returned_group) == str(group_id):
-                    candidate = str(result.data.get("card") or result.data.get("nickname") or "").strip()
+                    candidate = str(result.data.get("card") or "").strip() or str(
+                        result.data.get("nickname") or ""
+                    ).strip()
                     if candidate and len(candidate) <= 160 and not any(ord(ch) < 32 for ch in candidate):
                         label = candidate
             if key not in self._bot_group_labels and len(self._bot_group_labels) >= 256:
@@ -3631,11 +3617,21 @@ class NapCatQQGateway:
             self._bot_nickname_refresh_at = time.monotonic() + 60.0
             return self._bot_nickname
 
-    def _effective_wake_words(self) -> tuple[str, ...]:
-        if self._wake_words:
-            return self._wake_words
+    def _effective_command_prefixes(self) -> tuple[str, ...]:
+        if self._command_prefixes:
+            return self._command_prefixes
         nickname = self._resolve_bot_nickname()
         return (nickname,) if nickname else ()
+
+    def build_group_identity_context(self, group_id: int) -> str:
+        """Current request facts, not a new identity repeated in chat history."""
+        if not group_id or not self.bot_qq:
+            return ""
+        lines = [f"当前会话：QQ群（group:{int(group_id)}）", f"你的 QQ 账号：qq:{self.bot_qq}"]
+        display_name = self._resolve_bot_group_label(group_id)
+        if display_name:
+            lines.append(f"你在本群的显示名：{display_name}")
+        return "\n".join(lines)
 
     @staticmethod
     def _project_mention_evidence(mentions: tuple[MentionRef, ...]) -> list[dict[str, Any]]:

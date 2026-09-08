@@ -1359,6 +1359,15 @@ def _process_qq_turn_streaming(
 ) -> dict[str, Any]:
     timing_started_at = time.perf_counter()
     timing: dict[str, float] = {}
+    # Add live, Bot-bound session identity only when a queued/direct/ambient
+    # turn actually runs. Do not rewrite its saved message or quoted history.
+    turn_payload = dict(turn_payload)
+    identity_builder = getattr(qq_gateway, "build_group_identity_context", None)
+    if bool(getattr(context, "is_group", False)) and callable(identity_builder):
+        identity_context = identity_builder(int(getattr(context, "group_id", 0) or 0))
+        turn_payload["extra_context"] = "\n\n".join(
+            part for part in (identity_context, str(turn_payload.get("extra_context") or "").strip()) if part
+        )
     pending_stage_messages: list[str] = []
     deferred_stage_messages: list[str] = []
     streamed_messages: list[str] = []

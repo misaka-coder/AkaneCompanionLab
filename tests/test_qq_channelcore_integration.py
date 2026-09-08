@@ -56,7 +56,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         ) as package_parser:
             context = gateway.build_message_context(event)
 
-        package_parser.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=("Akane",))
+        package_parser.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=())
         self.assertTrue(context.should_respond)
         self.assertEqual(context.reason, "group_mention")
         self.assertEqual(context.sender_label, "伙伴")
@@ -224,14 +224,14 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         ) as package_parser:
             context = gateway.build_message_context(event)
 
-        package_parser.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=("Akane",))
+        package_parser.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=())
         self.assertIsNotNone(context.inbound_message)
         self.assertIs(context.message_chain, context.inbound_message.chain)
         self.assertFalse(context.inbound_message.mentioned_bot)
-        self.assertTrue(context.inbound_message.mentioned_wake_word)
+        self.assertFalse(context.inbound_message.mentioned_wake_word)
         self.assertEqual([part.kind for part in context.message_chain.parts], ["text", "attachment"])
-        self.assertTrue(context.should_respond)
-        self.assertEqual(context.reason, "group_wake_word")
+        self.assertFalse(context.should_respond)
+        self.assertEqual(context.reason, "group_passive_image_unbound")
 
     def test_gateway_quoted_lookup_delegates_action_and_scope_to_package(self) -> None:
         gateway = NapCatQQGateway(wake_words=("Akane",))
@@ -286,7 +286,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         ):
             result = gateway.resolve_quoted_attachments(event, context=context)
 
-        package_parser.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=("Akane",))
+        package_parser.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=())
         package_resolver.assert_called_once()
         self.assertEqual(result["status"], "resolved")
         self.assertEqual(result["quoted_message"]["text"], "这是很久以前的原话 [图片]")
@@ -313,6 +313,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
             "group_id": GROUP_ID,
             "message_id": "direct-video",
             "message": [
+                {"type": "at", "data": {"qq": BOT_ID}},
                 {"type": "text", "data": {"text": "Akane 看看这个视频"}},
                 {
                     "type": "video",

@@ -50,13 +50,13 @@ class QQDeliveryIdentityContractTests(unittest.TestCase):
             gateway._channel_config,
             session=transport_fixtures._Session(
                 [
-                    transport_fixtures._Response({"status": "ok", "data": {"user_id": 10001, "nickname": "山城高岭"}}),
                     transport_fixtures._Response(
                         {
                             "status": "ok",
                             "data": {"user_id": 10001, "group_id": 30003, "card": "天为", "nickname": "山城高岭"},
                         }
                     ),
+                    transport_fixtures._Response({"status": "ok", "data": {"user_id": 10001, "nickname": "山城高岭"}}),
                 ]
             ),
         )
@@ -83,7 +83,8 @@ class QQDeliveryIdentityContractTests(unittest.TestCase):
         text = "\n".join(str(item.get("content") or "") for item in projection["payloads"])
         self.assertIn("target: assistant", text)
         self.assertIn("天为 (id=assistant)", text)
-        self.assertIn("@助手（本群昵称：天为） ？", text)
+        self.assertIn("@天为 ？", text)
+        self.assertNotIn("本群昵称", text)
         self.assertNotIn("山城高岭", text)
         self.assertTrue(addressing["explicit_assistant_mention"])
 

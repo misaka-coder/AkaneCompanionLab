@@ -273,7 +273,7 @@ Host 现在从 `<AKANE_DATA_ROOT>/secrets/qq_profiles.toml` 按 BotConfig 的安
 
 旧 `/api/qq/napcat/event` 只作为默认 Bot 的薄别名，两条路径共享同一个 Gateway duplicate ledger；同一事件同时投递到新旧地址时只产生一次 Engine turn 和一次出站回复。非默认 Bot 不注册旧地址。
 
-每个启用 QQ 的 Bot 现在有独立 `wake_words`。Host 配置会拒绝按真实 QQ 匹配边界发生重叠的唤醒词，例如 `Akane` 与 `Akane Finance`；`Akane` 不会误匹配账号名或普通文本中的 `Akane218`。因此同群两个 Bot 可以分别使用 `Akane`、`金融助手`，角色切换等命令只进入被唤醒 Bot。
+2026-09-08 更新：群聊文字唤醒关闭，两个 Bot 按真实 @ 的账号 ID 接收，不因正文出现 Akane、金融助手或昵称启动直接回复。旧 `wake_words` 仅兼容各 Bot 的命令前缀，重名不再阻止 Host 启动；身份和记忆空间隔离校验保持。后文的双唤醒词记录是旧阶段记录，当前规则见 [群身份修复](qq_group_identity_trigger_repair_20260908.md)。
 
 本切片只能阻止同一新 Host 内串线，不能跨进程去重。若用户看到“一次消息先收到正常模型回复，随后又收到‘我在认真听你说……’兜底”，而新 Host 的单 Gateway 已证明只处理一次，首要排查项是：
 

@@ -3383,9 +3383,6 @@ class AkaneMemoryEngine:
         if addressed_to_assistant:
             target_id = "assistant"
             target_name = ""
-        elif not target_id and mentions:
-            target_id = str(mentions[0]["actor_id"])
-            target_name = str(mentions[0]["display_name"])
         normalized = {
             "mode": mode,
             "trigger": trigger,
