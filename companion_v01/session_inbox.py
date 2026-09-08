@@ -492,6 +492,15 @@ class SessionInboxStore:
             ).rowcount
         return int(changed or 0)
 
+    def owned_claim_count(self, worker_id: str) -> int:
+        """Read-only shutdown fence, including claims handed to active turns."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM session_inbox_items WHERE status = 'claimed' AND claimed_by = ?",
+                (worker_id,),
+            ).fetchone()
+        return int(row[0])
+
     def pending_count(self, session_key: Any) -> int:
         normalized = str(session_key or "").strip()
         if not normalized:

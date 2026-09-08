@@ -302,6 +302,19 @@ class BotRuntime:
         if self._stop_status is not None:
             return dict(self._stop_status)
 
+        queue_status: dict[str, Any] = {"status": "not_configured"}
+        if self.session_work_queue is not None:
+            try:
+                queue_status = await self.session_work_queue.close(timeout=10.0)
+            except Exception:
+                queue_status = {"status": "error", "reason": "session_queue_shutdown_failed"}
+            if queue_status.get("status") != "stopped":
+                # Do not cancel a to_thread model turn or close the services it
+                # still uses. A later stop may retry after the turn settles.
+                return {"status": "degraded", "reason": "session_queue_shutdown_incomplete",
+                        "bot_id": self.bot_id, "queue_status": queue_status,
+                        "engine_status": {"status": "deferred", "reason": "session_queue_not_drained"}}
+
         failures: list[str] = []
         followup_status: dict[str, Any] = {"status": "not_configured"}
         plugin_status: dict[str, Any] = {"status": "not_started"}
@@ -370,6 +383,7 @@ class BotRuntime:
             "reason": failures[0] if failures else "",
             "bot_id": self.bot_id,
             "failures": failures,
+            "queue_status": queue_status,
             "followup_status": followup_status,
             "plugin_status": plugin_status,
             "voice_status": voice_status,
