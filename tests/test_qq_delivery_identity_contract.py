@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.memcore_integration.manager import MemcoreManager
+from companion_v01.onebot_transport import OneBotActionTransport
 from companion_v01.plugin_event_delivery import apply_plugin_notification_output_policy
 from tests import test_memcore_integration as fixtures
 from tests import test_qq_nickname_addressing as nickname_fixtures
+from tests import test_onebot_transport as transport_fixtures
 
 
 class QQDeliveryIdentityContractTests(unittest.TestCase):
@@ -43,12 +44,22 @@ class QQDeliveryIdentityContractTests(unittest.TestCase):
         setup = nickname_fixtures.QQNicknameAddressingTests()
         self.addCleanup(setup.doCleanups)
         gateway = setup.gateway()
-        setup.transport.side_effect = [
-            setup.login,
-            SimpleNamespace(
-                ok=True, data={"user_id": 10001, "group_id": 30003, "card": "天为", "nickname": "山城高岭"}
+        # Exercise the package projection as well as the gateway. Returning a
+        # pre-normalized stub hid the loss of member ids in the old package.
+        gateway._onebot_transport = OneBotActionTransport(
+            gateway._channel_config,
+            session=transport_fixtures._Session(
+                [
+                    transport_fixtures._Response({"status": "ok", "data": {"user_id": 10001, "nickname": "山城高岭"}}),
+                    transport_fixtures._Response(
+                        {
+                            "status": "ok",
+                            "data": {"user_id": 10001, "group_id": 30003, "card": "天为", "nickname": "山城高岭"},
+                        }
+                    ),
+                ]
             ),
-        ]
+        )
         context = gateway.build_message_context(setup.event("？", targets=("10001",)))
         payload = context.to_turn_payload()
         addressing = AkaneMemoryEngine._normalize_message_addressing(payload, fallback_mode="current_request")
