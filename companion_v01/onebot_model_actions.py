@@ -42,8 +42,8 @@ _ACTIONS = (
     ModelOneBotAction("send_private_msg", "发送私聊消息；小程序可直接用生成的 card_ref，无需复制卡片。", "user_id; message（字符串/消息段）或 card_ref，二选一", "write"),
     ModelOneBotAction(
         "get_mini_app_ark",
-        "生成小程序卡片但不发送；B站只需 source 链接或BV号，返回 card_ref 供发送。其他模板详见 qq-miniapp-share Skill。",
-        "source=B站视频链接/BV号（可选 type=bili）；手工模板参数见 Skill，不与 source 混用",
+        "生成支持的非B站小程序卡片但不发送，返回 card_ref 供发送。B站需转发真实原生卡片，详见 qq-miniapp-share Skill。",
+        "手工模板参数见 Skill；B站 source/type=bili 返回 native-card-required，不生成伪原生卡片",
         "read",
     ),
     ModelOneBotAction("get_group_msg_history", "读取群聊历史。", "group_id, count; 可选 message_seq, reverseOrder", "read"),

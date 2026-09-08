@@ -28,12 +28,12 @@ from companion_v01.tool_handlers.skills import LoadSkillToolHandler
 
 ROOT = Path(__file__).resolve().parents[1]
 PARAMS = {
-    "type": "bili",
-    "title": "测试视频",
+    "type": "weibo",
+    "title": "测试卡片",
     "desc": "",
     "picUrl": "https://i0.hdslb.com/bfs/archive/fixture.jpg?sign=keep-me",
-    "jumpUrl": "pages/video/video.html?avid=170001",
-    "webUrl": "https://www.bilibili.com/video/av170001/",
+    "jumpUrl": "pages/index/index?id=170001",
+    "webUrl": "https://example.com/posts/170001/",
 }
 ARK = {
     "app": "com.tencent.miniapp_01",
@@ -43,8 +43,8 @@ ARK = {
     "config": {"forward": 0},
     "meta": {
         "detail_1": {
-            "title": "哔哩哔哩",
-            "desc": "测试视频",
+            "title": "微博",
+            "desc": "测试卡片",
             "qqdocurl": PARAMS["webUrl"],
             "qqsign": "fixture-signature",
         }
@@ -290,33 +290,14 @@ class MiniappWorkflowTests(unittest.TestCase):
         self.assertNotIn("message", data)
         self.assertFalse(result.finish_turn)
 
-    def test_source_resolution_uses_real_public_boundary_then_sends_original_ark(self):
-        from tests.test_qq_bilibili_share import BVID, PublicResponse, public_target
-        with patch('companion_v01.qq_bilibili_share.validate_public_http_url', side_effect=public_target), \
-             patch('companion_v01.qq_bilibili_share.get_pinned_public_response',
-                   side_effect=lambda _s, target, **_: PublicResponse(target)):
-            _, generated = self.call(params={'source': BVID})
-        self.assertTrue(generated['ok'])
-        self.assertEqual(generated['title'], '真实视频标题')
-        self.assertNotIn('fixture-signature', json.dumps(generated))
-        self.assertEqual(self.session.calls[0][2]['json']['jumpUrl'], 'pages/video/video.html?avid=170001')
-        self.assertNotIn('source', self.session.calls[0][2]['json'])
-        self.session.response = {'status': 'ok', 'retcode': 0, 'data': {'message_id': 88}}
-        result, receipt = self.call('send_group_msg', {'card_ref': generated['card_ref']}, finish_turn=True)
-        self.assertTrue(result.finish_turn)
-        self.assertEqual(receipt['data']['message_id'], 88)
-        self.assertEqual(json.loads(self.session.calls[-1][2]['json']['message'][0]['data']['data']), ARK)
-
-    def test_source_failure_never_calls_napcat_or_falls_back_to_invented_metadata(self):
-        from tests.test_qq_bilibili_share import BVID, PublicResponse, public_target
-        with patch('companion_v01.qq_bilibili_share.validate_public_http_url', side_effect=public_target), \
-             patch('companion_v01.qq_bilibili_share.get_pinned_public_response',
-                   side_effect=lambda _s, target, **_: PublicResponse(target, status=412)):
-            result, receipt = self.call(params={'source': BVID}, finish_turn=True)
-        self.assertFalse(result.finish_turn)
-        self.assertEqual(receipt['reason'], 'bilibili_metadata_rate_limited')
+    def test_bilibili_source_and_template_require_a_native_card_without_transport(self):
+        for params in ({'source': 'BV17x411w7KC'}, {**PARAMS, 'type': 'bili'}):
+            result, receipt = self.call(params=params, finish_turn=True)
+            self.assertFalse(result.finish_turn)
+            self.assertFalse(receipt['ok'])
+            self.assertEqual(receipt['reason'], 'bilibili_native_card_forward_required')
         self.assertFalse(self.session.calls)
-        _, receipt = self.call(params={'source': BVID, 'picUrl': 'https://example.com/fake.png'})
+        _, receipt = self.call(params={'source': 'BV17x411w7KC', 'picUrl': 'https://example.com/fake.png'})
         self.assertEqual(receipt['reason'], 'miniapp_source_params_conflict')
 
     def test_repeated_send_returns_real_receipt_without_second_message(self):
@@ -422,6 +403,10 @@ class MiniappValidationTests(unittest.TestCase):
             }
         )
         self.assertEqual(validate_miniapp_params(params), "")
+        self.assertEqual(
+            validate_miniapp_params({**params, "appId": "1109937557"}),
+            "bilibili_native_card_forward_required",
+        )
         for value in ("NaN", "-1", "1.5", "１２", "1" * 17):
             self.assertEqual(validate_miniapp_params({**params, "scene": value}), "miniapp_numeric_string_required")
         self.assertEqual(validate_miniapp_params({**params, "scene": 1}), "miniapp_string_required")

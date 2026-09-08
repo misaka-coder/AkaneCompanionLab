@@ -62,7 +62,6 @@ from .plugin_api import (
 )
 from .qq_poke_reactor import PokeEventReactor, PokeOutcome
 from .qq_miniapp import MiniappCardStore, project_miniapp_result, validate_miniapp_params
-from .qq_bilibili_share import BilibiliShareError, resolve_bilibili_share
 
 
 # Public compatibility alias; client_protocol owns the capability list.
@@ -3192,16 +3191,9 @@ class NapCatQQGateway:
                 if set(resolved_params) - {"source", "type"} or resolved_params.get("type", "bili") != "bili":
                     return {"ok": False, "status": "invalid", "reason": "miniapp_source_params_conflict",
                             "action": clean_action, "scope": scope}
-                started = time.monotonic()
-                try:
-                    resolved_params = resolve_bilibili_share(resolved_params["source"], timeout=min(10.0, timeout_seconds))
-                except BilibiliShareError as exc:
-                    return {"ok": False, "status": "unavailable", "reason": exc.reason,
-                            "action": clean_action, "scope": scope}
-                timeout_seconds -= time.monotonic() - started
-                if timeout_seconds <= 0:
-                    return {"ok": False, "status": "unavailable", "reason": "bilibili_metadata_timeout",
-                            "action": clean_action, "scope": scope}
+                return {"ok": False, "status": "unavailable",
+                        "reason": "bilibili_native_card_forward_required",
+                        "action": clean_action, "scope": scope}
             validation_error = validate_miniapp_params(resolved_params)
             if validation_error:
                 return {

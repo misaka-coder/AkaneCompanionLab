@@ -4,9 +4,9 @@
 
 ## 自定义生成
 
-手工模板 `type="bili"` / `type="weibo"` 的共同字段为 `title`、`desc`（可空）、
+手工模板 `type="weibo"` 的共同字段为 `title`、`desc`（可空）、
 `picUrl`、`jumpUrl`，可选 `webUrl`，全部为字符串。封面必须是真实公开 HTTP(S) 图片。
-B 站优先使用 `source` 自动解析；手工小程序路径与网页 URL 不可混淆，不能把 BV 当数字 aid。
+B 站 `source` / `type="bili"` 已停用：真实客户端验收表明 PC 模板不能稳定播放，必须转发原生卡片。
 正常生成统一返回 `card_ref`，由发送接口取出原始卡片；不再把整段 JSON 交给模型复制。
 
 省略 `type`，保留共同字段 `title`、`desc`、`picUrl`、`jumpUrl`，并提供：

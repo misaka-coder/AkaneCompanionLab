@@ -65,6 +65,11 @@ def _public_url(value: str) -> bool:
 def validate_miniapp_params(params: dict[str, Any]) -> str:
     """Return a stable reason (no input values), or empty on valid input."""
     templated = "type" in params
+    if (templated and params["type"] == "bili") or (not templated and params.get("appId") == "1109937557"):
+        # NapCat's PC template produces a signed card that renders but does not
+        # preserve Bilibili's native playback route.  Only forwarding a real
+        # incoming Bilibili card has passed client playback acceptance.
+        return "bilibili_native_card_forward_required"
     if templated and params["type"] not in ("bili", "weibo"):
         return "miniapp_template_unsupported"
     required = _COMMON | ({"type"} if templated else _CUSTOM)

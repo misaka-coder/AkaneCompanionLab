@@ -1,11 +1,14 @@
 # QQ 小程序卡片生成与分享（2026-09-08）
 
-本文保留最初模板生成切片的验收记录。后续 B 站自动解析与 `card_ref` 发送契约见 [链接与句柄切片](qq_miniapp_link_handles_20260908.md)，替代下文正常生成后复制 `message` 的旧调用方式。
+本文保留最初模板生成切片的验收记录。后续客户端验收已证明 NapCat 的 PC B 站模板不能稳定播放，
+因此 B 站生成路径已停用，改为转发真实原生卡片；最终结论见 [链接与句柄切片](qq_miniapp_link_handles_20260908.md)。
+非 B 站模板仍使用 `card_ref`，替代下文正常生成后复制 `message` 的旧调用方式。
 
 ## 本轮范围
 
 - 现有 `onebot_action` 新增 `get_mini_app_ark`，不新增发送工具、Shell 直连或平台专属发送路径。
-- 支持 NapCat 的 `bili`、`weibo` 模板及完整参数自定义模式。生成模板和签名仍由 NapCat 负责。
+- 当时支持 NapCat 的 `bili`、`weibo` 模板及完整参数自定义模式；`bili` 后因真实播放验收失败而停用。
+  生成其他模板和签名仍由 NapCat 负责。
 - `qq_miniapp.py` 只做宿主参数验证及生成结果到模型结果的投影，不实现入站卡片解析或另一套签名。
 - 新增项目内 Skill `skills/qq-miniapp-share`；仅依赖 `onebot_action`，自定义参数说明按需加载。
 - 原始 JSON/XML 仍可经既有消息读取能力按需读取；业务链接和签名不擅自截断。
