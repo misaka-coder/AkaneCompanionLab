@@ -78,6 +78,7 @@ from .plugin_api import (
     PluginToolResultSnapshot,
 )
 from .plugin_text_presentation import apply_plugin_text_presentation_policy
+from .plugin_event_delivery import apply_plugin_notification_output_policy
 from . import final_output_engine
 from .local_capability_config import load_capability_config
 from .retrieval_service import RetrievalService
@@ -1570,18 +1571,48 @@ class AkaneMemoryEngine:
                 turn_id=turn_id,
                 assistant_record=assistant_record,
                 memory_metadata=memory_metadata,
-                provider_output_raw=provider_output_raw,
+                provider_output_raw="" if final_output.get("_notification_suppressed") else provider_output_raw,
                 chat_model_override=chat_model_override,
                 execution_target=execution_target,
                 annotation_status=annotation_status,
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
-                append_final=not bool(final_output.get("_tool_finished_turn")),
+                append_final=not bool(
+                    final_output.get("_tool_finished_turn") or final_output.get("_notification_suppressed")
+                ),
             )
             if not completion or bool(completion.get("ok")):
                 if completion and completion.get("ok"):
                     self._clear_open_memcore_turn_guard(turn_id)
+                    if final_output.get("_notification_suppressed"):
+                        try:
+                            receipt = self.record_plugin_timeline_event(
+                                {
+                                    "source_id": f"{turn_id}:notification_suppressed",
+                                    "user_id": session_id,
+                                    "real_user_id": profile_user_id,
+                                    "character_pack_id": character_pack_id,
+                                    "timestamp": int(time.time()),
+                                    "event": {
+                                        "event_type": "notification.delivery",
+                                        "source": "host",
+                                        "fields": {
+                                            "status": "suppressed",
+                                            "reason": str(final_output["_notification_suppressed"]),
+                                            "scope": "final_text_and_automatic_emotion",
+                                            "text_sent": "false",
+                                        },
+                                    },
+                                }
+                            )
+                        except Exception:
+                            receipt = {"ok": False}
+                        if not receipt.get("ok"):
+                            self._attach_nonfatal_memcore_failure(
+                                final_output,
+                                {"status": "failed", "reason": "notification_suppression_receipt_failed"},
+                            )
                 return True
         aborted = self._abort_memcore_input_turn(
             turn_id=turn_id,
@@ -3158,6 +3189,7 @@ class AkaneMemoryEngine:
             bool(persist_requested)
             and not bool(final_output.get("_transient_final_failure"))
             and not bool(final_output.get("_deliberate_silence"))
+            and not bool(final_output.get("_notification_suppressed"))
         )
 
     @staticmethod
@@ -4802,6 +4834,10 @@ class AkaneMemoryEngine:
                     (),
                 ),
             )
+            apply_plugin_notification_output_policy(
+                final_output,
+                {**payload, "plugin_external_event": plugin_external_event},
+            )
         self._attach_nonfatal_memcore_failure(final_output, turn_memcore_failure)
         final_output["tool_events"] = tool_events
         final_output["npc_turns"] = tool_turns
@@ -4924,7 +4960,11 @@ class AkaneMemoryEngine:
                             ),
                         },
                     )
-        elif deliberate_silence and memcore_turn_id and not externally_managed_memcore_turn:
+        elif (
+            (deliberate_silence or final_output.get("_notification_suppressed"))
+            and memcore_turn_id
+            and not externally_managed_memcore_turn
+        ):
             # Preserve an actual silent provider envelope; a host-completed
             # action closes without appending any assistant entry. Neither path
             # creates a blank legacy bubble. Tool pairs remain replayable.

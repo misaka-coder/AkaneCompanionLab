@@ -1521,7 +1521,7 @@ def _process_qq_turn_streaming(
 
     frame_delivery_events = frame.get("tool_events") if isinstance(frame.get("tool_events"), list) else []
     visible_action_delivered = _qq_has_visible_action_receipt(frame_delivery_events)
-    deliberate_silence = bool(frame.get("_deliberate_silence"))
+    deliberate_silence = bool(frame.get("_deliberate_silence") or frame.get("_notification_suppressed"))
     retained_frame_events = [
         dict(event)
         for event in frame_delivery_events
@@ -1737,7 +1737,11 @@ def _process_qq_turn_streaming(
         emotion_mface_result = {
             "ok": True,
             "status": "skipped",
-            "reason": "main_delivery_failed",
+            "reason": (
+                str(frame.get("_notification_suppressed") or "model_silence")
+                if deliberate_silence
+                else "main_delivery_failed"
+            ),
         }
     timing["emotion_delivery_ms"] = round((time.perf_counter() - emotion_started_at) * 1000, 1)
 
@@ -1798,6 +1802,19 @@ def _process_qq_turn_streaming(
         list(frame.get("tool_events") or []),
     )
     timing["sticker_delivery_ms"] = round((time.perf_counter() - sticker_started_at) * 1000, 1)
+    if (
+        deliberate_silence
+        and not delivered_reply_messages
+        and not visible_file_delivered
+        and not visible_action_delivered
+        and not (sticker_send_result.get("ok") and sticker_send_result.get("count"))
+        and send_result.get("ok")
+    ):
+        send_result = {
+            **send_result,
+            "status": "suppressed",
+            "reason": str(frame.get("_notification_suppressed") or "model_silence"),
+        }
     timing["total_ms"] = round((time.perf_counter() - timing_started_at) * 1000, 1)
     return {
         "frame": frame,
@@ -1812,6 +1829,10 @@ def _process_qq_turn_streaming(
         "sticker_send_result": sticker_send_result,
         "visible_action_delivered": visible_action_delivered,
         "final_frame_received": bool(final_frame_received),
+        "text_suppression": {
+            "status": "suppressed" if frame.get("_notification_suppressed") else "not_suppressed",
+            "reason": str(frame.get("_notification_suppressed") or ""),
+        },
         "timing": timing,
     }
 

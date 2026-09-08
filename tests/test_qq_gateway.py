@@ -105,6 +105,7 @@ class QQGatewayTests(unittest.TestCase):
         # These legacy behavior fixtures use a QQ account named Akane. The
         # real login lookup, refresh and failure paths have dedicated tests.
         self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_nickname", return_value="Akane"))
+        self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_group_label", return_value="Akane"))
 
     def test_restore_admitted_passive_media_preserves_binding_without_readmission(self) -> None:
         gateway = NapCatQQGateway()
@@ -321,7 +322,7 @@ class QQGatewayTests(unittest.TestCase):
             [
                 {
                     "actor_id": "assistant",
-                    "display_name": "",
+                    "display_name": "Akane",
                     "is_assistant": True,
                 }
             ],
@@ -447,7 +448,7 @@ class QQGatewayTests(unittest.TestCase):
         payload = context.to_turn_payload()
 
         self.assertEqual(payload["source_message_id"], "multi-mention-1")
-        self.assertEqual(payload["memory_message"], "@Akane 帮我问问 @天为 明天去不去")
+        self.assertEqual(payload["memory_message"], "@助手（本群昵称：Akane） 帮我问问 @天为 明天去不去")
         self.assertEqual(
             [item["actor_id"] for item in payload["message_addressing"]["mentions"]],
             ["assistant", f"qq:{QQ_THIRD_USER_FIXTURE_ID}"],

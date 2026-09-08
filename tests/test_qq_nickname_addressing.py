@@ -56,7 +56,7 @@ class QQNicknameAddressingTests(unittest.TestCase):
         self.assertEqual(other.to_turn_payload()["message_addressing"]["primary_target"]["actor_id"], "qq:40004")
         own = gateway.build_message_context(self.event("你好", targets=("10001", "40004"), message_id="2"))
         self.assertEqual(own.reason, "group_mention")
-        self.assertIn("@塞西莉亚", own.to_turn_payload()["memory_message"])
+        self.assertIn("@助手（本群昵称：塞西莉亚）", own.to_turn_payload()["memory_message"])
         self.assertTrue(own.to_turn_payload()["message_addressing"]["explicit_assistant_mention"])
 
     def test_failed_lookup_backs_off_and_keeps_explicit_mentions(self):
@@ -66,8 +66,65 @@ class QQNicknameAddressingTests(unittest.TestCase):
         own = gateway.build_message_context(self.event("你好", targets=("10001",), message_id="2"))
         self.assertTrue(own.should_respond)
         self.assertIn("@助手", own.to_turn_payload()["memory_message"])
-        self.assertEqual(self.transport.call_count, 1)
+        self.assertEqual(self.transport.call_count, 2)
         self.assertEqual(gateway._bot_nickname_status, "timeout")
+
+    def test_group_card_and_self_identity_reach_turn_payload(self):
+        gateway = self.gateway()
+        self.transport.side_effect = [
+            self.login,
+            SimpleNamespace(
+                ok=True, data={"user_id": 10001, "group_id": 30003, "card": "天为", "nickname": "山城高岭"}
+            ),
+        ]
+        context = gateway.build_message_context(self.event("？", targets=("10001",)))
+        payload = context.to_turn_payload()
+        self.assertEqual(context.reason, "group_mention")
+        self.assertEqual(payload["memory_message"], "@助手（本群昵称：天为） ？")
+        addressing = payload["message_addressing"]
+        self.assertTrue(addressing["explicit_assistant_mention"])
+        self.assertEqual(addressing["primary_target"], {"actor_id": "assistant", "display_name": ""})
+        self.assertEqual(addressing["mentions"][0]["display_name"], "天为")
+        self.assertTrue(addressing["mentions"][0]["is_assistant"])
+        self.assertEqual(gateway._project_mention_evidence(context.mentions)[0]["display_name"], "天为")
+        self.transport.assert_called_with(
+            "get_group_member_info", {"group_id": 30003, "user_id": 10001, "no_cache": True}, timeout=2
+        )
+
+    def test_group_cards_are_isolated_refreshed_and_identity_checked(self):
+        gateway = self.gateway()
+        member = SimpleNamespace(ok=True, data={"user_id": 10001, "group_id": 30003, "card": "天为"})
+        self.transport.return_value = member
+        self.assertEqual(gateway._resolve_bot_group_label(30003), "天为")
+        self.assertEqual(gateway._resolve_bot_group_label(30003), "天为")
+        self.assertEqual(self.transport.call_count, 1)
+        member.data.update(group_id=30004, card="第二群")
+        self.assertEqual(gateway._resolve_bot_group_label(30004), "第二群")
+        self.assertEqual(gateway._resolve_bot_group_label(30003), "天为")
+        gateway._bot_group_labels[("10001", 30003)] = (0, "天为")
+        member.data.update(group_id=30003, card="新名片")
+        self.assertEqual(gateway._resolve_bot_group_label(30003), "新名片")
+        for invalid in (
+            {"user_id": 40004, "group_id": 30003, "card": "冒名"},
+            {"user_id": 10001, "group_id": 30004, "card": "跨群"},
+            {"user_id": 10001, "card": "bad\ncard"},
+        ):
+            gateway._bot_group_labels[("10001", 30003)] = (0, "新名片")
+            self.transport.return_value = SimpleNamespace(ok=True, data=invalid)
+            self.assertEqual(gateway._resolve_bot_group_label(30003), "")
+        self.transport.side_effect = None
+
+    def test_empty_card_falls_back_and_failed_refresh_never_keeps_old_card(self):
+        gateway = self.gateway()
+        self.transport.return_value = SimpleNamespace(
+            ok=True, data={"user_id": 10001, "card": "", "nickname": "账号昵称"}
+        )
+        self.assertEqual(gateway._resolve_bot_group_label(30003), "账号昵称")
+        gateway._bot_group_labels[("10001", 30003)] = (0, "账号昵称")
+        self.transport.return_value = SimpleNamespace(ok=False, data={})
+        self.assertEqual(gateway._resolve_bot_group_label(30003), "")
+        self.assertEqual(gateway._resolve_bot_group_label(30003), "")
+        self.assertEqual(self.transport.call_count, 2)
 
     def test_nickname_refresh_and_account_mismatch_do_not_keep_stale_alias(self):
         gateway = self.gateway()

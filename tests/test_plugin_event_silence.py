@@ -6,6 +6,7 @@ import unittest
 
 from companion_v01.client_protocol import ClientMode
 from companion_v01.llm_runtime import ChatJSONResult
+from companion_v01.plugin_event_delivery import apply_plugin_notification_output_policy
 from companion_v01.routes.qq import _process_qq_turn_streaming
 from tests import test_final_json_repair as final_repair
 
@@ -32,6 +33,7 @@ class PluginEventSilenceTests(unittest.TestCase):
 
             @staticmethod
             def process_turn_stream(_payload):
+                apply_plugin_notification_output_policy(normalized, _payload)
                 # The delivery policy must also suppress intermediate text.
                 if single_message:
                     yield {"type": "speech_segment", "text": "研究过程，不应单独发送"}
@@ -81,6 +83,8 @@ class PluginEventSilenceTests(unittest.TestCase):
         payload = {"user_id": "test", "message": "event.finance.news"}
         if single_message:
             payload.update(
+                turn_kind="plugin_event",
+                plugin_external_event={"event_type": "finance.news", "source": "akane.finance"},
                 plugin_text_delivery="single_message",
                 plugin_text_prefix="【财经快讯｜10:18】",
                 plugin_text_suffix="原文链接：https://finance.eastmoney.com/a/test.html",
@@ -103,6 +107,7 @@ class PluginEventSilenceTests(unittest.TestCase):
                 self.assertEqual(gateway.emotions, 0)
                 self.assertEqual(result["reply_messages"], [])
                 self.assertEqual(result["final_failure_notice_result"]["status"], "skipped")
+                self.assertEqual(result["send_result"]["status"], "suppressed")
 
     def test_analysis_keeps_single_trusted_envelope(self):
         frame, gateway, result = self._deliver("有新的经营数据，仍需核验。")
@@ -119,6 +124,75 @@ class PluginEventSilenceTests(unittest.TestCase):
         frame, gateway, _result = self._deliver(text, single_message=False)
         self.assertFalse(frame.get("_deliberate_silence"))
         self.assertEqual(gateway.sent, [text])
+
+    def test_legacy_non_delivery_labels_never_send_the_decision_or_envelope(self):
+        for text in (
+            "【不推送】没有新增信息。",
+            "【暂不推送】证据不足。",
+            "[暂时不推送]研究过程",
+            "【财经快讯｜10:18】\n【暂不推送】证据不足。",
+        ):
+            with self.subTest(text=text):
+                frame, gateway, result = self._deliver(text)
+                self.assertEqual(frame["_notification_suppressed"], "legacy_notification_silence")
+                self.assertFalse(frame.get("_deliberate_silence"))
+                self.assertEqual(gateway.sent, [])
+                self.assertEqual(gateway.emotions, 0)
+                self.assertEqual(result["reply_messages"], [])
+                self.assertEqual(result["send_result"]["status"], "suppressed")
+                self.assertEqual(result["send_result"]["count"], 0)
+                self.assertEqual(
+                    result["text_suppression"], {"status": "suppressed", "reason": "legacy_notification_silence"}
+                )
+
+    def test_ordinary_user_discussion_and_news_quotes_are_not_suppressed(self):
+        for text, single_message in (
+            ("【暂不推送】是你问到的标签。", False),
+            ("公告中的“【暂不推送】”指该平台的设置。", True),
+        ):
+            with self.subTest(text=text):
+                frame, gateway, result = self._deliver(text, single_message=single_message)
+                self.assertNotIn("_notification_suppressed", frame)
+                self.assertTrue(gateway.sent)
+                self.assertEqual(result["text_suppression"]["status"], "not_suppressed")
+
+    def test_model_cannot_invent_host_suppression_marker(self):
+        class LLM:
+            @staticmethod
+            def snapshot_metrics():
+                return {}
+
+            @staticmethod
+            def call_chat_json_result(**kwargs):
+                payload = {"speech": "正常回答", "_notification_suppressed": "legacy_notification_silence"}
+                return ChatJSONResult(parsed=payload, raw_text=json.dumps(payload))
+
+        recovery = final_repair.FinalRecoveryTests()
+        engine = recovery._real_normalize_engine(LLM(), client_mode=ClientMode.QQ_TEXT)
+        frame = recovery._run_nonstream(engine)
+        self.assertNotIn("_notification_suppressed", frame)
+        self.assertEqual(frame["speech"], "正常回答")
+
+    def test_compatibility_guard_is_not_a_general_text_filter(self):
+        good = {
+            "client_mode": "qq_text",
+            "turn_kind": "plugin_event",
+            "plugin_text_delivery": "single_message",
+            "plugin_external_event": {"event_type": "finance.news"},
+        }
+        for override in (
+            {"client_mode": "desktop_pet"},
+            {"turn_kind": "user"},
+            {"plugin_text_delivery": "default"},
+            {"plugin_external_event": None},
+        ):
+            frame = {"speech": "【暂不推送】正常讨论标题"}
+            apply_plugin_notification_output_policy(frame, {**good, **override})
+            self.assertNotIn("_notification_suppressed", frame)
+            self.assertEqual(frame["speech"], "【暂不推送】正常讨论标题")
+        failed = {"speech": "【暂不推送】", "_transient_final_failure": True}
+        apply_plugin_notification_output_policy(failed, good)
+        self.assertNotIn("_notification_suppressed", failed)
 
 
 if __name__ == "__main__":

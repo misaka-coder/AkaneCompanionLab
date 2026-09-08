@@ -381,7 +381,13 @@ class QQMessageContext:
     def to_turn_payload(self) -> dict[str, Any]:
         message = self.clean_message
         mention_labels = {
-            str(mention.target_id or "").strip(): str(mention.display_name or "").strip()
+            str(mention.target_id or "").strip(): (
+                f"助手（本群昵称：{mention.display_name}）"
+                if mention.is_bot and self.is_group and mention.display_name and mention.display_name != "助手"
+                else "助手"
+                if mention.is_bot
+                else str(mention.display_name or "").strip()
+            )
             for mention in self.mentions
             if str(mention.target_id or "").strip()
         }
@@ -436,7 +442,7 @@ class QQMessageContext:
         mentions = [
             {
                 "actor_id": "assistant" if mention.is_bot else f"qq:{mention.target_id}",
-                "display_name": "" if mention.is_bot else mention.display_name,
+                "display_name": mention.display_name,
                 "is_assistant": bool(mention.is_bot),
             }
             for mention in self.mentions
@@ -545,6 +551,7 @@ class NapCatQQGateway:
         self._bot_nickname_status = "not_checked"
         self._bot_nickname_refresh_at = 0.0
         self._bot_nickname_lock = threading.RLock()
+        self._bot_group_labels: dict[tuple[str, int], tuple[float, str]] = {}
         self.poke_reactor = poke_reactor or PokeEventReactor()
         require_self_id = self._channel_config.require_self_id if self._channel_config is not None else False
         self._event_admission = OneBotEventAdmission(
@@ -3542,7 +3549,7 @@ class NapCatQQGateway:
             target_id = self._safe_int(target_text)
             display_name = str(mention.display_name or "").strip()
             if mention.is_bot:
-                resolved.append(replace(mention, display_name=self._resolve_bot_nickname() or "助手"))
+                resolved.append(replace(mention, display_name=self._resolve_bot_group_label(group_id) or "助手"))
                 continue
             cache_key = self._sender_label_cache_key(group_id=group_id, user_id=target_id)
             if display_name and cache_key:
@@ -3564,6 +3571,34 @@ class NapCatQQGateway:
                 )
             )
         return tuple(resolved)
+
+    def _resolve_bot_group_label(self, group_id: int) -> str:
+        """Resolve the bound account's group card, never an inbound @ label."""
+        if not group_id or not self.bridge_enabled or not self.bot_qq:
+            return ""
+        key = (str(self.bot_qq), int(group_id))
+        with self._bot_nickname_lock:
+            now = time.monotonic()
+            cached = self._bot_group_labels.get(key)
+            if cached is not None and now < cached[0]:
+                return cached[1]
+            result = self._onebot_transport.call(
+                "get_group_member_info",
+                {"group_id": group_id, "user_id": int(self.bot_qq), "no_cache": True},
+                timeout=2,
+            )
+            label = ""
+            if result.ok and str(result.data.get("user_id") or "").strip() == str(self.bot_qq):
+                # Some OneBot implementations omit group_id in this response.
+                returned_group = result.data.get("group_id")
+                if returned_group is None or str(returned_group) == str(group_id):
+                    candidate = str(result.data.get("card") or result.data.get("nickname") or "").strip()
+                    if candidate and len(candidate) <= 160 and not any(ord(ch) < 32 for ch in candidate):
+                        label = candidate
+            if key not in self._bot_group_labels and len(self._bot_group_labels) >= 256:
+                self._bot_group_labels.pop(next(iter(self._bot_group_labels)))
+            self._bot_group_labels[key] = (now + (60.0 if label else 15.0), label)
+            return label
 
     def _resolve_bot_nickname(self, *, login_result: Any = None) -> str:
         """Use the bound login identity, never sender-controlled mention labels.
@@ -3609,7 +3644,7 @@ class NapCatQQGateway:
         return [
             {
                 "actor_id": "assistant" if mention.is_bot else f"qq:{mention.target_id}",
-                "display_name": "" if mention.is_bot else str(mention.display_name or "").strip(),
+                "display_name": str(mention.display_name or "").strip(),
                 "is_assistant": bool(mention.is_bot),
             }
             for mention in mentions

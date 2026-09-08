@@ -69,6 +69,7 @@ def normalize_final_output(
     )
     raw_result = result if isinstance(result, dict) else {}
     normalized = dict(raw_result or {})
+    normalized.pop("_notification_suppressed", None)  # Host-only delivery decision.
     explicit_silence = (
         (client_context.effective_mode == ClientMode.QQ_TEXT or allow_deliberate_silence)
         and "speech" in raw_result
