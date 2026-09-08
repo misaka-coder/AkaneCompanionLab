@@ -17,6 +17,8 @@
 
 ## 本机 Cecelia 小程序：诊断完成，接口改造未做
 
+以上状态对应首次诊断时点；后续实现及网络/交付验收限制见 [B 站链接与句柄切片](qq_miniapp_link_handles_20260908.md)。
+
 - 本次真实调用先缺 `picUrl`；补齐 `type/title/desc/picUrl/jumpUrl` 后生成成功。
 - 发送前，模型复制生成 JSON 时改变了 `meta.detail_1.qqdocurl`。随后 OneBot 返回 QQ 发送失败（HTTP 200 不代表交付成功）。无法仅据此断言这个字段变化就是 QQ 拒绝的唯一原因。
 - 当前能力是卡片模板生成器，不包含类似音乐 ID 的元数据解析；仅加强提示无法免除模型凑字段、复制大段 JSON 的负担。

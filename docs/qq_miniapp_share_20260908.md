@@ -1,5 +1,7 @@
 # QQ 小程序卡片生成与分享（2026-09-08）
 
+本文保留最初模板生成切片的验收记录。后续 B 站自动解析与 `card_ref` 发送契约见 [链接与句柄切片](qq_miniapp_link_handles_20260908.md)，替代下文正常生成后复制 `message` 的旧调用方式。
+
 ## 本轮范围
 
 - 现有 `onebot_action` 新增 `get_mini_app_ark`，不新增发送工具、Shell 直连或平台专属发送路径。
