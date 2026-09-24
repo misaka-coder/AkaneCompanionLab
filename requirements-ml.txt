@@ -1,0 +1,10 @@
+sentence-transformers>=3.0,<4.0
+torch>=2.3,<3.0
+demucs>=4.0,<5.0
+deepfilternet>=0.5,<1.0
+faster-whisper>=1.1,<2.0
+# DeepFilterNet 0.5.6 (latest, no upstream fix as of 2026-06) declares
+# packaging<24.0,>=23.0 on its install metadata. Without this pin, opting into
+# the ML extras leaves the venv in a state that makes every subsequent
+# `pip install -r requirements.txt` emit a noisy dependency conflict warning.
+packaging>=23.0,<24.0

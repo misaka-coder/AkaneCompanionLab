@@ -1,0 +1,656 @@
+"""Attachment / file material tool handlers."""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import Any
+
+import config
+from ..capability_registry import (
+    INSPECT_ATTACHMENT_TOOL_SPEC,
+    LOAD_MATERIAL_TOOL_SPEC,
+    READ_ATTACHMENT_SECTION_TOOL_SPEC,
+)
+from .core import (
+    BaseToolHandler,
+    ToolExecutionContext,
+    ToolExecutionResult,
+    ToolFollowupEnvelope,
+    operation_tool_result,
+)
+
+class InspectAttachmentToolHandler(BaseToolHandler):
+    tool_type = "inspect_attachment"
+
+    def __init__(self, *, attachment_service) -> None:
+        self.attachment_service = attachment_service
+
+    def tool_spec(self):  # M66-C
+        return INSPECT_ATTACHMENT_TOOL_SPEC
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- inspect_attachment：列出当前材料，或读取单个材料的元数据和已有摘要。"
+            '格式为 {"type":"inspect_attachment","target":"all|附件id|标题|文件名|latest","kind":"any|image|file|document|audio"}。'
+            "消息明确绑定附件时，latest 只指本轮材料；群聊没有绑定材料时，需列出工作台或使用精确 handle。"
+            "图片像素、文字和视觉细节由 load_material 读取，参数使用本工具返回的精确 handle。"
+            "工作台材料只是临时上下文，不是角色资源或长期记忆。"
+            "对比多张图片时，先取得精确 handle，再一次传给 load_material。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        return {
+            "type": self.tool_type,
+            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[
+                :120
+            ],
+            "kind": self._normalize_kind(value.get("kind") or value.get("asset_type") or "any"),
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        requested_target = str(call.get("target") or "").strip()
+        effective_target = requested_target
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        if self._is_latest_alias(requested_target) and (
+            "current_attachment_ids" in request_context or self._is_qq_group_turn(context)
+        ):
+            bound_ids = self._current_attachment_ids(context)
+            if not bound_ids:
+                return ToolExecutionResult(
+                    tool_type=self.tool_type,
+                    followup_context=(
+                        "本轮消息没有绑定任何附件，因此不能把共享工作台中的历史 latest 当成本轮图片或文件。"
+                        "如果用户指的是历史材料，请先用 inspect_attachment(target=\"all\") 查看发送者、时间和 handle，"
+                        "再用精确 handle 打开；不要猜测。"
+                    ),
+                )
+            result = {}
+            for bound_id in reversed(bound_ids):
+                candidate = self.attachment_service.inspect_attachment(
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    target=bound_id,
+                    kind=str(call.get("kind") or "any"),
+                    timestamp=context.now_ts,
+                )
+                if bool(candidate.get("ok")):
+                    result = candidate
+                    break
+            if not result:
+                result = {
+                    "ok": False,
+                    "status": "current_attachment_kind_unavailable",
+                    "followup_context": "本轮绑定的材料中没有符合 kind 条件的项目；不要改用历史 latest 猜测。",
+                }
+        else:
+            result = self.attachment_service.inspect_attachment(
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                target=effective_target,
+                kind=str(call.get("kind") or "any"),
+                timestamp=context.now_ts,
+            )
+        item = result.get("item") if isinstance(result, dict) else None
+        events = []
+        if isinstance(item, dict):
+            events.append(
+                {
+                    "type": "attachment_inspected",
+                    "attachment": item,
+                }
+            )
+        return operation_tool_result(
+            tool_type=self.tool_type,
+            operation_result=result,
+            success_events=events,
+        )
+
+    @staticmethod
+    def _is_latest_alias(value: Any) -> bool:
+        return str(value or "").strip().lower() in {"", "latest", "current", "最近", "当前", "最后一张", "最后一个"}
+
+    @staticmethod
+    def _is_qq_group_turn(context: ToolExecutionContext) -> bool:
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        delivery_context = (
+            request_context.get("qq_delivery_context")
+            if isinstance(request_context.get("qq_delivery_context"), dict)
+            else {}
+        )
+        return str(context.client_mode or request_context.get("client_mode") or "").strip() == "qq_text" and bool(
+            delivery_context.get("is_group")
+        )
+
+    @staticmethod
+    def _current_attachment_ids(context: ToolExecutionContext) -> list[str]:
+        request_context = context.request_context if isinstance(context.request_context, dict) else {}
+        values = request_context.get("current_attachment_ids", request_context.get("qq_current_attachment_ids"))
+        if not isinstance(values, list):
+            return []
+        return [str(value or "").strip() for value in values if str(value or "").strip()]
+
+    def _normalize_kind(self, value: Any) -> str:
+        kind = str(value or "any").strip().lower()
+        if kind in {"photo", "picture", "pic", "img"}:
+            return "image"
+        if kind in {"doc", "text", "txt", "pdf"}:
+            return "document"
+        if kind in {"music", "song", "voice"}:
+            return "audio"
+        if kind in {"any", "image", "file", "document", "audio"}:
+            return kind
+        return "any"
+
+
+class LoadMaterialToolHandler(BaseToolHandler):
+    tool_type = "load_material"
+
+    def __init__(self, *, image_material_resolver) -> None:
+        self.image_material_resolver = image_material_resolver
+
+    def tool_spec(self):  # M66-C
+        return LOAD_MATERIAL_TOOL_SPEC
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- load_material：把当前会话工作区里较早图片的原始像素交给视觉模型，"
+            "用于实际查看历史图片内容，图片发送者不影响读取。"
+            '格式为 {"type":"load_material","targets":["img_001","gen_002"],'
+            '"purpose":"重新比较细节"}。'
+            "purpose 可省略，只描述中性的核验目标；像素和可见上下文是图像内容证据。"
+            "targets 使用工作区 handle，不使用路径、URL 或 base64。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        raw_targets = value.get("targets")
+        if raw_targets is None:
+            raw_targets = value.get("target") or value.get("image_ids") or value.get("images")
+        if isinstance(raw_targets, str):
+            candidates = [part.strip() for part in raw_targets.replace("，", ",").replace("、", ",").split(",")]
+        elif isinstance(raw_targets, (list, tuple, set)):
+            candidates = [str(item or "").strip() for item in raw_targets]
+        else:
+            candidates = []
+        targets = list(dict.fromkeys(item[:120] for item in candidates if item))[:5]
+        if not targets:
+            return None
+        return {
+            "type": self.tool_type,
+            "targets": targets,
+            "purpose": str(value.get("purpose") or value.get("reason") or "").strip()[:240],
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = self.image_material_resolver.build_model_image_inputs(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            targets=list(call.get("targets") or []),
+            max_count=5,
+            max_bytes_per_image=int(getattr(config, "VISION_MAX_IMAGE_BYTES", 8 * 1024 * 1024) or 0),
+            max_total_bytes=20 * 1024 * 1024,
+        )
+        images = [dict(item) for item in list(result.get("images") or []) if isinstance(item, dict)]
+        handles = [str(item.get("attachment_handle") or "").strip() for item in images]
+        handles = [item for item in handles if item]
+        unresolved = [
+            {
+                "target": str(item.get("target") or "")[:120],
+                "reason": str(item.get("reason") or "unavailable")[:120],
+            }
+            for item in list(result.get("unresolved") or [])
+            if isinstance(item, dict)
+        ]
+        if not images:
+            unresolved_labels = ", ".join(item["target"] for item in unresolved if item["target"])
+            return ToolExecutionResult(
+                tool_type=self.tool_type,
+                stream_events=[
+                    {
+                        "type": "material_load_failed",
+                        "status": "unavailable",
+                        "targets": list(call.get("targets") or []),
+                    }
+                ],
+                followup_context=(
+                    "<tool_use_error>没有加载到可用原图。"
+                    f"未解析目标：{unresolved_labels or '未知'}。"
+                    "请基于已有摘要继续，或自然请用户重新发送图片；不要假装看到了原图。</tool_use_error>"
+                ),
+            )
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[
+                {
+                    "type": "material_images_loaded",
+                    "status": "ready" if not unresolved else "partial",
+                    "handles": handles,
+                    "image_count": len(images),
+                    "unresolved_count": len(unresolved),
+                }
+            ],
+            followup_context=(
+                f"已把当前会话材料 {', '.join(handles)} 的原始图片加载到紧随本结果的视觉证据消息。"
+            ),
+            model_image_inputs=images,
+        )
+
+class ReadAttachmentSectionToolHandler(BaseToolHandler):
+    tool_type = "read_attachment_section"
+
+    def __init__(self, *, attachment_service) -> None:
+        self.attachment_service = attachment_service
+
+    def tool_spec(self):  # M66-C
+        return READ_ATTACHMENT_SECTION_TOOL_SPEC
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- read_attachment_section：当工作台材料较长、你需要展开某一页/某几行/某个表/某个 sheet 的内容时使用。"
+            '格式为 {"type":"read_attachment_section","target":"file_001|标题|文件名|latest",'
+            '"section":"第2页|第10-30行|第1个表|Sheet1","kind":"any|file|document"}。'
+            "它只展开当前已解析出的可用文本片段；如果文件本身没有文本层或还没解析好，系统会告诉你。"
+            "不要用它处理图片礼物或长期记忆。"
+            "当指定 section 还有未展示内容时会返回 cursor；当前证据够用就直接回答，"
+            "只有需要同一 section 的后续内容时才只传 cursor 继续。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        cursor = str(value.get("cursor") or "").strip()
+        if cursor:
+            return {"type": self.tool_type, "cursor": cursor}
+        return {
+            "type": self.tool_type,
+            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[
+                :120
+            ],
+            "section": str(value.get("section") or value.get("range") or value.get("page") or "当前可用片段").strip()[
+                :120
+            ],
+            "kind": self._normalize_kind(value.get("kind") or "document"),
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        from ..paged_reading import (
+            FIRST_PAGE_BUDGET_CHARS,
+            FIRST_PAGE_BUDGET_LINES,
+            NEXT_PAGE_BUDGET_CHARS,
+            NEXT_PAGE_BUDGET_LINES,
+            cursor_binding,
+            json_payload,
+            make_paged_cursor,
+            parse_json_payload,
+            parse_paged_cursor,
+            slice_page,
+        )
+
+        owner_binding = cursor_binding(self.tool_type, context.profile_user_id, context.session_id)
+        cursor = str(call.get("cursor") or "").strip()
+        start_offset = 0
+        expected_fingerprint = ""
+        if cursor:
+            payload = parse_json_payload(parse_paged_cursor(cursor, tool="as", binding=owner_binding))
+            if not isinstance(payload, dict):
+                return self._page_failure("cursor_invalid", "cursor 不属于当前用户/会话，或已损坏")
+            call = {
+                "type": self.tool_type,
+                "target": str(payload.get("t") or ""),
+                "section": str(payload.get("s") or "当前可用片段"),
+                "kind": str(payload.get("k") or "document"),
+            }
+            try:
+                start_offset = max(0, int(payload.get("o") or 0))
+            except (TypeError, ValueError):
+                return self._page_failure("cursor_invalid", "cursor 偏移无效")
+            expected_fingerprint = str(payload.get("f") or "")
+        result = self.attachment_service.read_section(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            target=str(call.get("target") or ""),
+            section=str(call.get("section") or ""),
+            kind=str(call.get("kind") or "document"),
+            max_chars=4_000_000,
+            timestamp=context.now_ts,
+        )
+        item = result.get("item") if isinstance(result, dict) else None
+        events = []
+        if isinstance(item, dict):
+            events.append(
+                {
+                    "type": "attachment_section_read",
+                    "attachment": item,
+                    "section": str(call.get("section") or ""),
+                }
+            )
+        content = str(result.get("content") or "") if isinstance(result, dict) else ""
+        execution = operation_tool_result(
+            tool_type=self.tool_type,
+            operation_result=result,
+            success_events=events,
+        )
+        if bool(result.get("ok")):
+            fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if expected_fingerprint and fingerprint != expected_fingerprint:
+                return self._page_failure("stale_cursor", "附件内容在上一页后已变化")
+            if start_offset > len(content):
+                return self._page_failure("stale_cursor", "附件片段比 cursor 记录的更短")
+            budget_chars, budget_lines = (
+                (FIRST_PAGE_BUDGET_CHARS, FIRST_PAGE_BUDGET_LINES)
+                if not cursor
+                else (NEXT_PAGE_BUDGET_CHARS, NEXT_PAGE_BUDGET_LINES)
+            )
+            page_text, next_offset, total_chars = slice_page(
+                content,
+                start=start_offset,
+                budget_chars=budget_chars,
+                budget_lines=budget_lines,
+            )
+            complete = next_offset >= total_chars
+            item = result.get("item") if isinstance(result.get("item"), dict) else {}
+            stable_target = str(item.get("attachment_handle") or item.get("attachment_id") or call.get("target") or "")
+            section = str(call.get("section") or "当前可用片段")
+            followup = (
+                f"你刚刚展开读取了工作台材料 {stable_target} 的「{section}」。\n"
+                f"本页内容如下：\n{page_text}\n"
+                "请基于这段展开内容自然回应；不要把材料全文默认写入长期记忆。"
+            )
+            continuation = None
+            if not complete:
+                next_cursor = make_paged_cursor(
+                    tool="as",
+                    binding=owner_binding,
+                    payload=json_payload(
+                        {"t": stable_target, "s": section, "k": str(call.get("kind") or "document"), "o": next_offset, "f": fingerprint}
+                    ),
+                )
+                continuation = {"type": self.tool_type, "cursor": next_cursor}
+                followup += (
+                    f"\n本页展示 {len(page_text)} 字，该 section 还有未展示内容。当前证据够用就直接回答；"
+                    f'需要时再调用 read_attachment_section(cursor="{next_cursor}")。'
+                )
+            elif len(content) >= 4_000_000:
+                followup += "\n该 section 已达到4M提取窗口；窗口外内容未包含，需改用更精确的页、行或 sheet 范围。"
+            diagnostics = {"shown_chars": len(page_text), "total_chars": total_chars, "complete": complete}
+            envelope = ToolFollowupEnvelope(
+                content=followup,
+                producer_bounded=True,
+                complete=complete,
+                continuation=continuation,
+                diagnostics=diagnostics,
+            )
+            execution.followup_context = envelope.content
+            execution.followup_envelope = envelope
+        return execution
+
+    def _page_failure(self, status: str, reason: str) -> ToolExecutionResult:
+        from ..paged_reading import page_failure_feedback
+
+        content = page_failure_feedback(status=status, tool=self.tool_type, detail=reason)
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=[{"type": "attachment_section_read", "status": status, "reason": reason}],
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content,
+                producer_bounded=True,
+                complete=True,
+                continuation=None,
+                diagnostics={"status": status},
+            ),
+        )
+
+    def _normalize_kind(self, value: Any) -> str:
+        kind = str(value or "document").strip().lower()
+        if kind in {"doc", "text", "txt", "pdf"}:
+            return "document"
+        if kind in {"any", "file", "document"}:
+            return kind
+        return "document"
+
+
+class ClearAttachmentFocusToolHandler(BaseToolHandler):
+    tool_type = "clear_attachment_focus"
+
+    def __init__(self, *, attachment_service) -> None:
+        self.attachment_service = attachment_service
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- clear_attachment_focus：当工作台图片/文件已经聊完、用户说发错了、或你判断不需要继续挂在上下文时使用。"
+            '格式为 {"type":"clear_attachment_focus","target":"current|latest|all|附件id/标题/文件名","targets":["img_001","第2张图"],"kind":"any|image|file|document|audio","delete_storage":false,"reason":"可选原因"}。'
+            "清理多个指定材料时用 targets 数组；清理全部图片或文件时用 target=all 并配合 kind。"
+            "默认只让材料退出当前工作台；只有用户明确要求删除原始附件文件时才把 delete_storage 设为 true。"
+            "它不删除聊天记忆、生成成果或礼物。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        targets = value.get("targets")
+        if targets is None:
+            targets = value.get("attachment_ids")
+        return {
+            "type": self.tool_type,
+            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "current").strip()[
+                :120
+            ],
+            "targets": self._normalize_targets(targets),
+            "kind": self._normalize_kind(value.get("kind") or "any"),
+            "delete_storage": bool(value.get("delete_storage") or value.get("purge") or value.get("delete_files")),
+            "reason": str(value.get("reason") or "").strip()[:160],
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = self.attachment_service.clear_focus(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            target=str(call.get("target") or "current"),
+            targets=list(call.get("targets") or []),
+            kind=str(call.get("kind") or "any"),
+            reason=str(call.get("reason") or ""),
+            delete_storage=bool(call.get("delete_storage")),
+            timestamp=context.now_ts,
+        )
+        cleared = list(result.get("cleared") or []) if isinstance(result, dict) else []
+        events = []
+        if cleared:
+            events.append(
+                {
+                    "type": "attachment_focus_cleared",
+                    "items": cleared,
+                }
+            )
+        followup_context = str(result.get("followup_context") or "") if isinstance(result, dict) else ""
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            stream_events=events,
+            followup_context=followup_context,
+        )
+
+    def _normalize_kind(self, value: Any) -> str:
+        kind = str(value or "any").strip().lower()
+        if kind in {"photo", "picture", "pic", "img"}:
+            return "image"
+        if kind in {"doc", "text", "txt", "pdf"}:
+            return "document"
+        if kind in {"music", "song", "voice"}:
+            return "audio"
+        if kind in {"any", "image", "file", "document", "audio"}:
+            return kind
+        return "any"
+
+    def _normalize_targets(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_items = [item.strip() for item in value.replace("，", ",").replace("、", ",").split(",")]
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        else:
+            raw_items = [value]
+        targets: list[str] = []
+        for item in raw_items:
+            text = str(item or "").strip()
+            if text and text not in targets:
+                targets.append(text[:120])
+        return targets[:20]
+
+class RetryAttachmentToolHandler(BaseToolHandler):
+    tool_type = "retry_attachment"
+
+    def __init__(self, *, attachment_ingest_service) -> None:
+        self.attachment_ingest_service = attachment_ingest_service
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- retry_attachment：当工作台图片/文件处理失败，且用户让你再试一次，或你需要重新读取失败材料时使用。"
+            '格式为 {"type":"retry_attachment","target":"latest|附件id|img_001|标题|文件名","kind":"any|image|file|document|audio","reason":"可选原因"}。'
+            "这个工具只会重新处理工作台材料，不会把它变成礼物、角色资源或长期记忆；成功后材料会回到当前材料工作台。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        return {
+            "type": self.tool_type,
+            "target": str(value.get("target") or value.get("attachment_id") or value.get("query") or "latest").strip()[
+                :120
+            ],
+            "kind": self._normalize_kind(value.get("kind") or "any"),
+            "reason": str(value.get("reason") or "").strip()[:160],
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = self.attachment_ingest_service.retry_attachment(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            target=str(call.get("target") or "latest"),
+            kind=str(call.get("kind") or "any"),
+            timestamp=context.now_ts,
+        )
+        item = result.get("item") if isinstance(result, dict) else None
+        events = []
+        if isinstance(item, dict):
+            events.append(
+                {
+                    "type": "attachment_retry_started",
+                    "status": str(result.get("status") or ""),
+                    "item": item,
+                }
+            )
+        return operation_tool_result(
+            tool_type=self.tool_type,
+            operation_result=result,
+            success_events=events,
+        )
+
+    def _normalize_kind(self, value: Any) -> str:
+        kind = str(value or "any").strip().lower()
+        if kind in {"photo", "picture", "pic", "img"}:
+            return "image"
+        if kind in {"doc", "text", "txt", "pdf"}:
+            return "document"
+        if kind in {"music", "song", "voice"}:
+            return "audio"
+        if kind in {"any", "image", "file", "document", "audio"}:
+            return kind
+        return "any"
+
+
+class FetchMediaFromUrlToolHandler(BaseToolHandler):
+    tool_type = "fetch_media_from_url"
+
+    def __init__(self, *, attachment_ingest_service) -> None:
+        self.attachment_ingest_service = attachment_ingest_service
+
+    def build_prompt_instruction(self) -> str:
+        return (
+            "- fetch_media_from_url：当用户直接给你公开视频/音频链接，想让你先把素材下载到当前工作台时使用。"
+            '格式为 {"type":"fetch_media_from_url","url":"https://...","preferred_title":"可选标题"}，'
+            '批量时可用 {"type":"fetch_media_from_url","urls":["https://...","https://..."]}。'
+            "在 QQ/桌宠模式里，如果用户只发来一个公开视频或音频链接，或说“下载/拉进来/转写/总结这个链接”，"
+            "应优先调用这个工具实际获取素材；不要只凭猜测说链接打不开、需要登录或平台不稳定。"
+            "如果用户说“再试一次/重新下载/继续试”，且最近对话里有明确链接，也应带上那个链接重新调用。"
+            "它只负责把公开可访问的媒体链接下载成工作台材料，不会直接总结、转写或转码；"
+            "下载成功后，这些素材会像普通 audio_001/file_001 一样进入当前材料工作台，之后可交给当前实际可用的工具。"
+            "如果用户只是要原视频/原音频或“把链接里的文件发我”，下载成功后直接 send_file 对应 handle，不要顺手转写、提音频或压缩。"
+            "不要用它处理需要登录、付费、会员、DRM 或整条播放列表/合集的链接。"
+        )
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        if str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        urls_value = (
+            value.get("urls")
+            if value.get("urls") is not None
+            else value.get("links")
+            if value.get("links") is not None
+            else value.get("url")
+        )
+        urls = self._normalize_urls(urls_value)
+        if not urls:
+            return None
+        return {
+            "type": self.tool_type,
+            "url": urls[0],
+            "urls": urls,
+            "preferred_title": str(value.get("preferred_title") or value.get("title") or "").strip()[:120],
+        }
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        result = self.attachment_ingest_service.fetch_media_from_urls(
+            profile_user_id=context.profile_user_id,
+            session_id=context.session_id,
+            urls=list(call.get("urls") or []),
+            preferred_title=str(call.get("preferred_title") or ""),
+            character_pack_id=context.character_pack_id,
+            timestamp=context.now_ts,
+        )
+        events = []
+        if isinstance(result, dict):
+            for item in list(result.get("items") or []):
+                if not isinstance(item, dict):
+                    continue
+                events.append(
+                    {
+                        "type": "attachment_remote_media_ready",
+                        "item": item,
+                    }
+                )
+        return operation_tool_result(
+            tool_type=self.tool_type,
+            operation_result=result,
+            success_events=events,
+        )
+
+    def _normalize_urls(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_items = re.split(r"[\s,，;；]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        else:
+            raw_items = [value]
+        urls: list[str] = []
+        for item in raw_items:
+            text = str(item or "").strip()
+            if text.startswith(("http://", "https://")) and text not in urls:
+                urls.append(text[:1000])
+        return urls[:8]

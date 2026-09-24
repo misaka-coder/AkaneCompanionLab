@@ -1,0 +1,14 @@
+[Unit]
+Description=Akane Host bounded storage retention and disk health check
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/akane/ops/akane-host-storage-maintenance.py
+StateDirectory=akane-host-storage
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/akane/releases /opt/akane/backups /var/lib/akane/backups /var/lib/akane-host/deploy-backups /var/lib/akane-host/bots /var/lib/akane-host/execution_workspace /var/lib/akane-host-storage

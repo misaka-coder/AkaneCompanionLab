@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "bots": {
+    "personal": {
+      "required": [
+        "tool.send_file",
+        "provider.tts.edge"
+      ]
+    },
+    "finance": {
+      "required": [
+        "tool.web_search"
+      ]
+    }
+  }
+}

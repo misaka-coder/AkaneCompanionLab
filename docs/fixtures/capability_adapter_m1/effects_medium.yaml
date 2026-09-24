@@ -1,0 +1,11 @@
+schema: capability_adapter/v1
+provider:
+  id: file_writer
+  type: python_plugin
+capabilities:
+  - id: write_note
+    display_name: Write Note
+    visible_in: [desktop]
+    risk: low
+    confirm: never
+    effects: [file_write]

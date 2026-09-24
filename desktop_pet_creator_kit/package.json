@@ -1,0 +1,17 @@
+{
+  "name": "akane-desktop-pet-creator-kit",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "Creator-facing character pack tools for Akane desktop pet.",
+  "scripts": {
+    "create": "node ./scripts/create-character-pack.mjs",
+    "draft": "node ./scripts/create-character-pack.mjs --from-images",
+    "check": "node ./scripts/validate-character-pack.mjs",
+    "check:sample": "node ./scripts/validate-character-pack.mjs ./characters/akane_v1",
+    "export": "node ./scripts/export-character-pack.mjs",
+    "export:sample": "node ./scripts/export-character-pack.mjs ./characters/akane_v1",
+    "import": "node ./scripts/import-character-pack.mjs"
+  }
+}

@@ -1,0 +1,297 @@
+"""Immutable deployment-owned channel and management security boundaries.
+
+Instance manifests select *which* channel profile is enabled.  Secrets and
+network endpoints remain deployment inputs and are bound once, before the
+engine opens mutable stores.  This module deliberately exposes no public
+snapshot containing secret material.
+"""
+
+from __future__ import annotations
+
+import hmac
+import hashlib
+import json
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
+from urllib.parse import urlsplit
+
+from channelcore_onebot import validate_onebot_identity
+
+from .instance_profile import InstanceContext
+from .qq_channel_profiles import QQChannelDeploymentProfile
+
+
+class DeploymentSecurityError(RuntimeError):
+    """Structured startup failure without secret values or local paths."""
+
+    def __init__(self, *, reason: str, field_name: str = "") -> None:
+        self.status = "invalid_config"
+        self.reason = str(reason or "deployment_security_invalid")
+        self.field = str(field_name or "")
+        super().__init__(json.dumps(self.as_dict(), ensure_ascii=False, sort_keys=True))
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": False,
+            "status": self.status,
+            "reason": self.reason,
+        }
+        if self.field:
+            payload["field"] = self.field
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationDecision:
+    ok: bool
+    status_code: int = 200
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class QQChannelRuntimeConfig:
+    """One restart-only QQ binding for the current Akane process."""
+
+    enabled: bool
+    profile_ref: str
+    bot_id: str
+    onebot_http_url: str
+    webhook_secret: str = field(repr=False)
+    onebot_access_token: str = field(repr=False)
+    require_webhook_auth: bool
+    require_self_id: bool
+    local_data_root: str = field(default="", repr=False)
+    onebot_shared_data_root: str = field(default="", repr=False)
+
+    def authorize_webhook(self, request: Any, *, body: bytes | None = None) -> AuthorizationDecision:
+        if not self.require_webhook_auth:
+            return AuthorizationDecision(True)
+        supplied = _request_token(
+            request,
+            alternate_header="x-akane-webhook-secret",
+        )
+        if supplied and hmac.compare_digest(supplied, self.webhook_secret):
+            return AuthorizationDecision(True)
+        signature = _clean(getattr(request, "headers", {}).get("x-signature", ""))
+        if signature and body is not None:
+            algorithm, separator, digest = signature.partition("=")
+            if separator and algorithm.lower() == "sha1" and digest:
+                expected = hmac.new(
+                    self.webhook_secret.encode("utf-8"),
+                    bytes(body),
+                    hashlib.sha1,
+                ).hexdigest()
+                if hmac.compare_digest(digest.lower(), expected):
+                    return AuthorizationDecision(True)
+        return AuthorizationDecision(False, 401, "qq_webhook_auth_required")
+
+    def authorize_event_identity(self, event: Any) -> AuthorizationDecision:
+        result = validate_onebot_identity(
+            event,
+            bot_account_id=self.bot_id,
+            require_self_id=self.require_self_id,
+        )
+        if result.ok:
+            return AuthorizationDecision(True)
+        if result.reason == "onebot_event_must_be_mapping":
+            return AuthorizationDecision(False, 400, "qq_event_must_be_object")
+        return AuthorizationDecision(False, 403, "qq_self_id_mismatch")
+
+    def onebot_headers(self) -> dict[str, str]:
+        if not self.onebot_access_token:
+            return {}
+        return {"Authorization": f"Bearer {self.onebot_access_token}"}
+
+    def project_local_file(self, path: str | Path) -> str:
+        """Project one Bot-owned host file into its OneBot container path.
+
+        The projection is fail-closed: paths outside the bound Bot data root
+        remain unchanged and use the existing authenticated stream fallback.
+        """
+
+        if not self.local_data_root or not self.onebot_shared_data_root:
+            return str(path)
+        try:
+            resolved_path = Path(path).resolve(strict=True)
+            resolved_root = Path(self.local_data_root).resolve(strict=True)
+            relative_path = resolved_path.relative_to(resolved_root)
+        except (OSError, ValueError):
+            return str(path)
+        raw_target_root = self.onebot_shared_data_root
+        target_root = (
+            PureWindowsPath(raw_target_root)
+            if PureWindowsPath(raw_target_root).drive
+            else PurePosixPath(raw_target_root)
+        )
+        return str(target_root.joinpath(*relative_path.parts))
+
+
+@dataclass(frozen=True, slots=True)
+class AdminWriteAuth:
+    """Management-write authorization with local-default compatibility."""
+
+    token: str = field(repr=False)
+    require_token: bool
+    allow_loopback_without_token: bool
+
+    def authorize(self, request: Any) -> AuthorizationDecision:
+        if self.require_token:
+            supplied = _request_token(
+                request,
+                alternate_header="x-akane-admin-token",
+            )
+            if supplied and hmac.compare_digest(supplied, self.token):
+                return AuthorizationDecision(True)
+            return AuthorizationDecision(False, 401, "admin_auth_required")
+        if self.allow_loopback_without_token and is_loopback_request(request):
+            return AuthorizationDecision(True)
+        return AuthorizationDecision(False, 403, "local_request_required")
+
+    @classmethod
+    def local_compatibility(cls) -> "AdminWriteAuth":
+        return cls(token="", require_token=False, allow_loopback_without_token=True)
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopSatelliteAuth:
+    """Restart-only device credential, deliberately separate from admin auth."""
+
+    token: str = field(repr=False)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token)
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceDeploymentSecurity:
+    qq: QQChannelRuntimeConfig
+    admin: AdminWriteAuth
+    satellite: DesktopSatelliteAuth
+
+
+def resolve_instance_deployment_security(
+    instance_context: InstanceContext,
+    config_module: Any,
+    *,
+    qq_channel_profile: QQChannelDeploymentProfile | None = None,
+) -> InstanceDeploymentSecurity:
+    """Bind manifest selections to deployment secrets before Engine startup."""
+
+    compatibility = instance_context.is_compatibility_default
+    admin_token = _clean(getattr(config_module, "AKANE_ADMIN_TOKEN", ""))
+    if not compatibility and not admin_token:
+        _fail("admin_token_required", field_name="AKANE_ADMIN_TOKEN")
+    admin = AdminWriteAuth(
+        token=admin_token,
+        require_token=bool(admin_token),
+        allow_loopback_without_token=compatibility and not admin_token,
+    )
+    satellite = DesktopSatelliteAuth(token=_clean(getattr(config_module, "AKANE_DESKTOP_SATELLITE_TOKEN", "")))
+
+    manifest_qq = instance_context.channels.qq
+    canonical_bot_config = instance_context.source == "bot_config_adapter"
+    enabled = bool(getattr(config_module, "QQ_BRIDGE_ENABLED", False)) if compatibility else manifest_qq.enabled
+    configured_profile_ref = _clean(getattr(config_module, "QQ_CHANNEL_PROFILE_REF", ""))
+    profile_ref = configured_profile_ref if compatibility else manifest_qq.profile_ref
+    if enabled and canonical_bot_config:
+        if qq_channel_profile is None:
+            _fail("qq_channel_profile_unavailable", field_name="channels.qq.profile_ref")
+        if qq_channel_profile.profile_ref != manifest_qq.profile_ref:
+            _fail("qq_channel_profile_mismatch", field_name="channels.qq.profile_ref")
+        bot_id = qq_channel_profile.bot_qq
+        onebot_http_url = qq_channel_profile.onebot_http_url
+        webhook_secret = qq_channel_profile.webhook_secret
+        onebot_access_token = qq_channel_profile.onebot_access_token
+        onebot_shared_data_root = qq_channel_profile.onebot_shared_data_root
+    elif canonical_bot_config:
+        bot_id = ""
+        onebot_http_url = "http://127.0.0.1:3001"
+        webhook_secret = ""
+        onebot_access_token = ""
+        onebot_shared_data_root = ""
+    else:
+        bot_id = _clean(getattr(config_module, "QQ_BOT_QQ", ""))
+        onebot_http_url = (
+            _clean(getattr(config_module, "QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")).rstrip("/")
+            or "http://127.0.0.1:3001"
+        )
+        webhook_secret = _clean(getattr(config_module, "QQ_WEBHOOK_SECRET", ""))
+        onebot_access_token = _clean(getattr(config_module, "QQ_ONEBOT_ACCESS_TOKEN", ""))
+        onebot_shared_data_root = ""
+
+    if enabled and not compatibility and not canonical_bot_config:
+        if not configured_profile_ref:
+            _fail(
+                "qq_channel_profile_ref_required",
+                field_name="QQ_CHANNEL_PROFILE_REF",
+            )
+        if configured_profile_ref != manifest_qq.profile_ref:
+            _fail(
+                "qq_channel_profile_ref_mismatch",
+                field_name="QQ_CHANNEL_PROFILE_REF",
+            )
+        if not bot_id or not bot_id.isdigit():
+            _fail("qq_bot_id_required", field_name="QQ_BOT_QQ")
+        if not webhook_secret:
+            _fail("qq_webhook_secret_required", field_name="QQ_WEBHOOK_SECRET")
+        if not onebot_access_token:
+            _fail(
+                "qq_onebot_access_token_required",
+                field_name="QQ_ONEBOT_ACCESS_TOKEN",
+            )
+        if not _valid_http_url(onebot_http_url):
+            _fail("qq_onebot_http_url_invalid", field_name="QQ_ONEBOT_HTTP_URL")
+
+    return InstanceDeploymentSecurity(
+        qq=QQChannelRuntimeConfig(
+            enabled=enabled,
+            profile_ref=profile_ref,
+            bot_id=bot_id,
+            onebot_http_url=onebot_http_url,
+            webhook_secret=webhook_secret,
+            onebot_access_token=onebot_access_token,
+            require_webhook_auth=enabled and (not compatibility or bool(webhook_secret)),
+            require_self_id=enabled and bool(bot_id),
+            local_data_root=(
+                str(getattr(config_module, "DATA_ROOT", "") or "")
+                if compatibility
+                else ""
+            ),
+            onebot_shared_data_root=onebot_shared_data_root,
+        ),
+        admin=admin,
+        satellite=satellite,
+    )
+
+
+def is_loopback_request(request: Any) -> bool:
+    host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
+    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _request_token(request: Any, *, alternate_header: str) -> str:
+    headers = getattr(request, "headers", {})
+    authorization = _clean(headers.get("authorization", ""))
+    if authorization:
+        scheme, separator, value = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer":
+            return value.strip()
+    return _clean(headers.get(alternate_header, ""))
+
+
+def _valid_http_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
+def _clean(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _fail(reason: str, *, field_name: str) -> None:
+    raise DeploymentSecurityError(reason=reason, field_name=field_name)

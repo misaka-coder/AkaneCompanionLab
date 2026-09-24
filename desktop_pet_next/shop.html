@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Akane Next 小卖部</title>
+  </head>
+  <body>
+    <main class="shop-shell">
+      <header class="shop-header">
+        <div>
+          <span class="eyebrow">AKANE · 日常补给</span><h1>片刻小卖铺<span class="store-stamp" aria-hidden="true">☕</span></h1>
+          <p id="shop-summary">正在整理货架</p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-shop" class="primary-button" type="button">刷新</button>
+          <button id="close-shop" type="button">关闭</button>
+        </div>
+      </header>
+
+      <section id="shop-alert" class="shop-alert" hidden></section>
+
+      <p class="shop-intro">挑一点喜欢的，把今天补满。<span>食物的价格与效果，由你来设定。</span></p>
+      <section class="metric-grid" aria-label="养成状态">
+        <article class="metric">
+          <span>金币</span>
+          <strong id="care-coins">0</strong>
+        </article>
+        <article class="metric">
+          <span>饥饿</span>
+          <strong id="care-hunger">0</strong>
+        </article>
+        <article class="metric">
+          <span>精力</span>
+          <strong id="care-energy">0</strong>
+        </article>
+        <article class="metric">
+          <span>好感</span>
+          <strong id="care-affection">0</strong>
+        </article>
+      </section>
+
+      <section id="work-panel" class="work-panel" aria-label="外出">
+        <div>
+          <h2>外出</h2>
+          <p id="work-summary">可以让她出去转一圈，回来带些金币。</p>
+        </div>
+        <button id="start-work" class="primary-button" type="button">出门</button>
+      </section>
+
+      <section id="allowance-panel" class="allowance-panel" aria-label="补给">
+        <div>
+          <h2>补给</h2>
+          <p id="allowance-summary">金币太少时，可以领取一点应急补给。</p>
+        </div>
+        <button id="claim-allowance" type="button">领取</button>
+      </section>
+
+      <section class="shop-content">
+        <section class="shop-section" aria-label="商品">
+          <div class="section-header">
+            <h2>今日货架 <span class="section-tag">可编辑食物</span></h2>
+            <div class="section-actions">
+              <p id="shop-count">0 件商品</p>
+              <button id="create-item" class="primary-button" type="button">新增商品</button>
+            </div>
+          </div>
+          <div id="shop-items" class="item-grid">
+            <div class="empty-state">这个角色还没有配置商店。</div>
+          </div>
+        </section>
+
+        <section class="shop-section" aria-label="背包">
+          <div class="section-header">
+            <h2>你的食物篮</h2>
+            <p id="inventory-count">0 件物品</p>
+          </div>
+          <div id="inventory-items" class="item-grid">
+            <div class="empty-state">背包是空的。</div>
+          </div>
+        </section>
+      </section>
+
+      <dialog id="food-editor" aria-labelledby="editor-title">
+        <form id="food-form">
+          <div class="editor-header"><div><span class="eyebrow">自定义商品</span><h2 id="editor-title">调整食物</h2></div><button id="editor-close" type="button" aria-label="关闭编辑">×</button></div>
+          <p id="editor-description">修改会保存到当前角色，之后的购买和投喂都会使用这些数值。</p>
+          <label class="name-field">商品名<input id="food-name" name="name" type="text" required maxlength="40" placeholder="例如：抹茶大福"></label>
+          <label class="price-field">售价 · 金币<input id="food-price" name="price" type="number" required min="0" max="999999" step="1"></label>
+          <h3>每次投喂的效果</h3>
+          <div class="effect-fields">
+            <label>饥饿<input id="food-hunger" name="hunger" type="number" required min="-100" max="100" step="1"></label>
+            <label>精力<input id="food-energy" name="energy" type="number" required min="-100" max="100" step="1"></label>
+            <label>好感<input id="food-affection" name="affection" type="number" required min="-100" max="100" step="1"></label>
+          </div>
+          <p class="field-hint">效果范围 −100～100；正数增加，负数减少。状态仍限制在 0～100。</p>
+          <label class="note-field">说明（可选）<input id="food-description" name="description" type="text" maxlength="120" placeholder="留空显示默认说明"></label>
+          <label class="check-field"><input id="food-qq" name="qq" type="checkbox">也在 QQ 商店上架</label>
+          <p id="editor-error" role="alert" hidden></p>
+          <div class="editor-actions"><button id="editor-cancel" type="button">取消</button><button id="editor-save" class="primary-button" type="submit">保存设置</button></div>
+        </form>
+      </dialog>
+      <footer class="shop-footer">
+        <span id="shop-character">当前角色：—</span>
+        <span id="shop-status">正在连接</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/shop.js"></script>
+  </body>
+</html>

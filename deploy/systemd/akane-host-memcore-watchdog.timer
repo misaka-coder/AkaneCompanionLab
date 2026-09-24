@@ -1,0 +1,13 @@
+[Unit]
+Description=Check Akane Host MemCore compaction health every five minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+AccuracySec=30
+Persistent=true
+Unit=akane-host-memcore-watchdog.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,178 @@
+"""Provider-agnostic internal representation of a tool call.
+
+Step 2 of the tool-system decoupling (see `docs/tool_system_decoupling_v1.md`):
+every tool-call source — native OpenAI provider `tool_calls`, native Anthropic
+`tool_use`, and the legacy `{"type": name, ...args}` JSON fallback — normalises
+into a single internal shape so the engine never cares which provider produced
+the call.
+
+Native-first is now the default production path (N1–N3 complete; see §12 of the
+decoupling doc). Legacy JSON `tool_call` remains as a thin fallback for
+unverified providers and non-allowlisted tools. All sources normalise through
+this module into `ToolInvocation` before validation and execution.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+
+# Known invocation sources. Native OpenAI and Anthropic calls are active
+# production paths for verified providers with allowlisted tools; LEGACY_JSON is
+# the thin fallback for unverified providers and non-allowlisted tools.
+LEGACY_JSON = "legacy_json"
+NATIVE_OPENAI = "native_openai"
+NATIVE_ANTHROPIC = "native_anthropic"
+TOOL_SOURCE_FIELD = "_tool_source"
+TOOL_INVOCATION_ID_FIELD = "_tool_invocation_id"
+TOOL_MODEL_NAME_FIELD = "_tool_model_name"
+TOOL_MODEL_ARGUMENTS_FIELD = "_tool_model_arguments"
+TOOL_PARSE_ERROR_FIELD = "_tool_parse_error"
+TOOL_RAW_ARGUMENTS_FIELD = "_tool_raw_arguments"
+NATIVE_TOOL_CALL_FIELD = "_native_tool_call"
+NATIVE_TOOL_CALLS_FIELD = "_native_tool_calls"
+# Provider-private reasoning that must accompany a DeepSeek assistant tool call
+# when the same open turn is replayed. This is an in-process wire sidecar, not
+# durable conversation content and not a MemCore record field.
+NATIVE_REASONING_CONTENT_FIELD = "_native_reasoning_content"
+TOOL_EXECUTION_RECEIPT_FIELD = "_tool_execution_receipt"
+TOOL_EXECUTION_RECEIPTS_FIELD = "_tool_execution_receipts"
+# M66-C: Frozen round — carry the per-turn CapabilitySelection from prepare_context
+# through _prepare_tool_round_decisions so normalize/validate/execute do not
+# re-resolve tool handlers a second time for the same round.
+TOOL_CAPABILITY_SELECTION_FIELD = "_tool_capability_selection"
+
+
+@dataclass
+class ToolInvocation:
+    """A single tool call, independent of how the model expressed it."""
+
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    source: str = LEGACY_JSON
+    id: str = ""
+    execution_receipt: dict[str, Any] = field(default_factory=dict)
+    parse_error: str = ""
+    raw_arguments: Any = None
+    capability_selection: Any = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not str(self.id or "").strip():
+            self.id = f"call_{uuid.uuid4().hex[:16]}"
+
+
+@dataclass
+class ValidationResult:
+    """Outcome of validating a ToolInvocation against a tool's contract.
+
+    On failure, `message` is model-facing (fed back verbatim so the model can
+    self-correct) and `code` is machine-readable for logging/metrics
+    (e.g. "unknown_tool", "bad_args", "not_available").
+    """
+
+    ok: bool
+    message: str = ""
+    code: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def success(cls) -> "ValidationResult":
+        return cls(ok=True)
+
+    @classmethod
+    def fail(cls, code: str, message: str, *, details: dict[str, Any] | None = None) -> "ValidationResult":
+        return cls(ok=False, code=str(code or ""), message=str(message or ""), details=dict(details or {}))
+
+
+@dataclass
+class ToolResultEnvelope:
+    """Provider-agnostic result shape for future tool feedback plumbing.
+
+    The live path still consumes ToolExecutionResult today. This envelope is
+    introduced alongside ToolInvocation so later slices can move execution
+    results to the same provider-neutral boundary without inventing another
+    shape.
+    """
+
+    invocation_id: str
+    status: str
+    model_feedback: str
+    data: dict[str, Any] | None = None
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+
+def legacy_tool_call_to_invocation(
+    tool_call: Any,
+    *,
+    source: str = LEGACY_JSON,
+    invocation_id: str = "",
+    capability_selection: Any = None,
+) -> ToolInvocation | None:
+    """Wrap a legacy ``{"type": name, ...args}`` tool_call dict as a ToolInvocation.
+
+    Returns None when the value is not a usable tool-call dict — callers must
+    treat None exactly like "the model did not call a tool", which is how the
+    current code already treats a falsy normalised tool_call. No behaviour change.
+    """
+    if not isinstance(tool_call, dict):
+        return None
+    name = str(tool_call.get("type") or "").strip()
+    if not name:
+        return None
+    embedded_source = str(tool_call.get(TOOL_SOURCE_FIELD) or "").strip()
+    embedded_id = str(tool_call.get(TOOL_INVOCATION_ID_FIELD) or "").strip()
+    embedded_receipt = tool_call.get(TOOL_EXECUTION_RECEIPT_FIELD)
+    embedded_parse_error = str(tool_call.get(TOOL_PARSE_ERROR_FIELD) or "").strip()
+    embedded_raw_arguments = tool_call.get(TOOL_RAW_ARGUMENTS_FIELD)
+    embedded_selection = tool_call.get(TOOL_CAPABILITY_SELECTION_FIELD)
+    arguments = {key: value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
+    return ToolInvocation(
+        name=name,
+        arguments=arguments,
+        source=embedded_source or source,
+        id=embedded_id or invocation_id,
+        execution_receipt=dict(embedded_receipt) if isinstance(embedded_receipt, dict) else {},
+        parse_error=embedded_parse_error,
+        raw_arguments=embedded_raw_arguments,
+        capability_selection=capability_selection if capability_selection is not None else embedded_selection,
+    )
+
+
+def invocation_to_legacy_tool_call(
+    invocation: ToolInvocation,
+    *,
+    include_metadata: bool = False,
+) -> dict[str, Any]:
+    """Round-trip back to the legacy ``{"type": name, ...args}`` shape that the
+    current execute path consumes.
+
+    Keeping this exact inverse is what lets later steps route the live tool_call
+    through ToolInvocation without changing which tool runs or with what args.
+    """
+    tool_call = {"type": invocation.name, **dict(invocation.arguments or {})}
+    if include_metadata and str(invocation.source or LEGACY_JSON) != LEGACY_JSON:
+        tool_call[TOOL_SOURCE_FIELD] = str(invocation.source or "")
+        tool_call[TOOL_INVOCATION_ID_FIELD] = str(invocation.id or "")
+    if include_metadata and invocation.execution_receipt:
+        tool_call[TOOL_EXECUTION_RECEIPT_FIELD] = dict(invocation.execution_receipt)
+    if include_metadata and invocation.parse_error:
+        tool_call[TOOL_PARSE_ERROR_FIELD] = str(invocation.parse_error)
+        tool_call[TOOL_RAW_ARGUMENTS_FIELD] = invocation.raw_arguments
+    if include_metadata and invocation.capability_selection is not None:
+        tool_call[TOOL_CAPABILITY_SELECTION_FIELD] = invocation.capability_selection
+    return tool_call
+
+
+def round_trip_legacy_tool_call(tool_call: Any) -> dict[str, Any] | None:
+    """Route an already-normalized legacy tool_call through ToolInvocation.
+
+    This is the behaviour-preserving bridge for step 2b: old handlers still
+    normalize and execute legacy dicts, while the live dispatch path starts
+    crossing the new internal boundary.
+    """
+    invocation = legacy_tool_call_to_invocation(tool_call)
+    if invocation is None:
+        return None
+    return invocation_to_legacy_tool_call(invocation)

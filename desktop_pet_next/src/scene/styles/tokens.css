@@ -1,0 +1,154 @@
+:root {
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  color: #4e493f;
+  background: #e7dece;
+  font-synthesis: none;
+  --ink: #4e493f;
+  --muted: #928775;
+  --accent: #a77c43;
+  --accent-light: #f2e5cc;
+  --paper: #faf6ef;
+  --line: #e6dfd2;
+  --sage: #74816c;
+  --blue: #687c86;
+  --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+button {
+  color: inherit;
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+button,
+input {
+  -webkit-tap-highlight-color: transparent;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+button {
+  border: 0;
+  background: transparent;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+.eyebrow {
+  font-size: 10px;
+  letter-spacing: 2.6px;
+  color: var(--accent);
+}
+.icon-button {
+  width: 36px;
+  height: 36px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+}
+.icon-button:hover {
+  background: #ad916220;
+}
+.primary-button,
+.soft-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-radius: 7px;
+  font-size: 13px;
+  transition:
+    background 160ms,
+    transform 160ms;
+}
+.primary-button {
+  color: #fff9ec;
+  background: #927143;
+}
+.primary-button:hover {
+  background: #795c35;
+}
+.soft-button {
+  background: #eee6d7;
+  color: #80643e;
+  padding: 10px 14px;
+  white-space: nowrap;
+}
+.soft-button:hover {
+  background: #e7d8c0;
+}
+.primary-button:active,
+.soft-button:active {
+  transform: translateY(1px);
+}
+.text-button {
+  color: var(--accent);
+  font-size: 13px;
+  padding: 10px 0;
+}
+.empty-state {
+  padding: 36px 15px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 2;
+  color: var(--muted);
+}
+.panel-intro {
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--muted);
+  margin-bottom: 22px;
+}
+.segmented {
+  display: flex;
+  padding: 4px;
+  border-radius: 8px;
+  background: #eae4d9;
+  margin: 20px 0;
+  gap: 4px;
+}
+.segmented button {
+  flex: 1;
+  padding: 9px 6px;
+  font-size: 13px;
+  border-radius: 5px;
+  color: var(--muted);
+}
+.segmented button.active {
+  background: #fffcf7;
+  color: var(--ink);
+  box-shadow: 0 2px 5px #4e493f0a;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}

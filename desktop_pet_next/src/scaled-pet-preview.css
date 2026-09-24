@@ -1,0 +1,39 @@
+.pet-preview-host {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  min-width: 0;
+  isolation: isolate;
+  background-image:
+    linear-gradient(45deg, rgb(120 135 150 / 0.055) 25%, transparent 25%, transparent 75%, rgb(120 135 150 / 0.055) 75%),
+    linear-gradient(45deg, rgb(120 135 150 / 0.055) 25%, transparent 25%, transparent 75%, rgb(120 135 150 / 0.055) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 10px 10px;
+}
+.pet-preview-viewport { position: relative; flex: none; }
+.pet-preview-stage {
+  position: absolute;
+  inset: 0 auto auto 0;
+  overflow: hidden;
+  transform-origin: top left;
+  outline: 1px solid rgb(86 107 133 / 0.32);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.62);
+}
+.pet-preview-stage .pet-hitbox { cursor: default; }
+.pet-preview-stage[data-preview-static] .portrait-motion { animation: none; }
+.pet-preview-stage .bubble { transition: none; }
+.pet-preview-stage .bubble-text { user-select: none; }
+.pet-preview-notice {
+  position: absolute;
+  inset: auto 12px 12px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}

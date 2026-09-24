@@ -1,0 +1,1298 @@
+{
+  "baseline": {
+    "guide_version": "11",
+    "schema_hash": "sha256:d06145ee6548731189562aaa47fa0171b765cd294c0d7e4fc96215f47c950d25",
+    "git_head": "8c4070185efa4a9efe23ab4464c92b9751c4d3f9",
+    "source_dirty": true,
+    "device_running_version": "unverified",
+    "fixture_kind": "synthetic; validation only, no desktop dispatch"
+  },
+  "cases": [
+    {
+      "id": "list-empty",
+      "arguments": {
+        "action": "list_windows"
+      },
+      "accepted": true
+    },
+    {
+      "id": "list-empty-query",
+      "arguments": {
+        "action": "list_windows",
+        "query": "",
+        "offset": 0,
+        "limit": 50
+      },
+      "accepted": true
+    },
+    {
+      "id": "launch",
+      "arguments": {
+        "action": "launch_app",
+        "app": "notepad"
+      },
+      "accepted": true
+    },
+    {
+      "id": "select",
+      "arguments": {
+        "action": "select_window",
+        "window_id": "test-window",
+        "device_epoch": "test-epoch"
+      },
+      "accepted": true
+    },
+    {
+      "id": "observe-visual",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "mode": "visual"
+      },
+      "accepted": true
+    },
+    {
+      "id": "observe-region",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "region": {
+          "x": 0,
+          "y": 0,
+          "width": 1,
+          "height": 32767
+        },
+        "scale": 3
+      },
+      "accepted": true
+    },
+    {
+      "id": "click-element",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "element_id": "test-element"
+      },
+      "accepted": true
+    },
+    {
+      "id": "click-visual-weak-uia",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": 0,
+        "y": 32767,
+        "button": "right",
+        "click_count": 2
+      },
+      "accepted": true
+    },
+    {
+      "id": "type-unicode",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": "合成🙂"
+      },
+      "accepted": true
+    },
+    {
+      "id": "key",
+      "arguments": {
+        "action": "press_key",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "key": "Ctrl+A"
+      },
+      "accepted": true
+    },
+    {
+      "id": "key-empty-host-baseline",
+      "arguments": {
+        "action": "press_key",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "key": ""
+      },
+      "accepted": true
+    },
+    {
+      "id": "scroll-element",
+      "arguments": {
+        "action": "scroll",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "element_id": "test-element",
+        "direction": "down",
+        "amount": 10
+      },
+      "accepted": true
+    },
+    {
+      "id": "scroll-visual",
+      "arguments": {
+        "action": "scroll",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": 0,
+        "y": 0,
+        "direction": "up"
+      },
+      "accepted": true
+    },
+    {
+      "id": "clear-value",
+      "arguments": {
+        "action": "set_value",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "element_id": "test-element",
+        "text": ""
+      },
+      "accepted": true
+    },
+    {
+      "id": "uncheck",
+      "arguments": {
+        "action": "set_checked",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "element_id": "test-element",
+        "checked": false
+      },
+      "accepted": true
+    },
+    {
+      "id": "drag",
+      "arguments": {
+        "action": "drag",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": 0,
+        "y": 1,
+        "to_x": 32767,
+        "to_y": 3,
+        "duration_ms": 2000
+      },
+      "accepted": true
+    },
+    {
+      "id": "resume",
+      "arguments": {
+        "action": "resume_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "workflow_id": "test-workflow",
+        "budget_ms": 15000
+      },
+      "accepted": true
+    },
+    {
+      "id": "status",
+      "arguments": {
+        "action": "status"
+      },
+      "accepted": true
+    },
+    {
+      "id": "status-scoped",
+      "arguments": {
+        "action": "status",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "operation_id": "test-operation"
+      },
+      "accepted": true
+    },
+    {
+      "id": "stop",
+      "arguments": {
+        "action": "stop",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch"
+      },
+      "accepted": true
+    },
+    {
+      "id": "handoff",
+      "arguments": {
+        "action": "handoff",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch"
+      },
+      "accepted": true
+    },
+    {
+      "id": "window-activate",
+      "arguments": {
+        "action": "manage_window",
+        "window_id": "test-window",
+        "device_epoch": "test-epoch",
+        "window_action": "activate"
+      },
+      "accepted": true
+    },
+    {
+      "id": "window-restore",
+      "arguments": {
+        "action": "manage_window",
+        "window_id": "test-window",
+        "device_epoch": "test-epoch",
+        "window_action": "restore"
+      },
+      "accepted": true
+    },
+    {
+      "id": "window-minimize",
+      "arguments": {
+        "action": "manage_window",
+        "window_id": "test-window",
+        "device_epoch": "test-epoch",
+        "window_action": "minimize"
+      },
+      "accepted": true
+    },
+    {
+      "id": "window-move",
+      "arguments": {
+        "action": "manage_window",
+        "window_id": "test-window",
+        "device_epoch": "test-epoch",
+        "window_action": "move",
+        "desktop_x": -32768,
+        "desktop_y": 32767
+      },
+      "accepted": true
+    },
+    {
+      "id": "visual-batch",
+      "arguments": {
+        "action": "run_actions",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "actions": [
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          },
+          {
+            "action": "type_text",
+            "text": "合成"
+          },
+          {
+            "action": "press_key",
+            "key": "Enter"
+          },
+          {
+            "action": "scroll",
+            "x": 1,
+            "y": 2,
+            "direction": "down"
+          },
+          {
+            "action": "drag",
+            "x": 1,
+            "y": 2,
+            "to_x": 3,
+            "to_y": 4
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "verified-batch",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "type_text",
+            "text": "合成",
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "press_key",
+            "key": "Tab",
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "scroll",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "direction": "down",
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "set_value",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "text": "",
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "set_checked",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "checked": false,
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "wait_for",
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "select_window",
+            "window_id": "test-window",
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "expect-focused",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "wait_for",
+            "expect": {
+              "kind": "focused",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "expect-value_equals",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "wait_for",
+            "expect": {
+              "kind": "value_equals",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              },
+              "value": ""
+            }
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "expect-checked_equals",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "wait_for",
+            "expect": {
+              "kind": "checked_equals",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              },
+              "checked": false
+            }
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "expect-element_absent",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "wait_for",
+            "expect": {
+              "kind": "element_absent",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "expect-window_title",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "wait_for",
+            "expect": {
+              "kind": "window_title",
+              "title": "Synthetic"
+            }
+          }
+        ]
+      },
+      "accepted": true
+    },
+    {
+      "id": "historical-observe-window",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "window_id": "test-window"
+      },
+      "accepted": false,
+      "error_path": "window_id"
+    },
+    {
+      "id": "historical-key-shot",
+      "arguments": {
+        "action": "press_key",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "key": "Enter",
+        "screenshot_id": "test-shot"
+      },
+      "accepted": false,
+      "error_path": "screenshot_id"
+    },
+    {
+      "id": "type-newline",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": "a\nb"
+      },
+      "accepted": false,
+      "error_path": "text"
+    },
+    {
+      "id": "type-return",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": "a\rb"
+      },
+      "accepted": false,
+      "error_path": "text"
+    },
+    {
+      "id": "type-tab",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": "a\tb"
+      },
+      "accepted": false,
+      "error_path": "text"
+    },
+    {
+      "id": "type-nul",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": "a\u0000b"
+      },
+      "accepted": false,
+      "error_path": "text"
+    },
+    {
+      "id": "type-empty",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": ""
+      },
+      "accepted": false,
+      "error_path": "text"
+    },
+    {
+      "id": "missing-control_session_id",
+      "arguments": {
+        "action": "type_text",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": "test"
+      },
+      "accepted": false,
+      "error_path": "control_session_id"
+    },
+    {
+      "id": "missing-device_epoch",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "observation_id": "test-observation",
+        "text": "test"
+      },
+      "accepted": false,
+      "error_path": "device_epoch"
+    },
+    {
+      "id": "missing-observation_id",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "text": "test"
+      },
+      "accepted": false,
+      "error_path": "observation_id"
+    },
+    {
+      "id": "coordinate-True",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": true,
+        "y": 2
+      },
+      "accepted": false,
+      "error_path": "x"
+    },
+    {
+      "id": "coordinate-1.5",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": 1.5,
+        "y": 2
+      },
+      "accepted": false,
+      "error_path": "x"
+    },
+    {
+      "id": "coordinate--1",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": -1,
+        "y": 2
+      },
+      "accepted": false,
+      "error_path": "x"
+    },
+    {
+      "id": "coordinate-32768",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": 32768,
+        "y": 2
+      },
+      "accepted": false,
+      "error_path": "x"
+    },
+    {
+      "id": "coordinate-1",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": "1",
+        "y": 2
+      },
+      "accepted": false,
+      "error_path": "x"
+    },
+    {
+      "id": "coordinate-None",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "x": null,
+        "y": 2
+      },
+      "accepted": false,
+      "error_path": "x"
+    },
+    {
+      "id": "click-target-missing",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation"
+      },
+      "accepted": false,
+      "error_path": "target"
+    },
+    {
+      "id": "click-target-partial",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "x": 1
+      },
+      "accepted": false,
+      "error_path": "target"
+    },
+    {
+      "id": "click-target-both",
+      "arguments": {
+        "action": "click",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "element_id": "test-element",
+        "screenshot_id": "test-shot",
+        "x": 1,
+        "y": 2
+      },
+      "accepted": false,
+      "error_path": "target"
+    },
+    {
+      "id": "batch-nested-newline",
+      "arguments": {
+        "action": "run_actions",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "actions": [
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          },
+          {
+            "action": "type_text",
+            "text": "a\nb"
+          }
+        ]
+      },
+      "accepted": false,
+      "error_path": "actions[1].text"
+    },
+    {
+      "id": "batch-nested-missing-x",
+      "arguments": {
+        "action": "run_actions",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "actions": [
+          {
+            "action": "drag",
+            "y": 1,
+            "to_x": 2,
+            "to_y": 3
+          }
+        ]
+      },
+      "accepted": false,
+      "error_path": "actions[0].x"
+    },
+    {
+      "id": "workflow-missing-text",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "type_text",
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          }
+        ]
+      },
+      "accepted": false,
+      "error_path": "steps[0].text"
+    },
+    {
+      "id": "workflow-expect-missing-target",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "wait_for",
+            "expect": {
+              "kind": "focused"
+            }
+          }
+        ]
+      },
+      "accepted": false,
+      "error_path": "steps[0].expect.target"
+    },
+    {
+      "id": "workflow-key-empty",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "press_key",
+            "key": "",
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          }
+        ]
+      },
+      "accepted": false,
+      "error_path": "steps[0].key"
+    },
+    {
+      "id": "move-missing-y",
+      "arguments": {
+        "action": "manage_window",
+        "window_id": "test-window",
+        "device_epoch": "test-epoch",
+        "window_action": "move",
+        "desktop_x": 0
+      },
+      "accepted": false,
+      "error_path": "desktop_y"
+    },
+    {
+      "id": "activate-extra-x",
+      "arguments": {
+        "action": "manage_window",
+        "window_id": "test-window",
+        "device_epoch": "test-epoch",
+        "window_action": "activate",
+        "desktop_x": 0
+      },
+      "accepted": false,
+      "error_path": "desktop_x"
+    },
+    {
+      "id": "run_actions-count-0",
+      "arguments": {
+        "action": "run_actions",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "actions": []
+      },
+      "accepted": false,
+      "error_path": "actions"
+    },
+    {
+      "id": "run_actions-count-7",
+      "arguments": {
+        "action": "run_actions",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "screenshot_id": "test-shot",
+        "actions": [
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          },
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          },
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          },
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          },
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          },
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          },
+          {
+            "action": "click",
+            "x": 1,
+            "y": 2
+          }
+        ]
+      },
+      "accepted": false,
+      "error_path": "actions"
+    },
+    {
+      "id": "run_steps-count-0",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": []
+      },
+      "accepted": false,
+      "error_path": "steps"
+    },
+    {
+      "id": "run_steps-count-13",
+      "arguments": {
+        "action": "run_steps",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "steps": [
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          },
+          {
+            "action": "click",
+            "target": {
+              "name": "Synthetic field",
+              "editable": true
+            },
+            "expect": {
+              "kind": "element_exists",
+              "target": {
+                "name": "Synthetic field",
+                "editable": true
+              }
+            }
+          }
+        ]
+      },
+      "accepted": false,
+      "error_path": "steps"
+    },
+    {
+      "id": "query-length-0",
+      "arguments": {
+        "action": "list_windows",
+        "query": ""
+      },
+      "accepted": true
+    },
+    {
+      "id": "query-length-100",
+      "arguments": {
+        "action": "list_windows",
+        "query": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+      },
+      "accepted": true
+    },
+    {
+      "id": "query-length-101",
+      "arguments": {
+        "action": "list_windows",
+        "query": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+      },
+      "accepted": false,
+      "error_path": "query"
+    },
+    {
+      "id": "key-length-40",
+      "arguments": {
+        "action": "press_key",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+      },
+      "accepted": true
+    },
+    {
+      "id": "key-length-41",
+      "arguments": {
+        "action": "press_key",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+      },
+      "accepted": false,
+      "error_path": "key"
+    },
+    {
+      "id": "text-length-4000",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂"
+      },
+      "accepted": true
+    },
+    {
+      "id": "text-length-4001",
+      "arguments": {
+        "action": "type_text",
+        "control_session_id": "test-session",
+        "device_epoch": "test-epoch",
+        "observation_id": "test-observation",
+        "text": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂"
+      },
+      "accepted": false,
+      "error_path": "text"
+    },
+    {
+      "id": "mode-on-status-legacy",
+      "arguments": {
+        "action": "status",
+        "mode": "text"
+      },
+      "accepted": true
+    },
+    {
+      "id": "unrecognized-field",
+      "arguments": {
+        "action": "status",
+        "synthetic_unknown": "sensitive-value"
+      },
+      "accepted": false,
+      "error_path": "<unknown>"
+    },
+    {
+      "id": "not-object",
+      "arguments": [],
+      "accepted": false,
+      "error_path": "$"
+    },
+    {
+      "id": "invalid-action",
+      "arguments": {
+        "action": "invented"
+      },
+      "accepted": false,
+      "error_path": "action"
+    },
+    {
+      "id": "missing-action",
+      "arguments": {},
+      "accepted": false,
+      "error_path": "action"
+    }
+  ]
+}

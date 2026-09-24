@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-cover-song"
+version = "0.1.0"
+description = "RVC voice conversion and cover-song business runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.31,<3", "urllib3>=2.2,<3"]
+
+[project.entry-points."akane.plugins.v1"]
+"akane.cover-song" = "akane_cover_song.plugin:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

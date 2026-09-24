@@ -1,0 +1,82 @@
+{
+  "schema_version": "akane.market_data.choice_fixture.v1",
+  "synthetic": true,
+  "received_at": "2026-07-10T10:05:00+08:00",
+  "news": [
+    {
+      "datetime": "2026-07-10 09:30:00",
+      "eitime": "2026-07-10 09:31:20",
+      "code": "000000.TEST",
+      "content": "这是仅用于单元测试的合成资讯，不代表任何真实公司、证券或市场事件。",
+      "title": "合成测试公司发布季度经营数据",
+      "infoCode": "SYNTH-NEWS-001",
+      "medianname": "Synthetic Choice Fixture",
+      "url": "https://example.invalid/choice-fixture/SYNTH-NEWS-001",
+      "type": "companynews",
+      "label": "earnings,synthetic"
+    },
+    {
+      "datetime": "2026-07-09 16:10:00",
+      "eitime": "2026-07-09 16:11:00",
+      "code": "000000.TEST",
+      "content": "第二条离线合成资讯，用于测试类型、日期和关键词过滤。",
+      "title": "合成测试公司披露离线公告",
+      "infoCode": "SYNTH-NEWS-002",
+      "medianname": "Synthetic Choice Fixture",
+      "url": "https://example.invalid/choice-fixture/SYNTH-NEWS-002",
+      "type": "regularreport",
+      "label": ["announcement", "synthetic"]
+    }
+  ],
+  "quotes": [
+    {
+      "TIME": "2026-07-10 10:00:00",
+      "CODE": "000000.TEST",
+      "PRECLOSE": "100.00",
+      "OPEN": 100.5,
+      "HIGH": 103.0,
+      "LOW": 99.5,
+      "NOW": "102.00",
+      "VOLUME": 123456,
+      "AMOUNT": 12500000,
+      "STATUS": "trading"
+    }
+  ],
+  "series": [
+    {
+      "code": "000000.TEST",
+      "interval": "1d",
+      "adjusted": "none",
+      "timezone": "Asia/Shanghai",
+      "points": [
+        {
+          "datetime": "2026-07-08 15:00:00",
+          "open": 98.0,
+          "high": 101.0,
+          "low": 97.5,
+          "close": 100.0,
+          "volume": 100000,
+          "amount": 9900000
+        },
+        {
+          "datetime": "2026-07-09 15:00:00",
+          "open": 100.0,
+          "high": 102.0,
+          "low": 99.0,
+          "close": 100.0,
+          "volume": 110000,
+          "amount": 11000000
+        },
+        {
+          "datetime": "2026-07-10 15:00:00",
+          "open": 100.5,
+          "high": 103.0,
+          "low": 99.5,
+          "close": 102.0,
+          "volume": 123456,
+          "amount": 12500000
+        }
+      ]
+    }
+  ]
+}

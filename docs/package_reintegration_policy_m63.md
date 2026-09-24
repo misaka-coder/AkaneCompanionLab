@@ -1,0 +1,744 @@
+# Package Reintegration Policy M63
+
+Status: policy and audit implemented.
+Date: 2026-07-09
+
+## Goal
+
+Akane extracted several reusable packages after the public source-alpha line was
+already opened. Some packages have been applied back into Akane. The risk is not
+package extraction itself; the risk is applying a package back as a second
+parallel implementation while the old Akane implementation keeps growing.
+
+M63 sets the rule for future package reintegration:
+
+```text
+Package reintegration must reduce owning implementations.
+```
+
+In practical terms:
+
+```text
+Applying a package back to Akane is a replacement, not a permanent new path.
+```
+
+## Scope
+
+In scope for this document:
+
+- `promptpack-core`
+- `charpack-core`
+- `channelcore-onebot`
+- `capcore`
+- `capcore-adapter-*`
+- `capcore-provider-*`
+- `capcore-host-utils`
+- `petcore-protocol`
+- `petdesk-character-host`
+- `petdesk-live2d-pixi-driver`
+- `petdesk-runtime`
+- `voicecore`
+
+Out of scope for M63:
+
+- `memcore`
+
+`memcore` needs a separate public/private decision. M63 does not decide that
+question and should not be used to force `memcore` into either public hard
+dependency or private optional dependency status.
+
+## Hard Rule
+
+When a reusable package is applied back to Akane, the old Akane implementation
+must end in exactly one of these states:
+
+```text
+deleted
+thin adapter
+documented migration window
+```
+
+Definitions:
+
+- `deleted`: Akane no longer owns that implementation.
+- `thin adapter`: Akane keeps only product-specific glue, config, routing,
+  profile selection, UI/API shape, or compatibility re-export. The package owns
+  the reusable logic.
+- `documented migration window`: temporary coexistence with a written reason,
+  one authority implementation, removal target, and tests proving new code does
+  not keep expanding the old path.
+
+Not allowed:
+
+- old and new implementations both own business logic indefinitely;
+- new package path is added while old callers continue to mutate old logic;
+- two places validate the same schema or normalize the same protocol with
+  different rules;
+- docs say the package owns a behavior while Akane still contains a growing
+  full implementation for that behavior;
+- tests only check constants/imports and do not prove the intended path is used.
+
+## Lean Reintegration Rule
+
+Package adoption is optional. A reusable package should be applied back to
+Akane only when it clearly reduces Akane's iteration complexity.
+
+Good reasons to apply a package back:
+
+- it deletes an Akane-owned implementation;
+- it turns an old Akane implementation into a thin product adapter;
+- it removes repeated schema normalization, protocol validation, descriptor
+  projection, or resource resolution logic;
+- it makes a product path easier to test by narrowing the number of authority
+  implementations.
+
+Bad reasons to apply a package back:
+
+- it looks more architectural but keeps the old path alive;
+- it adds a second API while existing callers still mutate the first one;
+- it preserves redundant fields, status objects, prompt sections, or UI labels
+  whose product effect is the same;
+- it exposes future-only placeholders to the user, model, or runtime before
+  real behavior exists.
+
+If the package-backed behavior is roughly equivalent to the old behavior, the
+old behavior should be deleted or collapsed in the same change window. Do not
+leave "we will clean it later" as the default outcome.
+
+Future-facing ideas belong in docs or tickets until they have real behavior.
+They should not appear as prompt hints, runtime capability modules, status
+fields, or settings controls just to advertise planned work.
+
+## Reintegration Gate
+
+Before applying a package back to Akane, do this checklist:
+
+1. Find the old implementation entry points with `rg`.
+2. List all active callers and tests.
+3. Pick one authority implementation.
+4. Verify that adopting the package reduces Akane-owned logic rather than only
+   adding another layer.
+5. Change old Akane code to `deleted`, `thin adapter`, or `documented migration window`.
+6. Remove redundant fields, status blocks, prompts, docs, or UI hints whose
+   product effect is unchanged.
+7. Add or update tests that prove callers use the intended package-backed path.
+8. Update docs with the old implementation status.
+9. If a migration window is needed, document:
+   - start milestone/commit;
+   - why coexistence is needed;
+   - old files/functions that must be deleted or collapsed;
+   - validation command that keeps the window from expanding.
+
+## Dependency Classes
+
+Use these labels when deciding whether a package can be required by Akane:
+
+```text
+public-hard
+  Package is public or intended to be public, installable by normal users, and
+  can be a normal Akane runtime dependency.
+
+optional-runtime
+  Akane can use it when installed, but must start and degrade structurally
+  without it.
+
+dev-only
+  Local smoke, release tooling, or acceptance helper. It must not become a
+  public runtime requirement.
+
+incubating
+  Interface is not stable enough to replace old Akane behavior yet.
+```
+
+This label is separate from repository layout. A package can be an independent
+repo and still be private, public, optional, or dev-only.
+
+## Current Audit
+
+### `promptpack-core`
+
+Current Akane use:
+
+- `companion_v01/prompt_blocks.py` imports `PromptBlock` and subclasses
+  `PromptBlockRegistry`.
+- prompt text remains Akane-owned product content.
+
+Authority:
+
+- `promptpack-core` owns prompt block/registry primitives and future generic
+  assembly/cache-audit primitives.
+- Akane owns actual persona wording, mode-specific rules, tool instructions,
+  and product prompt content.
+
+Old implementation status:
+
+```text
+thin adapter
+```
+
+The old Akane prompt block registry has effectively become an Akane content
+registry layered on `promptpack-core`. That is acceptable.
+
+LD006 cleanup:
+
+- `PromptBuilder` remains the owner of Akane final chat prompt assembly.
+- `promptpack-core` remains the reusable primitive layer for prompt blocks,
+  profiles, sections, and cache/audit helpers.
+- `PromptAssembler` must not be added as a second final chat assembler beside
+  `PromptBuilder.build_final_generation_context()`.
+
+Next cleanup target:
+
+- A future migration to `PromptAssembler` is allowed only if it replaces one
+  specific `PromptBuilder` assembly path in the same change window and updates
+  the LD006 guard tests.
+
+### `charpack-core`
+
+Current Akane use:
+
+- `companion_v01/resource_manifest.py` re-exports `ResourceManifest`.
+- `companion_v01/character_context_library.py` re-exports context library
+  services.
+- `companion_v01/desktop_pet_character_resources.py` imports character resource
+  services and helpers.
+
+Authority:
+
+- `charpack-core` owns reusable character pack resources, manifest reading,
+  context library projection, visual output normalization, and pack id
+  sanitizing.
+- Akane owns product routes, creator kit UI, user/session policy, TTS playback,
+  QQ delivery, and concrete character assets.
+
+Old implementation status:
+
+```text
+thin adapter
+```
+
+The old `ResourceManifest` implementation is no longer Akane-owned. Akane keeps
+compatibility import paths so existing callers can continue using
+`companion_v01.resource_manifest.ResourceManifest`.
+
+LD009 cleanup:
+
+- `desktop_pet_character_resources.py` no longer imports underscored helpers
+  from `charpack-core`; it remains a compatibility re-export over public
+  character resource services, constants, and pack-id sanitizing.
+
+### `channelcore-onebot`
+
+Current Akane use:
+
+- `companion_v01/qq_gateway.py` delegates OneBot message text, CQ segment,
+  attachment, reply, mention, wake-word, and poke normalization to the package.
+- One inbound normalization now creates the ordered package `MessageChain` kept
+  on `QQMessageContext`; quote/forward resolution and trusted mface extraction
+  consume that same parsed message instead of reparsing the event.
+- It also delegates outbound target, text/image/voice/reply/mface segments,
+  message/file action selection, and logical result normalization.
+- The package capability matrix now declares which real content families may
+  share a visible OneBot reply, and its bounded ledger owns the one-reply claim
+  for an inbound message. Akane only supplies the target, source message id,
+  and content family.
+- `QQMessageContext` remains an Akane product projection that adds session,
+  profile, character, reply-mode, model, prompt, and memory-facing fields.
+
+Authority:
+
+- `channelcore-onebot` owns the neutral inbound contracts and OneBot
+  event/message-segment normalization plus the M1 self-id, stale, and atomic
+  replay admission boundary, the M2 neutral group-trigger/follow decision,
+  the M3 quoted-message lookup/scope boundary, and the M4 outbound protocol
+  plan/result boundary.
+- Akane owns webhook authentication and HTTP status mapping, session/profile mapping, product commands,
+  attachment materialization, vision, MemCore, model calls, TTS, and delivery
+  policy.
+- Group vision enablement remains Akane-owned and is passed into the package as
+  `allow_attachment_follow`; Akane supplies only the Bot-bound action transport
+  for quoted lookup, attachment-cache lookup, self-check, and current outbound
+  delivery. The HTTP transport, product media choice, local-file authorization,
+  and fallback ordering remain Akane-owned; protocol/message construction and
+  logical acknowledgement validation are package-owned.
+
+Old implementation status:
+
+```text
+thin adapter for inbound normalization, admission, group trigger policy,
+quoted lookup projection, and outbound product-to-protocol projection
+```
+
+The old parsing and replay helpers in `qq_gateway.py` are now deleted or pure
+compatibility projections. Akane must not add new OneBot segment, identity,
+freshness, replay, outbound segment, action-selection, or logical result rules
+there. Akane's remaining sending code prepares product content and safe local
+media candidates, then executes the package plan through its Bot-bound
+transport.
+
+The old Akane-owned reply-claim dictionary, lock, eviction constant, and
+`_claim_reply_message_id()` policy are deleted. The remaining
+`_reply_reference_for_content()` method is a thin product adapter over
+`channelcore-onebot.ReplyReferenceLedger`; it does not duplicate the matrix or
+claim state.
+
+The compatibility `clean_message`, resolved mention labels, and materialization
+attachment dictionaries on `QQMessageContext` are thin Akane product
+projections. They are derived from the immutable package message and must not
+be used to reconstruct or mutate protocol ordering. Resolved quote content is
+stored once as structured MemCore `reply_reference` evidence rather than being
+duplicated into a `qq.reply_reference` message-text block.
+
+### `capcore`
+
+Current Akane use:
+
+- `companion_v01/capcore_runtime.py` uses capcore permission primitives.
+- `companion_v01/local_capability_config.py` uses capcore approval and
+  projection helpers.
+- `companion_v01/tool_runtime.py` uses capcore schema validation and permission
+  request builders.
+- Dynamic adapter handlers preserve the model's raw argument keys and values
+  until capcore validation. Akane removes only outer host transport metadata;
+  compact redaction is restricted to capcore-owned permission previews and
+  never mutates the arguments sent to MCP, Python, or plugin adapters.
+- Dynamic MCP, Python, and plugin handlers enter capcore through the single
+  public `prepare_invocation()` gate. Akane resolves the effective profile and
+  per-capability approval mode before that call, then owns only approval event
+  rendering and concrete adapter execution.
+- `companion_v01/capability_adapters/types.py`,
+  `protocol.py`, and `manifest_loader.py` are compatibility re-export layers.
+
+Authority:
+
+- `capcore` owns capability descriptor types, schema projection, invocation
+  argument validation, risk/confirm/effects policy, and permission
+  request/decision primitives.
+- Akane owns concrete tool handlers, product profile selection, approval UI
+  state, local config files, and final execution orchestration.
+
+Old implementation status:
+
+```text
+thin adapter with active host-owned orchestration
+```
+
+Akane still has a large `tool_runtime.py`, but that file owns product tools and
+handler orchestration. It must not grow a second schema validator or permission
+policy that duplicates capcore.
+
+Known risk:
+
+- Legacy JSON `tool_call` and provider-native tool calls coexist. That is a
+  migration window for model invocation shape, not permission/schema ownership.
+  The bridge must not become a second provider envelope implementation.
+
+Three-core production slice:
+
+- `tests/test_three_core_production_slice.py` proves one QQ group-mention turn
+  through channelcore inbound, a CapCore Python adapter/native OpenAI schema,
+  MemCore action/result projection and settlement, and channelcore outbound.
+- Akane keeps no fourth coordinator for that path. Its remaining code is a
+  thin product binding over package-owned protocol, capability, and context
+  contracts.
+- Model-supplied executable path arguments remain in the MemCore action; only
+  credential-shaped fields are removed before durable projection.
+
+### `capcore-provider-openai`
+
+Current Akane use:
+
+- `companion_v01/native_tool_schema.py` delegates OpenAI tool schema envelope
+  generation to `build_openai_chat_tool_set`. Native projection requires the
+  handler's canonical CapCore `CapabilityToolSpec`; the former fallback that
+  rebuilt schema/risk/description from legacy metadata or prompt prose is
+  deleted.
+- `companion_v01/llm_runtime.py` delegates OpenAI non-streaming and streaming
+  tool-call parsing to provider package parsers.
+
+Authority:
+
+- `capcore-provider-openai` owns OpenAI Chat Completions native tool schema
+  envelope and tool-call parsing.
+- Akane owns model selection, provider allowlist, forced JSON policy, and
+  mapping parsed native invocations back into the existing internal tool shape.
+
+Old implementation status:
+
+```text
+documented migration window
+```
+
+The old handwritten `tool_call` JSON path remains for providers/modes that
+cannot use native tools yet. It is allowed only as a compatibility path. New
+OpenAI-native envelope or parser logic should go into `capcore-provider-openai`,
+not Akane.
+
+Legacy prompt migration V1 removes the per-handler prompt authority for
+`web_search`, the four MemCore tools, and `onebot_action`. Their compatibility
+instructions now render deterministically from canonical ToolSpecs through one
+Akane-owned final-JSON adapter. This does not move Akane prompt wording into
+CapCore and does not change the documented migration-window status.
+
+### `capcore-provider-native-tools`
+
+Current Akane use:
+
+- Runtime dependency through provider package ecosystem and release audit.
+- No broad direct Akane import in the backend path.
+
+Authority:
+
+- `capcore-provider-native-tools` owns reusable provider-neutral invocation
+  hygiene.
+- Akane owns whether to use that runner in a given provider flow.
+
+Old implementation status:
+
+```text
+dev/ecosystem support
+```
+
+Do not add another Akane-owned generic native-tool runner if this package
+already covers the use case.
+
+### `capcore-provider-anthropic`
+
+Current Akane use:
+
+- Ecosystem package and smoke coverage.
+- Not a current Akane runtime hard dependency.
+
+Authority:
+
+- package owns Anthropic tool schema and tool-use parsing.
+
+Old implementation status:
+
+```text
+dev-only / public-later
+```
+
+If Akane later adds Anthropic native tools, it should use this package directly
+instead of copying the OpenAI adapter pattern into Akane.
+
+### `capcore-host-utils`
+
+Current Akane use:
+
+- Ecosystem package and release audit.
+- Not a current Akane runtime hard dependency.
+
+Authority:
+
+- package owns generic workspace/approval utility patterns.
+- Akane owns its concrete approval UI and product policy.
+
+Old implementation status:
+
+```text
+public-later
+```
+
+Future adoption must replace specific Akane helper code or remain out of the
+runtime path.
+
+### `capcore-adapter-python`
+
+Current Akane use:
+
+- `companion_v01/capability_adapters/python_local.py` subclasses
+  `PythonCapabilityAdapter` and defines Akane-specific callable specs.
+
+Authority:
+
+- package owns local callable adapter invocation and descriptor projection.
+- Akane owns which local functions are exposed and the concrete function bodies.
+
+Old implementation status:
+
+```text
+thin adapter
+```
+
+This is the desired pattern.
+
+### `capcore-adapter-mcp`
+
+Current Akane use:
+
+- `companion_v01/capability_adapters/mcp_stdio.py` is a compatibility wrapper
+  over the package's stdio or Streamable HTTP adapter selected by config.
+- Akane keeps argv/env/header-placeholder hydration, profile config, and the
+  synchronous host worker through `_AkaneMcpClient`.
+
+Authority:
+
+- package owns official-SDK MCP stdio/Streamable HTTP transport, optional HTTP
+  session pooling, tool-to-capcore descriptor conversion, capability id
+  handling, and JSON-safe invocation arguments.
+- Akane owns server config, environment/header placeholder hydration,
+  low-risk allowlist, approval mode, and host event-loop lifecycle.
+
+Old implementation status:
+
+```text
+thin adapter with host-owned client bridge
+```
+
+LD005 cleanup:
+
+- `capcore-adapter-mcp` exposes a public
+  `McpStdioCapabilityAdapter.descriptor_for_tool(...)` API for trusted cached
+  tool metadata.
+- Akane uses that API when building dynamic MCP handlers and no longer calls
+  package-private `_descriptor_for_tool` / `_capability_id` methods.
+
+The host-owned client bridge is acceptable because it binds Akane config,
+placeholder hydration, and its synchronous runtime to the package client.
+Akane's HTTP bridge must remain a thin scheduler; protocol/session behavior
+belongs to the package.
+
+### `capcore-adapter-speech`
+
+Current Akane use:
+
+- `openai_compat_tts.py` and `openai_compat_asr.py` re-export package adapters.
+- voice and petdesk routes invoke those adapters when configured.
+
+Authority:
+
+- package owns reusable OpenAI-compatible ASR/TTS adapter behavior.
+- Akane owns provider profile storage, route responses, playback/audio delivery,
+  and fallback policy.
+
+Old implementation status:
+
+```text
+thin adapter / partial migration
+```
+
+Known risk:
+
+- Akane still has older TTS service paths and route-level fallback behavior.
+  That can be valid product policy, but any reusable speech client logic that
+  overlaps package behavior should be collapsed into `capcore-adapter-speech`
+  before more providers are added.
+- P5e0 converges TTS preference aliases and selected-provider failure semantics
+  in the host's `tts_provider_selection.py` / `tts_provider_runtime.py`. HTTP,
+  QQ, the transitional pet bridge and realtime client binding no longer choose
+  Edge after an explicitly selected voice fails. The catalog uses the same
+  preference interpreter and does not advertise an unselected fallback. Speech
+  protocol ownership stays in `capcore-adapter-speech`; public TTS/ASR plugin
+  services remain a later migration slice.
+
+### `capcore-adapter-comfyui`
+
+Current Akane use:
+
+- `capability_adapters/comfyui.py` re-exports package adapter/API.
+- `local_workflow_execution.py` imports package execution dataclasses and
+  normalizers.
+- `local_workflow_runners/comfyui.py` runs configured Akane workflows through
+  `ComfyUiCapabilityAdapter`.
+
+Authority:
+
+- package owns ComfyUI workflow invocation, slot mapping, upload/prompt/history
+  handling, and output asset normalization.
+- Akane owns workflow profile config, product routes, artifact storage, and UI.
+
+Old implementation status:
+
+```text
+thin adapter
+```
+
+Do not grow another local workflow execution engine inside Akane when the
+package API can be extended instead.
+
+### `voicecore`
+
+Current Akane use:
+
+- `companion_v01/voice_runtime/host.py` delegates event reduction, snapshot
+  ownership, version fencing, command/projection records, and replay-compatible
+  event serialization to `voicecore`;
+- the Slice A host bridge supplies Akane-owned journal, projection, and
+  command-executor ports plus a fake-audio acceptance chain;
+- the current default-off durable Slice A ports add a transactional SQLite
+  event journal, an atomic projection outbox, immutable opaque text artifacts,
+  deterministic snapshot replay, and a restored-snapshot Host entry without
+  activating a fake product route;
+- `BotRuntime` now owns an instance-private production voice service for
+  `/voice/realtime`; it builds the configured streaming ASR adapter, replays the
+  durable journal, drains projection recovery, and projects one committed
+  `message.user.voice` turn into MemCore;
+- provisional ASR checkpoints are durable but prompt-invisible and
+  non-retrievable; a later typed `message.assistant.voice` final completes the
+  same MemCore turn and keeps delivery/interruption state in provider-visible
+  structured history;
+- pending projections are delivered at least once by stable `projection_id`
+  and fence later model/audio commands until the missing trigger facts are
+  acknowledged;
+- command intent and complete observation batches are persisted as host-owned
+  receipts; restart replays stable observation event ids, while an unknown
+  in-flight effect requires executor recovery by VoiceCore's
+  `idempotency_key` instead of blind re-execution;
+- `start_response_generation` now uses Akane's existing Thinking Agent over the
+  already committed MemCore voice turn; model, retrieval, and tool behavior are
+  not copied into VoiceCore or a second Akane engine path;
+- command receipts durably apply `response.created` and `generation_started`
+  before model work is submitted in the background; completion and failure flow
+  back through VoiceCore, while duplicate ordinary-message persistence is
+  suppressed;
+- old file-oriented `/asr` remains the active desktop-pet fallback; no QQ,
+  desktop-pet AudioWorklet, `/tts`, or playback path is activated by this slice.
+  Until TTS exists, the response completes as typed `text_only` and does not
+  declare fake speech units.
+
+Authority:
+
+- `voicecore` owns VoiceEvent/Command/Projection contracts, the Input Turn /
+  Response / Speech Unit reducers, interruption/candidate/delivery semantics,
+  snapshot invariants, and replay;
+- Akane owns product policy, durable journal choice, MemCore projection,
+  concrete ASR/TTS/playback adapters, model calls, and UI/channel delivery.
+
+Old implementation status:
+
+```text
+no legacy Voice Runtime state machine; incubating package with thin host adapter
+```
+
+Akane must not copy reducer transitions into the host adapter. Existing
+file-oriented `/asr`, `/tts`, and frontend playback code remains unchanged
+until a later, explicitly tested replacement slice connects real observations.
+
+## Petdesk Package Audit
+
+### `petcore-protocol`
+
+Current Akane use:
+
+- Contract source for petdesk runtime events and resource/display shapes.
+- Akane Python backend does not import it directly.
+
+Authority:
+
+- package owns TypeScript protocol contracts for petdesk runtimes and hosts.
+- Akane owns `/pet/*` bridge payload construction until a Python projection is
+  deliberately introduced.
+
+Old implementation status:
+
+```text
+contract package; no Python hard dependency
+```
+
+If Akane adds Python protocol helpers later, they should be generated or
+implemented as a package-owned projection, not copied ad hoc in the backend.
+
+### `petdesk-character-host`
+
+Current Akane use:
+
+- Character host package for TS/Node bridge and hot-reload workflows.
+- Akane backend does not embed it.
+
+Authority:
+
+- package owns generic character pack scanning/projection for TS hosts.
+- Akane owns its existing Python character resource service and public routes.
+
+Old implementation status:
+
+```text
+dev/release ecosystem support
+```
+
+Do not embed Node host behavior into the Python backend just to avoid writing a
+proper bridge.
+
+### `petdesk-runtime`
+
+Historical M32 integration:
+
+- sibling Tauri/WebView2 runtime launched by Akane starter scripts;
+- consumed through `/pet/health`, `/pet/resource-manifest`, `/pet/snapshot`,
+  `/pet/turn`, and audio resource routes.
+
+Current authority (supersedes the original M63 runtime direction):
+
+- `desktop_pet_next` is Akane's active desktop product mainline, as specified
+  in `AGENTS.md`; new Akane desktop behavior belongs there.
+- `petdesk-runtime` owns its reusable runtime implementation in the package
+  ecosystem. It is not a second authority for Akane product behavior.
+- Akane owns backend turn generation, TTS synthesis, character resources,
+  session policy, and compatibility bridge output.
+
+Old implementation status:
+
+```text
+documented compatibility bridge; not the active Akane desktop product mainline
+```
+
+The old Electron `desktop_pet` remains frozen for existing user entry points.
+Akane `/pet/*` must remain a bridge, not a second runtime or a reason
+to expand the frozen Electron implementation. It is transitional. Applying package behavior into
+`desktop_pet_next` still requires deletion or collapse of the replaced host path.
+
+Desktop perception cleanup: `desktop_pet_next` no longer polls or automatically
+attaches window titles or clipboard text. The bound Satellite owns on-demand
+window reads, without the old frontend cache. See
+`desktop_perception_retirement_v1.md` for the removed paths, compatibility
+boundary, migration behavior, and regression commands.
+
+### `petdesk-live2d-pixi-driver`
+
+Current Akane use:
+
+- runtime-side Live2D driver package.
+- Not a Python backend dependency.
+
+Authority:
+
+- package owns Pixi/Cubism driver adapter behavior.
+- Akane owns character pack selection and product acceptance.
+
+Old implementation status:
+
+```text
+runtime plugin; Live2D Productization L1 pending
+```
+
+Live2D product work should extend this runtime-side package/contract rather
+than add Live2D rendering logic to the Python backend.
+
+## Preferred Next Work
+
+After LD006, the promptpack ownership decision is closed for now. The best
+remaining lean-down candidates are:
+
+```text
+native tools default / legacy tool_call migration window
+memcore default / legacy memory migration window
+```
+
+These are higher-risk P1 cuts and should start with focused migration windows,
+not opportunistic rewrites.
+
+## Validation
+
+M63 is document/policy-only. Validation should include:
+
+```powershell
+python -m unittest tests.test_package_reintegration_policy -v
+python -m ruff check tests\test_package_reintegration_policy.py
+python -m ruff format --check tests\test_package_reintegration_policy.py
+python -m py_compile tests\test_package_reintegration_policy.py
+git diff --check -- AGENTS.md README.md docs\package_reintegration_policy_m63.md tests\test_package_reintegration_policy.py
+```
+
+No runtime, backend, QQ bot, petdesk window, package build, or package test
+process needs to be started for this phase.

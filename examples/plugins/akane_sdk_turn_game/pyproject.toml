@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-sdk-turn-game"
+version = "0.1.0"
+description = "SDK-first deterministic turn game and host Task lifecycle"
+requires-python = ">=3.11"
+dependencies = ["akane-plugin>=0.14,<0.15"]
+
+[project.entry-points."akane.plugins.v1"]
+"example.sdk-turn-game" = "akane_sdk_turn_game:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

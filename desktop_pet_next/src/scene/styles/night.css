@@ -1,0 +1,32 @@
+.is-night .room-vignette {
+  background:
+    linear-gradient(90deg, #151e3dcc, #19233670 20%, transparent 46%),
+    linear-gradient(0deg, #0c1422aa, transparent 45%, #12203b55);
+}
+.is-night .room-topbar,
+.is-night .room-note {
+  color: #f3e5cb;
+}
+.is-night .room-brand small,
+.is-night .room-note p,
+.is-night .note-name span,
+.is-night .room-location {
+  color: #d1bfa2;
+}
+.is-night .eyebrow {
+  color: #ddb778;
+}
+.is-night .brand-mark {
+  color: #ead2a1;
+  border-color: #e1c58a40;
+}
+.is-night .connection-status {
+  color: #d4ceb9;
+}
+.is-night .room-drawer .eyebrow {
+  color: var(--accent);
+}
+.room-error > button:not(:last-child) {
+  flex-shrink: 0;
+  border-bottom: 1px solid currentColor;
+}

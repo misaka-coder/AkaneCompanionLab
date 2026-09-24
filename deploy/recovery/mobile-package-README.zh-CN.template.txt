@@ -1,0 +1,45 @@
+Akane 手机 / 其他电脑应急重登
+================================
+
+有效期：__EXPIRY__（到期后服务器自动拒绝这把密钥）
+服务器：__HOST__
+用户名：akane-recovery
+主机指纹：__FINGERPRINT__
+
+一、手机使用（推荐 Termius，Android / iPhone 都可以）
+
+1. 把本文件夹中的 akane-mobile-recovery 私钥安全导入 Termius。
+   不要发到微信、QQ、邮箱或公共网盘；建议用数据线、局域网互传或系统的近距离传输。
+2. 在 Termius 新建 Host：
+   Address = __HOST__
+   Port = 22
+   Username = akane-recovery
+   Key = akane-mobile-recovery
+3. 第一次连接时核对主机指纹必须是：
+   __FINGERPRINT__
+4. 连接后会出现 1-4 菜单：
+   1 只查状态；2 强制恢复个人号；3 强制恢复金融号；4 强制恢复两个号。
+   选 2/3/4 会重启对应 Bot，避免卡死会话被残留的账号信息误判为在线。
+5. 执行结果会停留到你按回车关闭。如果显示 connected 或
+   connected_after_restart，说明账号已经在线，此时不会生成二维码，
+   SFTP 中的 qr 目录为空是正常的。
+6. 如果显示 qr_ready，在 Termius 的 SFTP 中进入 qr 目录，下载 personal.png
+   或 finance.png 到手机相册。
+7. QQ 可能拒绝从相册或长按识别本机登录二维码。请把二维码显示在
+   另一台手机、平板或电脑上，再用当前手机的 QQ 摄像头扫描。可信朋友
+   可以只帮你显示二维码，但不要把私钥发给任何人。
+8. 二维码 10 分钟后自动删除。扫完重新连接，选 1 检查 connected。
+
+二、其他 Windows 电脑
+
+1. 把整个文件夹通过数据线或加密 U 盘带走，不要只复制 bat。
+2. 双击“启动应急重登.bat”，选择 status / personal / finance / both。
+3. 新二维码会下载到本文件夹的“二维码”目录并自动打开。
+
+三、安全边界
+
+- 这把密钥没有服务器 Shell，不能端口转发、上传文件或执行任意命令。
+- 它只能查询两个 Bot、重启固定 NapCat 容器并只读下载临时二维码。
+- 它读不到 Akane 记忆、模型密钥、QQ token 或部署配置。
+- 如果手机丢失，请立即撤销服务器上的 akane-recovery 密钥。
+- 回来后即使密钥已经到期，也应删除手机和便携文件夹里的私钥。

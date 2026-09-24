@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-timer"
+version = "0.3.0"
+description = "Durable one-shot scheduled events for the current conversation (SDK plugin)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["akane-plugin>=0.14,<0.15"]
+
+[project.entry-points."akane.plugins.v1"]
+"akane.timer" = "akane_timer_plugin:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

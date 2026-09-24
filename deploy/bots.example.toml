@@ -1,0 +1,44 @@
+# Copy to <AKANE_DATA_ROOT>/bots.toml to enable Host multi-Bot bootstrap.
+# When this file is active, leave AKANE_INSTANCE_ID empty: BotConfig becomes
+# the single product configuration authority.
+# Canonical multi-Bot mode also requires one Host-level AKANE_ADMIN_TOKEN in
+# deployment environment; the token never belongs in this file.
+#
+# QQ can be enabled after copying deploy/qq_profiles.example.toml to the Host
+# secret location and replacing every placeholder. Keeping it disabled is a
+# truthful configuration-only smoke for Host lifecycle and memory isolation.
+
+schema_version = 1
+default_bot_id = "akane-personal"
+
+[[bots]]
+bot_id = "akane-personal"
+enabled = true
+display_name = "Akane"
+wake_words = ["Akane"]
+character_pack_id = "akane_v1"
+memory_space_id = "akane-personal"
+model_profile_ref = "default"
+capability_profile_ref = "default"
+care_enabled = true
+
+[bots.channels.qq]
+enabled = false
+
+[[bots]]
+bot_id = "akane-finance"
+enabled = true
+display_name = "Akane Finance"
+wake_words = ["金融助手"]
+character_pack_id = "akane_v1"
+memory_space_id = "akane-finance"
+model_profile_ref = "default"
+capability_profile_ref = "default"
+care_enabled = true
+
+[bots.channels.qq]
+enabled = false
+
+[[bots.plugins]]
+id = "akane.finance"
+enabled = true

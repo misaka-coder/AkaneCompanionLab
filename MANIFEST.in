@@ -1,0 +1,3 @@
+include akane_plugin/README.md
+exclude README.md
+exclude tests/*

@@ -1,0 +1,34 @@
+fastapi
+python-multipart
+uvicorn
+chromadb
+# chromadb pulls in `build` transitively. build 1.3+ raises its packaging
+# floor to >=24.0, which clashes with DeepFilterNet's metadata in
+# requirements-ml.txt. Pin to the last 1.2.x line — still inside chromadb's
+# accepted range — so opting into ML extras does not produce a noisy
+# pip dependency conflict warning on every bootstrap.
+build>=1.0.3,<1.3
+openai
+requests
+PyYAML
+# Required by the independently packaged capcore MCP adapter.
+mcp>=1.27,<2
+pydantic-settings
+edge-tts
+python-docx
+openpyxl
+pypdf
+reportlab
+Pillow>=10,<13
+tzdata
+yt-dlp
+syncedlyrics
+json-repair
+# Managed browser automation. Browser binaries remain an explicit host install:
+# local Windows can use Edge, while headless servers install Chromium separately.
+playwright==1.60.0
+# Bounded regular-expression search for the model-facing project inspector.
+regex>=2024.11,<2027
+# Realtime microphone PCM normalization for capcore-adapter-speech.
+numpy>=1.24,<3
+soxr>=0.5,<1

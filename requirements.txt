@@ -1,0 +1,5 @@
+# Extracted Akane libraries are normal versioned artifacts. The Windows
+# bootstrap installs them from a bundled wheelhouse or configured package
+# index; source checkout paths are forbidden in the runtime contract.
+-r requirements-packages.txt
+-r requirements-runtime.txt

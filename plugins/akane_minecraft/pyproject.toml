@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-minecraft"
+version = "0.1.5"
+description = "Owner-controlled Minecraft companions through Numen MCP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["akane-plugin>=0.14.2,<0.15", "httpx>=0.27,<1"]
+
+[project.entry-points."akane.plugins.v1"]
+"akane.minecraft" = "akane_minecraft.plugin:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+akane_minecraft = ["numen-tools.json", "skills/minecraft-companion/SKILL.md"]

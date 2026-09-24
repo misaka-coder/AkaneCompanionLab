@@ -1,0 +1,265 @@
+# Tool Interface
+
+`AkaneMemoryEngine` resolves model tool calls through one handler registry and one canonical capability schema per tool.
+
+## Current Shape
+
+- Registry lives in `AkaneMemoryEngine._build_tool_handlers()`
+- Mode packs live in `TOOL_PACKS` / `MODE_TOOL_PACKS`
+- Base protocol lives in `companion_v01/tool_runtime.py`
+- Main final-response prompt receives only the tool descriptions allowed by the current `client_mode`
+- Tool execution is filtered by the same mode pack, so hidden tools cannot be executed by hallucinated `tool_call`
+
+## Mode Tool Packs
+
+Tools are split into capability packs:
+
+- `base`
+  - `retrieve_memory`
+  - `read_memory_timeline`
+  - `load_character_context`
+- `qq`
+  - `fetch_media_from_url`
+  - `inspect_attachment`
+  - `read_attachment_section`
+  - `retry_attachment`
+  - `clear_attachment_focus`
+  - `compose_file`
+  - `revise_generated_file`
+  - `apply_style_to_existing_file`
+  - `inspect_media_info`
+  - `separate_audio_stems`
+  - `clean_voice_track`
+  - `transcribe_media`
+  - `prepare_voice_dataset`
+  - `convert_media_file`
+  - `inspect_generated_file`
+  - `send_file`
+  - `manage_generated_file`
+- `desktop`
+  - `fetch_media_from_url`
+  - `open_music_search`
+  - `list_workspace`
+  - `read_workspace`
+  - `register_workspace_items`
+  - `inspect_attachment`
+  - `read_attachment_section`
+  - `retry_attachment`
+  - `clear_attachment_focus`
+  - `compose_file`
+  - `revise_generated_file`
+  - `apply_style_to_existing_file`
+  - `inspect_media_info`
+  - `separate_audio_stems`
+  - `clean_voice_track`
+  - `transcribe_media`
+  - `prepare_voice_dataset`
+  - `convert_media_file`
+  - `inspect_generated_file`
+  - `send_file`
+  - `manage_generated_file`
+
+Mode mapping:
+
+- `scene_static` -> `base + web_scene`
+- `scene_live2d` -> `base + web_scene`
+- `qq_text` -> `base + qq`
+- `desktop_pet` -> `base + desktop`
+
+## Handler Contract
+
+Each tool handler should:
+
+- expose a unique `tool_type`
+- implement `build_prompt_instruction()` so the model knows when and how to call it
+- implement `normalize_call(value)` to coerce aliases and reject invalid payloads
+- implement `execute(call=..., context=...)` and return `ToolExecutionResult`
+
+`ToolExecutionResult` currently supports:
+
+- `raw_turns`: structured side-effect output that may be persisted into dialogue history
+- `stream_events`: frontend-facing events emitted immediately during `/think`
+- `followup_context`: extra context injected into Akane's second-pass reply after the tool finishes
+
+## Adding A New Tool
+
+1. Create a new handler class in `companion_v01/tool_runtime.py` or a sibling module.
+2. Register it in `AkaneMemoryEngine._build_tool_handlers()`.
+3. Add its tool name to the correct pack in `TOOL_PACKS`.
+4. Keep prompt instructions concise and concrete; include one canonical JSON shape.
+5. Return only normalized, bounded fields from `normalize_call()`.
+6. Add focused tests for:
+   - prompt injection
+   - normalization
+   - engine dispatch / execution
+   - mode filtering, if the tool is mode-specific
+
+## Current Tool
+
+- `retrieve_memory`
+  - performs raw-first semantic/BM25 recall across raw, episodic-summary, and long-term memory
+  - is for people, events, preferences, agreements, and other content-based recall
+  - returns ranked complete match units with layer, reloadable ID, local ISO time, pre-score candidate counts, and lineage scope
+  - accepts `within_memory_id` plus `source_layers=["raw"]` to search for one detail only inside a selected summary/card lineage
+  - is not used to dump an explicitly dated transcript; exact time uses `read_memory_timeline`
+- `read_memory_timeline`
+  - reads raw dialogue by exact `time_range.start_at/end_at`, date/coarse-period selectors, or a raw `source_id` anchor
+  - does not run vector search and does not read episodic summaries or long-term semantic memory
+  - is scoped by the current profile and character pack; model-supplied user or character ids are ignored
+  - excludes the current query message from tool results while keeping it in the local daily transcript
+  - for installed character packs, shares its renderer with the rebuildable local Markdown mirror under `desktop_pet_creator_kit/characters/<pack_id>/_local/memory/`
+  - raw records without an installed character-pack owner remain under the compatibility mirror in `users_data/akane_memory_v01/memory/`
+  - daily files keep readable dialogue, actual message time, available memory mood tags, and new assistant response emotion metadata; SQLite remains the source of truth
+- `browse_memory`
+  - returns compact chronological cards and stored-history coverage for broad/high-density time ranges
+- `open_memory`
+  - opens selected raw/summary nodes as card/content, or follows one node's exact source tree with `sources`
+  - supports batch `memory_ids` for card/content; sources remains single-ID because each tree owns its cursor
+- `inspect_attachment`
+  - expands a temporary attachment card from the current session's Attachment Inbox
+  - used by QQ / desktop-style clients when Akane needs details about an earlier image or file
+  - does not promote the attachment into gifts, resources, or long-term memory
+- `read_attachment_section`
+  - expands a specific available section from a temporary document attachment, such as a line range, sheet, table, or PDF page range
+  - prefers rereading the stored original attachment when available; falls back to the current parsed attachment card
+  - if the file has no text layer or parser support, it returns a clear failure context
+  - intended for long documents where Akane should not load every detail into the prompt by default
+- `clear_attachment_focus`
+  - marks temporary attachments as `cleared` so they stop being injected into prompt context
+  - clears only the focus inbox; it does not delete raw chat memory or gift assets
+  - accepts either `target` for current/all/single-item clearing, or `targets` for arbitrary batch clearing such as `["img_001", "第2张图", "计划.md"]`
+- `retry_attachment`
+  - retries a failed temporary attachment through the same ingest pipeline
+  - preserves the original handle such as `img_006` instead of creating a new attachment
+  - useful when QQ / NapCat temporary links fail, the vision call fails, or a file parser had a transient error
+- `fetch_media_from_url`
+  - downloads one or more public media links into the current Attachment Inbox / workspace
+  - intended for “先把这个视频链接下载下来”“把这两个公开视频拉进来再转写”
+  - does not summarize, transcribe, convert, or resend by itself; after success Akane should continue with `inspect_attachment`, `inspect_media_info`, `transcribe_media`, `convert_media_file`, or `send_file`
+  - supports direct media URLs immediately, and uses `yt-dlp` for ordinary public video/audio pages when installed
+  - rejects playlists/collections and should not be used for login-only, paid, DRM, or private links
+- `open_music_search`
+  - opens a public music-platform search page for a requested song in desktop pet mode
+  - accepts a title, optional artist, and optional platform (`qq_music`, `netease_music`, `bilibili`, `youtube`)
+  - does not claim playback success, click results, log in, download, or control the player
+  - if the user wants Akane to continue operating the page, follow-up browser actions still go through `browser_page` authorization
+- `register_workspace_items`
+  - registers files already present under the configured Akane workspace as attachment handles without copying or moving them
+  - accepts one or more `workspace:/` files or directories and supports bounded recursive batch registration
+  - stores only the safe workspace URI in attachment state; absolute local paths are not added to prompts or tool results
+  - reuses the existing handle for the same active workspace URI and refreshes its parsed metadata when registered again
+  - makes the returned handle available to existing document, media, conversion, transcription, and file-delivery tools
+  - desktop turns always receive a compact workspace overview and recent-file manifest, so Akane can discover newly added files and call `list_workspace` without asking the user for an absolute path
+  - new visible files use readable date folders such as `Inbox/2026-06-10` and `Outputs/2026-06-10`; internal session UUIDs remain database identifiers and are not used as folder names
+- `compose_file`
+  - creates a new generated file such as `gen_001` from temporary attachments, generated files, or current dialogue content
+  - keeps the model-facing interface high level: sources, task, output format, title, and final content/table
+  - supports `md`, `txt`, `docx`, `xlsx`, `pdf`, `json`, `csv`, and `html` as rendering targets when dependencies are installed
+  - if no final content/table is supplied, it can use a larger bounded excerpt from the stored source attachment instead of only the short prompt preview
+  - for faithful source conversion/export, Akane should leave `content_markdown/table_rows` empty so the backend reads the stored original attachment or generated file body without injecting task/source metadata into the output
+  - if Akane accidentally copies only a visible source-prefix preview for a faithful conversion, the backend can recover by replacing it with fuller source material
+  - accepts a declarative `formatting` object for common styles, such as `header.bold`, `columns[].match_header`, `rows[].index`, `cells[]`, and `highlights[].text`
+  - current style execution focuses on `xlsx` and `docx`; `pdf` remains plain/content-first
+  - stores output in `GeneratedFileStore`; it never overwrites the user's original attachment
+  - returns a `generated_file_ready` event so QQ can attempt file upload and future clients can expose downloads
+- `revise_generated_file`
+  - creates a new version from an existing generated file such as `gen_001 -> gen_002`
+  - requires Akane to provide the revised final content via `content_markdown` or `table_rows`; Python only renders and versions it
+  - may reuse the same declarative `formatting` object to apply colors, bolding, highlights, rows, columns, or cells to the new version
+  - never overwrites older generated files
+  - returns the same `generated_file_ready` event used by `compose_file`
+- `apply_style_to_existing_file`
+  - creates a styled copy of an existing `docx/xlsx` attachment or generated file without asking Akane to re-output the full content
+  - accepts `target`, optional `target_type`, `instruction`, `output_title`, and the same declarative `formatting` object
+  - is intended for large-file operations such as “姓名列标红”, “低于 60 分整行标红”, or “把重点高亮”
+  - stores the result as a new generated file, preserving the original attachment/generated file
+  - returns the same `generated_file_ready` event used by other generated-file tools
+- `inspect_media_info`
+  - reads media metadata through `ffprobe` without generating a new file
+  - answers questions such as duration, codec, sample rate, channels, bitrate, resolution, frame rate, or whether the file has an audio track
+  - ordinary uploaded audio/video attachments already carry a lightweight media card when ingestion succeeds, so this tool is mainly for rechecking, generated files, or cases where Akane needs exact specs before conversion
+- `separate_audio_stems`
+  - uses a local audio-separation model workflow to split one source into `vocals` and `instrumental`
+  - currently focuses on `vocals_instrumental` and should be used for “把人声和伴奏拆开 / 提取干声 / 保留伴奏”
+  - supports ordinary audio files and video-like sources with audio tracks; video sources are prepared through `ffmpeg` before separation
+  - outputs multiple generated files, which can be further refined again with `convert_media_file`
+- `clean_voice_track`
+  - cleans one speech/vocal source for tasks such as denoising, dereverb, de-echo, or making the voice more focused
+  - supports `mode: denoise|dereverb|deecho|voice_focus` and `quality: auto|ai|basic`
+  - `quality=auto` prefers a local DeepFilterNet workflow when available and falls back to basic `ffmpeg` cleanup otherwise
+  - is intended for speech-like material or separated vocal stems, not for ordinary format conversion
+  - outputs one generated file that can still be trimmed, resampled, normalized, or transcoded again with `convert_media_file`
+- `transcribe_media`
+  - transcribes one or more audio/video/generated media sources into text or subtitle files
+  - accepts `source_ids`, `output_format: md|txt|srt|vtt|json`, `language`, `with_timestamps`, and `merge_outputs`
+  - uses local `faster-whisper` when available; it does not call a cloud ASR API
+  - can generate one merged transcript or one transcript per source
+  - is intended before summarizing video/audio content, creating captions, meeting notes, highlights, or training labels
+- `prepare_voice_dataset`
+  - prepares one or more speech/vocal sources as a voice-training dataset batch
+  - accepts `source_ids`, `profile: gpt_sovits|rvc|archive`, optional sample-rate and slicer parameters
+  - standardizes sources through `ffmpeg`, slices by silence/RMS, writes `slices/*.wav`, `manifest.json`, and `README.md` into one generated zip
+  - exposes issue slice filenames such as `too_short`, `too_long`, `low_volume`, and `clipping` so Akane can discuss cleanup with the user
+  - is intended after `separate_audio_stems` / `clean_voice_track`, but can also process ordinary speech audio directly
+- `convert_media_file`
+  - converts ordinary non-encrypted media attachments/generated files through `ffmpeg`
+  - supports `mp3`, `wav`, `flac`, `m4a`, `aac`, `ogg`, and `opus`
+  - can compress audio, normalize sample rate/channels, or extract audio from video-like sources such as `mp4/mov/mkv/webm` if `ffmpeg` supports the input
+  - can trim a single file with `start_time/end_time`, normalize loudness with `normalize_volume`, adjust overall volume with `volume_gain_db`, remove leading/trailing silence with `trim_silence`, add `fade_in_seconds/fade_out_seconds`, or change speed with `speed_ratio`
+  - `bitrate`, `sample_rate`, and `channels` are optional; Akane should leave them empty unless the user asks for compression or a specific audio spec
+  - media polishing fields are also optional; Akane should only fill them when the user asks to cut a clip, make volume comfortable, make it louder/quieter, add fades, or slow down/speed up
+  - use `normalize_volume` for “声音忽大忽小/调正常/更舒服”; use positive `volume_gain_db` for “太小声/放大一点”, and negative values for “太吵/压低一点”; use `trim_silence=true` for “把前后空白切掉/去掉开头结尾静音”
+  - for voice/speech-recognition style output, `wav + sample_rate=16000 + channels=1` is a sensible default; for music, preserving the original sample rate/channels is usually better
+  - remains a single-source tool; do not use it for concatenating multiple audio files
+  - refuses platform-protected/cache formats such as `kgm`, `ncm`, and `qmc`; it does not decrypt or bypass DRM/proprietary protection
+  - stores the converted media as `gen_001` style generated output and returns `generated_file_ready`
+- `inspect_generated_file`
+  - reads back an existing generated file such as `gen_001` without sending, modifying, or deleting it
+  - supports `content`, `head`, `tail`, `summary`, `file_list`, `manifest`, and `file:manifest.json` / `file:README.md` for generated zip bundles
+  - text-like outputs (`md/txt/json/csv/html/srt/vtt`) are read from disk; `docx/xlsx/pdf` use local parser libraries when installed
+  - for binary media it returns the generated content card and points Akane back to media tools such as `inspect_media_info` or `transcribe_media`
+  - emits `generated_file_inspected` and feeds the inspected content back as follow-up context
+- `send_file`
+  - sends an existing local file from either Attachment Inbox (`file_001/img_001/audio_001`) or GeneratedFileStore (`gen_001/gen_002`)
+  - accepts `target`, batch `targets`, handles, titles, or `latest`
+  - does not modify, regenerate, transcode, archive, or delete anything
+  - emits `file_ready`; QQ currently uploads this through the same delivery path used by generated files
+- `manage_generated_file`
+  - manages generated files such as `gen_001`, not temporary attachments such as `file_001/img_001`
+  - accepts `action: archive|delete|purge` and batch `targets`
+  - `archive` hides the generated file from the workbench; `delete` also removes the local generated file; `purge` additionally clears the generated content card
+  - never deletes the user's original attachment sources
+  - emits `generated_files_managed` for clients that want to update UI state
+- `browser_page`
+  - operates an isolated managed Playwright browser window with hybrid observation (AX accessibility tree + temporary viewport screenshot directly fed to multimodal visual channel)
+  - supports 11 canonical actions: `navigate`, `read_text`, `current`, `snapshot`, `screenshot`, `scroll`, `elements`, `click`, `fill`, `press`, `download_status`
+  - `navigate` and control actions (`click`, `fill`, `press`, `scroll`) trigger automatic hybrid re-observation, returning both updated accessibility tree and visual viewport screenshot
+  - `read_text` uses text/AX-only observation for reading and summarizing without screenshot spam
+  - control actions support `ref`, `selector`, `candidate_index`, and visual coordinate click fallback (`coordinate: [x, y]` bound to `screenshot_id` within viewport bounds)
+  - `click`/`fill`/`press` require the observed `observation_id`; coordinate clicks can instead bind to `screenshot_id`. Automatic document/DOM/scroll/viewport changes invalidate controls, but immutable text cursors remain readable. Coordinate evidence expires after 60 seconds and its target pixels are rechecked locally before clicking; refresh with `snapshot(observation_mode="hybrid")` when stale.
+  - screenshot results explicitly label `screenshot_id`, viewport CSS dimensions and image dimensions; coordinate clicks use viewport CSS pixels, not desktop pixels
+  - downloads are intercepted by `BrowserDownloadTracker`, atomically published to managed workspace, and registered into `AttachmentInbox` with material handles (such as `file_001`) for downstream inspection or delivery; registration errors return `failed` with a reason, retaining the saved file for recovery without advertising a usable handle
+  - decouples `action_state` (`not_started` / `executed` / `unknown`) from `observation_state` (`complete` / `partial` / `failed` / `unstable`); a post-click popup failure preserves `executed`, and an uncertain input timeout requires observation instead of replaying the action
+  - automatically dismisses dialog popups (`alert`, `confirm`, `prompt`, `beforeunload`) and cleanly cancels downloads on shutdown
+
+## 工具保留与退役裁决
+
+工具退役硬标准：只有"Shell 技术上能做"不等于可以退役。只有同时满足以下条件才允许删除：
+无独有用户可感知能力、无独有审批/安全/设备路由边界、不承担句柄生命周期、
+不承担表现层交付、无仍在使用的宿主调用方、删除后模型信息不变、
+且无需第二套兼容实现。
+
+- **永久保留（不能被 Shell 粗暴替代）**：MemCore 记忆工具（`retrieve_memory` 等）、
+  `send_file`/`send_sticker` 等表现层交付、角色包上下文、
+  Desktop Satellite 系统能力、浏览器与联网能力、审批边界、
+  安全工作区/附件句柄工具、仍承担生成物生命周期的文档和媒体工具。
+- **可 Skill 化但暂不退役**：`inspect_media_info`、`convert_media_file`、
+  批量重命名、文本/数据处理等未来小能力。它们依赖 `workspace:/`→执行输入的
+  安全映射、Shell 产物自动登记、MIME/格式识别、`gen_*` 生命周期、文件交付、
+  脱敏、云端/本地执行位置与结构化失败。在 exec artifact bridge 落地前，媒体和
+  文档专用工具继续保留。
+- **已退役**：`send_generated_file`，以及旧的 NPC/礼物/资产/persona-card、
+  工作区 focus、附件 sync 工具。完整清单与替代路径见 `retired_host_tool_surfaces_v1.md`。
+
+历史 MemCore 中的 `tool.send_generated_file.*` 记录只作为历史轨迹读取，按 kind
+投影，不要求旧 handler 存在；因此删除 handler 不影响历史记录展示。

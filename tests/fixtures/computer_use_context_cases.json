@@ -1,0 +1,308 @@
+[
+  {
+    "id": "context-observe",
+    "arguments": {
+      "action": "observe",
+      "context_ref": "ctx-test"
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-stop",
+    "arguments": {
+      "action": "stop",
+      "context_ref": "ctx-test"
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-handoff",
+    "arguments": {
+      "action": "handoff",
+      "context_ref": "ctx-test"
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-click",
+    "arguments": {
+      "action": "click",
+      "context_ref": "ctx-test",
+      "x": 1,
+      "y": 2
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-type_text",
+    "arguments": {
+      "action": "type_text",
+      "context_ref": "ctx-test",
+      "text": "synthetic"
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-press_key",
+    "arguments": {
+      "action": "press_key",
+      "context_ref": "ctx-test",
+      "key": "Enter"
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-scroll",
+    "arguments": {
+      "action": "scroll",
+      "context_ref": "ctx-test",
+      "element_id": "e",
+      "direction": "down"
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-set_value",
+    "arguments": {
+      "action": "set_value",
+      "context_ref": "ctx-test",
+      "element_id": "e",
+      "text": ""
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-set_checked",
+    "arguments": {
+      "action": "set_checked",
+      "context_ref": "ctx-test",
+      "element_id": "e",
+      "checked": false
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-drag",
+    "arguments": {
+      "action": "drag",
+      "context_ref": "ctx-test",
+      "x": 1,
+      "y": 2,
+      "to_x": 3,
+      "to_y": 4
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-run_actions",
+    "arguments": {
+      "action": "run_actions",
+      "context_ref": "ctx-test",
+      "actions": [
+        {
+          "action": "type_text",
+          "text": "synthetic"
+        }
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-run_steps",
+    "arguments": {
+      "action": "run_steps",
+      "context_ref": "ctx-test",
+      "steps": [
+        {
+          "action": "wait_for",
+          "expect": {
+            "kind": "window_title",
+            "title": "Synthetic"
+          }
+        }
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-resume_steps",
+    "arguments": {
+      "action": "resume_steps",
+      "context_ref": "ctx-test",
+      "workflow_id": "flow"
+    },
+    "accepted": true
+  },
+  {
+    "id": "mixed-device_epoch",
+    "arguments": {
+      "action": "type_text",
+      "context_ref": "ctx-test",
+      "text": "test",
+      "device_epoch": "old"
+    },
+    "accepted": false,
+    "error_path": "device_epoch"
+  },
+  {
+    "id": "mixed-control_session_id",
+    "arguments": {
+      "action": "type_text",
+      "context_ref": "ctx-test",
+      "text": "test",
+      "control_session_id": "old"
+    },
+    "accepted": false,
+    "error_path": "control_session_id"
+  },
+  {
+    "id": "mixed-observation_id",
+    "arguments": {
+      "action": "type_text",
+      "context_ref": "ctx-test",
+      "text": "test",
+      "observation_id": "old"
+    },
+    "accepted": false,
+    "error_path": "observation_id"
+  },
+  {
+    "id": "mixed-screenshot_id",
+    "arguments": {
+      "action": "type_text",
+      "context_ref": "ctx-test",
+      "text": "test",
+      "screenshot_id": "old"
+    },
+    "accepted": false,
+    "error_path": "screenshot_id"
+  },
+  {
+    "id": "unsupported-list_windows",
+    "arguments": {
+      "action": "list_windows",
+      "context_ref": "ctx-test"
+    },
+    "accepted": false,
+    "error_path": "context_ref"
+  },
+  {
+    "id": "unsupported-select_window",
+    "arguments": {
+      "action": "select_window",
+      "context_ref": "ctx-test"
+    },
+    "accepted": false,
+    "error_path": "context_ref"
+  },
+  {
+    "id": "unsupported-manage_window",
+    "arguments": {
+      "action": "manage_window",
+      "context_ref": "ctx-test"
+    },
+    "accepted": false,
+    "error_path": "context_ref"
+  },
+  {
+    "id": "unsupported-launch_app",
+    "arguments": {
+      "action": "launch_app",
+      "context_ref": "ctx-test"
+    },
+    "accepted": false,
+    "error_path": "context_ref"
+  },
+  {
+    "id": "unsupported-status",
+    "arguments": {
+      "action": "status",
+      "context_ref": "ctx-test"
+    },
+    "accepted": false,
+    "error_path": "context_ref"
+  },
+  {
+    "id": "context-missing-text",
+    "arguments": {
+      "action": "type_text",
+      "context_ref": "ctx-test"
+    },
+    "accepted": false,
+    "error_path": "text"
+  },
+  {
+    "id": "context-no-target",
+    "arguments": {
+      "action": "click",
+      "context_ref": "ctx-test"
+    },
+    "accepted": false,
+    "error_path": "target"
+  },
+  {
+    "id": "context-mixed-target",
+    "arguments": {
+      "action": "click",
+      "context_ref": "ctx-test",
+      "element_id": "e",
+      "x": 1,
+      "y": 2
+    },
+    "accepted": false,
+    "error_path": "target"
+  },
+  {
+    "id": "context-multiline",
+    "arguments": {
+      "action": "type_text",
+      "context_ref": "ctx-test",
+      "text": "a\nb"
+    },
+    "accepted": false,
+    "error_path": "text"
+  },
+  {
+    "id": "context-nested-missing",
+    "arguments": {
+      "action": "run_actions",
+      "context_ref": "ctx-test",
+      "actions": [
+        {
+          "action": "type_text"
+        }
+      ]
+    },
+    "accepted": false,
+    "error_path": "actions[0].text"
+  },
+  {
+    "id": "read_element_context",
+    "arguments": {
+      "action": "read_element",
+      "context_ref": "ctx_test",
+      "element_id": "element"
+    },
+    "accepted": true
+  },
+  {
+    "id": "read_element_missing_target",
+    "arguments": {
+      "action": "read_element",
+      "context_ref": "ctx_test"
+    },
+    "accepted": false,
+    "error_path": "element_id"
+  },
+  {
+    "id": "read_element_missing_observation",
+    "arguments": {
+      "action": "read_element",
+      "control_session_id": "s",
+      "device_epoch": "e",
+      "element_id": "el"
+    },
+    "accepted": false,
+    "error_path": "observation_id"
+  }
+]

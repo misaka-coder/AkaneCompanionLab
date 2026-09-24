@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-voice-dataset"
+version = "0.1.0"
+description = "Voice material slicing and quality manifest business runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.entry-points."akane.plugins.v1"]
+"akane.voice-dataset" = "akane_voice_dataset.plugin:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

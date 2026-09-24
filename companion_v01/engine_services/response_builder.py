@@ -1,0 +1,1681 @@
+"""Final response context builder extracted from engine.py."""
+
+from __future__ import annotations
+from dataclasses import replace
+import hashlib
+import json
+import logging
+import re
+from typing import Any, Mapping
+from services import provider_continuation as continuation
+
+from ..client_protocol import ClientCapability, ClientMode, ClientProtocolContext
+import config as mod_config
+from ..domain_profiles import DomainProfileRegistry, build_domain_profile_prompt
+from ..memory_rendering import render_semantic_summary_timeline, render_summary_timeline
+from ..prompt_blocks import strip_care_prompt_contract
+from ..prompt_context_lifecycle import (
+    PromptContextContribution,
+    PromptContextLifecycle,
+    materialize_prompt_contexts,
+)
+from ..prompt_profiles import PromptModule
+from ..resource_manifest import ResourceManifest
+from ..text_utils import render_chat_timeline
+from ..tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD, TOOL_EXECUTION_RECEIPTS_FIELD
+
+logger = logging.getLogger("akane.response_builder")
+
+PROJECTION_READ_MIGRATION_REASONS = frozenset({"legacy_memory_backend"})
+_EPHEMERAL_PROVIDER_BLOCK_TYPES = frozenset(
+    {"image_url", "input_image", "image", "input_audio", "audio", "input_file", "file"}
+)
+_CAPABILITY_CATALOG_SOURCE_PREFIX = "prompt-context:capability-catalog:"
+_LEGACY_CAPABILITY_SNAPSHOT_SOURCE_PREFIX = "prompt-context:capabilities:"
+
+
+def _capability_catalog_source(source_ids: list[str] | tuple[str, ...]) -> tuple[str, int, str] | None:
+    normalized = [str(item or "").strip() for item in source_ids if str(item or "").strip()]
+    if not normalized or any(not item.startswith(_CAPABILITY_CATALOG_SOURCE_PREFIX) for item in normalized):
+        return None
+    for source_id in normalized:
+        parts = source_id.split(":")
+        if len(parts) < 7:
+            continue
+        try:
+            generation = max(0, int(parts[2]))
+        except (TypeError, ValueError):
+            continue
+        role = str(parts[3] or "").strip()
+        if role in {"base", "update"}:
+            return source_id, generation, role
+    return None
+
+
+def _catalog_message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "\n".join(
+            str(item.get("text") or "").strip()
+            for item in content
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ).strip()
+    return ""
+
+
+def _shape_capability_catalog_projection(
+    projection: dict[str, Any],
+    *,
+    compaction_generation: int,
+) -> tuple[dict[str, Any], str]:
+    """Lift the base once; preserve every same-generation update in place."""
+
+    shaped = dict(projection or {})
+    history_turns = [dict(item) for item in list(shaped.get("history_turns") or []) if isinstance(item, dict)]
+    history_groups = [list(group or []) for group in list(shaped.get("history_message_source_ids") or [])]
+    active_turns = [dict(item) for item in list(shaped.get("active_turn_messages") or []) if isinstance(item, dict)]
+    active_groups = [list(group or []) for group in list(shaped.get("active_turn_message_source_ids") or [])]
+    current_turn_messages = [
+        dict(item) for item in list(shaped.get("current_turn_messages") or []) if isinstance(item, dict)
+    ]
+
+    records: list[tuple[str, int, str, dict[str, Any], list[str]]] = []
+    for message, source_ids in [*zip(history_turns, history_groups), *zip(active_turns, active_groups)]:
+        parsed = _capability_catalog_source(source_ids)
+        if parsed is not None:
+            records.append((*parsed, message, source_ids))
+
+    generation = max(0, int(compaction_generation or 0))
+    current_records = [record for record in records if record[1] == generation]
+    base_records = [record for record in current_records if record[2] == "base"]
+    base_context = _catalog_message_text(base_records[-1][3]) if base_records else ""
+
+    def keep_message(source_ids: list[str]) -> bool:
+        normalized = [str(item or "").strip() for item in source_ids if str(item or "").strip()]
+        if normalized and all(item.startswith(_LEGACY_CAPABILITY_SNAPSHOT_SOURCE_PREFIX) for item in normalized):
+            return False
+        parsed = _capability_catalog_source(normalized)
+        if parsed is None:
+            return True
+        source_id, source_generation, role = parsed
+        return bool(
+            source_generation == generation
+            and role == "update"
+        )
+
+    kept_history = [
+        (message, source_ids)
+        for message, source_ids in zip(history_turns, history_groups)
+        if keep_message(source_ids)
+    ]
+    kept_active = [
+        (message, source_ids)
+        for message, source_ids in zip(active_turns, active_groups)
+        if keep_message(source_ids)
+    ]
+    shaped["history_turns"] = [message for message, _source_ids in kept_history]
+    shaped["history_message_source_ids"] = [source_ids for _message, source_ids in kept_history]
+    shaped["active_turn_messages"] = [message for message, _source_ids in kept_active]
+    shaped["active_turn_message_source_ids"] = [source_ids for _message, source_ids in kept_active]
+    shaped["current_turn_messages"] = [
+        message
+        for message in current_turn_messages
+        if (
+            _capability_catalog_source(list(message.get("source_ids") or [])) is None
+            or _capability_catalog_source(list(message.get("source_ids") or []))[2] == "update"
+        )
+        and not (
+            list(message.get("source_ids") or [])
+            and all(
+                str(source_id or "").strip().startswith(_LEGACY_CAPABILITY_SNAPSHOT_SOURCE_PREFIX)
+                for source_id in list(message.get("source_ids") or [])
+            )
+        )
+    ]
+    return shaped, base_context
+
+
+def _split_active_projection_turns(
+    projection: dict[str, Any],
+    prepared_turns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Overlay media on ordinary turns without moving durable catalog updates."""
+
+    active_turns = [
+        dict(item) for item in list((projection or {}).get("active_turn_messages") or []) if isinstance(item, dict)
+    ]
+    active_groups = [list(group or []) for group in list((projection or {}).get("active_turn_message_source_ids") or [])]
+    ordinary: list[dict[str, Any]] = []
+    ordinary_indexes: list[int] = []
+    for index, (turn, source_ids) in enumerate(zip(active_turns, active_groups)):
+        if _capability_catalog_source(source_ids) is None:
+            ordinary.append(turn)
+            ordinary_indexes.append(index)
+    overlaid = _overlay_ephemeral_provider_evidence(ordinary, prepared_turns)
+    for index, turn in zip(ordinary_indexes, overlaid):
+        active_turns[index] = turn
+    return active_turns
+
+
+def _visible_projection_source_ids(projection: dict[str, Any]) -> list[str]:
+    """Return authoritative source ids in the order visible to the model."""
+
+    source_ids = [
+        str(source_id or "").strip()
+        for source_id in list((projection or {}).get("source_ids") or [])
+        if str(source_id or "").strip()
+    ]
+    for message in list((projection or {}).get("current_turn_messages") or []):
+        if not isinstance(message, dict):
+            continue
+        source_ids.extend(
+            str(source_id or "").strip()
+            for source_id in list(message.get("source_ids") or [])
+            if str(source_id or "").strip()
+        )
+    return list(dict.fromkeys(source_ids))
+
+
+def _overlay_ephemeral_provider_evidence(
+    authoritative_turns: list[dict[str, Any]],
+    prepared_turns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Decorate the authoritative open turn with request-only provider state.
+
+    MemCore owns message order, roles and durable text. Raw image/audio/file
+    bytes deliberately do not live in its projection, so the tool runtime may
+    attach provider-native blocks to the matching open-turn message for this
+    request only. Signed continuation also requires an unchanged tool batch.
+    A shape mismatch skips media overlay, but fails for signed continuation.
+    """
+
+    authoritative = [dict(turn) for turn in authoritative_turns]
+    prepared = [dict(turn) for turn in prepared_turns]
+    if not authoritative or len(authoritative) != len(prepared):
+        if any(turn.get(continuation.FIELD) for turn in prepared):
+            raise ValueError("provider_continuation_projection_changed")
+        return authoritative
+    if any(
+        str(left.get("role") or "").strip().lower()
+        != str(right.get("role") or "").strip().lower()
+        for left, right in zip(authoritative, prepared)
+    ):
+        if any(turn.get(continuation.FIELD) for turn in prepared):
+            raise ValueError("provider_continuation_projection_changed")
+        return authoritative
+    overlaid: list[dict[str, Any]] = []
+    for durable, transient in zip(authoritative, prepared):
+        durable = continuation.carry(transient, durable)
+        if transient.get("reasoning_content") and continuation.batch(durable) == continuation.batch(transient):
+            durable = {**durable, "reasoning_content": transient["reasoning_content"]}
+        transient_content = transient.get("content")
+        media_blocks = [
+            dict(block)
+            for block in transient_content
+            if isinstance(block, dict)
+            and str(block.get("type") or "").strip().lower() in _EPHEMERAL_PROVIDER_BLOCK_TYPES
+        ] if isinstance(transient_content, list) else []
+        if not media_blocks:
+            overlaid.append(durable)
+            continue
+        content = durable.get("content")
+        if isinstance(content, list):
+            blocks = [dict(block) for block in content if isinstance(block, dict)]
+        else:
+            blocks = [{"type": "text", "text": str(content or "")}]
+        overlaid.append({**durable, "content": [*blocks, *media_blocks]})
+    return overlaid
+
+
+def _safe_projection_failure_code(value: Any, *, fallback: str = "projection_detail_unavailable") -> str:
+    """Keep diagnostics useful without copying paths or provider data into logs."""
+
+    text = str(value or "").strip().lower()
+    if re.fullmatch(r"[a-z0-9][a-z0-9_.:-]{0,159}", text):
+        return text
+    return str(fallback or "projection_detail_unavailable")[:160]
+
+# 文档 §9 的稳定回读说明: 属于 compact profile 的稳定工具规则, 放在稳定前缀;
+# 只要可见历史仍含 compact turn 就不能撤掉, 以免旧回执变成不可打开的死引用。
+COMPACT_READBACK_STABLE_HINT = (
+    "部分已完成轮次的历史工具结果会显示为紧凑回执，而不是完整正文。\n"
+    "这不代表结果丢失。工具调用参数仍在对应历史 action 中可见；回执保留结果状态与 source_id。\n"
+    "若当前问题依赖其中的具体内容，可以按 source_id 单个或批量打开完整结果；\n"
+    "若旧结果不足，可以继续调用相应工具。当前开放轮次中的工具结果始终完整可见；\n"
+    "不要在已有信息足够时机械回读。"
+)
+
+
+def build_compact_readback_hint(*, policy: str, has_compact_history: bool) -> str:
+    """当前启用紧凑策略或可见历史仍含 compact turn 时返回稳定回读说明, 否则空串。
+
+    默认 full 策略且无 compact 历史时返回空串, 保证旧请求体逐字节不变。
+    """
+    if str(policy or "").strip().lower() == "compact_after_terminal" or bool(has_compact_history):
+        return COMPACT_READBACK_STABLE_HINT
+    return ""
+
+
+def with_compact_readback_hint(
+    stable_system_context: str,
+    *,
+    policy: str,
+    has_compact_history: bool,
+) -> str:
+    """Compose the compact readback rule once even if prompt budgeting rebuilds context."""
+
+    base = str(stable_system_context or "")
+    hint = build_compact_readback_hint(policy=policy, has_compact_history=has_compact_history)
+    if not hint or hint in base:
+        return base
+    return "\n\n".join(part for part in (base, hint) if part.strip())
+
+
+def with_current_actor_relation(current_message_text: str, *, relation: str) -> str:
+    """Add a verified relation only to the request-local current user tail."""
+
+    text = str(current_message_text or "").strip()
+    normalized_relation = str(relation or "").strip().lower()
+    if normalized_relation not in {"owner", "participant"} or not text:
+        return text
+    lines = text.splitlines()
+    if any(line.strip().startswith("actor_relation:") for line in lines):
+        return text
+    for index, line in enumerate(lines):
+        if line.strip().startswith("actor:"):
+            indent = line[: len(line) - len(line.lstrip())]
+            lines.insert(index + 1, f"{indent}actor_relation: {normalized_relation}")
+            return "\n".join(lines)
+    return f"{text}\nactor_relation: {normalized_relation}"
+
+
+def prepare_context(
+    engine: Any,
+    *,
+    session_id: str,
+    user_message: str,
+    recent_raw: list[dict[str, Any]],
+    recent_episodic_summaries: list[dict[str, Any]],
+    recent_semantic_summaries: list[dict[str, Any]],
+    confirmed_snippets: list[str],
+    now_ts: int,
+    profile_user_id: str,
+    current_visual_payload: Any = None,
+    extra_user_context: str = "",
+    stable_system_context: str = "",
+    client_context: ClientProtocolContext | None = None,
+    resource_manifest: ResourceManifest | None = None,
+    character_pack_id: str = "",
+    allow_tool_call: bool = True,
+    final_debug_enabled: bool | None = None,
+    enable_native_tools: bool = False,
+    chat_model_override: str = "",
+    execution_target: Any = None,
+    post_user_turns: list[dict[str, Any]] | None = None,
+    prompt_exclude_source_ids: list[str] | None = None,
+    domain_profile_id: str = "",
+    prompt_scope: str = "",
+    current_user_source_id: str = "",
+    current_input_transient: bool = False,
+    current_actor_relation: str = "",
+    authorization_profile_user_id: str = "",
+    actor_stable_id: str = "",
+    actor_profile_user_id: str = "",
+    request_projection_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_prompt_scope = str(prompt_scope or "").strip().lower()
+    client_context = client_context or engine._resolve_client_protocol_context({})
+    care_status_getter = getattr(engine, "care_feature_status", None)
+    care_status = care_status_getter() if callable(care_status_getter) else {"enabled": True}
+    care_enabled = bool(care_status.get("enabled", True))
+    care_context_resolver = getattr(engine, "care_enabled_for_context", None)
+    if care_enabled and callable(care_context_resolver):
+        care_enabled = bool(
+            care_context_resolver(
+                character_pack_id=character_pack_id,
+                client_context=client_context,
+            )
+        )
+    prompt_builder = engine._get_prompt_builder()
+    prompt_profile = engine._get_prompt_profile_registry().resolve(client_context, care_enabled=care_enabled)
+    domain_profile = DomainProfileRegistry().get(
+        domain_profile_id if prompt_profile.includes(PromptModule.DOMAIN_PROFILE) else ""
+    )
+    domain_profile_context = build_domain_profile_prompt(domain_profile)
+    tool_capability_available = bool(
+        prompt_profile.includes(PromptModule.TOOLS)
+        and client_context.has_capability(ClientCapability.TOOL_ACTIONS)
+    )
+    effective_allow_tool_call = bool(allow_tool_call and tool_capability_available)
+    requested_debug_enabled = bool(
+        getattr(mod_config, "FINAL_DEBUG", False) if final_debug_enabled is None else final_debug_enabled
+    )
+    debug_enabled = bool(requested_debug_enabled and prompt_profile.supports_thought_debug)
+    if client_context.effective_mode != ClientMode.QQ_TEXT:
+        resource_manifest = resource_manifest or engine.resource_manifest
+    manifest = resource_manifest.refresh() if resource_manifest else None
+    runtime_projection = engine._get_user_runtime_projection(profile_user_id)
+    user_bgm_tracks = list(runtime_projection.get("extra_bgm_tracks") or [])
+    user_scene_groups = list(runtime_projection.get("extra_scene_groups") or [])
+    user_character_outfits = list(runtime_projection.get("extra_character_outfits") or [])
+    desktop_pet_character_only = client_context.effective_mode == ClientMode.DESKTOP_PET
+    character_pack_persona_enabled = client_context.effective_mode in {ClientMode.DESKTOP_PET, ClientMode.QQ_TEXT}
+    excluded_prompt_sources = {
+        str(source_id or "").strip()
+        for source_id in list(prompt_exclude_source_ids or [])
+        if str(source_id or "").strip()
+    }
+    visible_recent_raw = [
+        record for record in recent_raw if str(record.get("source_id") or "").strip() not in excluded_prompt_sources
+    ]
+    _history_records, current_record = engine._split_history_records(
+        recent_raw=visible_recent_raw,
+        user_message=user_message,
+        now_ts=now_ts,
+    )
+    current_message_text = engine._render_current_message_line(
+        current_user_record=current_record,
+    )
+    raw_records = list(visible_recent_raw)
+    if _memory_backend() == "memcore":
+        raw_text = ""
+        episodic_summary_text = ""
+        semantic_summary_text = ""
+    else:
+        raw_text = render_chat_timeline(visible_recent_raw)
+        episodic_summary_text = render_summary_timeline(
+            recent_episodic_summaries,
+            store=engine.store,
+        )
+        semantic_summary_text = render_semantic_summary_timeline(
+            recent_semantic_summaries,
+            store=engine.store,
+        )
+    current_source_id = "" if current_input_transient else str(current_user_source_id or current_record.get("source_id") or "").strip()
+    provider_projection = _build_memcore_provider_history(
+        engine,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        character_pack_id=character_pack_id,
+        current_source_id=current_source_id,
+        allow_history_only=current_input_transient or normalized_prompt_scope == "qq_attention",
+        chat_model_override=chat_model_override,
+        execution_target=execution_target,
+        exclude_source_ids=list(excluded_prompt_sources),
+    )
+    projection_read_active = bool(provider_projection.get("ok"))
+    projection_migration_window = (
+        str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
+    )
+    projection_authoritative = not projection_migration_window
+    projection_recovery_failure: dict[str, Any] | None = None
+    if _memory_backend() == "memcore" and not projection_read_active and not projection_migration_window:
+        logger.warning(
+            "memcore projection unavailable status=%s reason=%s detail=%s current_source=%s",
+            str(provider_projection.get("status") or "unavailable")[:40],
+            str(provider_projection.get("reason") or "projection_unavailable")[:120],
+            _safe_projection_failure_code(provider_projection.get("detail"), fallback="none"),
+            "present" if current_source_id else "missing",
+        )
+        # A completed tool action/result pair is already an exact, bounded
+        # provider continuation.  If the broader MemCore history projection is
+        # temporarily unavailable, preserve the current turn instead of
+        # discarding the successful tool work.  This recovery is deliberately
+        # narrow: it carries no legacy/guessed history, only the frozen current
+        # stimulus and the explicit post-user tool turns supplied by the host.
+        if current_source_id and any(isinstance(turn, dict) for turn in list(post_user_turns or [])):
+            projection_recovery_failure = dict(
+                _projection_failure_context(
+                    provider_projection,
+                    prompt_scope=normalized_prompt_scope,
+                )["memcore_projection_failure"]
+            )
+            provider_projection = {
+                "ok": True,
+                "status": "current_turn_recovery",
+                "reason": "",
+                "provider_profile": "",
+                "history_turns": [],
+                "current_turn_id": "",
+                "current_turn_messages": [],
+                "source_ids": [],
+                "source_count": 0,
+                "message_count": 0,
+                "stable_prefix_hash": "",
+                "projection_version": 0,
+                "compaction_generation": 0,
+                "projection_generation": 0,
+                "current_source_visible": True,
+            }
+            projection_read_active = True
+            projection_authoritative = True
+            logger.warning(
+                "memcore current-turn continuation recovery activated reason=%s detail=%s",
+                str(projection_recovery_failure.get("reason") or "projection_unavailable")[:120],
+                _safe_projection_failure_code(projection_recovery_failure.get("detail"), fallback="none"),
+            )
+        else:
+            return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
+    if projection_read_active and projection_authoritative:
+        projected_current_message = _projected_current_message_text(
+            provider_projection,
+            current_source_id=current_source_id,
+        )
+        if projected_current_message:
+            current_message_text = projected_current_message
+    event_timeline_authoritative = bool(projection_read_active and projection_authoritative)
+    memory_text = "\n\n".join(confirmed_snippets) if confirmed_snippets else ""
+    extra_context = str(extra_user_context or "").strip()
+    attachment_service = engine._get_attachment_inbox_service()
+    current_visual_context_payload = engine._resolve_current_visual_payload(
+        session_id=session_id,
+        current_visual_payload=current_visual_payload,
+    )
+    current_character = (
+        current_visual_context_payload.get("character")
+        if isinstance(current_visual_context_payload, dict)
+        and isinstance(current_visual_context_payload.get("character"), dict)
+        else {}
+    )
+    current_character_outfit = str(current_character.get("outfit") or "").strip()
+    scene_observation_context = (
+        engine.vision_service.build_scene_prompt_context(
+            visual_payload=current_visual_context_payload,
+            extra_bgm_tracks=user_bgm_tracks,
+            extra_scene_groups=user_scene_groups,
+            extra_character_outfits=user_character_outfits,
+        )
+        if engine.vision_service is not None
+        and prompt_profile.includes(PromptModule.SCENE_OBSERVATION)
+        and not desktop_pet_character_only
+        else ""
+    )
+    outfit_observation_context = (
+        engine.vision_service.build_outfit_prompt_context(
+            visual_payload=current_visual_context_payload,
+            extra_bgm_tracks=user_bgm_tracks,
+            extra_scene_groups=user_scene_groups,
+            extra_character_outfits=user_character_outfits,
+        )
+        if engine.vision_service is not None
+        and prompt_profile.includes(PromptModule.OUTFIT_OBSERVATION)
+        and not desktop_pet_character_only
+        else ""
+    )
+    character_pack_persona_context = (
+        engine._build_desktop_pet_character_pack_prompt_context(
+            character_pack_id=character_pack_id,
+            resource_manifest=resource_manifest,
+            client_mode=client_context.effective_mode.value,
+            preferred_outfit=current_character_outfit,
+            extra_character_outfits=user_character_outfits,
+        )
+        if character_pack_persona_enabled and prompt_profile.includes(PromptModule.PERSONA)
+        else {"system_context": "", "reference_context": "", "active_id": ""}
+    )
+    automatic_character_context = ""
+    if character_pack_persona_enabled and character_pack_id:
+        context_library_service = getattr(
+            getattr(engine, "desktop_pet_character_resources", None),
+            "context_libraries",
+            None,
+        )
+        automatic_context_builder = getattr(
+            context_library_service,
+            "build_automatic_context",
+            None,
+        )
+        if automatic_context_builder is not None:
+            try:
+                automatic_character_context = str(
+                    automatic_context_builder(character_pack_id, user_message) or ""
+                ).strip()
+            except Exception as exc:
+                logger.warning("automatic character context loading failed: %s", exc)
+                automatic_character_context = ""
+    persona_context = character_pack_persona_context
+    visual_observation_sections = [
+        text
+        for text in [
+            scene_observation_context,
+            outfit_observation_context,
+        ]
+        if text
+    ]
+    # The last flag is a placement contract, not a Bot-specific exception:
+    # per-turn transport/event material changes on every request and must stay
+    # after append-only history, while durable runtime context can precede it.
+    extra_context_contributions = [
+        PromptContextContribution(
+            name="relationship",
+            content=engine._build_memory_relationship_context(
+                profile_user_id=profile_user_id,
+                character_pack_id=character_pack_id,
+                now_ts=now_ts,
+            ),
+            lifecycle=PromptContextLifecycle.STABLE,
+        ),
+        PromptContextContribution(
+            name="attachment_focus",
+            content=lambda: attachment_service.build_activity_prompt_context(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+            ),
+            lifecycle=_declared_activity_context_lifecycle(attachment_service),
+            enabled=bool(
+                attachment_service is not None
+                and prompt_profile.includes(PromptModule.EXTRA_CONTEXT)
+                and client_context.effective_mode in {ClientMode.QQ_TEXT, ClientMode.DESKTOP_PET}
+            ),
+        ),
+        PromptContextContribution(
+            name="plugin_observations",
+            content=lambda: engine.plugin_observations_provider(
+                profile_user_id=profile_user_id, session_id=session_id, character_pack_id=character_pack_id,
+            ),
+            enabled=callable(getattr(engine, "plugin_observations_provider", None))
+            and prompt_profile.includes(PromptModule.EXTRA_CONTEXT),
+        ),
+        PromptContextContribution(name="character_automatic_context", content=automatic_character_context),
+        # Active outfit/emotion ids change far less often than conversation
+        # history. Keep them in their own stable pre-history block: ordinary
+        # turns reuse them, while a real outfit/resource change invalidates the
+        # prefix once without hiding any current resource from the model.
+        PromptContextContribution(
+            name="character_resources",
+            content=str(persona_context.get("resource_context") or "").strip(),
+            lifecycle=PromptContextLifecycle.STABLE,
+        ),
+        PromptContextContribution(
+            name="turn_extra_context",
+            content=extra_context if prompt_profile.includes(PromptModule.EXTRA_CONTEXT) else "",
+        ),
+    ]
+    materialized_contexts = materialize_prompt_contexts(
+        extra_context_contributions,
+        event_timeline_authoritative=event_timeline_authoritative,
+    )
+    extra_context_audit_sections = engine._build_extra_context_audit_sections(
+        [(name, text) for name, text, _volatile in materialized_contexts.sections]
+    )
+    volatile_names = {
+        name for name, _text, volatile in materialized_contexts.sections if volatile
+    }
+    stable_extra_context_sections = [
+        section["text"]
+        for section in extra_context_audit_sections
+        if str(section.get("name") or "") not in volatile_names
+    ]
+    volatile_extra_context_sections = [
+        section["text"]
+        for section in extra_context_audit_sections
+        if str(section.get("name") or "") in volatile_names
+    ]
+    merged_extra_context = (
+        "\n\n".join(stable_extra_context_sections)
+        if stable_extra_context_sections
+        else "(无额外上下文)"
+    )
+    merged_volatile_extra_context = "\n\n".join(volatile_extra_context_sections)
+    visual_defaults = (
+        resource_manifest.build_runtime_manifest(
+            extra_bgm_tracks=user_bgm_tracks,
+            extra_scene_groups=user_scene_groups,
+            extra_character_outfits=user_character_outfits,
+        )["defaults"]
+        if manifest
+        else {
+            "major": "default",
+            "minor": "default",
+            "background": "evening_classroom",
+            "bgm": "",
+            "outfit": "default",
+            "emotion": "normal",
+        }
+    )
+    if resource_manifest and current_visual_context_payload:
+        try:
+            current_visual_defaults = resource_manifest.normalize_visual_output(
+                json.loads(json.dumps(current_visual_context_payload)),
+                extra_bgm_tracks=user_bgm_tracks,
+                extra_scene_groups=user_scene_groups,
+                extra_character_outfits=user_character_outfits,
+            )
+            visual_defaults = dict(visual_defaults)
+            if desktop_pet_character_only:
+                visual_defaults["outfit"] = str(
+                    current_visual_defaults.get("character", {}).get("outfit") or visual_defaults["outfit"]
+                )
+                visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
+            else:
+                current_scene = (
+                    current_visual_defaults.get("scene") if isinstance(current_visual_defaults, dict) else {}
+                )
+                current_character = (
+                    current_visual_defaults.get("character") if isinstance(current_visual_defaults, dict) else {}
+                )
+                if isinstance(current_scene, dict):
+                    visual_defaults["major"] = str(current_scene.get("major") or visual_defaults["major"])
+                    visual_defaults["minor"] = str(current_scene.get("minor") or visual_defaults["minor"])
+                    visual_defaults["background"] = str(
+                        current_scene.get("background") or visual_defaults["background"]
+                    )
+                    visual_defaults["bgm"] = str(current_scene.get("bgm") or visual_defaults["bgm"])
+                if isinstance(current_character, dict):
+                    visual_defaults["outfit"] = str(current_character.get("outfit") or visual_defaults["outfit"])
+                visual_defaults["emotion"] = str(current_visual_defaults.get("emotion") or visual_defaults["emotion"])
+        except Exception as exc:
+            logger.warning("current visual defaults failed: %s", exc)
+    if client_context.effective_mode == ClientMode.QQ_TEXT:
+        resource_context = (
+            "" if resource_manifest else "当前角色包没有可用的表情图片清单。"
+        )
+    else:
+        resource_context = (
+            (
+                resource_manifest.build_character_catalog_prompt_context(
+                    extra_character_outfits=user_character_outfits,
+                )
+                if desktop_pet_character_only
+                else resource_manifest.build_prompt_context(
+                    extra_bgm_tracks=user_bgm_tracks,
+                    extra_scene_groups=user_scene_groups,
+                    extra_character_outfits=user_character_outfits,
+                )
+            )
+            if resource_manifest and prompt_profile.includes(PromptModule.RESOURCE_MANIFEST)
+            else "当前没有额外的视觉资源。"
+        )
+    current_visual_context = (
+        engine._build_current_visual_context(
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            current_visual_payload=current_visual_payload,
+            visual_payload=current_visual_context_payload,
+            runtime_projection=runtime_projection,
+            character_only=desktop_pet_character_only,
+            resource_manifest=resource_manifest,
+        )
+        if prompt_profile.includes(PromptModule.CURRENT_VISUAL_STATE)
+        else ""
+    )
+    if visual_observation_sections:
+        current_visual_context = "\n\n".join(
+            part for part in [current_visual_context, *visual_observation_sections] if part
+        )
+    mode_prompt_override = prompt_profile.mode_prompt_override(debug_enabled=debug_enabled)
+    if not care_enabled and not mode_prompt_override:
+        mode_prompt_override = strip_care_prompt_contract(
+            prompt_builder.persona.final_debug_mode_prompt
+            if debug_enabled
+            else prompt_builder.persona.final_fast_mode_prompt
+        )
+    if not care_enabled:
+        mode_prompt_override = strip_care_prompt_contract(mode_prompt_override)
+    native_tools: list[dict[str, Any]] = []
+    native_legacy_exclusions: set[str] = set()
+    projection_state = request_projection_state if isinstance(request_projection_state, Mapping) else {}
+    from ..plugin_invocation_scope import use_generation_scopes
+    # Model context follows current provider authority; admitted program calls
+    # retain their own invocation scopes independently.
+    block_reader = getattr(prompt_builder, "_registered_stable_system_blocks", None)
+    def _read_current_exposure():
+        with use_generation_scopes(()):
+            capability_selection = (
+                engine._resolve_capability_selection(
+                    client_context=client_context,
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    domain_profile_id=domain_profile.id,
+                    intent_text=user_message,
+                    authorization_profile_user_id=authorization_profile_user_id,
+                    character_pack_id=character_pack_id,
+                )
+                if tool_capability_available
+                else None
+            )
+            current_plugin_blocks = tuple(block_reader()) if callable(block_reader) else ()
+        return capability_selection, current_plugin_blocks
+
+    capability_selection, current_plugin_blocks = _read_current_exposure()
+    desired_capability_selection = capability_selection
+    published_plugin_blocks = current_plugin_blocks
+    exposure_lifecycle = {"ok": True, "status": "immediate", "reason": "memcore_authority_required"}
+    exposure_supported = bool(
+        _memory_backend() == "memcore" and projection_read_active and projection_authoritative
+        and projection_recovery_failure is None
+        and "compaction_generation" in provider_projection
+        and (not tool_capability_available or getattr(capability_selection, "capability_catalog", None) is not None)
+    )
+
+    def _synchronize_exposure():
+        nonlocal capability_selection, published_plugin_blocks, exposure_lifecycle
+        nonlocal desired_capability_selection, current_plugin_blocks
+        if exposure_supported:
+            # Compaction may await an external summary while providers/settings
+            # change. A newly published generation must sample current authority.
+            previous_generation = exposure_lifecycle.get("compaction_generation")
+            if previous_generation is not None and previous_generation != provider_projection.get("compaction_generation"):
+                desired_capability_selection, current_plugin_blocks = _read_current_exposure()
+            from ..capability_exposure import freeze_for_projection
+            capability_selection, published_plugin_blocks, exposure_lifecycle = freeze_for_projection(
+                engine, desired_capability_selection, provider_projection, plugin_blocks=current_plugin_blocks,
+                profile_user_id=profile_user_id, session_id=session_id, character_pack_id=character_pack_id,
+                client_mode=str(client_context.effective_mode.value), domain_profile_id=domain_profile.id,
+                authorization_profile_user_id=authorization_profile_user_id,
+            )
+
+    _synchronize_exposure()
+    if not exposure_lifecycle.get("ok"):
+        return _projection_failure_context(exposure_lifecycle, prompt_scope=normalized_prompt_scope)
+
+    def _build_native_exposure():
+        nonlocal native_tools, native_legacy_exclusions, capability_selection
+        if enable_native_tools and tool_capability_available:
+            from .. import tool_orchestration_engine as _toe
+            from ..native_tool_schema import native_tool_model_name_map
+
+            ready_handlers = engine._resolve_tool_handlers(
+                client_context=client_context,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                domain_profile_id=domain_profile.id,
+                capability_selection=capability_selection,
+            )
+            schema_tool_names = tuple(
+                getattr(capability_selection, "schema_tool_names", ())
+                or getattr(capability_selection, "tool_names", ())
+                or ()
+            )
+            frozen_handlers = getattr(capability_selection, "resolved_handlers", {})
+            schema_handlers = {
+                name: frozen_handlers[name]
+                for name in schema_tool_names
+                if name in frozen_handlers
+            }
+            try:
+                provider_supports_native_tools = engine.llm.chat_supports_native_tools(
+                    chat_model_override=chat_model_override,
+                    execution_target=execution_target,
+                )
+            except TypeError:
+                try:
+                    provider_supports_native_tools = engine.llm.chat_supports_native_tools(
+                        chat_model_override=chat_model_override
+                    )
+                except TypeError:
+                    provider_supports_native_tools = engine.llm.chat_supports_native_tools()
+            native_plan = _toe.build_native_tool_decision_plan(
+                schema_handlers or ready_handlers,
+                allow_tool_call=tool_capability_available,
+                provider_supports_native_tools=provider_supports_native_tools,
+                allowed_tool_names=schema_tool_names,
+            )
+            if native_plan.enabled:
+                native_tools = native_plan.tools
+                native_legacy_exclusions = native_plan.legacy_prompt_exclusions
+                if capability_selection is not None:
+                    resolved_native_names = tuple(
+                        name for name in schema_tool_names if name in native_legacy_exclusions
+                    )
+                    try:
+                        capability_selection = replace(
+                            capability_selection,
+                            native_tool_names=resolved_native_names,
+                            native_tool_aliases=native_tool_model_name_map(native_tools),
+                        )
+                    except TypeError:
+                        # Lightweight host/test projections may expose the same
+                        # attribute contract without being dataclasses.
+                        try:
+                            setattr(capability_selection, "native_tool_names", resolved_native_names)
+                            setattr(
+                                capability_selection,
+                                "native_tool_aliases",
+                                native_tool_model_name_map(native_tools),
+                            )
+                        except (AttributeError, TypeError):
+                            pass
+            elif native_plan.status == "unsupported":
+                engine.llm.record_metric("native_tool_provider_unsupported")
+    _build_native_exposure()
+    prompt_context_kwargs = {
+        "allow_tool_call": tool_capability_available,
+        "client_context": client_context,
+        "profile_user_id": profile_user_id,
+        "session_id": session_id,
+        "exclude_tool_types": native_legacy_exclusions,
+        "domain_profile_id": domain_profile.id,
+        "capability_selection": capability_selection,
+        "include_capability_status": not bool(native_tools),
+        "actor_stable_id": actor_stable_id,
+        "actor_profile_user_id": actor_profile_user_id,
+    }
+    section_builder = getattr(engine, "_build_tool_prompt_context_sections", None)
+    if callable(section_builder):
+        tool_prompt_sections = dict(section_builder(**prompt_context_kwargs) or {})
+    else:
+        # Lightweight hosts may still expose only the composed diagnostic API.
+        tool_prompt_sections = {
+            "execution_context": "",
+            "catalog_context": "",
+            "catalog_status": "skipped",
+            "round_context": engine._build_tool_prompt_context(**prompt_context_kwargs),
+        }
+    execution_context = str(tool_prompt_sections.get("execution_context") or "").strip()
+    catalog_source_content = str(tool_prompt_sections.get("catalog_context") or "").strip()
+    current_capability_state = None
+    if getattr(desired_capability_selection, "capability_catalog", None) is not None:
+        from ..capability_exposure import catalog_state
+        current_capability_state = catalog_state(desired_capability_selection, current_plugin_blocks)
+    capability_catalog_context = catalog_source_content
+    capability_catalog_status = str(tool_prompt_sections.get("catalog_status") or "skipped").strip()
+    tool_prompt_context = str(tool_prompt_sections.get("round_context") or "").strip()
+    if native_tools:
+        tool_prompt_context = "\n\n".join(
+            part
+            for part in [
+                str(tool_prompt_context or "").strip(),
+                engine._build_native_tool_round_instruction(native_tools),
+            ]
+            if part
+        )
+    capability_catalog_lifecycle: dict[str, Any] = {
+        "ok": False,
+        "status": "skipped",
+        "reason": "projection_not_authoritative",
+    }
+    catalog_writer = getattr(getattr(engine, "memcore_manager", None), "reconcile_capability_catalog", None)
+    capability_catalog_lifecycle_enabled = bool(
+        callable(catalog_writer)
+        and capability_catalog_status == "ready"
+        and catalog_source_content
+    )
+
+    def _synchronize_capability_catalog() -> None:
+        nonlocal provider_projection, current_message_text, capability_catalog_context
+        nonlocal capability_catalog_lifecycle, catalog_source_content, current_capability_state
+        nonlocal execution_context, tool_prompt_context
+        previous_generation = exposure_lifecycle.get("compaction_generation")
+        _synchronize_exposure()
+        if not exposure_lifecycle.get("ok"):
+            capability_catalog_lifecycle = dict(exposure_lifecycle)
+            return
+        _build_native_exposure()
+        if previous_generation != exposure_lifecycle.get("compaction_generation"):
+            refreshed_kwargs = {**prompt_context_kwargs, "capability_selection": capability_selection,
+                                "exclude_tool_types": native_legacy_exclusions,
+                                "include_capability_status": not bool(native_tools)}
+            if callable(section_builder):
+                refreshed_sections = dict(section_builder(**refreshed_kwargs) or {})
+                catalog_source_content = str(refreshed_sections.get("catalog_context") or "").strip()
+                execution_context = str(refreshed_sections.get("execution_context") or "").strip()
+                tool_prompt_context = str(refreshed_sections.get("round_context") or "").strip()
+                if native_tools:
+                    tool_prompt_context = "\n\n".join(part for part in [tool_prompt_context,
+                        engine._build_native_tool_round_instruction(native_tools)] if part)
+            if getattr(desired_capability_selection, "capability_catalog", None) is not None:
+                from ..capability_exposure import catalog_state
+                current_capability_state = catalog_state(desired_capability_selection, current_plugin_blocks)
+        if not (projection_authoritative and projection_read_active and capability_catalog_lifecycle_enabled):
+            return
+        generation = int(provider_projection.get("compaction_generation") or 0)
+        capability_catalog_lifecycle = catalog_writer(
+            content=catalog_source_content,
+            visible_source_ids=_visible_projection_source_ids(provider_projection),
+            compaction_generation=generation,
+            anchor_source_id=current_source_id,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            timestamp=now_ts,
+            **({"capability_state": current_capability_state} if current_capability_state is not None else {}),
+        )
+        if capability_catalog_lifecycle.get("ok") and capability_catalog_lifecycle.get("changed"):
+            refreshed_projection = _build_memcore_provider_history(
+                engine,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                current_source_id=current_source_id,
+                allow_history_only=current_input_transient or normalized_prompt_scope == "qq_attention",
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                exclude_source_ids=list(excluded_prompt_sources),
+            )
+            if refreshed_projection.get("ok"):
+                provider_projection = refreshed_projection
+                projected_current_message = _projected_current_message_text(
+                    provider_projection,
+                    current_source_id=current_source_id,
+                )
+                if projected_current_message:
+                    current_message_text = projected_current_message
+            else:
+                capability_catalog_lifecycle = {
+                    **dict(capability_catalog_lifecycle),
+                    "ok": False,
+                    "status": "projection_refresh_failed",
+                    "reason": str(refreshed_projection.get("reason") or "projection_build_failed"),
+                }
+        shaped_projection, base_context = _shape_capability_catalog_projection(
+            provider_projection,
+            compaction_generation=generation,
+        )
+        provider_projection = shaped_projection
+        if base_context:
+            capability_catalog_context = base_context
+
+    _synchronize_capability_catalog()
+    if not exposure_lifecycle.get("ok"):
+        return _projection_failure_context(exposure_lifecycle, prompt_scope=normalized_prompt_scope)
+    if exposure_supported and capability_catalog_lifecycle_enabled and not capability_catalog_lifecycle.get("ok"):
+        return _projection_failure_context(capability_catalog_lifecycle, prompt_scope=normalized_prompt_scope)
+    if not capability_catalog_lifecycle_enabled and projection_authoritative and projection_read_active:
+        provider_projection, visible_catalog_base = _shape_capability_catalog_projection(
+            provider_projection,
+            compaction_generation=int(provider_projection.get("compaction_generation") or 0),
+        )
+        if visible_catalog_base:
+            capability_catalog_context = visible_catalog_base
+    effective_post_user_turns = [
+        dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)
+    ]
+    surface_active_turns = [
+        dict(turn) for turn in list(provider_projection.get("active_turn_messages") or []) if isinstance(turn, dict)
+    ]
+    if projection_authoritative and surface_active_turns:
+        effective_post_user_turns = _split_active_projection_turns(
+            provider_projection,
+            effective_post_user_turns,
+        )
+    system_prompt_override = prompt_profile.system_prompt_override
+    if not care_enabled:
+        system_prompt_override = strip_care_prompt_contract(system_prompt_override)
+
+    authoritative_history_turns = (
+        [dict(turn) for turn in list(provider_projection.get("history_turns") or [])]
+        if projection_authoritative
+        else []
+    )
+
+    def _build_generation_context() -> dict[str, Any]:
+        current_message_visible_in_raw = bool(provider_projection.get("current_source_visible")) if (
+            projection_read_active
+        ) else bool(
+            current_source_id
+            and any(str(record.get("source_id") or "").strip() == current_source_id for record in raw_records)
+        )
+        if projection_authoritative:
+            history_turns = [dict(turn) for turn in authoritative_history_turns]
+        elif current_source_id:
+            history_records = [
+                record
+                for record in raw_records
+                if str(record.get("source_id") or "").strip() != current_source_id
+            ]
+        else:
+            history_records, _current = engine._split_history_records(
+                recent_raw=raw_records,
+                user_message=user_message,
+                now_ts=now_ts,
+            )
+        if not projection_authoritative:
+            history_builder = getattr(engine, "_build_history_turns", None)
+            history_turns = history_builder(history_records) if callable(history_builder) else []
+            if not history_turns and raw_text and not raw_records:
+                history_turns = [
+                    {
+                        "role": "user",
+                        "content": f"当前会话中所有未总结的原始消息：\n{raw_text}",
+                    }
+                ]
+        effective_stable_system_context = with_compact_readback_hint(
+            stable_system_context,
+            policy=str(
+                getattr(mod_config, "MEMCORE_OPERATION_PROJECTION_POLICY", "full_until_raw_compaction") or ""
+            ),
+            has_compact_history=bool(provider_projection.get("has_compact_history")),
+        )
+        generation_context = prompt_builder.build_final_generation_context(
+            now_ts=now_ts,
+            raw_text="" if projection_authoritative else raw_text,
+            history_turns=history_turns,
+            current_message_text=with_current_actor_relation(
+                current_message_text,
+                relation=current_actor_relation,
+            ),
+            episodic_summary_text="" if projection_authoritative else episodic_summary_text,
+            semantic_summary_text="" if projection_authoritative else semantic_summary_text,
+            memory_text=memory_text,
+            current_visual_context=current_visual_context,
+            resource_context=resource_context,
+            extra_context=merged_extra_context,
+            volatile_extra_context=merged_volatile_extra_context,
+            extra_context_audit_sections=extra_context_audit_sections,
+            stable_system_context=effective_stable_system_context,
+            persona_system_context=str(persona_context.get("system_context") or ""),
+            persona_reference_context=str(persona_context.get("reference_context") or ""),
+            persona_active_id=str(persona_context.get("active_id") or ""),
+            domain_profile_context=domain_profile_context,
+            visual_defaults=visual_defaults,
+            allow_tool_call=effective_allow_tool_call,
+            capability_catalog_context=capability_catalog_context,
+            execution_context=execution_context,
+            tool_prompt_context=tool_prompt_context,
+            debug_enabled=debug_enabled,
+            system_prompt_override=system_prompt_override,
+            mode_prompt_override=mode_prompt_override,
+            prompt_scope=normalized_prompt_scope,
+            current_message_in_raw=current_message_visible_in_raw,
+            **({"registered_stable_blocks_override": published_plugin_blocks} if callable(block_reader) else {}),
+        )
+        cache_scope_material = "\x00".join(
+            (
+                str(profile_user_id or ""),
+                str(session_id or ""),
+                str(character_pack_id or ""),
+            )
+        )
+        generation_context["prompt_cache_scope_hash"] = hashlib.sha256(
+            cache_scope_material.encode("utf-8", errors="ignore")
+        ).hexdigest()
+        generation_context["tool_exposure_lifecycle"] = dict(exposure_lifecycle)
+        generation_context["memcore_history_start_index"] = max(
+            0,
+            len(list(generation_context.get("history_turns") or [])) - len(history_turns),
+        )
+        generation_context["post_user_turns"] = [dict(turn) for turn in effective_post_user_turns]
+        generation_context["memcore_projection_read"] = {
+            key: value
+            for key, value in provider_projection.items()
+            if key not in {"history_turns"}
+        }
+        if projection_recovery_failure is not None:
+            generation_context["memcore_projection_recovery"] = dict(projection_recovery_failure)
+        prompt_context_lifecycle = {
+            "event_timeline_authoritative": event_timeline_authoritative,
+            "skipped_event_backed": list(materialized_contexts.skipped_event_backed),
+        }
+        if capability_catalog_lifecycle_enabled:
+            prompt_context_lifecycle["capability_catalog"] = {
+                "status": str(capability_catalog_lifecycle.get("status") or "skipped"),
+                "role": str(capability_catalog_lifecycle.get("catalog_role") or ""),
+                "changed": bool(capability_catalog_lifecycle.get("changed")),
+                "compaction_generation": int(
+                    capability_catalog_lifecycle.get("compaction_generation") or 0
+                ),
+            }
+        generation_context["prompt_context_lifecycle"] = prompt_context_lifecycle
+        return generation_context
+
+    generation_context = _build_generation_context()
+    prompt_token_limit = max(0, int(getattr(mod_config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 0) or 0))
+    initial_prompt_tokens = _estimate_generation_context_tokens(generation_context, native_tools)
+    compact_attempted = False
+    if prompt_token_limit and initial_prompt_tokens > prompt_token_limit and projection_read_active:
+        manager = getattr(engine, "memcore_manager", None)
+        compact_sync = getattr(manager, "compact_due_sync", None)
+        if callable(compact_sync):
+            compact_attempted = True
+            compact_sync(
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                provider_profile=str(provider_projection.get("provider_profile") or ""),
+            )
+            provider_projection = _build_memcore_provider_history(
+                engine,
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+                current_source_id=current_source_id,
+                allow_history_only=current_input_transient or normalized_prompt_scope == "qq_attention",
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+                exclude_source_ids=list(excluded_prompt_sources),
+            )
+            projection_read_active = bool(provider_projection.get("ok"))
+            projection_migration_window = (
+                str(provider_projection.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS
+            )
+            projection_authoritative = not projection_migration_window
+            if not projection_read_active and not projection_migration_window:
+                return _projection_failure_context(provider_projection, prompt_scope=normalized_prompt_scope)
+            if projection_read_active and projection_authoritative:
+                projected_current_message = _projected_current_message_text(
+                    provider_projection,
+                    current_source_id=current_source_id,
+                )
+                if projected_current_message:
+                    current_message_text = projected_current_message
+                _synchronize_capability_catalog()
+                if not exposure_lifecycle.get("ok"):
+                    return _projection_failure_context(exposure_lifecycle, prompt_scope=normalized_prompt_scope)
+                if exposure_supported and capability_catalog_lifecycle_enabled and not capability_catalog_lifecycle.get("ok"):
+                    return _projection_failure_context(capability_catalog_lifecycle, prompt_scope=normalized_prompt_scope)
+                if not capability_catalog_lifecycle_enabled:
+                    provider_projection, visible_catalog_base = _shape_capability_catalog_projection(
+                        provider_projection,
+                        compaction_generation=int(provider_projection.get("compaction_generation") or 0),
+                    )
+                    if visible_catalog_base:
+                        capability_catalog_context = visible_catalog_base
+                surface_active_turns = [
+                    dict(turn)
+                    for turn in list(provider_projection.get("active_turn_messages") or [])
+                    if isinstance(turn, dict)
+                ]
+                effective_post_user_turns = _split_active_projection_turns(
+                    provider_projection,
+                    [dict(turn) for turn in list(post_user_turns or []) if isinstance(turn, dict)],
+                )
+                authoritative_history_turns = [
+                    dict(turn) for turn in list(provider_projection.get("history_turns") or [])
+                ]
+            generation_context = _build_generation_context()
+
+    # Emergency second boundary: compaction normally keeps these layers small,
+    # but a blocked turn or one oversized imported/tool trace must never make
+    # context grow without a bound. Trim complete authoritative history groups,
+    # or the legacy raw/episodic fallback layers; semantic memory and the
+    # current user message remain intact.
+    trimmed_layers: list[str] = []
+    trimmed_history_messages = 0
+    if prompt_token_limit and projection_authoritative:
+        while (
+            _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit
+            and authoritative_history_turns
+        ):
+            removed = _trim_oldest_provider_history_group(authoritative_history_turns)
+            if removed <= 0:
+                break
+            trimmed_history_messages += removed
+            if "memcore_history" not in trimmed_layers:
+                trimmed_layers.append("memcore_history")
+            generation_context = _build_generation_context()
+    if prompt_token_limit and not projection_authoritative:
+        while (
+            _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit
+            and _trim_oldest_prompt_raw_record(
+                raw_records,
+                current_source_id=current_source_id,
+                current_content=str(current_record.get("content") or ""),
+            )
+        ):
+            raw_text = render_chat_timeline(raw_records)
+            if "raw" not in trimmed_layers:
+                trimmed_layers.append("raw")
+            generation_context = _build_generation_context()
+        while (
+            _estimate_generation_context_tokens(generation_context, native_tools) > prompt_token_limit
+            and episodic_summary_text
+        ):
+            reduced = _drop_oldest_prompt_lines(episodic_summary_text)
+            episodic_summary_text = "" if reduced == episodic_summary_text else reduced
+            if "episodic" not in trimmed_layers:
+                trimmed_layers.append("episodic")
+            generation_context = _build_generation_context()
+    generation_context["prompt_budget"] = {
+        "limit_tokens": prompt_token_limit,
+        "initial_estimated_tokens": initial_prompt_tokens,
+        "final_estimated_tokens": _estimate_generation_context_tokens(generation_context, native_tools),
+        "compact_attempted": compact_attempted,
+        "trimmed_layers": trimmed_layers,
+        "trimmed_history_messages": trimmed_history_messages,
+    }
+    if not care_enabled:
+        fallback_payload = generation_context.get("fallback")
+        if isinstance(fallback_payload, dict):
+            fallback_payload.pop("state_request", None)
+    if desktop_pet_character_only and client_context.has_capability(ClientCapability.AUDIO_PLAYBACK):
+        fallback_payload = generation_context.get("fallback")
+        if isinstance(fallback_payload, dict):
+            fallback_payload["activity"] = None
+    generation_context["allow_tool_call"] = effective_allow_tool_call
+    generation_context["native_tools"] = native_tools
+    generation_context["native_tool_choice"] = (
+        "auto" if native_tools and effective_allow_tool_call else "none" if native_tools else ""
+    )
+    generation_context["post_user_turns"] = effective_post_user_turns
+    generation_context["memcore_projection_shadow"] = _compare_memcore_projection_shadow(
+        engine,
+        generation_context=generation_context,
+        profile_user_id=profile_user_id,
+        session_id=session_id,
+        character_pack_id=character_pack_id,
+        current_source_id=current_source_id,
+        chat_model_override=chat_model_override,
+        execution_target=execution_target,
+    )
+    generation_context["prompt_profile"] = prompt_profile.to_public_dict()
+    generation_context["domain_profile"] = domain_profile.to_public_dict()
+    generation_context["prompt_scope"] = normalized_prompt_scope
+    # Host-only normalization flag: never a second prompt profile/cache family.
+    generation_context["allow_deliberate_silence"] = bool(
+        current_input_transient and client_context.effective_mode == ClientMode.DESKTOP_PET
+    )
+    execution_receipts = getattr(capability_selection, "execution_receipts", {})
+    if isinstance(execution_receipts, dict) and execution_receipts:
+        generation_context[TOOL_EXECUTION_RECEIPTS_FIELD] = {
+            str(name): dict(receipt)
+            for name, receipt in execution_receipts.items()
+            if isinstance(receipt, dict)
+        }
+    # M66-C frozen round: carry the resolved CapabilitySelection into the
+    # invocation phase so _prepare_tool_round_decisions can pass it to
+    # normalize/validate without re-resolving handlers a second time.
+    if capability_selection is not None:
+        generation_context[TOOL_CAPABILITY_SELECTION_FIELD] = capability_selection
+    if client_context.effective_mode == ClientMode.QQ_TEXT:
+        fallback_payload = generation_context.get("fallback")
+        if isinstance(fallback_payload, dict):
+            fallback_payload.pop("character", None)
+            fallback_payload.pop("scene", None)
+            fallback_payload.pop("live2d", None)
+            fallback_payload.pop("pet", None)
+            fallback_payload.pop("activity", None)
+    return generation_context
+
+
+def _compare_memcore_projection_shadow(
+    engine: Any,
+    *,
+    generation_context: dict[str, Any],
+    profile_user_id: str,
+    session_id: str,
+    character_pack_id: str,
+    current_source_id: str,
+    chat_model_override: str,
+    execution_target: Any = None,
+) -> dict[str, Any]:
+    if not bool(getattr(mod_config, "MEMCORE_SHADOW_COMPARE", False)):
+        return {"ok": True, "status": "disabled", "reason": "shadow_compare_disabled"}
+    manager = getattr(engine, "memcore_manager", None)
+    compare = getattr(manager, "compare_context_projection", None)
+    runtime = getattr(engine, "llm", None)
+    protocol_getter = getattr(runtime, "chat_provider_protocol", None)
+    history_normalizer = getattr(runtime, "normalize_chat_history_turns", None)
+    if not callable(compare) or not callable(protocol_getter) or not callable(history_normalizer):
+        return {"ok": False, "status": "unavailable", "reason": "projection_shadow_dependencies_unavailable"}
+    try:
+        protocol = str(
+            protocol_getter(
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+            )
+            or ""
+        ).strip().lower()
+        history_turns = list(generation_context.get("history_turns") or [])
+        history_start = max(0, int(generation_context.get("memcore_history_start_index") or 0))
+        actual_history = history_normalizer(
+            history_turns[history_start:],
+            chat_model_override=chat_model_override,
+            execution_target=execution_target,
+        )
+        result = compare(
+            provider_profile=protocol,
+            actual_history_messages=actual_history,
+            profile_user_id=profile_user_id,
+            session_id=session_id,
+            character_pack_id=character_pack_id,
+            exclude_source_ids=[current_source_id] if current_source_id else [],
+        )
+        safe_result = dict(result) if isinstance(result, dict) else {
+            "ok": False,
+            "status": "failed",
+            "reason": "invalid_projection_shadow_result",
+        }
+        logger.info(
+            "memcore projection shadow status=%s profile=%s strict_prefix=%s projection_hash=%s "
+            "actual_history_hash=%s first_divergence_index=%s reason=%s",
+            str(safe_result.get("status") or "unknown")[:40],
+            str(safe_result.get("provider_profile") or "")[:40],
+            bool(safe_result.get("strict_prefix")),
+            str(safe_result.get("projection_hash") or "")[:64],
+            str(safe_result.get("actual_history_hash") or "")[:64],
+            int(safe_result.get("first_divergence_index") or 0),
+            str(safe_result.get("divergence_reason") or safe_result.get("reason") or "")[:80],
+        )
+        return safe_result
+    except Exception as exc:
+        logger.warning("memcore projection shadow unavailable: %s", exc.__class__.__name__)
+        return {"ok": False, "status": "failed", "reason": "shadow_compare_failed"}
+
+
+def _projected_current_message_text(
+    projection: dict[str, Any],
+    *,
+    current_source_id: str,
+) -> str:
+    current_sid = str(current_source_id or "").strip()
+    if not current_sid:
+        return ""
+    for message in list(projection.get("current_turn_messages") or []):
+        if not isinstance(message, dict):
+            continue
+        source_ids = {
+            str(source_id or "").strip()
+            for source_id in list(message.get("source_ids") or [])
+            if str(source_id or "").strip()
+        }
+        if current_sid not in source_ids:
+            continue
+        payload = message.get("payload")
+        if not isinstance(payload, dict) or str(payload.get("role") or "") != "user":
+            continue
+        content = payload.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+    return ""
+
+
+def _build_memcore_provider_history(
+    engine: Any,
+    *,
+    profile_user_id: str,
+    session_id: str,
+    character_pack_id: str,
+    current_source_id: str,
+    allow_history_only: bool = False,
+    chat_model_override: str,
+    execution_target: Any = None,
+    exclude_source_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    if _memory_backend() != "memcore":
+        return {"ok": False, "status": "migration_window", "reason": "legacy_memory_backend"}
+    manager = getattr(engine, "memcore_manager", None)
+    build_surface = getattr(manager, "build_context_surface", None)
+    runtime = getattr(engine, "llm", None)
+    protocol_getter = getattr(runtime, "chat_provider_protocol", None)
+    if not callable(build_surface) or not callable(protocol_getter):
+        return {"ok": False, "status": "unavailable", "reason": "projection_read_dependencies_unavailable"}
+    if not str(current_source_id or "").strip() and not allow_history_only:
+        return {"ok": False, "status": "skipped", "reason": "current_source_id_missing"}
+    try:
+        protocol = str(
+            protocol_getter(
+                chat_model_override=chat_model_override,
+                execution_target=execution_target,
+            )
+            or ""
+        ).strip().lower()
+        surface: dict[str, Any] = {}
+        for _attempt in range(2):
+            candidate = build_surface(
+                provider_profile=protocol,
+                current_source_id=current_source_id,
+                active_turn_messages=[],
+                profile_user_id=profile_user_id,
+                session_id=session_id,
+                character_pack_id=character_pack_id,
+            )
+            surface = candidate if isinstance(candidate, dict) else {}
+            if surface.get("ok"):
+                break
+            if str(surface.get("reason") or "") in PROJECTION_READ_MIGRATION_REASONS:
+                break
+        if not isinstance(surface, dict) or not surface.get("ok"):
+            migration_reason = str((surface or {}).get("reason") or "")
+            if migration_reason in PROJECTION_READ_MIGRATION_REASONS:
+                return {"ok": False, "status": "migration_window", "reason": migration_reason}
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "projection_build_failed",
+                "detail": _safe_projection_failure_code(
+                    (surface or {}).get("reason") or (surface or {}).get("status"),
+                ),
+            }
+        current_sid = str(current_source_id).strip()
+        history_turns = [dict(item) for item in list(surface.get("history_messages") or []) if isinstance(item, dict)]
+        current_payload = surface.get("current_message")
+        current_ids = {
+            str(item or "").strip()
+            for item in (list(surface.get("message_source_ids") or [])[len(history_turns)] if current_payload else [])
+            if str(item or "").strip()
+        }
+        current_source_visible = bool(current_sid and current_sid in current_ids)
+        if current_sid and not current_source_visible:
+            return {"ok": False, "status": "skipped", "reason": "current_source_not_projected"}
+        active_start = len(history_turns) + (1 if current_payload else 0)
+        source_ids = list(surface.get("message_source_ids") or [])
+        projection_metadata = [
+            dict(item)
+            for item in list(surface.get("message_projection_metadata") or [])
+            if isinstance(item, dict)
+        ]
+        expected_message_count = len(history_turns) + (1 if current_payload else 0) + len(
+            list(surface.get("active_turn_messages") or [])
+        )
+        if len(projection_metadata) != expected_message_count:
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "context_surface_projection_metadata_missing",
+            }
+        active_payloads = [dict(item) for item in list(surface.get("active_turn_messages") or []) if isinstance(item, dict)]
+        active_ids = source_ids[active_start : active_start + len(active_payloads)]
+        current_turn_messages: list[dict[str, Any]] = []
+        if current_payload is not None and isinstance(current_payload, dict):
+            current_metadata = projection_metadata[len(history_turns)]
+            metadata_source_ids = {
+                str(item or "").strip()
+                for item in list(current_metadata.get("source_ids") or [])
+                if str(item or "").strip()
+            }
+            if metadata_source_ids != current_ids:
+                return {
+                    "ok": False,
+                    "status": "unavailable",
+                    "reason": "context_surface_projection_metadata_mismatch",
+                }
+            current_turn_messages.append(
+                {
+                    "payload": dict(current_payload),
+                    "source_ids": list(current_ids),
+                    "turn_id": str(current_metadata.get("turn_id") or ""),
+                    "projection_index": int(current_metadata.get("projection_index", -1)),
+                    "projection_status": str(current_metadata.get("projection_status") or "complete"),
+                    "projection_version": int(current_metadata.get("projection_version") or 0),
+                }
+            )
+        current_turn_messages.extend(
+            {
+                "payload": payload,
+                "source_ids": list(active_ids[index]) if index < len(active_ids) else [],
+                "turn_id": str(projection_metadata[active_start + index].get("turn_id") or ""),
+                "projection_index": int(projection_metadata[active_start + index].get("projection_index", -1)),
+                "projection_status": str(
+                    projection_metadata[active_start + index].get("projection_status") or "complete"
+                ),
+                "projection_version": int(
+                    projection_metadata[active_start + index].get("projection_version") or 0
+                ),
+            }
+            for index, payload in enumerate(active_payloads)
+        )
+        if any(
+            int(message.get("projection_index", -1)) < 0 or int(message.get("projection_version") or 0) < 1
+            for message in current_turn_messages
+            if message.get("source_ids")
+        ):
+            return {
+                "ok": False,
+                "status": "unavailable",
+                "reason": "context_surface_projection_metadata_invalid",
+            }
+        history_source_ids = [
+            str(source_id)
+            for group in source_ids[: len(history_turns)]
+            for source_id in group
+            if str(source_id or "").strip()
+        ]
+        return {
+            "ok": True,
+            "status": "active",
+            "reason": "",
+            "provider_profile": str(surface.get("provider_profile") or ""),
+            "history_turns": history_turns,
+            "history_message_source_ids": [list(group or []) for group in source_ids[: len(history_turns)]],
+            "current_turn_id": str(surface.get("current_turn_id") or ""),
+            "current_turn_messages": current_turn_messages,
+            "current_message": dict(current_payload) if isinstance(current_payload, dict) else None,
+            "active_turn_messages": active_payloads,
+            "active_turn_message_source_ids": [list(group or []) for group in active_ids],
+            "source_ids": list(dict.fromkeys(history_source_ids)),
+            "source_count": len(set(history_source_ids)),
+            "message_count": len(history_turns),
+            "stable_prefix_hash": str(surface.get("projection_hash") or ""),
+            "projection_version": int(surface.get("projection_version") or 1),
+            "compaction_generation": int(surface.get("compaction_generation") or 0),
+            "projection_generation": int(surface.get("projection_generation") or 0),
+            "has_compact_history": bool(surface.get("has_compact_history")),
+            "current_source_visible": current_source_visible,
+        }
+    except Exception as exc:
+        logger.warning("memcore projection read unavailable: %s", exc.__class__.__name__)
+        return {"ok": False, "status": "failed", "reason": "projection_read_failed"}
+
+
+def _projection_failure_context(projection: dict[str, Any], *, prompt_scope: str) -> dict[str, Any]:
+    status = str((projection or {}).get("status") or "unavailable").strip()[:40] or "unavailable"
+    reason = str((projection or {}).get("reason") or "projection_unavailable").strip()[:120]
+    raw_detail = str((projection or {}).get("detail") or "").strip()
+    detail = _safe_projection_failure_code(raw_detail) if raw_detail else ""
+    return {
+        "memcore_projection_failure": {
+            "status": status,
+            "reason": reason or "projection_unavailable",
+            **({"detail": detail} if detail else {}),
+        },
+        "prompt_scope": str(prompt_scope or "").strip(),
+    }
+
+
+def _estimate_generation_context_tokens(
+    generation_context: dict[str, Any],
+    native_tools: list[dict[str, Any]],
+) -> int:
+    parts = [
+        str(generation_context.get("system_prompt") or ""),
+        str(generation_context.get("user_prompt") or ""),
+        "\n".join(str(item or "") for item in generation_context.get("system_extra_blocks") or []),
+        json.dumps(
+            generation_context.get("history_turns") or [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ),
+        json.dumps(
+            generation_context.get("ephemeral_turns") or [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ),
+        json.dumps(
+            generation_context.get("post_user_turns") or [],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ),
+        json.dumps(native_tools or [], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    ]
+    text = "\n".join(parts)
+    cjk_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    non_cjk_chars = max(0, len(text) - cjk_chars)
+    return int(cjk_chars + ((non_cjk_chars + 3) // 4))
+
+
+def _drop_oldest_prompt_lines(text: str) -> str:
+    marker = "[更早内容已由上下文高水位保护省略]"
+    lines = [line for line in str(text or "").splitlines() if line.strip() != marker]
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        raw = lines[0]
+        if len(raw) <= 256:
+            return ""
+        return marker + "\n" + raw[len(raw) // 2 :]
+    remove_count = max(1, len(lines) // 4)
+    remaining = lines[remove_count:]
+    return marker + "\n" + "\n".join(remaining)
+
+
+def _trim_oldest_provider_history_group(history_turns: list[dict[str, Any]]) -> int:
+    """Drop one oldest complete provider-history group.
+
+    Provider projections no longer carry host-only turn ids once converted to
+    request messages. A new user message is therefore the safest portable
+    group boundary: remove the oldest user/assistant/tool prefix up to the next
+    user message. If only one historical group remains, drop it whole rather
+    than splitting a tool exchange. The current user turn is stored separately
+    and is never passed to this helper.
+    """
+
+    if not history_turns:
+        return 0
+    remove_count = len(history_turns)
+    for index in range(1, len(history_turns)):
+        if str(history_turns[index].get("role") or "").strip().lower() == "user":
+            remove_count = index
+            break
+    del history_turns[:remove_count]
+    return remove_count
+
+
+def _trim_oldest_prompt_raw_record(
+    records: list[dict[str, Any]],
+    *,
+    current_source_id: str,
+    current_content: str,
+) -> bool:
+    """Trim one oldest history record while preserving the current user turn."""
+
+    current_sid = str(current_source_id or "").strip()
+    normalized_current = str(current_content or "").strip()
+    candidate_index = -1
+    for index, record in enumerate(records):
+        source_id = str(record.get("source_id") or "").strip()
+        role = str(record.get("role") or "").strip().lower()
+        content = str(record.get("content") or "").strip()
+        if current_sid and source_id == current_sid:
+            continue
+        if not current_sid and index == len(records) - 1 and role == "user" and content == normalized_current:
+            continue
+        candidate_index = index
+        break
+    if candidate_index < 0:
+        return False
+    candidate = dict(records[candidate_index])
+    content = str(candidate.get("content") or "")
+    marker = "[更早内容已由上下文高水位保护省略]"
+    if len(content) > 512:
+        candidate["content"] = marker + "\n" + content[len(content) // 2 :]
+        records[candidate_index] = candidate
+    else:
+        records.pop(candidate_index)
+    return True
+
+
+def _declared_activity_context_lifecycle(service: Any) -> PromptContextLifecycle:
+    """Read a producer lifecycle declaration without feature-specific rules."""
+
+    resolver = getattr(service, "activity_prompt_context_lifecycle", None)
+    if not callable(resolver):
+        return PromptContextLifecycle.TURN
+    try:
+        return PromptContextLifecycle.coerce(resolver())
+    except Exception as exc:
+        logger.warning("prompt context lifecycle declaration failed: %s", exc)
+        return PromptContextLifecycle.TURN
+
+
+def _memory_backend() -> str:
+    backend = str(getattr(mod_config, "MEMORY_BACKEND", "memcore") or "memcore").strip().lower()
+    return backend if backend in {"legacy", "dual", "memcore"} else "memcore"

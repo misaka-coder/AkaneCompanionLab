@@ -1,0 +1,216 @@
+# Akane QQ / NapCat 接入 V1
+
+本文档记录当前项目的 QQ 最小接入方式。V1 目标是先跑通“QQ 纯文本客户端”，验证 Akane 能离开 Web 场景端继续对话，而不是一次性搬旧项目里很重的 QQ 桥接器。
+
+## 1. 当前方案
+
+V1 使用 NapCat / OneBot 的 HTTP 事件上报：
+
+```text
+QQ / NapCat
+  -> POST /api/qq/napcat/event
+  -> AkaneMemoryEngine.process_turn(client_mode=qq_text)
+  -> OneBot HTTP send_private_msg / send_group_msg
+```
+
+当前回复由 `channelcore-onebot` 生成标准 OneBot action plan。入站事件有
+`message_id` 时，同一轮只有第一条可引用的文字、图片、语音或 mface 携带真实
+`reply` 段，后续流式分段和媒体不再重复显示引用框；文件仍使用 NapCat
+私聊/群文件上传 action。Akane 保留内容、媒介和本地文件安全决策。
+
+暂不启用旧项目的 WebSocket bridge 进程。旧项目的 `qq_bridge.py` 仍然很有参考价值，但里面包含任务执行、进度推送、插件运行、主动提醒等大量逻辑，直接搬会污染当前架构。
+
+## 2. 环境变量
+
+在 `.env` 中开启：
+
+```env
+QQ_BRIDGE_ENABLED=true
+QQ_ONEBOT_HTTP_URL=http://127.0.0.1:3001
+QQ_BOT_QQ=你的机器人QQ号
+MASTER_QQ=你的主人QQ号
+QQ_CHARACTER_PACK_ID=
+QQ_GROUP_PLAINTEXT_ENABLED=false
+QQ_GROUP_ATTENTION_MODE=engaged
+QQ_GROUP_ATTENTION_TTL_SECONDS=120
+QQ_GROUP_ATTENTION_DELAY_SECONDS=10
+QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS=60
+QQ_ATTACHMENT_DEBOUNCE_SECONDS=1.2
+QQ_ATTACHMENT_READY_WAIT_SECONDS=8
+QQ_REPLY_SEGMENT_DELAY_SECONDS=0.8
+QQ_EVENT_MAX_AGE_SECONDS=300
+QQ_ALLOW_STALE_EVENTS=false
+```
+
+字段说明：
+
+- `QQ_BRIDGE_ENABLED`：是否开启 QQ 事件入口。默认关闭，避免公网误触发。
+- `QQ_ONEBOT_HTTP_URL`：NapCat OneBot HTTP 地址。
+- `QQ_ONEBOT_CACHE_ROOTS`：可选的 OneBot 本地缓存可信根目录，多个目录用分号分隔。留空时不会读取
+  `/get_image` 或 `/get_file` 返回的本地路径，只使用受限 base64 或后续安全 URL 下载路径。
+  本地启动器会开启 NapCat 的 `enableLocalFile2Url`，让已鉴权的文件接口直接返回 base64 内容；
+  这同时覆盖图片和普通文档，不要求逐个添加 QQ 图片、文件或临时缓存目录。
+  手工配置 NapCat 时也应开启此项。否则可能出现 NapCat 已下载文件、Akane 却只能尝试外部
+  下载链接的情况；本机代理的 fake-IP DNS 还可能使该链接被公网地址校验拒绝。
+- `QQ_BOT_QQ`：机器人 QQ，用于识别群聊里是否被 at。
+- `MASTER_QQ`：主创 QQ。该 QQ 的私聊会映射到 `master` 记忆身份。
+- `QQ_CHARACTER_PACK_ID`：QQ 文字聊天默认使用的 Creator Kit 角色包 id。留空时使用内置 Akane 人设；例如设为 `reimu` 后，QQ 每轮会把 `character_pack_id=reimu` 传给后端，角色包 persona 会进入 `qq_text` prompt，聊天记忆也会按该角色包隔离。
+- `QQ_GROUP_PLAINTEXT_ENABLED`：旧兼容项。
+- `QQ_GROUP_ATTENTION_MODE`：普通群消息注意力模式。`off` 不观察普通消息；`engaged` 仅在 Akane 刚刚成功参与后的窗口内判断；`adaptive` 还允许非活跃期的低频环境观察。三种模式都不影响 @、控制指令和回复 Akane；群聊文字唤醒已关闭。
+- `QQ_GROUP_ATTENTION_TTL_SECONDS`：Akane 成功向群里交付回复后，普通消息可继续触发注意力判断的时长，默认 `120` 秒。
+- `QQ_GROUP_ATTENTION_DELAY_SECONDS`：第一条普通消息写入 MemCore 后，到一次注意力判断之间的固定等待，默认 `10` 秒。期间新消息照常入库，但不会重置这个截止时间。
+- `QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS`：`adaptive` 模式在非活跃期观察一次但未参与后，再次允许观察前的冷却，默认 `60` 秒。没有新消息时不会创建定时请求。
+- 未 @、也未回复 Akane 的群图片只会完成素材注册并写入 MemCore，不会追加到正在执行的工具轮，也不会单独唤醒 Akane。后续明确要求“看看刚才的图”时，模型可通过时间线中的真实素材句柄调用 `load_material`。
+- `QQ_ATTACHMENT_DEBOUNCE_SECONDS`：明确发给 Akane 的连发图片/文件使用短防抖窗口，窗口内较早事件只入库不触发回复，最后一个事件统一进入当前请求，默认 `1.2` 秒。
+- `QQ_ATTACHMENT_READY_WAIT_SECONDS`：附件入库后，主回复最多等待文件解析完成的秒数，默认 `8` 秒。QQ 图片会自动提升到 `VISION_REQUEST_TIMEOUT + 5` 的等待窗口，尽量保证首轮回复就能看到视觉摘要；超时后仍会回复，但 Prompt 会显示仍有附件在处理中。
+- `QQ_REPLY_SEGMENT_DELAY_SECONDS`：`speech_segments` 分多条发到 QQ 时，每条之间的象征性停顿秒数，默认 `0.8`，最大 `3.0`。
+- `QQ_EVENT_MAX_AGE_SECONDS`：忽略超过该秒数的旧 QQ 事件，避免 NapCat / OneBot 重连后把历史消息重新灌进当前对话。设为 `0` 可关闭时间拦截。
+- `QQ_ALLOW_STALE_EVENTS`：是否允许处理旧事件，默认 `false`。只建议临时排查回放事件时打开。
+- QQ 文件投递以当前轮结构化工具事件为准：模型通过 `send_file` 选择一个或多个工作台文件后，网关负责校验事件来源、会话内文件句柄和客户端类型，并执行真实投递；网关不再用关键词正则二次猜测用户意图。
+
+## 3. NapCat 配置
+
+NapCat 需要满足两件事：
+
+- OneBot HTTP API 可用，例如 `http://127.0.0.1:3001/send_private_msg`。
+- 事件上报地址指向当前后端：
+
+```text
+http://127.0.0.1:9999/api/qq/napcat/event
+```
+
+可先访问状态检查：
+
+```text
+GET http://127.0.0.1:9999/api/qq/napcat/status
+```
+
+## 4. 行为规则
+
+私聊：
+
+- 机器人会回复所有私聊消息。
+- 如果发送者是 `MASTER_QQ`，会话身份是 `master`。
+- 其他 QQ 私聊会话身份是 `qq_pri_{user_id}`，长期身份是 `qq_{user_id}`。
+
+群聊：
+
+- 真实 @ 按 Bot QQ 账号 ID 接收；引用 Akane 先前消息仍按既有引用规则处理。模型可根据语境选择回复、动作或静默，不强制输出文字。
+- 群聊文字唤醒已关闭：Akane、群显示名、QQ 昵称和显式别名均不再直接启动回复。旧 Bot 配置 `wake_words` 只兼容命令前缀，自检的有效唤醒词为空。
+- 当前群身份仅在执行模型回合时提供一次：群 ID、Bot QQ 账号和单一实际群显示名（群名片优先、为空时用 QQ 昵称）。查询失败不编造名字，不改写历史；见 [群身份修复](qq_group_identity_trigger_repair_20260908.md)。
+- 普通群消息先由“被动群记忆策略”决定是否写入当前群聊记忆；注意力调度只保存会话键和固定截止时间，请求模型时读取同一份 MemCore 投影，不复制一份聊天摘要。
+- `QQ_GROUP_PASSIVE_MEMORY_MODE` 支持 `all`（默认全部记录）、`denylist`（排除名单群）和 `off`（不记录任何背景群消息）；历史 `allowlist/whitelist` 值会迁移为 `all`，避免名单漏配导致背景历史静默丢失。`QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS` 仅用于 denylist，支持逗号、分号或空白分隔。
+- 该策略只过滤无人触发 Akane 时的背景聊天；@ 和其他正常回复轮仍会写入群聊 Raw 并按正常阈值压缩。
+- 默认 `engaged` 模式会在 Akane 成功回复后的活跃窗口内，为普通消息创建一次注意力判断；`/listen off|engaged|adaptive|status` 可由群主、管理员或主人 QQ 按群修改。
+- 普通消息的等待是单次固定截止时间，不是尾随防抖；后续消息不会不断推迟请求。没有新消息时也没有周期性模型调用。
+- @ 之后会为同一个发送者打开一个短暂的“附件缓冲窗口”；在窗口内补发的图片/文件可以不再次 @，用于适配手机端不能边 @ 边发图的限制。
+- 附件缓冲窗口只接收图片/文件/音频等附件消息，不接收普通文字消息，也不接收其他群成员的附件。
+- 连发附件会经过短防抖合并：每条附件消息都会立即登记和解析，但窗口内较早消息不会单独触发 Akane 回复，最后一条消息负责等待附件观察结果并统一回复。
+- 附件上下文排序按 `sequence_no`，即用户发来的原始顺序；视觉模型或文件解析谁先完成，不会改变 Akane 看到的“第 1 张 / 第 2 张”顺序。
+- 群聊会话身份是 `qq_group_shared_{group_id}`。
+- 同一个群里的成员共享该群的群聊记忆；发送者 QQ 和昵称会作为本轮上下文注入，让 Akane 知道是谁在说话。
+- 群成员之间的 `@` 会作为结构化接收者写入 MemCore；引用群友消息时还会保留被引用者、QQ 消息 id 与受限原文摘录。环境注意力回复默认不机械引用窗口内最后一条消息。
+- 群聊记忆不直接写入 `master` 私聊身份，避免公共群聊污染主人的私有长期记忆。
+
+## 5. `qq_text` 模式
+
+QQ 入口会把消息转成：
+
+```json
+{
+  "client_mode": "qq_text",
+  "client_capabilities": ["speech_segments", "file_drop", "choices", "tool_actions"],
+  "character_pack_id": "可选；来自 QQ_CHARACTER_PACK_ID"
+}
+```
+
+`qq_text` 模式不会要求模型输出 `scene`、`character`、`bgm`、`live2d`、`pet` 等演出字段。后端 `QQTextOutputAdapter` 也会剥掉这些字段，保证 QQ 侧只拿纯文本回复。
+
+如果配置了 `QQ_CHARACTER_PACK_ID`，后端只注入该角色包的身份、称呼、说话风格、边界和 persona 参考；不会把桌宠服装、立绘、场景或 BGM 渲染规则带到 QQ prompt。
+
+### QQ 表情包投递
+
+QQ 侧的表情反馈由模型输出的 `emotion` 驱动，不走图片工具调用。默认会从当前 QQ 会话的角色包里找到对应 emotion 图片，并通过 NapCat / OneBot `image` 消息段发出去；这保证表情图片来自当前 `character_pack_id`，不会跨角色包共用。
+
+如果需要 QQ 原生 / 商城表情包，可额外配置 NapCat / OneBot 的 `mface` 消息段。`mface` 不能直接由本地 PNG 生成，必须使用 QQ 已知表情包的 `emoji_package_id / emoji_id / key / summary`。当 `mface` 命中时优先发 `mface`；没有命中时回退到当前角色包的本地 emotion 图片。
+
+角色包配置示例：
+
+```json
+{
+  "qq_delivery": {
+    "emotion_images": {
+      "enabled": true,
+      "min_interval_seconds": 20
+    },
+    "emotion_mfaces": {
+      "enabled": true,
+      "min_interval_seconds": 20,
+      "map": {
+        "happy": {
+          "emoji_package_id": 123,
+          "emoji_id": "abc",
+          "key": "napcat-market-face-key",
+          "summary": "开心"
+        }
+      }
+    }
+  }
+}
+```
+
+`emoji_package_id`、`emoji_id`、`key`、`summary` 可从 NapCat 收到的商城表情 / 表情包事件中抓取。NapCat 有时会把收到的商城表情映射成 `image` 段，但只要 `data` 中带有这些字段，就可以复制到角色包配置里。缺少映射、配置关闭、或同一会话在 `min_interval_seconds` 内重复发送同一个表情时，后端会结构化跳过，不会假装发送成功。
+
+`map` 会按同一个角色包的 `emotion_aliases` 双向展开。例如 `emotion_aliases` 里有 `"happy": ["开心", "卖萌"]` 时，`map.happy` 可以同时匹配模型输出的 `happy`、`开心` 和 `卖萌`；反过来只配置 `map.开心` 也可以匹配 `happy`。
+
+主人可以在 QQ 里发送 `表情包配置 happy` 并同时带上要抓取的表情包。Akane 会从该消息里的 NapCat `mface` 段，或带有 `emoji_package_id / emoji_id / key / summary` 的 `image` 段中提取字段，并回复一段可粘进当前角色包 `character.json` 的 `qq_delivery` 配置片段。该命令只允许 `MASTER_QQ` 使用。
+
+### QQ 角色切换指令
+
+QQ 支持会话级角色切换；私聊和每个群聊各自保存当前角色包，重启后回到 `.env` 中的 `QQ_CHARACTER_PACK_ID` 默认值。
+
+- `角色列表`：列出当前已安装的 Creator Kit 角色包。
+- `当前角色`：查看当前 QQ 会话正在使用的角色。
+- `切换角色 reimu` / `使用角色 reimu`：把当前 QQ 会话切到指定角色包。
+- `切回默认角色`：清除当前会话临时切换，恢复 `QQ_CHARACTER_PACK_ID`。
+- `切回Akane`：当前会话强制使用内置 Akane 人设，不绑定角色包。
+
+切换成功后，后续 QQ 消息会继续带对应 `character_pack_id`，聊天记忆也按该角色包隔离。
+
+### QQ 聊天模型切换指令
+
+QQ 支持主人在当前会话里临时切换聊天模型。该功能只改 `CHAT_MODEL_NAME` 对应的模型 id，不切换供应商、API Key 或 `base_url`；供应商仍由控制中心 / `.env` 的全局配置决定。该命令只允许 `MASTER_QQ` 使用。
+
+- `模型列表`：向当前配置的供应商查询可用模型，并按一行一个模型 id 返回。
+- `当前模型`：查看当前 QQ 会话正在使用的聊天模型。
+- `切换模型 deepseek-v4-flash` / `model deepseek-v4-flash`：把当前 QQ 会话临时切到指定模型。
+- `切回默认模型`：清除当前会话临时模型，恢复全局 `CHAT_MODEL_NAME`。
+
+切换后只影响当前 QQ 会话；私聊和每个群聊互不影响。若供应商的模型列表接口暂时不可用，仍可直接用已知模型 id 手动切换。
+
+## 6. QQ 附件
+
+- QQ 图片 / 文件默认进入临时附件上下文，不默认进入礼物系统。设计见 `docs/attachment_focus_inbox_v1.md`。
+- 图片优先通过 NapCat / OneBot 的 `get_image` 读取本地缓存；如果失败才尝试直连临时 URL。
+- QQ 临时 URL 和 `fetch_media_from_url` 只允许公开 HTTP/HTTPS 地址：本机、局域网、保留地址、混合公网/私网 DNS、非法跳转和无法核验的连接会被结构化拒绝。拒绝取材不会中断本轮 QQ 文字回复，Akane 会说明需要公开直链。
+- 远程下载逐跳关闭自动重定向和环境代理，限制三次跳转、核验 DNS 与连接 peer、执行大小/总时限，并通过 `.part` 临时文件原子落盘。新写入的数据库记录、失败结果和模型提示只保留 URL 指纹或公开 origin，不保存签名 query、userinfo、fragment 和完整路径；QQ 远程取材尝试后，原始消息中的链接也会在进入 MemoryStore、MemCore 和模型前替换成公开 origin 或受限链接标记。旧材料行不会在本轮重写，但其 legacy URL 不再进入 prompt。
+- `yt-dlp` 只接收 Bilibili、YouTube、Douyin、Ixigua、Kuaishou 的现有 provider host，并禁用 Generic extractor、环境代理和浏览器 Cookie 导入；显式 cookies.txt 只有全部 Cookie 域属于受支持平台时才加载。依赖 Generic 的短链需要先换成平台 canonical URL。由于普通 HTTP 客户端仍有 DNS 校验到连接之间的 TOCTOU，且 `yt-dlp` extractor 的 API/媒体/manifest 网络栈不受逐跳检查控制，生产环境仍应配置出口防火墙或独立 IP-pinned 下载服务。
+- 文件会优先保留原始文件名；可解析文件会进入临时附件工作台。新的一批附件默认 Auto-Focus，未展开附件只在 Manifest 中显示结构化识别信息，不展示半截正文。
+- 如果用户要求“整理成文件发我”，Akane 可使用 `compose_file` 生成 `gen_001` 这类生成文件。
+- 如果用户只是要求 TXT/Markdown 等原始附件或 `gen_001` 这类已生成文件忠实转成 PDF/Word，Akane 应使用 `compose_file` 但留空 `content_markdown/table_rows`，让后端从来源读取正文；最终文件不会包含 `任务/来源摘录/用途` 这类工作台元信息。
+- 如果用户继续要求“把刚才那份改一下”，Akane 可使用 `revise_generated_file` 生成 `gen_002`，旧文件不会被覆盖。
+- 如果用户要求“再发一次刚才的文件”或“把原附件也发我”，Akane 可使用 `send_file` 发送已有 `file_001/img_001/audio_001` 或 `gen_001/gen_002`，不重新生成内容。
+- 如果用户直接给了公开视频/音频链接，Akane 可使用 `fetch_media_from_url` 先把素材下载进临时附件工作台；下载成功后，它就会像普通 `file_001/audio_001` 一样继续参与转写、转码、发送和后续协作。
+- 如果用户要求“标红、加粗、黄色高亮、某列/某行上色”，Akane 可在 `compose_file` 或 `revise_generated_file` 里使用声明式 `formatting`；QQ 端只负责发送生成后的文件。
+- 如果用户只要求给已有 `docx/xlsx` 文件套样式，Akane 应优先使用 `apply_style_to_existing_file`，这样不需要把大文件全文或大表格重新输出一遍。
+- QQ 收到普通音频/视频附件时，会尽量用 `ffprobe` 自动写入轻量媒体卡，包含时长、音频编码、采样率、声道、视频分辨率和帧率等低成本信息；这些信息可以直接进入附件 Focus/Manifest，不需要 Akane 额外调用工具才知道基础规格。
+- 如果用户要求复查规格、查看生成物媒体信息，或转换前需要更确定的参数，Akane 可使用 `inspect_media_info`。它只读取信息，不生成文件。
+- 如果用户要求普通音频转码、压缩或从 `mp4/mov/mkv/webm` 等视频提取音频，Akane 可使用 `convert_media_file`，输出格式支持 `mp3/wav/flac/m4a/aac/ogg/opus`。它也支持单文件截取片段、响度标准化、整体音量增减、淡入淡出和调速。采样率、声道、码率以及这些精修参数都是可选项，用户没指定时不需要硬填；`normalize_volume` 用于“调正常/更舒服”，`volume_gain_db` 用于“放大一点/压低一点”；`kgm/ncm/qmc` 等平台加密或专有缓存格式只做识别和说明，不做解密转换。
+- 如果用户要求清理 Akane 生成过的 `gen_001/gen_002`，Akane 可使用 `manage_generated_file`；临时附件 `file_001/img_001` 仍使用 `clear_attachment_focus`。
+- 如果用户要求看长文件里的某页、某几行、某个 sheet，Akane 可使用 `read_attachment_section`；本地原始附件还在时会优先重新读取原文件，读不到时才回退到解析预览。
+- QQ 端会根据 `generated_file_ready` 事件尝试调用 NapCat / OneBot 上传文件；若上传失败，生成文件仍保留在本地 `GeneratedFileStore`。
+
+## 7. 当前边界
+
+- 群聊全量免 at 回复默认关闭，避免打扰和刷屏。
+- 旧项目的 WebSocket bridge、进度消息、任务执行器以后可以按模块逐步迁移，不建议一次性照搬。

@@ -1,0 +1,190 @@
+/* Placement stays on the image; motion composes on this independent layer. */
+.portrait-motion {
+  width: 100%;
+  height: 100%;
+  transform-origin: bottom center;
+  animation: pet-idle-breathe 4.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.stage[data-motion="thinking"] .portrait-motion {
+  animation: pet-thinking-focus 2.4s ease-in-out infinite;
+}
+
+.stage[data-motion="speaking"] .portrait-motion {
+  animation: pet-speaking-bob 1.15s ease-in-out infinite;
+}
+
+.stage[data-motion="dragging"] .pet-hitbox {
+  cursor: grabbing;
+}
+
+.stage[data-motion="dragging"] .portrait-motion {
+  animation: none;
+  filter: brightness(1.03);
+}
+
+.stage[data-motion="drag-release"] .portrait-motion {
+  animation: pet-release-blink 0.26s ease-out both;
+}
+
+.stage[data-motion="thrown"] .portrait-motion {
+  animation: none;
+  filter: brightness(1.04) saturate(1.04);
+}
+
+.stage[data-motion="land"] .portrait-motion {
+  animation: pet-land-bounce 0.3s cubic-bezier(0.2, 1.1, 0.25, 1) both;
+}
+
+.stage[data-motion="hit-wall"] .portrait-motion {
+  animation: pet-wall-hit 0.22s cubic-bezier(0.18, 1.22, 0.36, 1) both;
+}
+
+.stage[data-motion="jump"] .pet-hitbox {
+  animation: pet-idle-jump 0.86s cubic-bezier(0.2, 1.18, 0.28, 1) both;
+}
+
+.stage[data-motion="click"] .pet-hitbox {
+  animation: pet-click-pop 0.62s cubic-bezier(0.2, 1.2, 0.25, 1) 1;
+}
+
+@keyframes pet-idle-breathe {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  50% {
+    transform: translateY(-2px) scale(1.004);
+  }
+}
+
+@keyframes pet-thinking-focus {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
+
+  50% {
+    transform: translateY(-2px) rotate(-0.35deg) scale(1.002);
+  }
+}
+
+@keyframes pet-speaking-bob {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  35% {
+    transform: translateY(-2px) scale(1.008);
+  }
+
+  68% {
+    transform: translateY(-1px) scale(1.003);
+  }
+}
+
+@keyframes pet-click-pop {
+  0% {
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+
+  32% {
+    transform: translateX(-50%) translateY(-7px) scale(1.025);
+  }
+
+  62% {
+    transform: translateX(-50%) translateY(1px) scale(0.994);
+  }
+
+  100% {
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes pet-release-blink {
+  0% {
+    transform: translateY(0) scale(1);
+    filter: brightness(1);
+  }
+
+  100% {
+    transform: translateY(0) scale(1);
+    filter: brightness(1.08) saturate(1.05);
+  }
+}
+
+@keyframes pet-land-bounce {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+
+  45% {
+    transform: translateY(3px) scale(0.993);
+  }
+
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes pet-wall-hit {
+  0% {
+    transform: translateY(0) scale(1);
+    filter: brightness(1);
+  }
+
+  45% {
+    transform: translateY(0) scale(1.014);
+    filter: brightness(1.14) saturate(1.08);
+  }
+
+  100% {
+    transform: translateY(0) scale(1);
+    filter: brightness(1);
+  }
+}
+
+@keyframes pet-idle-jump {
+  0% {
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+
+  28% {
+    transform: translateX(-50%) translateY(-18px) scale(1.018);
+  }
+
+  48% {
+    transform: translateX(-50%) translateY(-22px) scale(1.024);
+  }
+
+  76% {
+    transform: translateX(-50%) translateY(4px) scale(0.996);
+  }
+
+  100% {
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+/* T5 — "伸手"动画，source-order 覆盖 [data-motion] 规则，无需 !important */
+@keyframes pet-reach {
+  0%   { transform: translate(0px, 0px)   scale(1.00); filter: brightness(1.00); }
+  45%  { transform: translate(9px, -5px)  scale(1.05); filter: brightness(1.10); }
+  55%  { transform: translate(10px, -6px) scale(1.06); filter: brightness(1.12); }
+  100% { transform: translate(0px, 0px)   scale(1.00); filter: brightness(1.00); }
+}
+
+.stage.is-reaching .portrait-motion {
+  animation: pet-reach 1200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage[data-motion] .pet-hitbox,
+  .stage .pet-hitbox .portrait-motion {
+    animation: none;
+  }
+}

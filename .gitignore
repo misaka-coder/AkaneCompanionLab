@@ -1,0 +1,127 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+/bots.toml
+/secrets/
+
+# Tool/eval run artifacts (run_tool_decision_eval, acceptance smoke output)
+reports/
+
+# Python virtual environments and caches
+.venv/
+venv/
+env/
+!/deploy/env/
+!/deploy/env/.env.vps.example
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+package_wheels/
+package_artifacts/
+*.egg-info/
+/build/
+/dist/
+/examples/plugins/akane_sdk_*/build/
+/plugins/*/build/
+
+# Runtime data, memories, generated files, and local user assets
+users_data/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Private research corpora and derived notes kept out of open-source releases
+local_research/
+*.epub
+epub_output/
+epub_v2/
+*_evidence.jsonl
+*_scenes_raw.json
+*_all.txt
+makeine_characters.json
+败犬女主太多了！/
+
+# Internal process docs, session handoffs, tickets and local research notes
+docs/*_ticket.md
+docs/*_handoff*.md
+docs/*_backlog.md
+docs/*_recon_brief*.md
+docs/*_notes.md
+docs/my_learning_notes.md
+docs/learning_backlog.md
+docs/research_learning_agent_prompt*.md
+docs/research_learning_agent_prompts/
+docs/magnetic_chaos_pendulum_video/
+docs/video_01_assets/
+docs/evidence/
+docs/productization_work_session_*.md
+documents/projects/retrieval_eval_*
+
+# Temporary date-stamped acceptance, audits, diagnostics and probe results
+docs/*_202[0-9][0-9][0-9][0-9][0-9]*.md
+docs/*_202[0-9][0-9][0-9][0-9][0-9]*.json
+docs/computer_use_refinement_*.md
+docs/computer_use_refinement_*.json
+docs/computer_use_comparison_*.md
+docs/computer_use_audio_findings_*.md
+docs/computer_use_general_findings_*.md
+docs/computer_use_visual_batches_*.md
+scripts/evaluate_computer_use_refinement.py
+scripts/manage_local_cli_proxy.ps1
+
+# Logs and temporary outputs
+/work/
+/exports/
+*.log
+runtime_logs/
+test-results/
+.tmp/
+.tmp_*/
+.tmp_*
+tmp/
+tmp_*/
+tmp_*.log
+tmp_*.wav
+*login-qr*.png
+*qrcode*.png
+*.qr.png
+
+# Local model / tool scratch space
+.plugin-market/
+.cache/
+.codex/
+.claude/settings.json
+.claude/settings.local.json
+models/
+downloads/
+
+# Local diagnostic/recovery archives
+qq-tool-fix-*.tar
+maintenance/_temporary_deepseek_cloud_switch.py
+
+# User-provided media assets (keep local, do not track in repo)
+web/assets/bgm/
+
+# Local reference copies not part of the Akane app
+claude_code_annotated/
+
+# Local coding-agent evaluation projects (not Akane source)
+/gargantua/
+/minecraft_clone/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

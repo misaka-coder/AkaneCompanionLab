@@ -1,0 +1,11568 @@
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { currentMonitor, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
+import { registerSceneDesktopBridge, sceneOwnsPlayback } from "./scene-desktop-bridge.js";
+
+import {
+  APP_DISPLAY_NAME,
+  CHARACTER_NAME,
+  COMMON_EMOTION_CANDIDATES,
+  DEFAULT_EMOTION,
+  DEFAULT_OUTFIT,
+  LOCAL_CLICK_LINES,
+  MUSIC_EMOTION,
+  REQUIRED_EMOTIONS,
+  RECOMMENDED_EMOTIONS,
+  buildCharacterSnapshot,
+  getActiveCharacterPackId,
+  getActiveCharacterProfile,
+  getActiveCharacterText,
+  listCharacterPacks,
+  selectCharacterPack,
+  setRuntimeCharacterPacks
+} from "./character-profile.js";
+import { bindInstanceStorage } from "./instance-storage.js";
+import { botScopedPath, normalizeBotId } from "./bot-routing.js";
+import { createWorkspaceImportQueue } from "./workspace-import.js";
+import { mediaKind, mediaPosition } from "./media-awareness.js";
+import { createMediaCommandQueue } from "./media-control.js";
+import { createPendingAttachments, serializeBrowserAttachments } from "./pending-attachments.js";
+import { performChatFileAction } from "./chat-file-action.js";
+import {
+  RealtimeVoiceCallResources,
+  RealtimeVoiceCallSession,
+  RealtimeVoiceSession,
+  buildVoiceWebSocketUrl,
+  supportsRealtimeVoiceCapture
+} from "./realtime-voice-client.js";
+import {
+  RealtimeVoiceCallFlow,
+  RealtimeVoiceReconnectBackoff,
+  hasRealtimeVoiceInputEvidence,
+  shouldReconnectPassiveVoiceFailure
+} from "./realtime-voice-call-flow.js";
+import { captureMicrophone } from "./voice-capture.js";
+import { RealtimeVoiceEndpointDetector } from "./realtime-voice-endpoint.js";
+import {
+  attachDesktopCareContext,
+  cloneCareState,
+  createUnresolvedCareFeature,
+  isCareFeatureEnabled,
+  resolveCareFeatureFromHealth
+} from "./care-feature.js";
+import { createVisualRenderer } from "./visual-renderer.js";
+import {
+  SETTINGS_COMMAND_EVENT,
+  SETTINGS_SNAPSHOT_EVENT
+} from "./control-center/event-bridge.js";
+import { segmentSpeechForDelivery, missingReplySegments, SpeechStageReplay } from "./speech-delivery.js";
+import { getBubbleSegmentDisplayDelay } from "./bubble-delivery.js";
+import { observeBubbleLayout } from "./bubble-layout.js";
+import {
+  MODERATE_PROACTIVE_PROMPT,
+  SCREEN_OBSERVATION_DEFAULTS,
+  ScreenObservationBuffer,
+  ScreenObservationPreparation,
+  normalizeScreenObservationSettings,
+  packScreenObservation,
+  observationDuration,
+  observationConfigurationIssue,
+  proactiveWakeDelay
+} from "./screen-observation.js";
+import {
+  MEDIA_CONTROL_TARGETS,
+  normalizeMediaControlAction,
+  resolveActiveMediaControl,
+  resolveMediaControlAction
+} from "./media-control.js";
+import voicePcmWorkletUrl from "./voice-pcm-worklet.js?url&no-inline";
+import "./styles.css";
+
+const bundledCharacterAssets = import.meta.glob("./assets/characters/猫娘/*.{png,jpg,jpeg,webp}", {
+  eager: true,
+  import: "default",
+  query: "?url"
+});
+// Character-pack portraits are loaded from disk through Tauri at runtime.
+const characterPackCharacterAssets = {};
+
+const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);
+const appWindow = isTauriRuntime ? getCurrentWindow() : null;
+
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:9999";
+const LOCAL_DEFAULT_INSTANCE_ID = "local-default";
+const PROFILE_USER_ID = "master";
+const CLIENT_MODE = "desktop_pet";
+
+const DESKTOP_HEALTH_PATH = "/desktop-pet/health";
+const PUBLIC_HEALTH_PATH = "/health";
+const BASE_CAPABILITIES = ["speech_segments", "tts", "file_drop", "tool_actions"];
+const AUDIO_PLAYBACK_CAPABILITY = "audio_playback";
+const THINK_TIMEOUT_MS = 5 * 60 * 1000;
+const TTS_TIMEOUT_MS = 45 * 1000;
+const TTS_SLOW_REQUEST_MS = 1200;
+const TTS_CHUNK_SOFT_LIMIT = 24;
+const TTS_SHORT_SEGMENT_MAX_CHARS = 4;
+const TTS_SHORT_SEGMENT_HOLD_MS = 420;
+const TTS_PREWARM_TEXT = "嗯。";
+const TTS_PREWARM_DELAY_MS = 650;
+const TTS_PREWARM_TIMEOUT_MS = 12 * 1000;
+const TTS_PREWARM_COOLDOWN_MS = 10 * 60 * 1000;
+const ASR_TIMEOUT_MS = 2 * 60 * 1000;
+const REALTIME_VOICE_FINAL_TIMEOUT_MS = 15 * 1000;
+const REALTIME_VOICE_STABLE_LISTENER_MS = 5 * 1000;
+const SCREEN_VISION_JPEG_QUALITY = 0.8;
+const PROACTIVE_WAKE_DEFAULT_SEC = 30;
+const PROACTIVE_WAKE_MIN_SEC = 15;
+const PROACTIVE_WAKE_MAX_SEC = 600;
+const PROACTIVE_WAKE_RETRY_MS = 15000;
+const MUSIC_TIMELINE_POLL_MS = 8000;
+const MUSIC_TIMELINE_RETRY_MS = 30000;
+const MUSIC_TIMELINE_INITIAL_DELAY_MS = 6500;
+const SYSTEM_MEDIA_POLL_MS = 2000;
+const SYSTEM_MEDIA_MAX_AGE_MS = 10000;
+const SYSTEM_MEDIA_LYRICS_RETRY_MS = 30000;
+const SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS = 1200;
+const SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS = 2400;
+const BACKEND_RETRY_MS = 30 * 1000;
+const VOICE_MIME_TYPES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/ogg;codecs=opus",
+  "audio/ogg",
+  "audio/mp4"
+];
+const VOICE_PCM_WORKLET_URL = voicePcmWorkletUrl;
+const MUSIC_FILE_EXTENSIONS = new Set(["mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "webm"]);
+const MUSIC_LYRIC_EXTENSIONS = new Set(["lrc"]);
+const MUSIC_PLAY_MODES = Object.freeze(["列表循环", "单曲循环", "随机播放"]);
+const MIN_RECORDING_MS = 700;
+const CLIENT_SEGMENT_SOFT_LIMIT = 56;
+const LOCAL_CLICK_DELAY_MS = 240;
+const INPUT_HISTORY_LIMIT = 24;
+const CHAT_INPUT_IDLE_HIDE_MS = 5000;
+const PET_PHYSICS_FRAME_MS = 20;
+const PET_PHYSICS_GRAVITY = 0.8;
+const PET_PHYSICS_GROUND_FRICTION = 0.94;
+const PET_PHYSICS_AIR_FRICTION = 0.99;
+const PET_PHYSICS_BOUNCE = 0.4;
+const PET_DRAG_THRESHOLD_PX = 5;
+const PET_DRAG_VELOCITY_FACTOR = 0.4;
+const PET_THROW_THRESHOLD = 8;
+const PET_WALL_PAIN_THRESHOLD = 7;
+const PET_MOTION_RESTORE_MS = 1800;
+const PET_IDLE_JUMP_AFTER_MS = 90000;
+const PET_IDLE_JUMP_COOLDOWN_MS = 150000;
+const PET_PHYSICS_MIN_SPEED = 0.2;
+const PET_PHYSICS_FLOOR_CLEARANCE = 18;
+const MUSIC_EMOTION_RESTORE_DELAY_MS = 1800;
+const CARE_PASSIVE_TICK_MS = 60 * 1000;
+const CARE_DEFAULT_HUNGER_DECAY_PER_HOUR = 4;
+const CARE_DEFAULT_ENERGY_COST_PER_REPLY = 1;
+const CARE_DEFAULT_ENERGY_COST_PER_PROACTIVE = 0;
+const SCALE_MIN = 0.75;
+const SCALE_MAX = 1.45;
+const SCALE_PRESETS = [0.85, 1, 1.15, 1.3];
+const OPACITY_PRESETS = [1, 0.85, 0.7, 0.55];
+const MENU_VIEWPORT_MARGIN = 8;
+const WORKSPACE_REFRESH_EVENT = "akane-next-workspace-refresh";
+const SHOP_STATUS_EVENT = "akane-next-shop-status";
+const CHARACTER_PACK_ACTIVATED_EVENT = "akane-next-character-pack-activated";
+const PLUGIN_AGENT_EVENT_FRAME_EVENT = "akane:plugin-agent-event-frame";
+const PET_HIT_POLYGON = [
+  [32, 0],
+  [72, 0],
+  [88, 12],
+  [94, 32],
+  [100, 66],
+  [100, 88],
+  [93, 100],
+  [8, 100],
+  [0, 78],
+  [8, 36],
+  [18, 12]
+];
+
+const DEFAULT_STATE = {
+  instanceId: LOCAL_DEFAULT_INSTANCE_ID,
+  hostId: LOCAL_DEFAULT_INSTANCE_ID,
+  boundBotId: LOCAL_DEFAULT_INSTANCE_ID,
+  x: null,
+  y: null,
+  width: null,
+  height: null,
+  scale: 1,
+  opacity: 1,
+  skipTaskbar: true,
+  alwaysOnTop: true,
+  clickThrough: false,
+  backendUrl: DEFAULT_BACKEND_URL,
+  profileUserId: PROFILE_USER_ID,
+  characterPackId: getActiveCharacterPackId(),
+  characters: {},
+  sessionId: "",
+  outfit: getProfileDefaultOutfit(),
+  currentEmotion: getProfileDefaultEmotion(),
+  restoreLatestOnStartup: true,
+  voiceEnabled: false,
+  voiceInputEnabled: true,
+  voiceVolume: 0.85,
+  screenVisionEnabled: false,
+  ...SCREEN_OBSERVATION_DEFAULTS,
+  proactiveWakeEnabled: false,
+  proactiveWakeIntervalSec: PROACTIVE_WAKE_DEFAULT_SEC,
+  hitTestEnabled: true,
+  hitboxOverlay: false,
+  care: null,
+  voiceSpeed: "1.00x",
+  wakeWord: "Akane",
+  wakeSensitivity: "中等",
+  musicPlayMode: MUSIC_PLAY_MODES[0],
+  musicVolumeNormalization: true
+};
+
+const bundledOutfit = buildBundledOutfit();
+let runtimeCharacterPacks = [];
+let runtimeCharacterPackOutfits = [];
+let characterPackOutfits = buildCharacterPackOutfits();
+let localOutfits = buildLocalOutfits();
+const resourceState = {
+  health: "unknown",
+  healthMessage: "Not checked",
+  healthEndpoint: PUBLIC_HEALTH_PATH,
+  contractVersion: "",
+  contractSource: "unknown",
+  capabilities: [],
+  endpoints: {},
+  tts: {
+    enabled: null,
+    endpoint: "/tts",
+    responseMediaType: "audio/mpeg"
+  },
+  asr: {
+    available: null,
+    endpoint: "/asr",
+    uploadField: "file"
+  },
+  features: {
+    care: createUnresolvedCareFeature()
+  },
+  manifest: null,
+  outfit: getDefaultLocalOutfit(),
+  source: getLocalResourceSource(),
+  loadedAt: 0
+};
+
+const state = { ...DEFAULT_STATE, characters: {} };
+const careAuthority = {
+  status: "unresolved",
+  characterPackId: "",
+  reason: ""
+};
+const careAuthorityImportedKeys = new Set();
+const playState = {
+  mode: "idle",
+  vx: 0,
+  vy: 0,
+  heldEmotion: "",
+  lastWallHitAt: 0,
+  lastLandAt: 0,
+  lastIdleJumpAt: 0
+};
+
+function getProfileUserId() {
+  return state.profileUserId || PROFILE_USER_ID;
+}
+
+function getCareFeatureStatus() {
+  return resourceState.features?.care || createUnresolvedCareFeature();
+}
+
+function isCareConfiguredForCurrentCharacter() {
+  return isCareFeatureEnabled(getCareFeatureStatus()) && Boolean(getProfileCareConfig()?.enabled);
+}
+
+function isCareRuntimeActive() {
+  return isCareConfiguredForCurrentCharacter()
+    && careAuthority.status === "ready"
+    && careAuthority.characterPackId === getCurrentCharacterPackId();
+}
+
+function buildCharacterRuntimeSnapshot() {
+  const entries = Object.entries(ensureCharacterRuntimeMap()).map(([key, runtime]) => [
+    key,
+    runtime && typeof runtime === "object"
+      ? { ...runtime, care: cloneCareState(runtime.care) }
+      : runtime
+  ]);
+  return Object.fromEntries(entries);
+}
+
+function applyCareFeatureStatus(feature) {
+  resourceState.features = {
+    ...(resourceState.features || {}),
+    care: feature && typeof feature === "object" ? { ...feature } : createUnresolvedCareFeature()
+  };
+
+  if (!isCareFeatureEnabled(getCareFeatureStatus())) {
+    careAuthority.status = "disabled";
+    careAuthority.characterPackId = getCurrentCharacterPackId();
+    careAuthority.reason = "feature_disabled";
+    stopCareRuntime();
+    scheduleSettingsSnapshot(0);
+    schedulePanelStateSync(0);
+    return;
+  }
+
+  const config = getProfileCareConfig();
+  if (config.enabled) {
+    if (careAuthority.characterPackId !== getCurrentCharacterPackId() || careAuthority.status === "disabled") {
+      careAuthority.status = "unresolved";
+      careAuthority.characterPackId = getCurrentCharacterPackId();
+      careAuthority.reason = "awaiting_snapshot";
+    }
+  } else {
+    careAuthority.status = "disabled";
+    careAuthority.characterPackId = getCurrentCharacterPackId();
+    careAuthority.reason = "character_care_disabled";
+    stopCareRuntime();
+  }
+  scheduleSettingsSnapshot(0);
+  schedulePanelStateSync(0);
+}
+
+function stopCareRuntime() {
+  window.clearTimeout(carePassiveTimer);
+  window.clearTimeout(careWorkTimer);
+  carePassiveTimer = 0;
+  careWorkTimer = 0;
+  if (els?.stage) els.stage.classList.remove("is-away");
+  void setCareAwayClickThrough(false);
+}
+
+function rejectDisabledCareAction() {
+  const message = careAuthority.status === "unavailable"
+    ? "养成服务暂时不可用。"
+    : "养成模块未启用。";
+  setStatus(message, { durationMs: 2200 });
+  notifyShopStatus(message, "disabled");
+  return false;
+}
+
+function markCareAuthorityUnavailable(reason = "care_runtime_unavailable") {
+  if (!isCareFeatureEnabled(getCareFeatureStatus()) || !getProfileCareConfig()?.enabled) {
+    careAuthority.status = "disabled";
+  } else {
+    careAuthority.status = "unavailable";
+  }
+  careAuthority.characterPackId = getCurrentCharacterPackId();
+  careAuthority.reason = String(reason || "care_runtime_unavailable");
+  stopCareRuntime();
+  scheduleSettingsSnapshot(0);
+  schedulePanelStateSync(0);
+}
+
+function applyAuthoritativeCareSnapshot(snapshot, { characterPackId = getCurrentCharacterPackId() } = {}) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return false;
+  if (String(snapshot.authority || snapshot.source || "") !== "care_runtime") return false;
+  if (characterPackId !== getCurrentCharacterPackId()) return false;
+  const snapshotUpdatedAt = Math.max(0, Number(snapshot.updated_at || snapshot.updatedAt || 0));
+  const currentUpdatedAt = Math.max(0, Number(state.care?.updatedAt || state.care?.updated_at || 0));
+  if (isCareRuntimeActive() && snapshotUpdatedAt && currentUpdatedAt > snapshotUpdatedAt) {
+    return true;
+  }
+  state.care = normalizeCareState(snapshot, getProfileCareConfig());
+  careAuthority.status = "ready";
+  careAuthority.characterPackId = characterPackId;
+  careAuthority.reason = "";
+  careAuthorityImportedKeys.add(getCharacterRuntimeKey(characterPackId));
+  persistCurrentCharacterRuntimeState(characterPackId);
+  syncCareAwayVisualState();
+  scheduleCareWorkCompletion();
+  scheduleCarePassiveTick();
+  scheduleSave(0);
+  scheduleSettingsSnapshot(0);
+  schedulePanelStateSync(0);
+  return true;
+}
+
+function buildCareAuthorityRequest(extra = {}) {
+  return {
+    ...buildBackendCharacterContext(),
+    ...extra
+  };
+}
+
+async function refreshDesktopCareState({ importLegacy = false, silent = false } = {}) {
+  if (!isCareFeatureEnabled(getCareFeatureStatus()) || !getProfileCareConfig()?.enabled) {
+    careAuthority.status = "disabled";
+    careAuthority.characterPackId = getCurrentCharacterPackId();
+    careAuthority.reason = "care_disabled";
+    stopCareRuntime();
+    return false;
+  }
+
+  const requestedCharacterPackId = getCurrentCharacterPackId();
+  const legacyState = importLegacy && !careAuthorityImportedKeys.has(getCharacterRuntimeKey(requestedCharacterPackId))
+    ? cloneCareState(state.care)
+    : null;
+  try {
+    const response = await backendFetch(
+      buildBackendEndpointUrl("care_snapshot", "/desktop-pet/care/snapshot", { t: Date.now() }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify(buildCareAuthorityRequest({
+          legacy_state: isTauriRuntime ? legacyState : null
+        }))
+      }
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await readJsonResponse(response);
+    if (requestedCharacterPackId !== getCurrentCharacterPackId()) return false;
+    if (!payload?.ok || !applyAuthoritativeCareSnapshot(payload.snapshot, { characterPackId: requestedCharacterPackId })) {
+      markCareAuthorityUnavailable(payload?.reason || "invalid_care_snapshot");
+      if (!silent) rejectDisabledCareAction();
+      return false;
+    }
+    return true;
+  } catch {
+    if (requestedCharacterPackId !== getCurrentCharacterPackId()) return false;
+    markCareAuthorityUnavailable("care_snapshot_failed");
+    if (!silent) rejectDisabledCareAction();
+    return false;
+  }
+}
+
+async function performDesktopCareAction(action, { itemId = "", silent = false } = {}) {
+  if (!isCareRuntimeActive()) {
+    const refreshed = await refreshDesktopCareState({ importLegacy: true, silent: true });
+    if (!refreshed) {
+      if (!silent) rejectDisabledCareAction();
+      return null;
+    }
+  }
+  const requestedCharacterPackId = getCurrentCharacterPackId();
+  try {
+    const response = await backendFetch(
+      buildBackendEndpointUrl("care_action", "/desktop-pet/care/action", { t: Date.now() }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify(buildCareAuthorityRequest({
+          action: String(action || "").trim(),
+          item_id: String(itemId || "").trim()
+        }))
+      }
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await readJsonResponse(response);
+    if (requestedCharacterPackId !== getCurrentCharacterPackId()) return null;
+    if (payload?.snapshot) {
+      applyAuthoritativeCareSnapshot(payload.snapshot, { characterPackId: requestedCharacterPackId });
+    }
+    return payload && typeof payload === "object" ? payload : null;
+  } catch {
+    if (requestedCharacterPackId !== getCurrentCharacterPackId()) return null;
+    markCareAuthorityUnavailable("care_action_failed");
+    if (!silent) rejectDisabledCareAction();
+    return null;
+  }
+}
+
+function describeCareActionFailure(result) {
+  const reason = String(result?.reason || result?.status || "").trim();
+  if (reason === "insufficient_coins") return "钱不够啦。";
+  if (reason === "item_not_in_inventory") return "背包里没有这个。";
+  if (reason === "hunger_too_low") return "她有点饿，先喂点东西吧。";
+  if (reason === "energy_too_low") return "她现在没什么精神，先休息或投喂一下吧。";
+  if (reason === "work_already_active") return "她已经出门啦。";
+  if (reason === "work_not_due") {
+    const seconds = Math.max(1, Math.ceil(Number(result?.remaining_ms || 0) / 1000));
+    return `还要约 ${seconds} 秒才回来。`;
+  }
+  if (reason === "coins_not_low_enough") {
+    return `金币低于 ${getProfileCareConfig().allowance.maxCoins} 时才能领取补给。`;
+  }
+  if (reason === "allowance_cooldown") {
+    const seconds = Math.max(1, Math.ceil(Number(result?.remaining_ms || 0) / 1000));
+    return `补给还在冷却，约 ${seconds} 秒后可以领取。`;
+  }
+  if (reason === "work_not_configured") return "这个角色还没有配置外出。";
+  if (reason === "allowance_not_configured") return "这个角色还没有配置补给。";
+  if (reason === "work_not_active") return "她现在没有外出。";
+  if (reason === "item_not_available") return "这个商品暂时买不了。";
+  return "养成操作暂时没有完成。";
+}
+
+function buildBackendCharacterContext() {
+  return {
+    client_mode: CLIENT_MODE,
+    user_id: state.sessionId || "desktop_pet_next",
+    session_id: state.sessionId || "desktop_pet_next",
+    real_user_id: getProfileUserId(),
+    character_pack_id: getCurrentCharacterPackId(),
+    emotion: state.currentEmotion || getProfileDefaultEmotion()
+  };
+}
+
+function getCharacterRuntimeKey(packId = getCurrentCharacterPackId()) {
+  const profile = String(getProfileUserId() || PROFILE_USER_ID).trim() || PROFILE_USER_ID;
+  const character = normalizeCharacterPackId(packId) || getActiveCharacterPackId();
+  return `${profile}::${character}`;
+}
+
+function ensureCharacterRuntimeMap() {
+  if (!state.characters || typeof state.characters !== "object" || Array.isArray(state.characters)) {
+    state.characters = {};
+  }
+  return state.characters;
+}
+
+function persistCurrentCharacterRuntimeState(packId = state.characterPackId || getActiveCharacterPackId()) {
+  const normalizedPackId = normalizeCharacterPackId(packId) || getActiveCharacterPackId();
+  const map = ensureCharacterRuntimeMap();
+  map[getCharacterRuntimeKey(normalizedPackId)] = {
+    version: 1,
+    characterPackId: normalizedPackId,
+    sessionId: String(state.sessionId || "").trim() || generateSessionId(),
+    outfit: String(state.outfit || "").trim() || getProfileDefaultOutfit(),
+    currentEmotion: String(state.currentEmotion || "").trim() || getProfileDefaultEmotion(),
+    x: normalizeNullableInteger(state.x),
+    y: normalizeNullableInteger(state.y),
+    width: null,
+    height: null,
+    scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
+    opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
+    care: careAuthorityImportedKeys.has(getCharacterRuntimeKey(normalizedPackId))
+      ? null
+      : cloneCareState(state.care),
+    updatedAt: Date.now()
+  };
+  return map[getCharacterRuntimeKey(normalizedPackId)];
+}
+
+function findCharacterRuntimeState(packId) {
+  const key = getCharacterRuntimeKey(packId);
+  return normalizeCharacterRuntimeState(ensureCharacterRuntimeMap()[key]);
+}
+
+function createCharacterRuntimeState(packId, profile, { seedFromCurrent = false } = {}) {
+  const appearance = profile?.appearance || {};
+  const defaultOutfit = String(appearance.defaultOutfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
+  const defaultEmotion = String(appearance.defaultEmotion || getProfileDefaultEmotion()).trim() || getProfileDefaultEmotion();
+  return {
+    version: 1,
+    characterPackId: normalizeCharacterPackId(packId) || getActiveCharacterPackId(),
+    sessionId: seedFromCurrent ? String(state.sessionId || "").trim() || generateSessionId() : generateSessionId(),
+    outfit: seedFromCurrent ? String(state.outfit || defaultOutfit).trim() || defaultOutfit : defaultOutfit,
+    currentEmotion: seedFromCurrent ? String(state.currentEmotion || defaultEmotion).trim() || defaultEmotion : defaultEmotion,
+    x: normalizeNullableInteger(state.x),
+    y: normalizeNullableInteger(state.y),
+    width: null,
+    height: null,
+    scale: clamp(Number(state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
+    opacity: clamp(Number(state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
+    care: seedFromCurrent ? cloneCareState(state.care) : null,
+    updatedAt: Date.now()
+  };
+}
+
+function applyCharacterRuntimeState(packId, profile, options = {}) {
+  screenObservation.clear();
+  screenObservationLastSentAt = 0;
+  const normalizedPackId = normalizeCharacterPackId(packId) || getActiveCharacterPackId();
+  const map = ensureCharacterRuntimeMap();
+  const key = getCharacterRuntimeKey(normalizedPackId);
+  const persistedRuntime = findCharacterRuntimeState(normalizedPackId);
+  const runtime = persistedRuntime || createCharacterRuntimeState(normalizedPackId, profile, options);
+  if (!persistedRuntime && state.care) {
+    runtime.care = cloneCareState(state.care);
+  }
+  const appearance = profile?.appearance || {};
+  const defaultOutfit = String(appearance.defaultOutfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
+  const defaultEmotion = String(appearance.defaultEmotion || getProfileDefaultEmotion()).trim() || getProfileDefaultEmotion();
+
+  careAuthority.status = "unresolved";
+  careAuthority.characterPackId = normalizedPackId;
+  careAuthority.reason = "character_changed";
+
+  state.sessionId = String(runtime.sessionId || "").trim() || generateSessionId();
+  state.outfit = normalizeOutfitName(runtime.outfit || defaultOutfit) || defaultOutfit;
+  state.currentEmotion = String(runtime.currentEmotion || defaultEmotion).trim() || defaultEmotion;
+  state.x = normalizeNullableInteger(runtime.x);
+  state.y = normalizeNullableInteger(runtime.y);
+  state.width = null;
+  state.height = null;
+  state.scale = clamp(Number(runtime.scale ?? state.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
+  state.opacity = clamp(Number(runtime.opacity ?? state.opacity ?? DEFAULT_STATE.opacity), 0.55, 1);
+  state.care = cloneCareState(runtime.care);
+  stopCareRuntime();
+
+  map[key] = persistCurrentCharacterRuntimeState(normalizedPackId);
+  return runtime;
+}
+
+const unlistenFns = [];
+let saveTimer = 0;
+let careWorkTimer = 0;
+let carePassiveTimer = 0;
+let careAwayClickThrough = false;
+let webglProbe = null;
+let sending = false;
+let activeTurnToken = 0;
+let activeTurnLatencyTrace = null;
+let thinkController = null;
+let runtimeMode = "idle";
+let bubbleToken = 0;
+let bubbleTimer = 0;
+let bubbleKind = "none";
+let replyDisplayActive = false;
+let segmentTimer = 0;
+let streamedReplyTurnToken = 0;
+let streamedReplySegments = [];
+let streamedReplyTexts = [];
+let streamedReplySegmentActive = false;
+let lastTurnSignature = "";
+let lastTurnTextKey = "";
+const executedActivityOperationIds = new Set();
+let motionTimer = 0;
+let transientEmotionTimer = 0;
+let transientEmotionToken = 0;
+let localInteractionTimer = 0;
+let localInteractionToken = 0;
+let localInteractionActive = false;
+let lastLocalClickIndex = -1;
+let previewEmotionTimer = 0;
+let previewEmotionRestore = "";
+let previewEmotionToken = 0;
+let dragState = null;
+let physicsTimer = 0;
+let physicsTickInFlight = false;
+let monitorBoundsCache = null;
+let monitorBoundsCacheAt = 0;
+let lastWindowGeometry = null;
+let idleJumpTimer = 0;
+let lastUserPetInteractionAt = Date.now();
+let clickTimer = 0;
+let inputHistory = [];
+let inputHistoryIndex = -1;
+let inputHistoryDraft = "";
+let applyingInputHistory = false;
+let chatInputIdleTimer = 0;
+let suppressClickUntil = 0;
+let hitSyncFrame = 0;
+let pendingHitSyncForce = false;
+let lastHitRegionSignature = "";
+let settingsSnapshotTimer = 0;
+let settingsBridgeRegistered = false;
+let lastSettingsCommandResult = null;
+let characterActivationBridgeRegistered = false;
+let pluginAgentEventBridgeRegistered = false;
+const pluginAgentEventFrames = [];
+const queuedPluginAgentEventIds = new Set();
+let pluginAgentEventDrainTimer = 0;
+let menuAnchor = null;
+let characterActivationTask = Promise.resolve();
+let lastAppliedLayoutSignature = "";
+let musicSnapshotTimer = 0;
+let musicTimelineTimer = 0;
+let musicTimelineSourceId = "";
+let systemMediaPollTimer = 0;
+let systemMediaReadPending = null;
+let systemMedia = emptySystemMediaSnapshot();
+let systemMediaLyrics = emptySystemMediaLyricsSnapshot();
+let systemMediaLyricsLoading = false;
+let systemMediaLyricsLastAttemptAt = 0;
+const systemMediaLyricsCache = new Map();
+const systemMediaLyricsRequests = new Map();
+const recentTracksHistory = []; // max 5, newest first
+const PANEL_MUSIC_CONTROLS = Object.freeze(["pause", "next", "prev", "recommend"]);
+let panelMusicController = "model";
+let panelSyncTimer = null;
+let ttsToken = 0;
+let ttsController = null;
+let ttsObjectUrl = "";
+let ttsActive = false;
+let ttsPlaybackToken = 0;
+let ttsQueue = [];
+let ttsPrefetch = null;
+let lastTtsSignature = "";
+let resolveTtsWait = null;
+let streamingTtsTurnToken = 0;
+let streamingTtsText = "";
+let streamingTtsPendingShort = "";
+let streamingTtsPendingShortKey = "";
+let streamingTtsPendingShortTimer = 0;
+const streamingTtsSegmentKeys = new Set();
+let ttsPrewarmTimer = 0;
+let ttsPrewarmController = null;
+let ttsPrewarmInFlightKey = "";
+const ttsPrewarmReadyAtByKey = new Map();
+let musicTrack = null;
+let musicQueue = [];
+let musicQueueIndex = -1;
+let musicPlaying = false;
+let musicPaused = false;
+let musicLoading = false;
+let musicEmotionActive = false;
+let musicEmotionRestoreTimer = 0;
+let musicDropHover = false;
+let workspaceMusicRecommendations = [];
+let workspaceAudioCatalog = [];
+let workspaceMusicRecommendationsRefreshTimer = 0;
+let workspaceMusicRecommendationsLoading = false;
+function attachmentDraftScope() {
+  return {
+    backendUrl: state.backendUrl,
+    botId: state.boundBotId,
+    sessionId: state.sessionId,
+    realUserId: getProfileUserId(),
+    characterPackId: String(state.characterPackId || "").trim(),
+  };
+}
+const pendingAttachments = createPendingAttachments({ readScope: attachmentDraftScope,
+  changed: () => { renderPendingAttachments(); scheduleSettingsSnapshot(); } });
+const enqueueWorkspaceImport = createWorkspaceImportQueue({
+  readScope: attachmentDraftScope,
+  run: (paths, scope) => typeof paths[0] === "object" ? uploadClipboardAttachments(paths, scope) : invoke("import_dropped_files", {
+    paths,
+    backendUrl: scope.backendUrl,
+    botId: scope.botId,
+    userId: scope.sessionId,
+    sessionId: scope.sessionId,
+    realUserId: scope.realUserId,
+    characterPackId: scope.characterPackId,
+  }),
+});
+let voiceInputState = "idle";
+let voiceRecorder = null;
+let voiceStream = null;
+let voiceChunks = [];
+let voiceMimeType = "";
+let voiceStartedAt = 0;
+let realtimeVoiceTurn = null;
+let realtimeVoiceCall = null;
+let voiceShortcutHeld = false;
+let asrController = null;
+let voiceInputToken = 0;
+let voiceCaptureController = null;
+let proactiveWakeTimer = 0;
+let proactiveWakeLastAt = 0;
+let proactiveWakeNextAllowedAt = 0;
+const proactivePreparation = new ScreenObservationPreparation();
+let proactiveWakeRunning = false;
+let screenObservationLastSentAt = 0;
+let screenVisionTimer = 0;
+let screenVisionStream = null;
+let screenVisionVideo = null;
+let screenVisionCanvas = null;
+const screenObservation = new ScreenObservationBuffer();
+let screenVisionCapturePending = null;
+let screenVisionCaptureRevision = 0;
+let screenVisionStatus = "off";
+let screenVisionError = "";
+let backendRetryTimer = 0;
+let backendSwitchToken = 0;
+let backendSwitchPending = false;
+let validatedBotBindingKey = "";
+let desktopFileDeliveryHandled = new Set();
+
+const els = {
+  stage: document.querySelector(".stage"),
+  hitboxOverlay: document.querySelector("#hitbox-overlay"),
+  hitbox: document.querySelector("#pet-hitbox"),
+  petImage: document.querySelector("#pet-image"),
+  menu: document.querySelector("#debug-menu"),
+  menuTitle: document.querySelector("#debug-menu .menu-head strong"),
+  menuSummary: document.querySelector("#menu-summary"),
+  toggle: document.querySelector("#debug-toggle"),
+  close: document.querySelector("#close-window"),
+  quickInput: document.querySelector("#quick-input"),
+  openSettings: document.querySelector("#open-settings"),
+  screenShare: document.querySelector("#screen-share"),
+  openWorkshop: document.querySelector("#open-workshop"),
+  openWorkspace: document.querySelector("#open-workspace"),
+  stopReply: document.querySelector("#stop-reply"),
+  bubble: document.querySelector("#bubble"),
+  bubbleText: document.querySelector("#bubble-text"),
+  chatForm: document.querySelector("#chat-form"),
+  chatInput: document.querySelector("#chat-input"),
+  voiceRecordButton: document.querySelector("#voice-record-button"),
+  scale: document.querySelector("#scale-range"),
+  scaleOutput: document.querySelector("#scale-output"),
+  scalePresets: document.querySelector("#scale-presets"),
+  opacity: document.querySelector("#opacity-range"),
+  opacityOutput: document.querySelector("#opacity-output"),
+  opacityPresets: document.querySelector("#opacity-presets"),
+  backendUrl: document.querySelector("#backend-url-input"),
+  backendSave: document.querySelector("#backend-url-save"),
+  outfit: document.querySelector("#outfit-input"),
+  outfitSave: document.querySelector("#outfit-save"),
+  newSession: document.querySelector("#new-session"),
+  alwaysOnTop: document.querySelector("#always-on-top-toggle"),
+  taskbar: document.querySelector("#taskbar-toggle"),
+  webgl: document.querySelector("#webgl-toggle"),
+  passthrough: document.querySelector("#passthrough-probe"),
+  hitTestToggle: document.querySelector("#hit-test-toggle"),
+  hitboxOverlayToggle: document.querySelector("#hitbox-overlay-toggle"),
+  reset: document.querySelector("#reset-window"),
+  reloadResources: document.querySelector("#reload-resources"),
+  closeMenuButton: document.querySelector("#close-window-menu"),
+  previousMusic: document.querySelector("#previous-music"),
+  nextMusic: document.querySelector("#next-music"),
+  toggleMusic: document.querySelector("#toggle-music"),
+  stopMusic: document.querySelector("#stop-music"),
+  clearMusicQueue: document.querySelector("#clear-music-queue"),
+  resourceDetails: document.querySelector("#resource-details"),
+  emotionGrid: document.querySelector("#emotion-grid"),
+  connectionStatus: document.querySelector("#connection-status"),
+  status: document.querySelector("#runtime-status"),
+  voicePlayer: document.querySelector("#voice-player"),
+  musicPlayer: document.querySelector("#music-player"),
+  canvas: document.querySelector("#webgl-probe")
+};
+
+const visualRenderer = createVisualRenderer({
+  stage: els.stage,
+  image: els.petImage,
+  onImageLoadError: ({ expression, error }) => {
+    const label = String(expression?.name || expression?.id || "unknown").trim();
+    console.error("[pet-image] failed to preload:", expression?.url || "", error);
+    setRuntimeStatus(
+      `立绘加载失败：${label} · ${friendlyErrorMessage(formatError(error))}`,
+      { mode: "error" }
+    );
+  }
+});
+
+const disconnectBubbleLayout = observeBubbleLayout({
+  stage: els.stage,
+  bubble: els.bubble,
+  obstruction: els.chatForm,
+  onResize: () => scheduleNativeHitTestSync({ force: true })
+});
+window.addEventListener("pagehide", disconnectBubbleLayout, { once: true });
+
+boot();
+
+async function boot() {
+  bindUi();
+  if (!isTauriRuntime) {
+    bindInstanceStorage(LOCAL_DEFAULT_INSTANCE_ID);
+  }
+  applyCharacterChrome();
+  applyVisualState();
+  updateConnectionStatus();
+  scheduleIdleJump();
+
+  if (!isTauriRuntime) {
+    state.sessionId = generateSessionId();
+    setStatus("Browser preview");
+    await reloadCharacterResources({ startup: true });
+    scheduleNativeHitTestSync();
+    scheduleWorkspaceMusicRecommendationsRefresh();
+    return;
+  }
+
+  try {
+    await reportUiLaunchState("starting", "ui_initializing");
+    scheduleTauriRuntimeBridges();
+    await loadAndApplyPersistedCharacterState();
+    const backendReady = await reloadCharacterResources({ startup: true });
+    scheduleNativeWindowStateApply({ forceHitTest: true });
+    if (backendReady) {
+      scheduleSave(0);
+      const session = await ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
+      if (!session) throw new Error("backend_session_unavailable");
+      await reportUiLaunchState("ready", "ui_ready");
+    } else {
+      await reportUiLaunchState("failed", "backend_unavailable", resourceState.healthMessage || "backend_offline");
+    }
+    scheduleSystemMediaPoll({ immediate: true });
+    scheduleScreenVisionCapture({ immediate: true });
+    scheduleProactiveWake();
+    void prepareProactiveObservation();
+    scheduleWorkspaceMusicRecommendationsRefresh();
+  } catch (error) {
+    setStatus(`Tauri init failed: ${formatError(error)}`);
+    await reportUiLaunchState("failed", "ui_initialization_failed", formatError(error));
+  }
+}
+
+async function reportUiLaunchState(status, phase, reason = "") {
+  if (!isTauriRuntime) return null;
+  try {
+    return await invoke("report_ui_ready", {
+      status: String(status || "starting"),
+      phase: String(phase || ""),
+      reason: String(reason || "")
+    });
+  } catch (error) {
+    console.error("[launch] ui state report failed:", error);
+    return null;
+  }
+}
+
+function scheduleTauriRuntimeBridges() {
+  if (!isTauriRuntime) return;
+  window.setTimeout(startTauriRuntimeBridges, 0);
+}
+
+function startTauriRuntimeBridges() {
+  if (!isTauriRuntime) return;
+  void registerSceneDesktopBridge({
+    stop: async () => { await interruptReply({ reason: "scene_playback_handoff" }); stopMusic(); },
+    scope: () => ({ profile: state.profileUserId, pack: state.characterPackId, bot: state.boundBotId || "" }),
+    equip: updateOutfit,
+  }).catch(error => setStatus(`小屋播放交接不可用：${formatError(error)}`));
+  void registerCharacterActivationBridge().catch((error) => {
+    setStatus(`角色切换桥接不可用：${formatError(error)}`);
+  });
+  void registerSettingsBridge().catch((error) => {
+    setStatus(`设置桥接不可用：${formatError(error)}`);
+  });
+  void registerPluginAgentEventBridge().catch((error) => {
+    setRuntimeStatus(`插件事件桥接不可用：${formatError(error)}`, { mode: "error" });
+  });
+  void registerPanelBridge().catch(() => {});
+  void Promise.allSettled([
+    registerWindowListeners(),
+    registerFileDropHandlers()
+  ]);
+}
+
+async function loadAndApplyPersistedCharacterState({ expectedPackId = "" } = {}) {
+  const [persistedState, launchBinding] = await Promise.all([
+    invoke("load_pet_state"),
+    invoke("get_client_launch_binding")
+  ]);
+  const loaded = {
+    ...persistedState,
+    backendUrl: launchBinding?.hasBackendOverride
+      ? launchBinding.backendUrl
+      : persistedState?.backendUrl
+  };
+  const instanceId = String(loaded?.instanceId || "").trim();
+  const hostId = String(loaded?.hostId || instanceId).trim();
+  if (
+    String(launchBinding?.instanceId || "").trim() !== instanceId ||
+    String(launchBinding?.hostId || launchBinding?.instanceId || "").trim() !== hostId
+  ) {
+    throw new Error("桌面客户端实例绑定与状态文件不一致。");
+  }
+  bindInstanceStorage(hostId);
+  const persistedPackId = String(loaded?.characterPackId || "").trim();
+  await refreshRuntimeCharacterPacks({ silent: true, scheduleSnapshot: false });
+  Object.assign(state, normalizeState(loaded));
+
+  const pack = selectCharacterPack(state.characterPackId, { persist: false });
+  if (expectedPackId && pack.packId !== expectedPackId) {
+    throw new Error(`角色状态不一致：期望 ${expectedPackId}，实际 ${pack.packId}。`);
+  }
+  if (persistedPackId && pack.packId !== persistedPackId) {
+    throw new Error(`角色包 ${persistedPackId} 未加载，已保留当前桌宠。`);
+  }
+
+  state.characterPackId = pack.packId;
+  resourceState.manifest = null;
+  resourceState.source = "character_pack";
+  refreshLocalResourceAssets();
+  applyCharacterRuntimeState(pack.packId, pack.profile);
+  applyCharacterChrome();
+  applyVisualState();
+  if (canRenderCurrentLocalResources()) {
+    setPetEmotion(state.currentEmotion, { persist: false, force: true });
+  } else {
+    state.currentEmotion = getProfileDefaultEmotion();
+  }
+  return pack;
+}
+
+function bindUi() {
+  els.hitbox.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || state.clickThrough) return;
+    if (event.detail >= 2) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelLocalClick();
+      endManualDrag();
+      showChatInput();
+      return;
+    }
+
+    event.preventDefault();
+    closeMenu();
+    hideChatInput();
+    beginManualDrag(event);
+  });
+
+  els.hitbox.addEventListener("pointermove", (event) => {
+    void continueManualDrag(event);
+  });
+  els.hitbox.addEventListener("pointerup", handlePetPointerUp);
+  els.hitbox.addEventListener("pointercancel", endManualDrag);
+  els.hitbox.addEventListener("lostpointercapture", endManualDrag);
+  els.hitbox.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.detail !== 1) return;
+    if (Date.now() < suppressClickUntil) return;
+    scheduleLocalClick();
+  });
+  els.hitbox.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelLocalClick();
+    endManualDrag();
+    showChatInput();
+  });
+  els.hitbox.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelLocalClick();
+    void openPanelWindow();
+  });
+  els.petImage.addEventListener("load", () => {
+    if (import.meta.env.DEV) {
+      console.log("[pet-image] loaded:", els.petImage.src);
+    }
+    scheduleNativeHitTestSync();
+  });
+  els.petImage.addEventListener("error", () => {
+    const src = els.petImage.src || "";
+    console.error("[pet-image] failed to load:", src.substring(0, 256));
+    setStatus(`立绘加载失败：${src ? src.split("/").pop() : "无图片地址"}`, { durationMs: 3600 });
+  });
+
+  els.chatForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitChatInput();
+  });
+  els.chatInput.addEventListener("paste", (event) => {
+    const files = Array.from(event.clipboardData?.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    const scope = pendingAttachments.scope();
+    void serializeBrowserAttachments(files).then(async (values) => {
+      if (pendingAttachments.scope() !== scope) return;
+      await importClipboardAttachments(values);
+      showChatInput();
+    }).catch(error => setRuntimeStatus(formatError(error), { mode: "error" }));
+  });
+  els.chatForm.addEventListener("pointermove", () => {
+    scheduleChatInputAutoHide();
+  });
+  els.chatForm.addEventListener("pointerdown", () => {
+    scheduleChatInputAutoHide();
+  });
+
+  els.chatInput.addEventListener("keydown", (event) => {
+    scheduleChatInputAutoHide();
+    if (event.isComposing) return;
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submitChatInput();
+      return;
+    }
+    if (event.key === "ArrowUp" && shouldNavigateInputHistory(event, "up")) {
+      event.preventDefault();
+      navigateInputHistory("up");
+      return;
+    }
+    if (event.key === "ArrowDown" && shouldNavigateInputHistory(event, "down")) {
+      event.preventDefault();
+      navigateInputHistory("down");
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      hideChatInput();
+    }
+  });
+  els.chatInput.addEventListener("input", () => {
+    autoResizeChatInput();
+    if (!applyingInputHistory) resetInputHistoryCursor();
+    scheduleChatInputAutoHide();
+  });
+  els.chatInput.addEventListener("focus", () => {
+    scheduleChatInputAutoHide();
+  });
+  els.chatInput.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      if (!els.chatInput.value.trim() && document.activeElement !== els.chatInput) {
+        hideChatInput();
+      }
+    }, 180);
+  });
+  els.chatInput.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+    scheduleChatInputAutoHide();
+  });
+  els.voiceRecordButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void toggleVoiceRecording();
+  });
+  els.toggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void openPanelWindow();
+  });
+  els.close.addEventListener("click", () => {
+    void closePetWindow();
+  });
+  els.quickInput.addEventListener("click", () => {
+    closeMenu();
+    showChatInput();
+  });
+  els.openSettings.addEventListener("click", () => {
+    void openPanelWindow();
+  });
+  els.screenShare.addEventListener("click", () => {
+    // Invoke in this trusted click stack: activation does not cross WebViews.
+    void setScreenVisionEnabled(!state.screenVisionEnabled);
+    closeMenu();
+  });
+  els.openWorkshop.addEventListener("click", () => {
+    void openWorkshopWindow();
+  });
+  document.querySelector("#open-scene")?.addEventListener("click", () => {
+    void tauriCall("open_scene_window", {});
+  });
+  els.openWorkspace.addEventListener("click", () => {
+    void openWorkspaceWindow();
+  });
+  els.stopReply.addEventListener("click", () => {
+    interruptReply({ announce: true });
+  });
+  els.musicPlayer.addEventListener("ended", () => {
+    void handleMusicEnded();
+  });
+  els.musicPlayer.addEventListener("error", () => {
+    void handleMusicPlaybackError();
+  });
+  els.musicPlayer.addEventListener("timeupdate", () => {
+    if (musicTrack) scheduleMusicSnapshot();
+  });
+
+  window.addEventListener("contextmenu", (event) => {
+    if (event.target.closest("#chat-form")) return;
+    event.preventDefault();
+    void openPanelWindow();
+  });
+
+  window.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest("#debug-menu, #debug-toggle, #chat-form")) closeMenu();
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (isVoiceShortcut(event) && !event.repeat) {
+      event.preventDefault();
+      voiceShortcutHeld = true;
+      showChatInput();
+      if (canUseRealtimeVoice() || realtimeVoiceCall) void toggleVoiceRecording();
+      else if (voiceInputState !== "recording") void startVoiceRecording();
+      return;
+    }
+
+    if (event.key !== "Escape") return;
+    if (realtimeVoiceCall) {
+      void stopRealtimeVoiceCall({ notice: true, reason: "user_cancelled_call" });
+      return;
+    }
+    if (voiceInputState === "recording" || voiceInputState === "opening") {
+      void cancelVoiceRecording({ notice: true });
+      return;
+    }
+    if (!els.chatForm.hidden) {
+      hideChatInput();
+      return;
+    }
+    closeMenu();
+  });
+  window.addEventListener("keyup", (event) => {
+    if (!isVoiceShortcut(event) || !voiceShortcutHeld) return;
+    event.preventDefault();
+    voiceShortcutHeld = false;
+    if (canUseRealtimeVoice() || realtimeVoiceCall) return;
+    if (voiceInputState === "opening") {
+      void cancelVoiceRecording({ notice: true });
+    } else if (voiceInputState === "recording") {
+      void stopVoiceRecording();
+    }
+  });
+  window.addEventListener("resize", () => {
+    repositionOpenMenu();
+    scheduleNativeHitTestSync({ force: true });
+  });
+
+  els.scale.addEventListener("input", () => {
+    updateVisualScale(Number(els.scale.value));
+  });
+
+  els.opacity.addEventListener("input", () => {
+    updateVisualOpacity(Number(els.opacity.value));
+  });
+
+  els.scalePresets.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-scale]");
+    if (!button) return;
+    updateVisualScale(Number(button.dataset.scale), { commitNow: true });
+  });
+
+  els.opacityPresets.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-opacity]");
+    if (!button) return;
+    updateVisualOpacity(Number(button.dataset.opacity), { saveNow: true });
+  });
+
+  els.backendSave.addEventListener("click", () => {
+    void updateBackendUrlFromInput();
+  });
+  els.backendUrl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void updateBackendUrlFromInput();
+    }
+  });
+
+  els.outfitSave.addEventListener("click", () => {
+    void updateOutfitFromInput();
+  });
+  els.outfit.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void updateOutfitFromInput();
+    }
+  });
+
+  els.emotionGrid.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-emotion]");
+    if (!button) return;
+    previewEmotion(button.dataset.emotion);
+  });
+
+  els.connectionStatus.addEventListener("click", () => {
+    void reloadCharacterResources({ userTriggered: true });
+  });
+
+  els.newSession.addEventListener("click", () => {
+    void startNewSession();
+  });
+
+  els.alwaysOnTop.addEventListener("click", async () => {
+    await setAlwaysOnTop(!state.alwaysOnTop);
+  });
+
+  els.taskbar.addEventListener("click", async () => {
+    await setSkipTaskbar(!state.skipTaskbar);
+  });
+
+  els.webgl.addEventListener("click", () => {
+    toggleWebglProbe();
+  });
+
+  els.passthrough.addEventListener("click", async () => {
+    closeMenu();
+    await probeClickThrough(5000);
+  });
+
+  els.hitTestToggle.addEventListener("click", async () => {
+    await setHitTestEnabled(!state.hitTestEnabled);
+  });
+
+  els.hitboxOverlayToggle.addEventListener("click", () => {
+    setHitboxOverlay(!state.hitboxOverlay);
+  });
+
+  els.reset.addEventListener("click", async () => {
+    await resetWindowPlacement();
+  });
+
+  els.reloadResources.addEventListener("click", () => {
+    void reloadCharacterResources({ userTriggered: true });
+  });
+
+  els.previousMusic.addEventListener("click", () => {
+    void controlActiveMusic("previous", { source: "pet-controls" });
+  });
+
+  els.nextMusic.addEventListener("click", () => {
+    void controlActiveMusic("next", { source: "pet-controls" });
+  });
+
+  els.toggleMusic.addEventListener("click", () => {
+    void controlActiveMusic("toggle", { source: "pet-controls" });
+  });
+
+  els.stopMusic.addEventListener("click", () => {
+    void controlActiveMusic("stop", { source: "pet-controls" });
+  });
+
+  els.clearMusicQueue.addEventListener("click", () => {
+    clearMusicQueue({ announce: true });
+  });
+
+  els.closeMenuButton.addEventListener("click", () => {
+    void closePetWindow();
+  });
+}
+
+function beginManualDrag(event) {
+  if (!isTauriRuntime) return;
+  markPetInteraction();
+  stopPetPhysics({ restore: false, reschedule: false });
+  cancelLocalClick();
+  setPetMotion("dragging");
+  dragState = {
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    lastScreenX: event.screenX,
+    lastScreenY: event.screenY,
+    lastMoveAt: Date.now(),
+    vx: 0,
+    vy: 0,
+    moved: false
+  };
+
+  try {
+    els.hitbox.setPointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture may be unavailable while the webview is losing focus.
+  }
+}
+
+async function continueManualDrag(event) {
+  if (!dragState || event.pointerId !== dragState.pointerId) return;
+
+  const totalDx = event.clientX - dragState.startClientX;
+  const totalDy = event.clientY - dragState.startClientY;
+  if (!dragState.moved && Math.hypot(totalDx, totalDy) < PET_DRAG_THRESHOLD_PX) return;
+
+  dragState.moved = true;
+  cancelLocalClick();
+  hideBubble();
+  setPetMotion("dragging");
+  const dx = Math.round(event.screenX - dragState.lastScreenX);
+  const dy = Math.round(event.screenY - dragState.lastScreenY);
+  const now = Date.now();
+  if (now - dragState.lastMoveAt > 5) {
+    dragState.vx = dx * PET_DRAG_VELOCITY_FACTOR;
+    dragState.vy = dy * PET_DRAG_VELOCITY_FACTOR;
+    dragState.lastMoveAt = now;
+  }
+  if (!dx && !dy) return;
+
+  dragState.lastScreenX = event.screenX;
+  dragState.lastScreenY = event.screenY;
+  event.preventDefault();
+
+  const geometry = await tauriCall("move_window_by", { dx, dy }, { quiet: true });
+  if (geometry) {
+    applyWindowGeometryToState(geometry);
+    scheduleSave(250);
+  }
+}
+
+function handlePetPointerUp(event) {
+  const result = endManualDrag(event);
+  const moved = Boolean(result?.moved);
+  if (moved) {
+    suppressClickUntil = Date.now() + 350;
+    startPetThrow(result);
+  }
+}
+
+function endManualDrag(event) {
+  if (!dragState) return { moved: false, vx: 0, vy: 0 };
+  const ended = dragState;
+  const pointerId = ended.pointerId;
+  const moved = Boolean(ended.moved);
+  dragState = null;
+  try {
+    if (event?.currentTarget?.hasPointerCapture?.(pointerId)) {
+      event.currentTarget.releasePointerCapture(pointerId);
+    }
+  } catch {
+    // Nothing to release.
+  }
+  if (!moved) {
+    setPetMotion("idle");
+    releasePetPlayEmotion({ delayMs: 0 });
+  }
+  return {
+    moved,
+    vx: Number(ended.vx) || 0,
+    vy: Number(ended.vy) || 0
+  };
+}
+
+function markPetInteraction() {
+  lastUserPetInteractionAt = Date.now();
+  scheduleIdleJump();
+}
+
+function startPetThrow({ vx = 0, vy = 0 } = {}) {
+  markPetInteraction();
+  playState.vx = Number(vx) || 0;
+  playState.vy = Number(vy) || 0;
+
+  if (Math.hypot(playState.vx, playState.vy) <= 1) {
+    setPetMotion("idle");
+    releasePetPlayEmotion({ delayMs: 0 });
+    return;
+  }
+
+  playState.mode = "physics";
+  const isFastThrow = Math.abs(playState.vx) > PET_THROW_THRESHOLD || Math.abs(playState.vy) > PET_THROW_THRESHOLD;
+  const feedback = getProfilePlayFeedback(isFastThrow ? "throwFast" : "throwLight");
+  setPetMotion(isFastThrow ? "thrown" : "drag-release", { durationMs: isFastThrow ? 0 : 420 });
+  holdPetPlayEmotion(feedback.emotion);
+  showPetPlayBubble(feedback.bubble.text, { durationMs: feedback.bubble.durationMs });
+
+  startPetPhysicsLoop();
+}
+
+function startPetPhysicsLoop() {
+  if (physicsTimer || !isTauriRuntime) return;
+  physicsTimer = window.setInterval(() => {
+    void tickPetPhysics();
+  }, PET_PHYSICS_FRAME_MS);
+}
+
+function stopPetPhysics({ restore = true, reschedule = true } = {}) {
+  window.clearInterval(physicsTimer);
+  physicsTimer = 0;
+  playState.mode = "idle";
+  playState.vx = 0;
+  playState.vy = 0;
+  if (restore && !sending && !ttsActive) {
+    setPetMotion("idle");
+    releasePetPlayEmotion({ delayMs: 0 });
+  }
+  if (reschedule) {
+    scheduleSave(250);
+    scheduleIdleJump();
+  }
+}
+
+async function tickPetPhysics() {
+  if (!physicsTimer || dragState || !isTauriRuntime) return;
+  if (physicsTickInFlight) return;
+  physicsTickInFlight = true;
+  try {
+    const geometry = await getCachedWindowGeometry();
+    if (!geometry) {
+      stopPetPhysics({ restore: true });
+      return;
+    }
+
+    const bounds = await getCurrentWorkAreaBounds(geometry);
+    const floorY = Math.max(bounds.top, bounds.bottom - geometry.height - PET_PHYSICS_FLOOR_CLEARANCE);
+    let x = geometry.x;
+    let y = geometry.y;
+    let vx = playState.vx;
+    let vy = playState.vy;
+
+    if (y < floorY) {
+      vy += PET_PHYSICS_GRAVITY;
+    }
+
+    if (y + vy >= floorY) {
+      y = floorY;
+      if (Math.abs(vy) > 2) {
+        vy = -vy * PET_PHYSICS_BOUNCE;
+        setPetMotion("land", { durationMs: 420 });
+        handlePetLand();
+      } else {
+        vy = 0;
+      }
+      vx *= PET_PHYSICS_GROUND_FRICTION;
+    } else {
+      vx *= PET_PHYSICS_AIR_FRICTION;
+      vy *= PET_PHYSICS_AIR_FRICTION;
+    }
+
+    let nextX = x + vx;
+    let nextY = y + vy;
+    let hitWall = false;
+    let wallImpactSpeed = 0;
+    const maxX = Math.max(bounds.left, bounds.right - geometry.width);
+
+    if (nextX <= bounds.left) {
+      nextX = bounds.left;
+      wallImpactSpeed = Math.abs(vx);
+      vx = -vx * PET_PHYSICS_BOUNCE;
+      hitWall = true;
+    } else if (nextX >= maxX) {
+      nextX = maxX;
+      wallImpactSpeed = Math.abs(vx);
+      vx = -vx * PET_PHYSICS_BOUNCE;
+      hitWall = true;
+    }
+
+    const dx = Math.round(nextX - x);
+    const dy = Math.round(nextY - geometry.y);
+    if (dx || dy) {
+      const moved = await tauriCall("move_window_by", { dx, dy }, { quiet: true });
+      if (moved) {
+        applyWindowGeometryToState(moved);
+      } else {
+        stopPetPhysics({ restore: true });
+        return;
+      }
+    } else {
+      lastWindowGeometry = { ...geometry, x: Math.round(nextX), y: Math.round(nextY) };
+    }
+
+    playState.vx = vx;
+    playState.vy = vy;
+
+    if (hitWall) {
+      handlePetWallHit(wallImpactSpeed);
+    }
+
+    const settledOnFloor = Math.abs(vx) < PET_PHYSICS_MIN_SPEED && Math.abs(vy) < PET_PHYSICS_MIN_SPEED &&
+      Math.abs((lastWindowGeometry?.y ?? nextY) - floorY) <= 1;
+    if (settledOnFloor) {
+      stopPetPhysics({ restore: true });
+    }
+  } finally {
+    physicsTickInFlight = false;
+  }
+}
+
+async function getCachedWindowGeometry() {
+  if (!isTauriRuntime) return null;
+  if (lastWindowGeometry?.width && lastWindowGeometry?.height) return lastWindowGeometry;
+  const geometry = await tauriCall("get_window_geometry", {}, { quiet: true });
+  if (geometry) applyWindowGeometryToState(geometry);
+  return lastWindowGeometry;
+}
+
+async function getCurrentWorkAreaBounds(geometry = lastWindowGeometry) {
+  const now = Date.now();
+  if (monitorBoundsCache && now - monitorBoundsCacheAt < 3000) return monitorBoundsCache;
+
+  const monitor = await currentMonitor().catch(() => null) || await primaryMonitor().catch(() => null);
+  const workArea = monitor?.workArea;
+  const position = workArea?.position || monitor?.position || {};
+  const size = workArea?.size || monitor?.size || {};
+  const left = Number(position.x);
+  const top = Number(position.y);
+  const width = Number(size.width);
+  const height = Number(size.height);
+
+  if (Number.isFinite(left) && Number.isFinite(top) && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+    monitorBoundsCache = {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height
+    };
+  } else {
+    const x = Number(geometry?.x) || 0;
+    const y = Number(geometry?.y) || 0;
+    const fallbackWidth = Number(window.screen?.availWidth || window.innerWidth || 1280);
+    const fallbackHeight = Number(window.screen?.availHeight || window.innerHeight || 720);
+    monitorBoundsCache = {
+      left: Math.min(0, x),
+      top: Math.min(0, y),
+      right: Math.max(fallbackWidth, x + (geometry?.width || 0)),
+      bottom: Math.max(fallbackHeight, y + (geometry?.height || 0))
+    };
+  }
+  monitorBoundsCacheAt = now;
+  return monitorBoundsCache;
+}
+
+function handlePetWallHit(impactSpeed) {
+  const now = Date.now();
+  if (now - playState.lastWallHitAt < 300) return;
+  playState.lastWallHitAt = now;
+  markPetInteraction();
+  setPetMotion("hit-wall", { durationMs: 520 });
+
+  if (Math.abs(impactSpeed) > PET_WALL_PAIN_THRESHOLD) {
+    const feedback = getProfilePlayFeedback("wallHit");
+    holdPetPlayEmotion(feedback.emotion);
+    showPetPlayBubble(feedback.bubble.text, { durationMs: feedback.bubble.durationMs });
+  }
+}
+
+function handlePetLand() {
+  const now = Date.now();
+  if (now - playState.lastLandAt < 400) return;
+  playState.lastLandAt = now;
+  const feedback = getProfilePlayFeedback("land");
+  holdPetPlayEmotion(feedback.emotion);
+  showPetPlayBubble(feedback.bubble.text, { durationMs: feedback.bubble.durationMs });
+}
+
+function showPetPlayBubble(text, { durationMs = 1800 } = {}) {
+  if (!String(text || "").trim() || durationMs <= 0) return;
+  showBubbleText(text, { transient: true, durationMs, local: true, kind: "play" });
+}
+
+function holdPetPlayEmotion(emotion) {
+  const value = String(emotion || "").trim();
+  if (!value) return;
+  playState.heldEmotion = value;
+  clearTransientEmotionRestore();
+  setPetEmotion(value, { persist: false });
+}
+
+function getProfilePlayFeedback(kind) {
+  const feedback = getActiveCharacterProfile()?.playFeedback || {};
+  const entry = feedback[kind] && typeof feedback[kind] === "object" ? feedback[kind] : {};
+  const bubble = entry.bubble && typeof entry.bubble === "object" ? entry.bubble : {};
+  return {
+    emotion: String(entry.emotion || "").trim(),
+    bubble: {
+      text: String(bubble.text || "").trim(),
+      durationMs: Math.max(0, Number(bubble.durationMs) || 0)
+    }
+  };
+}
+
+function releasePetPlayEmotion({ delayMs = PET_MOTION_RESTORE_MS } = {}) {
+  const held = playState.heldEmotion;
+  if (!held) return;
+  window.setTimeout(() => {
+    if (playState.heldEmotion !== held) return;
+    if (sending || ttsActive || voiceInputState === "recording" || dragState || physicsTimer) return;
+    playState.heldEmotion = "";
+    setRestingPetEmotion();
+    scheduleMusicEmotionRestore();
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function restorePetEmotionAfterPlay(durationMs = PET_MOTION_RESTORE_MS) {
+  if (playState.heldEmotion) return;
+  if (sending || ttsActive || voiceInputState === "recording") return;
+  window.setTimeout(() => {
+    if (sending || ttsActive || voiceInputState === "recording" || dragState || physicsTimer) return;
+    setRestingPetEmotion();
+    scheduleMusicEmotionRestore();
+  }, durationMs);
+}
+
+function scheduleIdleJump() {
+  window.clearTimeout(idleJumpTimer);
+  if (!isTauriRuntime) return;
+  idleJumpTimer = window.setTimeout(() => {
+    if (Date.now() - lastUserPetInteractionAt < PET_IDLE_JUMP_AFTER_MS) {
+      scheduleIdleJump();
+      return;
+    }
+    maybePlayIdleJump();
+    scheduleIdleJump();
+  }, PET_IDLE_JUMP_AFTER_MS);
+}
+
+function maybePlayIdleJump() {
+  const now = Date.now();
+  if (now - playState.lastIdleJumpAt < PET_IDLE_JUMP_COOLDOWN_MS) return;
+  if (sending || ttsActive || ttsQueue.length > 0 || replyDisplayActive || !els.chatForm.hidden || !els.menu.hidden) return;
+  if (dragState || physicsTimer) return;
+
+  playState.lastIdleJumpAt = now;
+  setPetMotion("jump", { durationMs: 920 });
+}
+
+async function registerWindowListeners() {
+  if (!appWindow) return;
+
+  unlistenFns.push(await appWindow.onMoved(({ payload }) => {
+    state.x = Math.round(payload.x);
+    state.y = Math.round(payload.y);
+    scheduleSave(250);
+  }));
+
+  unlistenFns.push(await appWindow.onResized(({ payload }) => {
+    void payload;
+    state.width = null;
+    state.height = null;
+    scheduleNativeHitTestSync({ force: true });
+    scheduleSave(250);
+  }));
+
+  window.addEventListener("beforeunload", () => {
+    unlistenFns.forEach((unlisten) => unlisten());
+    window.clearTimeout(systemMediaPollTimer);
+    window.clearTimeout(proactiveWakeTimer);
+    window.clearTimeout(idleJumpTimer);
+    window.clearTimeout(musicEmotionRestoreTimer);
+    stopPetPhysics({ restore: false, reschedule: false });
+    stopScreenVisionCapture();
+    window.clearTimeout(backendRetryTimer);
+    window.clearTimeout(transientEmotionTimer);
+    window.clearTimeout(pluginAgentEventDrainTimer);
+    if (thinkController) thinkController.abort();
+    if (asrController) asrController.abort();
+    void cancelVoiceRecording();
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, "window_closed");
+    stopTts();
+    stopMusic({ silent: true, clearQueue: true });
+    cleanupVoiceRecorder();
+  });
+}
+
+async function registerFileDropHandlers() {
+  if (!appWindow?.onDragDropEvent) return;
+  unlistenFns.push(await appWindow.onDragDropEvent((event) => {
+    const payload = event?.payload || {};
+    const type = String(payload.type || "").toLowerCase();
+    if (type === "drop") {
+      musicDropHover = false;
+      void handleDroppedFiles(payload.paths || []);
+      return;
+    }
+    if (type === "over" || type === "enter") {
+      showFileDropHint();
+      return;
+    }
+    musicDropHover = false;
+  }));
+}
+
+async function registerSettingsBridge() {
+  if (!isTauriRuntime || settingsBridgeRegistered) return;
+
+  const unlisten = await listen(SETTINGS_COMMAND_EVENT, (event) => {
+    void handleSettingsCommand(event.payload).catch((error) => {
+      void reportSettingsCommandFailure(event.payload, error);
+    });
+  });
+  unlistenFns.push(unlisten);
+  settingsBridgeRegistered = true;
+  // Close the startup race where the settings window requests a snapshot
+  // before the main window has finished registering this listener.
+  await broadcastSettingsSnapshot();
+}
+
+async function registerCharacterActivationBridge() {
+  if (!isTauriRuntime || characterActivationBridgeRegistered) return;
+
+  const unlisten = await listen(CHARACTER_PACK_ACTIVATED_EVENT, (event) => {
+    const packId = String(event?.payload?.packId || "").trim();
+    if (!packId) return;
+    characterActivationTask = characterActivationTask
+      .catch(() => {})
+      .then(() => applyPersistedCharacterActivation(packId))
+      .catch((error) => {
+        setStatus(`角色切换失败：${formatError(error)}`);
+      });
+  });
+  unlistenFns.push(unlisten);
+  characterActivationBridgeRegistered = true;
+}
+
+async function registerPluginAgentEventBridge() {
+  if (!isTauriRuntime || pluginAgentEventBridgeRegistered) return;
+  const unlisten = await listen(PLUGIN_AGENT_EVENT_FRAME_EVENT, (event) => {
+    enqueuePluginAgentEventFrame(event?.payload);
+  });
+  unlistenFns.push(unlisten);
+  pluginAgentEventBridgeRegistered = true;
+  const pending = await invoke("list_pending_plugin_agent_event_frames");
+  for (const item of Array.isArray(pending) ? pending : []) {
+    enqueuePluginAgentEventFrame(item);
+  }
+}
+
+function enqueuePluginAgentEventFrame(item) {
+  const deliveryId = String(item?.deliveryId || "").trim();
+  const payload = item?.payload;
+  if (!deliveryId || !payload || typeof payload !== "object" || queuedPluginAgentEventIds.has(deliveryId)) return;
+  queuedPluginAgentEventIds.add(deliveryId);
+  pluginAgentEventFrames.push({ deliveryId, payload });
+  drainPluginAgentEventFrames();
+}
+
+function drainPluginAgentEventFrames() {
+  window.clearTimeout(pluginAgentEventDrainTimer);
+  if (!pluginAgentEventFrames.length) return;
+  if (sending || ttsActive || ttsQueue.length > 0) {
+    pluginAgentEventDrainTimer = window.setTimeout(drainPluginAgentEventFrames, 200);
+    return;
+  }
+  const item = pluginAgentEventFrames.shift();
+  renderPayload(item.payload, { source: "live", force: true });
+  scheduleSettingsSnapshot();
+  void invoke("acknowledge_plugin_agent_event_frame", { deliveryId: item.deliveryId })
+    .finally(() => queuedPluginAgentEventIds.delete(item.deliveryId));
+  if (pluginAgentEventFrames.length) {
+    pluginAgentEventDrainTimer = window.setTimeout(drainPluginAgentEventFrames, 250);
+  }
+}
+
+async function registerPanelBridge() {
+  if (!isTauriRuntime) return;
+
+  unlistenFns.push(await listen("panel:ready", () => {
+    schedulePanelStateSync(50);
+    if (recentTracksHistory.length) {
+      void emitPanelEvent("panel:recent-update", recentTracksHistory.slice());
+    }
+    void refreshPanelCoListenSummary();
+    void refreshPanelMusicController();
+  }));
+
+  unlistenFns.push(await listen("panel:action", (event) => {
+    const { action, muted, value, controller, mediaAction, operationId } = event.payload || {};
+    if (action === "new-session") {
+      void startNewSession();
+    } else if (action === "open-workspace") {
+      void openWorkspaceWindow();
+    } else if (action === "open-workshop") {
+      void openWorkshopWindow();
+    } else if (action === "open-shop") {
+      void openShopWindow();
+    } else if (action === "toggle-mute" && typeof muted === "boolean") {
+      setVoiceEnabled(!muted);
+    } else if (action === "stop-reply") {
+      interruptReply({ announce: true });
+    } else if (action === "quit") {
+      void quitAkane();
+    } else if (action === "set-scale" && typeof value === "number") {
+      state.scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, value));
+      applyVisualState();
+      schedulePanelStateSync(80);
+      scheduleSave(300);
+    } else if (action === "set-opacity" && typeof value === "number") {
+      state.opacity = Math.min(1, Math.max(0.55, value));
+      applyVisualState();
+      schedulePanelStateSync(80);
+      scheduleSave(300);
+    } else if (action === "refresh-co-listen") {
+      void refreshPanelCoListenSummary();
+    } else if (action === "refresh-music-controller") {
+      void refreshPanelMusicController();
+    } else if (action === "set-music-controller") {
+      void setPanelMusicController(controller === "user" ? "user" : "model");
+    } else if (action === "media-control" && mediaAction) {
+      void controlActiveMusic(mediaAction, { operationId });
+    }
+  }));
+}
+
+async function applyPersistedCharacterActivation(packId) {
+  const pack = await loadAndApplyPersistedCharacterState({ expectedPackId: packId });
+  scheduleSave(0);
+  setStatus(`角色包已切换为 ${pack.profile.identity.name}。`, { durationMs: 2400 });
+  await reloadCharacterResources({ userTriggered: true });
+  setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { persist: false, force: true });
+  scheduleNativeWindowStateApply({ forceHitTest: true });
+  await broadcastSettingsSnapshot();
+  void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
+}
+
+async function handleSettingsCommand(payload) {
+  const command = String(payload?.command || "").trim();
+  if (!command) return;
+  const operationId = String(payload?.operationId || "").trim();
+  let commandHandled = true;
+  if (["buyShopItem", "feedInventoryItem", "startCareWork", "claimCareAllowance"].includes(command)
+      && ((payload.characterPackId && payload.characterPackId !== getCurrentCharacterPackId())
+          || (payload.boundBotId && payload.boundBotId !== state.boundBotId))) {
+    notifyShopStatus("角色或连接已切换，请刷新商店后重试。", "warn");
+    throw new Error("shop_scope_changed");
+  }
+
+  switch (command) {
+    case "requestSnapshot":
+      await broadcastSettingsSnapshot();
+      break;
+    case "openInput":
+      closeMenu();
+      showChatInput();
+      break;
+    case "openWorkspace":
+      await openWorkspaceWindow();
+      break;
+    case "openShop":
+      await openShopWindow();
+      break;
+    case "openWorkshop":
+      await openWorkshopWindow();
+      break;
+    case "setBackendUrl":
+      await updateBackendUrl(payload.value);
+      break;
+    case "setBoundBot":
+      await updateBoundBot(payload.value);
+      lastSettingsCommandResult = {
+        command,
+        ok: true,
+        status: "completed",
+        operationId,
+        boundBotId: state.boundBotId,
+        at: Date.now()
+      };
+      break;
+    case "setOutfit":
+      await updateOutfit(payload.value);
+      break;
+    case "setCharacterPack":
+      await updateCharacterPack(payload.value);
+      break;
+    case "refreshCharacterPacks":
+      await refreshCharacterPacksFromSettings(payload.value);
+      break;
+    case "setScale":
+      updateVisualScale(Number(payload.value), { commitNow: true });
+      break;
+    case "setOpacity":
+      updateVisualOpacity(Number(payload.value), { saveNow: true });
+      break;
+    case "setVoiceEnabled":
+      setVoiceEnabled(Boolean(payload.value));
+      break;
+    case "setVoiceInputEnabled":
+      setVoiceInputEnabled(Boolean(payload.value));
+      break;
+    case "setVoiceVolume":
+      setVoiceVolume(Number(payload.value));
+      break;
+    case "setScreenVisionEnabled":
+      await setScreenVisionEnabled(Boolean(payload.value));
+      lastSettingsCommandResult = {
+        command,
+        ok: state.screenVisionEnabled === Boolean(payload.value),
+        status: state.screenVisionEnabled === Boolean(payload.value) ? "completed" : "failed",
+        reason: state.screenVisionEnabled === Boolean(payload.value) ? "" : screenVisionError || "screen_capture_unavailable",
+        operationId,
+        at: Date.now()
+      };
+      break;
+    case "setScreenVisionPacking":
+      setScreenObservationSetting("screenVisionPacking", payload.value);
+      break;
+    case "setProactiveWakeEnabled":
+      setProactiveWakeEnabled(Boolean(payload.value));
+      break;
+    case "setProactiveWakeIntervalSec":
+      setProactiveWakeIntervalSec(Number(payload.value));
+      break;
+    case "setScreenVisionSampleIntervalSec":
+      setScreenObservationSetting("screenVisionSampleIntervalSec", Number(payload.value));
+      break;
+    case "setScreenVisionWindowSec":
+      setScreenObservationSetting("screenVisionWindowSec", Number(payload.value));
+      break;
+    case "setScreenVisionMaxEdge":
+      setScreenObservationSetting("screenVisionMaxEdge", Number(payload.value));
+      break;
+    case "setScreenVisionSheetCount":
+      setScreenObservationSetting("screenVisionSheetCount", Number(payload.value));
+      break;
+    case "setScreenVisionFrameCount":
+      setScreenObservationSetting("screenVisionFrameCount", Number(payload.value));
+      break;
+    case "clearScreenVision":
+      clearScreenVisionWorkspace();
+      break;
+    case "setRestoreLatestOnStartup":
+      setRestoreLatestOnStartup(Boolean(payload.value));
+      break;
+    case "stopReply":
+      interruptReply({ announce: true });
+      break;
+    case "stopTts":
+      stopTts();
+      setRuntimeStatus("语音已停止", { mode: "stopped" });
+      break;
+    case "testTts":
+      await testTts();
+      break;
+    case "previewTts":
+      await previewTts(payload.value);
+      break;
+    case "previousMusic":
+      await controlActiveMusic("previous", payload);
+      break;
+    case "nextMusic":
+      await controlActiveMusic("next", payload);
+      break;
+    case "playMusicTrack":
+      await playMusicTrackBySourceId(payload.value);
+      break;
+    case "playWorkspaceAudio": {
+      const raw = payload.value && typeof payload.value === "object" ? payload.value : payload;
+      await playWorkspaceAudioItem({ itemType: raw.itemType, handle: raw.handle, title: raw.title });
+      break;
+    }
+    case "removeMusicTrack":
+      await removeMusicTrackBySourceId(payload.value);
+      break;
+    case "buyShopItem":
+      await buyShopItem(payload.value);
+      break;
+    case "feedInventoryItem":
+      await feedInventoryItem(payload.value);
+      break;
+    case "startCareWork":
+      await startCareWork();
+      break;
+    case "claimCareAllowance":
+      await claimCareAllowance();
+      break;
+    case "toggleMusic":
+      await toggleMusicPlayback();
+      break;
+    case "toggleActiveMusic":
+      await controlActiveMusic("toggle", payload);
+      break;
+    case "controlActiveMusic": {
+      const raw = payload.value && typeof payload.value === "object" ? payload.value : payload;
+      await controlActiveMusic(raw.action || payload.action || payload.value, payload);
+      break;
+    }
+    case "seekMusic":
+      seekMusicPlayback(Number(payload.value));
+      break;
+    case "stopMusic":
+      await controlActiveMusic("stop", payload);
+      break;
+    case "clearMusicQueue":
+      clearMusicQueue({ announce: true });
+      break;
+    case "setAlwaysOnTop":
+      await setAlwaysOnTop(Boolean(payload.value));
+      break;
+    case "setSkipTaskbar":
+      await setSkipTaskbar(Boolean(payload.value));
+      break;
+    case "setHitTestEnabled":
+      await setHitTestEnabled(Boolean(payload.value));
+      break;
+    case "setHitboxOverlay":
+      setHitboxOverlay(Boolean(payload.value));
+      break;
+    case "toggleWebgl":
+      toggleWebglProbe();
+      break;
+    case "probeClickThrough":
+      await probeClickThrough(5000);
+      break;
+    case "resetWindow":
+      await resetWindowPlacement();
+      break;
+    case "resetVisuals":
+      await resetVisuals();
+      break;
+    case "newSession":
+      await startNewSession();
+      break;
+    case "sendChatMessage": {
+      if (pendingAttachments.importing() || (payload.draftToken && String(payload.draftToken) !== pendingAttachments.token())) {
+        lastSettingsCommandResult = { command, operationId, ok: false, status: "failed",
+          reason: pendingAttachments.importing() ? "attachments_uploading" : "attachment_scope_changed", at: Date.now() };
+        scheduleSettingsSnapshot();
+        break;
+      }
+      const text = String(payload.value ?? payload.text ?? "").trim() || (pendingAttachments.list().length ? "请查看这些附件。" : "");
+      if (!text) {
+        lastSettingsCommandResult = {
+          command,
+          ok: false,
+          status: "invalid-payload",
+          reason: "message_required",
+          operationId,
+          at: Date.now()
+        };
+        scheduleSettingsSnapshot();
+        break;
+      }
+      if (proactiveWakeRunning) interruptReply({ announce: false });
+      if (sending) {
+        const accepted = await sendMessage(text);
+        lastSettingsCommandResult = {
+          command,
+          ok: Boolean(accepted),
+          status: accepted ? "accepted" : "failed",
+          reason: accepted ? "" : "steer_not_accepted",
+          operationId,
+          at: Date.now()
+        };
+        scheduleSettingsSnapshot();
+        break;
+      }
+      lastSettingsCommandResult = {
+        command,
+        ok: true,
+        status: "accepted",
+        operationId,
+        messageLength: text.length,
+        at: Date.now()
+      };
+      void sendMessage(text);
+      break;
+    }
+    case "chatFileAction": {
+      try {
+        if (String(payload.draftToken || "") !== pendingAttachments.token()) throw new Error("attachment_scope_changed");
+        const result = await performChatFileAction(payload, { scope: attachmentDraftScope(), invoke,
+          play: playWorkspaceAudioItem, isPlaying: item => Boolean(musicPlaying && musicQueue[musicQueueIndex]?.workspaceHandle === item.handle
+            && musicQueue[musicQueueIndex]?.workspaceItemType === item.itemType) });
+        lastSettingsCommandResult = { command, operationId, ...result, at: Date.now() };
+      } catch (error) {
+        lastSettingsCommandResult = { command, operationId, ok: false, status: "failed", reason: friendlyErrorMessage(formatError(error)), at: Date.now() };
+      }
+      scheduleSettingsSnapshot();
+      break;
+    }
+    case "attachChatFiles":
+    case "removeChatAttachment":
+    case "playChatAttachment": {
+      try {
+        if (String(payload.draftToken || "") !== pendingAttachments.token()) throw new Error("attachment_scope_changed");
+        let result = { ok: true, status: "completed" };
+        if (command === "attachChatFiles") {
+          const token = pendingAttachments.token();
+          const paths = payload.files ? null : (Array.isArray(payload.paths) ? payload.paths : await invoke("choose_workspace_files"));
+          if (token !== pendingAttachments.token()) throw new Error("attachment_scope_changed");
+          if (paths && !paths.length) result = { ok: false, status: "cancelled", reason: "picker_cancelled" };
+          else result = payload.files ? await importClipboardAttachments(payload.files) : await importDroppedFilesToWorkspace(paths);
+        } else {
+          const item = pendingAttachments.list().find(item => item.attachmentId === payload.attachmentId);
+          if (!item) throw new Error("attachment_not_in_draft");
+          if (command === "removeChatAttachment") pendingAttachments.remove(item.attachmentId);
+          else {
+            await playWorkspaceAudioItem(item);
+            result = { ok: Boolean(musicPlaying && musicQueue[musicQueueIndex]?.workspaceHandle === item.handle), status: "completed" };
+          }
+        }
+        lastSettingsCommandResult = { command, operationId, ok: Boolean(result.ok), status: result.status || (result.ok ? "completed" : "failed"), reason: result.reason || "", at: Date.now() };
+      } catch (error) {
+        lastSettingsCommandResult = { command, operationId, ok: false, status: "failed", reason: friendlyErrorMessage(formatError(error)), at: Date.now() };
+      }
+      scheduleSettingsSnapshot();
+      break;
+    }
+    case "reloadResources":
+      await reloadCharacterResources({ userTriggered: true });
+      break;
+    case "previewEmotion":
+      if (!previewEmotion(payload.value)) {
+        lastSettingsCommandResult = {
+          command,
+          ok: false,
+          status: "busy",
+          reason: sending ? "reply_in_progress" : "emotion_required",
+          operationId,
+          at: Date.now()
+        };
+      }
+      break;
+    case "closePet":
+      await closePetWindow();
+      break;
+    case "setVoiceSpeed":
+      setVoiceSpeed(payload.value);
+      break;
+    case "setWakeWord":
+      setWakeWord(payload.value);
+      break;
+    case "setWakeSensitivity":
+      setWakeSensitivity(payload.value);
+      break;
+    case "setMusicPlayMode":
+      setMusicPlayMode(payload.value);
+      break;
+    case "setMusicVolumeNormalization":
+      setMusicVolumeNormalization(payload.value);
+      break;
+    case "smtcAction":
+      if (payload.action) {
+        void controlSystemMediaPlayback(payload.action, { operationId });
+      }
+      break;
+    default:
+      setRuntimeStatus(`未知设置命令：${command}`);
+      commandHandled = false;
+      break;
+  }
+
+  if (operationId && commandHandled && lastSettingsCommandResult?.operationId !== operationId) {
+    lastSettingsCommandResult = {
+      command,
+      ok: true,
+      status: "completed",
+      operationId,
+      at: Date.now()
+    };
+  } else if (operationId && !commandHandled) {
+    lastSettingsCommandResult = {
+      command,
+      ok: false,
+      status: "not-supported",
+      reason: "unknown_settings_command",
+      operationId,
+      at: Date.now()
+    };
+  }
+  scheduleSettingsSnapshot(operationId ? 0 : 40);
+}
+
+function reportSettingsCommandFailure(payload, error) {
+  const message = formatError(error);
+  lastSettingsCommandResult = {
+    command: String(payload?.command || "").trim(),
+    ok: false,
+    status: "failed",
+    reason: message,
+    operationId: String(payload?.operationId || "").trim(),
+    boundBotId: state.boundBotId,
+    at: Date.now()
+  };
+  setStatus(`设置命令失败：${message}`);
+  scheduleSettingsSnapshot(0);
+}
+
+function applyCharacterChrome() {
+  const appName = getProfileIdentityText("appName", APP_DISPLAY_NAME);
+  const name = getProfileIdentityText("name", CHARACTER_NAME);
+  document.title = appName;
+  if (els.menuTitle) els.menuTitle.textContent = appName;
+  if (els.chatInput) els.chatInput.placeholder = getActiveCharacterText("inputPlaceholder");
+  if (els.hitbox) els.hitbox.setAttribute("aria-label", name);
+  visualRenderer.setCharacterLabel(name);
+  if (els.close) els.close.title = `关闭 ${appName}`;
+  schedulePanelStateSync(80);
+}
+
+function scheduleSettingsSnapshot(delay = 40) {
+  if (!isTauriRuntime) return;
+  window.clearTimeout(settingsSnapshotTimer);
+  settingsSnapshotTimer = window.setTimeout(() => {
+    void broadcastSettingsSnapshot();
+  }, delay);
+}
+
+function scheduleMusicSnapshot(delay = 420) {
+  if (!isTauriRuntime || musicSnapshotTimer) return;
+  musicSnapshotTimer = window.setTimeout(() => {
+    musicSnapshotTimer = 0;
+    void broadcastSettingsSnapshot();
+  }, delay);
+}
+
+async function broadcastSettingsSnapshot() {
+  if (!isTauriRuntime) return;
+  const payload = buildSettingsSnapshot();
+  await Promise.allSettled([
+    emitTo("settings", SETTINGS_SNAPSHOT_EVENT, payload),
+    emitTo("workshop", SETTINGS_SNAPSHOT_EVENT, payload),
+    emitTo("workspace", SETTINGS_SNAPSHOT_EVENT, payload),
+    emitTo("shop", SETTINGS_SNAPSHOT_EVENT, payload)
+  ]);
+  try {
+    await emit(SETTINGS_SNAPSHOT_EVENT, payload);
+  } catch {
+    // The settings window may not be open yet.
+  }
+}
+
+function buildSettingsSnapshot() {
+  renderPendingAttachments();
+  const activeOutfit = getActiveOutfit();
+  const emotions = getActiveEmotions();
+  const issues = buildResourceIssues(activeOutfit, emotions);
+  return {
+    character: buildCharacterSnapshot(),
+    settingsCommandResult: lastSettingsCommandResult ? { ...lastSettingsCommandResult } : null,
+    state: {
+      instanceId: state.instanceId,
+      hostId: state.hostId,
+      boundBotId: state.boundBotId,
+      scale: state.scale,
+      opacity: state.opacity,
+      skipTaskbar: state.skipTaskbar,
+      alwaysOnTop: state.alwaysOnTop,
+      backendUrl: state.backendUrl,
+      profileUserId: state.profileUserId,
+      characterPackId: state.characterPackId,
+      characterRuntimeKey: getCharacterRuntimeKey(state.characterPackId),
+      characters: buildCharacterRuntimeSnapshot(),
+      care: isCareRuntimeActive() ? normalizeCareState(state.care, getProfileCareConfig()) : null,
+      sessionId: state.sessionId,
+      outfit: state.outfit,
+      currentEmotion: state.currentEmotion,
+      restoreLatestOnStartup: state.restoreLatestOnStartup,
+      voiceEnabled: state.voiceEnabled,
+      voiceInputEnabled: state.voiceInputEnabled,
+      voiceVolume: state.voiceVolume,
+      screenVisionEnabled: state.screenVisionEnabled,
+      ...normalizeScreenObservationSettings(state),
+      proactiveWakeEnabled: state.proactiveWakeEnabled,
+      proactiveWakeIntervalSec: state.proactiveWakeIntervalSec,
+      hitTestEnabled: state.hitTestEnabled,
+      hitboxOverlay: state.hitboxOverlay,
+      voiceSpeed: state.voiceSpeed,
+      wakeWord: state.wakeWord,
+      wakeSensitivity: state.wakeSensitivity,
+      musicPlayMode: state.musicPlayMode,
+      musicVolumeNormalization: state.musicVolumeNormalization
+    },
+    resource: {
+      health: resourceState.health,
+      healthMessage: resourceState.healthMessage,
+      healthEndpoint: resourceState.healthEndpoint,
+      contractVersion: resourceState.contractVersion,
+      contractSource: resourceState.contractSource,
+      capabilities: Array.isArray(resourceState.capabilities) ? [...resourceState.capabilities] : [],
+      endpoints: { ...(resourceState.endpoints || {}) },
+      tts: { ...(resourceState.tts || {}) },
+      asr: { ...(resourceState.asr || {}) },
+      features: {
+        care: { ...getCareFeatureStatus() }
+      },
+      source: resourceState.source,
+      activeOutfit: activeOutfit.id || getProfileDefaultOutfit(),
+      activeOutfitName: activeOutfit.name || activeOutfit.id || getProfileDefaultOutfit(),
+      requestedOutfit: state.outfit || getProfileDefaultOutfit(),
+      defaultOutfit: getManifestDefaultOutfit(resourceState.manifest),
+      defaultEmotion: getManifestDefaultEmotion(resourceState.manifest),
+      emotionCount: emotions.length,
+      outfits: getAvailableOutfits().map(serializeOutfit).filter((item) => item.id),
+      emotions: emotions.map(serializeEmotion).filter((item) => item.id),
+      missingRequired: issues.missingRequired,
+      missingRecommended: issues.missingRecommended,
+      loadedAt: resourceState.loadedAt,
+      sessionShort: shortId(state.sessionId),
+      retrying: Boolean(backendRetryTimer)
+    },
+    runtimeStatus: els.status.textContent || "",
+    pendingAttachments: pendingAttachments.list(),
+    attachmentDraftToken: pendingAttachments.token(),
+    attachmentUploadCount: pendingAttachments.importing(),
+    runtimeMode,
+    active: {
+      sending,
+      speaking:
+        hasLocalTtsPlayback() ||
+        Boolean(realtimeVoiceTurn?.playbackActive) ||
+        hasRealtimeVoiceCallPlayback(),
+      voiceInput: voiceInputState,
+      musicPlaying,
+      musicPaused,
+      screenVision: screenVisionStatus,
+      screenVisionError,
+      screenVisionFrameBufferSize: screenObservation.snapshot(screenObservationScope(), state).length,
+      screenVisionBufferRevision: screenObservation.revision,
+      proactiveWake: state.proactiveWakeEnabled ? "enabled" : "off",
+      proactiveWakeRunning,
+      proactivePreparation: proactivePreparation.status,
+      proactivePreparationError: proactivePreparation.error,
+      proactiveWakeLastAt,
+      bubbleVisible: els.bubble.classList.contains("visible"),
+      bubbleKind,
+      replyDisplayActive
+    },
+    tts: {
+      active: ttsActive,
+      queueLength: ttsQueue.length
+    },
+    realtimeVoice: {
+      active:
+        Boolean(realtimeVoiceTurn?.responseActive) ||
+        Boolean(realtimeVoiceCall?.active),
+      callActive: Boolean(realtimeVoiceCall?.active),
+      callTurnCount: realtimeVoiceCall?.turns?.size || 0,
+      ready:
+        Boolean(realtimeVoiceTurn?.ready) ||
+        Boolean(realtimeVoiceCall?.inputTurn?.ready),
+      committed:
+        Boolean(realtimeVoiceTurn?.committed) ||
+        hasRealtimeVoiceCallCommittedTurn(),
+      playbackActive:
+        Boolean(realtimeVoiceTurn?.playbackActive) ||
+        hasRealtimeVoiceCallPlayback(),
+      fallbackPending:
+        Boolean(realtimeVoiceTurn?.failure && !realtimeVoiceTurn?.committed) ||
+        hasRealtimeVoiceCallFallbackPending()
+    },
+    visual: visualRenderer.getStatus(),
+    music: buildMusicSnapshot(),
+    currentExpression: buildCurrentExpressionSnapshot(),
+    webglEnabled: els.stage.classList.contains("show-webgl")
+  };
+}
+
+function buildCurrentExpressionSnapshot() {
+  const entry = resolveEmotionEntry(state.currentEmotion);
+  if (!entry) {
+    return {
+      id: state.currentEmotion || "",
+      name: state.currentEmotion || "",
+      image: state.currentEmotion || "",
+      outfitId: state.outfit || "",
+      characterPackId: getCurrentCharacterPackId(),
+      updatedAt: Date.now()
+    };
+  }
+  return {
+    id: entry.id || state.currentEmotion || "",
+    name: entry.name || entry.id || state.currentEmotion || "",
+    image: entry.image || entry.url || entry.key || entry.id || "",
+    outfitId: state.outfit || "",
+    characterPackId: getCurrentCharacterPackId(),
+    updatedAt: Date.now()
+  };
+}
+
+function normalizeState(value) {
+  // Ignore retired automatic perception preferences when loading older state.
+  const {
+    screenVisionMode: _retiredMode, screenVisionIntervalSec: _retiredInterval,
+    desktopContextEnabled: _retiredDesktopContext, clipboardContextEnabled: _retiredClipboard,
+    ...incoming
+  } = value ?? {};
+  const scale = clamp(Number(incoming.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX);
+  const _legacySize = isLegacyWindowSize(incoming.width, incoming.height, scale);
+  const instanceId = String(incoming.instanceId || "").trim() || LOCAL_DEFAULT_INSTANCE_ID;
+  return {
+    ...DEFAULT_STATE,
+    ...incoming,
+    instanceId,
+    hostId: String(incoming.hostId || instanceId).trim() || instanceId,
+    boundBotId: String(incoming.boundBotId || instanceId).trim() || instanceId,
+    width: null,
+    height: null,
+    scale,
+    opacity: clamp(Number(incoming.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
+    skipTaskbar: Boolean(incoming.skipTaskbar ?? DEFAULT_STATE.skipTaskbar),
+    alwaysOnTop: Boolean(incoming.alwaysOnTop ?? DEFAULT_STATE.alwaysOnTop),
+    clickThrough: false,
+    backendUrl: normalizeBackendUrl(incoming.backendUrl),
+    profileUserId: PROFILE_USER_ID,
+    characterPackId: normalizeCharacterPackId(incoming.characterPackId),
+    characters: normalizeCharacterRuntimeStates(incoming.characters),
+    sessionId: String(incoming.sessionId || "").trim() || generateSessionId(),
+    outfit: String(incoming.outfit || "").trim(),
+    currentEmotion: String(incoming.currentEmotion || "").trim(),
+    restoreLatestOnStartup: Boolean(incoming.restoreLatestOnStartup ?? DEFAULT_STATE.restoreLatestOnStartup),
+    voiceEnabled: Boolean(incoming.voiceEnabled ?? DEFAULT_STATE.voiceEnabled),
+    voiceInputEnabled: Boolean(incoming.voiceInputEnabled ?? DEFAULT_STATE.voiceInputEnabled),
+    voiceVolume: clamp(Number(incoming.voiceVolume ?? DEFAULT_STATE.voiceVolume), 0, 1),
+    screenVisionEnabled: Boolean(incoming.screenVisionEnabled ?? DEFAULT_STATE.screenVisionEnabled),
+    ...normalizeScreenObservationSettings(incoming),
+    proactiveWakeEnabled: Boolean(incoming.proactiveWakeEnabled ?? DEFAULT_STATE.proactiveWakeEnabled),
+    proactiveWakeIntervalSec: normalizeProactiveWakeIntervalSec(
+      incoming.proactiveWakeIntervalSec ?? DEFAULT_STATE.proactiveWakeIntervalSec
+    ),
+    hitTestEnabled: Boolean(incoming.hitTestEnabled ?? DEFAULT_STATE.hitTestEnabled),
+    hitboxOverlay: Boolean(incoming.hitboxOverlay ?? DEFAULT_STATE.hitboxOverlay),
+    care: cloneCareState(incoming.care),
+    voiceSpeed: String(incoming.voiceSpeed ?? DEFAULT_STATE.voiceSpeed).trim() || DEFAULT_STATE.voiceSpeed,
+    wakeWord: String(incoming.wakeWord ?? DEFAULT_STATE.wakeWord).trim() || DEFAULT_STATE.wakeWord,
+    wakeSensitivity: String(incoming.wakeSensitivity ?? DEFAULT_STATE.wakeSensitivity).trim() || DEFAULT_STATE.wakeSensitivity,
+    musicPlayMode: normalizeMusicPlayMode(incoming.musicPlayMode),
+    musicVolumeNormalization: normalizeBooleanSetting(
+      incoming.musicVolumeNormalization,
+      DEFAULT_STATE.musicVolumeNormalization
+    )
+  };
+}
+
+function normalizeCharacterRuntimeStates(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const result = {};
+  for (const [key, runtime] of Object.entries(source)) {
+    const normalized = normalizeCharacterRuntimeState(runtime);
+    if (normalized) {
+      result[String(key)] = normalized;
+    }
+  }
+  return result;
+}
+
+function normalizeCharacterRuntimeState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const characterPackId = normalizeCharacterPackId(value.characterPackId || value.packId || value.character_pack_id);
+  return {
+    version: Math.max(1, Math.round(Number(value.version || 1))),
+    characterPackId,
+    sessionId: String(value.sessionId || value.session_id || "").trim(),
+    outfit: String(value.outfit || value.outfit_id || "").trim(),
+    currentEmotion: String(value.currentEmotion || value.current_emotion || "").trim(),
+    x: normalizeNullableInteger(value.x),
+    y: normalizeNullableInteger(value.y),
+    width: null,
+    height: null,
+    scale: clamp(Number(value.scale ?? DEFAULT_STATE.scale), SCALE_MIN, SCALE_MAX),
+    opacity: clamp(Number(value.opacity ?? DEFAULT_STATE.opacity), 0.55, 1),
+    care: cloneCareState(value.care),
+    updatedAt: Math.max(0, Math.round(Number(value.updatedAt || value.updated_at || 0)))
+  };
+}
+
+function normalizeNullableInteger(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number) : null;
+}
+
+function normalizePositiveInteger(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return Math.round(number);
+}
+
+function normalizeProactiveWakeIntervalSec(value) {
+  const number = Number(value);
+  return Math.round(clamp(Number.isFinite(number) && number > 0 ? number : PROACTIVE_WAKE_DEFAULT_SEC, PROACTIVE_WAKE_MIN_SEC, PROACTIVE_WAKE_MAX_SEC));
+}
+
+function normalizeMusicPlayMode(value) {
+  const mode = String(value || "").trim();
+  return MUSIC_PLAY_MODES.includes(mode) ? mode : DEFAULT_STATE.musicPlayMode;
+}
+
+function normalizeBooleanSetting(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const text = String(value ?? "").trim().toLowerCase();
+  if (text === "true" || text === "1") return true;
+  if (text === "false" || text === "0") return false;
+  return Boolean(fallback);
+}
+
+function isLegacyWindowSize(width, height, scale) {
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return false;
+  return Math.abs(w - 360 * scale) <= 3 && Math.abs(h - 620 * scale) <= 3;
+}
+
+function applyVisualState() {
+  document.documentElement.style.setProperty("--pet-scale", String(state.scale));
+  document.documentElement.style.setProperty("--pet-opacity", String(state.opacity));
+  els.scale.value = String(state.scale);
+  els.opacity.value = String(state.opacity);
+  els.scaleOutput.value = `${Math.round(state.scale * 100)}%`;
+  els.opacityOutput.value = `${Math.round(state.opacity * 100)}%`;
+  if (els.voicePlayer) els.voicePlayer.volume = state.voiceVolume;
+  els.backendUrl.value = state.backendUrl;
+  els.outfit.value = state.outfit || getProfileDefaultOutfit();
+  els.stage.classList.toggle("show-hitbox-overlay", state.hitboxOverlay);
+  applyCharacterLayout();
+  updateVoiceRecordButton();
+  updateMenuLabels();
+  scheduleNativeHitTestSync();
+  autoResizeChatInput();
+}
+
+function applyCharacterLayout() {
+  const profile = getActiveCharacterProfile();
+  const layouts = profile?.layout?.outfits && typeof profile.layout.outfits === "object"
+    ? profile.layout.outfits
+    : {};
+  const outfit = String(state.outfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
+  const outfitLayout = layouts[outfit] || layouts[getProfileDefaultOutfit()];
+  if (!outfitLayout) {
+    visualRenderer.setLayout(null);
+    lastAppliedLayoutSignature = "";
+    return;
+  }
+
+  visualRenderer.setLayout(outfitLayout);
+
+  /* apply calibrated window size — only when dimensions change */
+  const winW = Number(outfitLayout.window?.width) || 0;
+  const winH = Number(outfitLayout.window?.height) || 0;
+  const sig = `${getCurrentCharacterPackId()}::${outfit}::${winW}x${winH}`;
+  if (winW >= 200 && winH >= 200 && sig !== lastAppliedLayoutSignature) {
+    lastAppliedLayoutSignature = sig;
+    if (isTauriRuntime) {
+      void invoke("resize_pet_window", { width: winW, height: winH }).catch((error) => {
+        setStatus(`窗口校准尺寸应用失败：${formatError(error)}`, { durationMs: 2400 });
+      });
+    }
+  }
+}
+
+/* Awaited resize to the active character's layout window dimensions.
+   Must be called AFTER apply_window_state to guarantee layout size wins the race. */
+const LAYOUT_RESIZE_MAX_WIDTH = 1200;
+const LAYOUT_RESIZE_MAX_HEIGHT = 1600;
+
+function scheduleNativeWindowStateApply({ forceHitTest = false } = {}) {
+  if (!isTauriRuntime) return;
+  window.setTimeout(() => {
+    void applyNativeWindowState({ forceHitTest }).catch((error) => {
+      setStatus(`窗口状态应用失败：${formatError(error)}`, { durationMs: 2400 });
+    });
+  }, 0);
+}
+
+async function applyNativeWindowState({ forceHitTest = false } = {}) {
+  const geometry = await invoke("apply_window_state", { state });
+  if (geometry) applyWindowGeometryToState(geometry);
+  await applyCharacterLayoutResize();
+  scheduleNativeHitTestSync({ force: forceHitTest });
+}
+
+async function applyCharacterLayoutResize() {
+  if (!isTauriRuntime) return;
+  const profile = getActiveCharacterProfile();
+  const layouts = profile?.layout?.outfits && typeof profile.layout.outfits === "object"
+    ? profile.layout.outfits : {};
+  const outfit = String(state.outfit || getProfileDefaultOutfit()).trim() || getProfileDefaultOutfit();
+  const outfitLayout = layouts[outfit] || layouts[getProfileDefaultOutfit()];
+  if (!outfitLayout) return;
+  let winW = Number(outfitLayout.window?.width) || 0;
+  let winH = Number(outfitLayout.window?.height) || 0;
+  if (winW >= 200 && winH >= 200) {
+    winW = Math.min(winW, LAYOUT_RESIZE_MAX_WIDTH);
+    winH = Math.min(winH, LAYOUT_RESIZE_MAX_HEIGHT);
+    await invoke("resize_pet_window", { width: winW, height: winH }).catch((error) => {
+      setStatus(`窗口校准尺寸应用失败：${formatError(error)}`, { durationMs: 2400 });
+    });
+    lastAppliedLayoutSignature = `${getCurrentCharacterPackId()}::${outfit}::${winW}x${winH}`;
+  }
+}
+
+function updateMenuLabels() {
+  els.taskbar.textContent = state.skipTaskbar ? "显示任务栏" : "隐藏任务栏";
+  els.alwaysOnTop.textContent = state.alwaysOnTop ? "取消置顶" : "保持置顶";
+  els.webgl.textContent = els.stage.classList.contains("show-webgl") ? "隐藏 WebGL" : "WebGL";
+  els.hitTestToggle.textContent = state.hitTestEnabled ? "Hit-Test: on" : "Hit-Test: off";
+  els.hitboxOverlayToggle.textContent = state.hitboxOverlay ? "Hitbox: on" : "Hitbox: off";
+  if (els.menuSummary) {
+    const outfit = getActiveOutfit();
+    const source = resourceSourceLabel(resourceState.source);
+    els.menuSummary.textContent = `${outfit.id || getProfileDefaultOutfit()} · ${source} · ${state.currentEmotion || getProfileDefaultEmotion()}`;
+  }
+  renderPresetChips();
+  renderResourceDetails();
+  renderEmotionGrid();
+  repositionOpenMenu();
+  scheduleSettingsSnapshot();
+}
+
+function updateVisualScale(value, { commitNow = false } = {}) {
+  state.scale = clamp(Number(value), SCALE_MIN, SCALE_MAX);
+  applyVisualState();
+  if (commitNow) {
+    window.clearTimeout(scaleTimer);
+    void commitVisualScale();
+  } else {
+    scheduleScaleCommit();
+  }
+}
+
+function updateVisualOpacity(value, { saveNow = false } = {}) {
+  state.opacity = clamp(Number(value), 0.55, 1);
+  applyVisualState();
+  scheduleSave(saveNow ? 0 : undefined);
+}
+
+function setVoiceEnabled(enabled) {
+  state.voiceEnabled = Boolean(enabled);
+  if (!state.voiceEnabled) {
+    if (voiceInputState === "opening") void cancelVoiceRecording();
+    void stopRealtimeVoiceCall({
+      notice: false,
+      reason: "voice_output_disabled"
+    });
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, "voice_output_disabled");
+    cancelTtsPrewarm();
+    stopTts();
+    if (streamedReplySegments.length && isTurnActive(streamedReplyTurnToken)) {
+      showNextStreamedReplySegment(streamedReplyTurnToken);
+    }
+  } else {
+    scheduleTtsPrewarm({ force: true, delayMs: 200 });
+  }
+  scheduleSave(0);
+  setRuntimeStatus(state.voiceEnabled ? "语音播放已开启" : "语音播放已关闭", { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setVoiceInputEnabled(enabled) {
+  state.voiceInputEnabled = Boolean(enabled);
+  if (!state.voiceInputEnabled) {
+    void cancelVoiceRecording();
+  }
+  scheduleSave(0);
+  setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+  setRuntimeStatus(state.voiceInputEnabled ? "语音输入已开启" : "语音输入已关闭", { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setVoiceVolume(value) {
+  state.voiceVolume = clamp(Number(value), 0, 1);
+  if (els.voicePlayer) els.voicePlayer.volume = state.voiceVolume;
+  if (els.musicPlayer) els.musicPlayer.volume = state.voiceVolume;
+  scheduleSave(0);
+  scheduleSettingsSnapshot();
+}
+
+function setVoiceSpeed(value) {
+  state.voiceSpeed = String(value ?? DEFAULT_STATE.voiceSpeed).trim() || DEFAULT_STATE.voiceSpeed;
+  scheduleSave(0);
+  setRuntimeStatus(`语速已设为 ${state.voiceSpeed}`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setWakeWord(value) {
+  state.wakeWord = String(value ?? DEFAULT_STATE.wakeWord).trim() || DEFAULT_STATE.wakeWord;
+  scheduleSave(0);
+  setRuntimeStatus(`唤醒词已设为 ${state.wakeWord}`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setWakeSensitivity(value) {
+  state.wakeSensitivity = String(value ?? DEFAULT_STATE.wakeSensitivity).trim() || DEFAULT_STATE.wakeSensitivity;
+  scheduleSave(0);
+  setRuntimeStatus(`唤醒灵敏度已设为 ${state.wakeSensitivity}`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setMusicPlayMode(value) {
+  state.musicPlayMode = normalizeMusicPlayMode(value);
+  scheduleSave(0);
+  setRuntimeStatus(`播放模式：${state.musicPlayMode}`, { mode: musicPlaying ? "music" : "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setMusicVolumeNormalization(value) {
+  state.musicVolumeNormalization = normalizeBooleanSetting(value, DEFAULT_STATE.musicVolumeNormalization);
+  scheduleSave(0);
+  setRuntimeStatus(state.musicVolumeNormalization ? "音量均衡已开启" : "音量均衡已关闭", {
+    mode: musicPlaying ? "music" : "idle"
+  });
+  scheduleSettingsSnapshot();
+}
+
+async function setScreenVisionEnabled(enabled) {
+  state.screenVisionEnabled = Boolean(enabled);
+  screenVisionError = "";
+  if (state.screenVisionEnabled) {
+    const revision = screenVisionCaptureRevision;
+    screenVisionStatus = "starting";
+    setRuntimeStatus("正在请求屏幕权限", { mode: "idle" });
+    const started = await ensureScreenVisionCapture();
+    if (revision !== screenVisionCaptureRevision || !state.screenVisionEnabled) return;
+    if (started) {
+      scheduleScreenVisionCapture({ immediate: true });
+      setRuntimeStatus("看屏幕已开启 · 连续画面直接交给视觉模型", { mode: "idle" });
+    } else {
+      state.screenVisionEnabled = false;
+      clearScreenVisionWorkspace({ quiet: true });
+      setRuntimeStatus(`看屏幕开启失败：${screenVisionError || "未获得屏幕权限"}`, { mode: "error" });
+    }
+  } else {
+    if (proactiveWakeRunning) interruptReply({ announce: false });
+    stopScreenVisionCapture();
+    setRuntimeStatus("看屏幕已关闭", { mode: "idle" });
+  }
+  scheduleSave(0);
+  scheduleSettingsSnapshot();
+}
+
+function setProactiveWakeEnabled(enabled) {
+  state.proactiveWakeEnabled = Boolean(enabled);
+  if (state.proactiveWakeEnabled) {
+    void prepareProactiveObservation();
+    proactiveWakeNextAllowedAt = Date.now() + getProactiveWakeIntervalMs();
+    scheduleProactiveWake({ immediate: false });
+    setRuntimeStatus("适度主动已开启 · 模型可选择安静", { mode: "idle" });
+  } else {
+    window.clearTimeout(proactiveWakeTimer);
+    proactiveWakeTimer = 0;
+    proactiveWakeNextAllowedAt = 0;
+    proactivePreparation.clear();
+    if (proactiveWakeRunning) interruptReply({ announce: false });
+    proactiveWakeRunning = false;
+    setRuntimeStatus("主动搭话已关闭", { mode: "idle" });
+  }
+  scheduleSave(0);
+  scheduleSettingsSnapshot();
+}
+
+function setProactiveWakeIntervalSec(value) {
+  state.proactiveWakeIntervalSec = normalizeProactiveWakeIntervalSec(value);
+  proactiveWakeNextAllowedAt = Date.now() + getProactiveWakeIntervalMs();
+  scheduleSave(0);
+  scheduleProactiveWake({ immediate: false });
+  setRuntimeStatus(`主动观察评估间隔：${state.proactiveWakeIntervalSec} 秒（不强制开口）`, { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setScreenObservationSetting(key, value) {
+  const normalized = normalizeScreenObservationSettings({ ...state, [key]: value });
+  const issue = observationConfigurationIssue(normalized);
+  if (issue) throw new Error(issue);
+  Object.assign(state, normalized);
+  screenObservation.clear();
+  screenObservationLastSentAt = 0;
+  if (state.screenVisionEnabled) scheduleScreenVisionCapture({ immediate: true });
+  scheduleSave(0);
+  setRuntimeStatus("屏幕观察配置已保存，下次采样生效", { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function setRestoreLatestOnStartup(enabled) {
+  state.restoreLatestOnStartup = Boolean(enabled);
+  scheduleSave(0);
+  setRuntimeStatus(state.restoreLatestOnStartup ? "启动时会恢复上一轮" : "启动时不恢复上一轮", {
+    mode: "idle"
+  });
+  scheduleSettingsSnapshot();
+}
+
+function renderPresetChips() {
+  renderValueChips(els.scalePresets, SCALE_PRESETS, "scale", state.scale);
+  renderValueChips(els.opacityPresets, OPACITY_PRESETS, "opacity", state.opacity);
+}
+
+function renderValueChips(container, values, dataKey, activeValue) {
+  if (!container) return;
+  const signature = `${dataKey}:${values.join(",")}:${activeValue}`;
+  if (container.dataset.signature === signature) return;
+  container.dataset.signature = signature;
+  container.replaceChildren(
+    ...values.map((value) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset[dataKey] = String(value);
+      button.textContent = `${Math.round(value * 100)}%`;
+      button.classList.toggle("active", Math.abs(Number(activeValue) - value) < 0.001);
+      return button;
+    })
+  );
+}
+
+function renderResourceDetails() {
+  if (!els.resourceDetails) return;
+  const activeOutfit = getActiveOutfit();
+  const outfits = getManifestOutfits();
+  const count = getActiveEmotions().length;
+  const source = resourceSourceLabel(resourceState.source);
+  const requested =
+    state.outfit && activeOutfit.id && state.outfit !== activeOutfit.id ? ` · 请求 ${state.outfit}` : "";
+  const outfitHint = outfits.length > 1 ? ` · 可用服装 ${outfits.length}` : "";
+  const sessionHint = state.sessionId ? ` · 会话 ${shortId(state.sessionId)}` : "";
+  els.resourceDetails.textContent = `${source} · ${activeOutfit.id || getProfileDefaultOutfit()} · ${count} 表情${requested}${outfitHint}${sessionHint}`;
+}
+
+function renderEmotionGrid() {
+  if (!els.emotionGrid) return;
+  const emotions = getActiveEmotions();
+  const signature = emotions
+    .map((emotion) => `${emotion.id}:${emotion.name || ""}`)
+    .join("|");
+  const active = state.currentEmotion || getProfileDefaultEmotion();
+  const gridSignature = `${signature}::${active}`;
+  if (els.emotionGrid.dataset.signature === gridSignature) return;
+  els.emotionGrid.dataset.signature = gridSignature;
+
+  els.emotionGrid.replaceChildren(
+    ...emotions.map((emotion) => {
+      const id = String(emotion.id || emotion.name || "").trim();
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.emotion = id;
+      button.textContent = String(emotion.name || id);
+      button.title = id;
+      button.classList.toggle("active", id === active);
+      return button;
+    })
+  );
+}
+
+function showChatInput() {
+  cancelLocalClick();
+  closeMenu();
+  els.chatForm.hidden = false;
+  renderPendingAttachments();
+  autoResizeChatInput();
+  scheduleChatInputAutoHide();
+  scheduleNativeHitTestSync({ force: true });
+  window.setTimeout(() => {
+    els.chatInput.focus();
+    els.chatInput.select();
+  }, 0);
+}
+
+function submitChatInput() {
+  const text = els.chatInput.value;
+  hideChatInput({ clear: true });
+  void sendMessage(text);
+}
+
+function hideChatInput({ clear = false } = {}) {
+  if (els.chatForm.hidden && !clear) return;
+  clearChatInputAutoHide();
+  els.chatForm.hidden = true;
+  if (clear) els.chatInput.value = "";
+  resetInputHistoryCursor();
+  autoResizeChatInput();
+  els.chatInput.blur();
+  scheduleNativeHitTestSync({ force: true });
+}
+
+function scheduleChatInputAutoHide(delayMs = CHAT_INPUT_IDLE_HIDE_MS) {
+  window.clearTimeout(chatInputIdleTimer);
+  if (els.chatForm.hidden) return;
+  chatInputIdleTimer = window.setTimeout(() => {
+    chatInputIdleTimer = 0;
+    if (els.chatForm.hidden) return;
+    if (sending || ["opening", "recording", "processing"].includes(voiceInputState)) {
+      scheduleChatInputAutoHide();
+      return;
+    }
+    if (els.chatInput.value.trim()) return;
+    if (els.chatForm.matches?.(":hover")) {
+      scheduleChatInputAutoHide();
+      return;
+    }
+    hideChatInput();
+  }, delayMs);
+}
+
+function clearChatInputAutoHide() {
+  window.clearTimeout(chatInputIdleTimer);
+  chatInputIdleTimer = 0;
+}
+
+function setChatInputText(text, { append = false } = {}) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  const current = els.chatInput.value.trim();
+  els.chatInput.value = append && current ? `${current} ${value}` : value;
+  showChatInput();
+  autoResizeChatInput();
+  scheduleChatInputAutoHide();
+}
+
+function shouldNavigateInputHistory(event, direction) {
+  if (event.ctrlKey || event.altKey || event.metaKey || !inputHistory.length) return false;
+  const input = els.chatInput;
+  const value = input.value || "";
+  const start = Number(input.selectionStart ?? value.length);
+  const end = Number(input.selectionEnd ?? value.length);
+  if (start !== end) return false;
+  if (!value.includes("\n")) return true;
+  return direction === "up" ? start === 0 : end === value.length;
+}
+
+function navigateInputHistory(direction) {
+  if (!inputHistory.length) return;
+  if (inputHistoryIndex === -1) inputHistoryDraft = els.chatInput.value;
+
+  if (direction === "up") {
+    inputHistoryIndex =
+      inputHistoryIndex === -1 ? inputHistory.length - 1 : Math.max(0, inputHistoryIndex - 1);
+  } else if (inputHistoryIndex >= inputHistory.length - 1) {
+    inputHistoryIndex = -1;
+  } else {
+    inputHistoryIndex += 1;
+  }
+
+  applyChatInputValue(inputHistoryIndex === -1 ? inputHistoryDraft : inputHistory[inputHistoryIndex]);
+}
+
+function applyChatInputValue(value) {
+  applyingInputHistory = true;
+  els.chatInput.value = String(value || "");
+  autoResizeChatInput();
+  const end = els.chatInput.value.length;
+  els.chatInput.setSelectionRange(end, end);
+  applyingInputHistory = false;
+}
+
+function rememberInputHistory(text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  inputHistory = inputHistory.filter((item) => item !== value);
+  inputHistory.push(value);
+  if (inputHistory.length > INPUT_HISTORY_LIMIT) {
+    inputHistory = inputHistory.slice(-INPUT_HISTORY_LIMIT);
+  }
+  resetInputHistoryCursor();
+}
+
+function resetInputHistoryCursor() {
+  inputHistoryIndex = -1;
+  inputHistoryDraft = "";
+}
+
+function restoreFailedInput(text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  showChatInput();
+  els.chatInput.value = value;
+  autoResizeChatInput();
+  window.setTimeout(() => {
+    els.chatInput.focus();
+    const end = els.chatInput.value.length;
+    els.chatInput.setSelectionRange(end, end);
+  }, 0);
+}
+
+function autoResizeChatInput() {
+  const input = els.chatInput;
+  if (!input) return;
+  const minHeight = readCssPx("--chat-input-min-height", 42);
+  const maxHeight = readCssPx("--chat-input-max-height", 96);
+  input.style.height = `${minHeight}px`;
+  const nextHeight = Math.min(input.scrollHeight, maxHeight);
+  input.style.height = `${Math.max(minHeight, nextHeight)}px`;
+}
+
+function isVoiceShortcut(event) {
+  return event.ctrlKey && event.shiftKey && !event.altKey && event.code === "Space";
+}
+
+async function toggleVoiceRecording() {
+  if (voiceInputState === "opening") {
+    await cancelVoiceRecording({ notice: true });
+    return;
+  }
+  if (realtimeVoiceCall) {
+    await stopRealtimeVoiceCall({ notice: true, reason: "user_ended_call" });
+    return;
+  }
+  if (canUseRealtimeVoice()) {
+    await startRealtimeVoiceCall();
+    return;
+  }
+  if (voiceInputState === "recording") {
+    await stopVoiceRecording();
+  } else {
+    await startVoiceRecording();
+  }
+}
+
+async function startVoiceRecording() {
+  if (sceneOwnsPlayback()) { showError("请在小屋中继续对话。"); return; }
+  if (["opening", "recording", "processing"].includes(voiceInputState)) return;
+  if (!state.voiceInputEnabled) {
+    showError("语音输入已关闭");
+    return;
+  }
+  let tookOverReply = false;
+  if (isReplyActive()) {
+    tookOverReply = interruptReply({
+      announce: false,
+      reason: "user_started_voice_input"
+    });
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    showError("当前 WebView 不支持录音");
+    return;
+  }
+  const token = ++voiceInputToken;
+  const controller = new AbortController();
+  voiceCaptureController = controller;
+  setVoiceInputState("opening");
+  showBubbleText("正在打开麦克风……再次点麦克风可取消。", { transient: false, kind: "status" });
+  setRuntimeStatus("正在打开麦克风", { mode: "listening" });
+  try {
+    const stream = await captureMicrophone({
+      getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
+      signal: controller.signal
+    });
+    if (token !== voiceInputToken) {
+      for (const track of stream?.getTracks?.() || []) track.stop();
+      return;
+    }
+    voiceStream = stream;
+    voiceChunks = [];
+    voiceMimeType = selectVoiceMimeType();
+    const options = voiceMimeType ? { mimeType: voiceMimeType } : undefined;
+    try {
+      voiceRecorder = new MediaRecorder(voiceStream, options);
+    } catch {
+      voiceRecorder = new MediaRecorder(voiceStream);
+      voiceMimeType = voiceRecorder.mimeType || voiceMimeType;
+    }
+    voiceRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size > 0) voiceChunks.push(event.data);
+    });
+    voiceStartedAt = Date.now();
+    voiceRecorder.start();
+    setVoiceInputState("recording");
+    setPetEmotion("listening", { persist: false });
+    setPetMotion("thinking");
+    showBubbleText(
+      tookOverReply ? "上一轮已停下，正在听你说……" : "正在听……",
+      { transient: false }
+    );
+    setRuntimeStatus(tookOverReply ? "已接管上一轮，语音录制中" : "语音录制中", {
+      mode: "listening"
+    });
+    if (canUseRealtimeVoice()) {
+      startRealtimeVoiceTurn(voiceStream);
+    }
+  } catch (error) {
+    if (token !== voiceInputToken) return;
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, "capture_start_failed");
+    cleanupVoiceRecorder();
+    setVoiceInputState("idle");
+    showError(describeVoiceError(error));
+  } finally {
+    if (voiceCaptureController === controller) voiceCaptureController = null;
+  }
+}
+
+async function stopVoiceRecording() {
+  if (voiceInputState !== "recording" || !voiceRecorder) return Promise.resolve();
+
+  const recorder = voiceRecorder;
+  const turn = realtimeVoiceTurn;
+  const durationMs = Date.now() - voiceStartedAt;
+  setVoiceInputState("processing");
+
+  if (durationMs < MIN_RECORDING_MS) {
+    closeRealtimeVoiceTurn(turn, "recording_too_short");
+    try {
+      await stopVoiceRecorderToBlob(recorder);
+    } catch {
+      // The short-recording message below is the actionable result.
+    }
+    cleanupVoiceRecorder();
+    setVoiceInputState("idle");
+    showError("录音太短啦，我没听清。");
+    return;
+  }
+
+  const realtimeFinish = turn?.session
+    ? turn.session
+        .finishInput()
+        .then(() => true)
+        .catch((error) => {
+          markRealtimeVoiceFailure(turn, {
+            reason: "voice_realtime_finalize_failed",
+            message: friendlyErrorMessage(formatError(error)),
+            terminal: true,
+            committed: turn.committed
+          });
+          return false;
+        })
+    : Promise.resolve(false);
+
+  let blob;
+  let realtimeAccepted = false;
+  try {
+    [realtimeAccepted, blob] = await Promise.all([
+      realtimeFinish,
+      stopVoiceRecorderToBlob(recorder)
+    ]);
+  } catch (error) {
+    closeRealtimeVoiceTurn(turn, "recording_stop_failed");
+    cleanupVoiceRecorder();
+    setVoiceInputState("idle");
+    showError(describeVoiceError(error));
+    return;
+  }
+  cleanupVoiceRecorder();
+
+  if (!turn) {
+    if (blob.size < 512) {
+      setVoiceInputState("idle");
+      showError("录音太短啦，我没听清。");
+      return;
+    }
+    await transcribeVoiceBlob(blob, { autoSubmit: true });
+    return;
+  }
+  if (turn.closed || realtimeVoiceTurn !== turn) return;
+
+  turn.fallbackBlob = turn.committed ? null : blob;
+  if (realtimeAccepted && !turn.failure) {
+    turn.responseActive = true;
+    sending = true;
+    showThinking();
+    setRuntimeStatus("语音识别收尾中", { mode: "thinking" });
+    armRealtimeVoiceFinalWatchdog(turn);
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+    return;
+  }
+
+  await fallbackRealtimeVoiceToBatch(turn);
+}
+
+async function cancelVoiceRecording({ notice = false } = {}) {
+  voiceInputToken += 1;
+  voiceCaptureController?.abort();
+  voiceCaptureController = null;
+  if (realtimeVoiceCall) {
+    await stopRealtimeVoiceCall({
+      notice,
+      reason: notice ? "user_cancelled_call" : "voice_input_cancelled"
+    });
+    return;
+  }
+  if (asrController) {
+    asrController.abort();
+    asrController = null;
+  }
+  if (voiceRecorder && voiceRecorder.state !== "inactive") {
+    try {
+      voiceRecorder.stop();
+    } catch {
+      // Cancellation should stay quiet.
+    }
+  }
+  closeRealtimeVoiceTurn(realtimeVoiceTurn, "voice_input_cancelled");
+  cleanupVoiceRecorder();
+  setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+  if (notice) {
+    showBubbleText("语音输入已取消。", { transient: true, durationMs: 1600 });
+    setRuntimeStatus("语音输入已取消", { mode: "idle" });
+  }
+}
+
+function canUseRealtimeVoice() {
+  return Boolean(state.voiceEnabled && els.voicePlayer && supportsRealtimeVoiceCapture(window));
+}
+
+function createRealtimeVoiceCallTransport(call) {
+  let transport = null;
+  transport = new RealtimeVoiceCallSession({
+    websocketUrl: buildVoiceWebSocketUrl(
+      buildBackendEndpointUrl("voiceRealtime", "/voice/realtime", { t: Date.now() })
+    ),
+    callResources: call.resources,
+    workletModuleUrl: VOICE_PCM_WORKLET_URL,
+    getVolume: () => state.voiceVolume,
+    openPayload: {
+      profile_user_id: getProfileUserId(),
+      conversation_id: call.sessionId,
+      session_id: call.sessionId,
+      character_pack_id: getCurrentCharacterPackId(),
+      language: "zh",
+      disposition: "message"
+    },
+    callbacks: {
+      onTransportOpen: () => {
+        if (isActiveRealtimeVoiceCall(call) && call.transport === transport) {
+          setRuntimeStatus("语音通话中 · 连接识别服务", { mode: "listening" });
+        }
+      },
+      onReady: () => {
+        if (isActiveRealtimeVoiceCall(call) && call.transport === transport) {
+          call.hasBeenReady = true;
+          setRuntimeStatus("语音通话中 · 正在听", { mode: "listening" });
+        }
+      },
+      onFailure: (failure) => {
+        if (!isActiveRealtimeVoiceCall(call) || call.transport !== transport) return;
+        const message = String(failure?.message || "实时语音链路暂时不可用。");
+        if (!failure?.terminal) {
+          setRuntimeStatus(message, { mode: "error" });
+          updateActivityControls();
+          return;
+        }
+        if (!call.inputTurn) {
+          void (async () => {
+            await stopRealtimeVoiceCall({
+              notice: false,
+              reason: failure?.reason || "voice_call_transport_failed"
+            });
+            showError(message);
+          })();
+          return;
+        }
+        void markRealtimeVoiceCallFailure(call.inputTurn, {
+          reason: failure?.reason,
+          message,
+          terminal: true,
+          committed: Boolean(call.inputTurn?.committed),
+          retryable: Boolean(failure?.retryable)
+        });
+      },
+      onCallClosed: () => {
+        if (!isActiveRealtimeVoiceCall(call) || call.transport !== transport) return;
+        void (async () => {
+          await stopRealtimeVoiceCall({
+            notice: false,
+            reason: "voice_call_closed_by_server"
+          });
+          showError("实时语音服务结束了这次通话，请重新点击麦克风。");
+        })();
+      }
+    }
+  });
+  return transport;
+}
+
+async function startRealtimeVoiceCall() {
+  if (sceneOwnsPlayback()) { showError("声音正在小屋中播放，请先关闭小屋。"); return; }
+  if (realtimeVoiceCall || ["opening", "recording", "processing"].includes(voiceInputState)) return;
+  if (!state.voiceInputEnabled) {
+    showError("语音输入已关闭");
+    return;
+  }
+  if (!canUseRealtimeVoice()) {
+    showError("当前环境不支持实时语音通话");
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    showError("当前 WebView 不支持录音");
+    return;
+  }
+
+  const tookOverReply = isReplyActive()
+    ? interruptReply({
+        announce: false,
+        reason: "user_started_voice_call"
+      })
+    : false;
+  const token = ++voiceInputToken;
+  const controller = new AbortController();
+  voiceCaptureController = controller;
+  setVoiceInputState("opening");
+  showBubbleText("正在打开麦克风……再次点麦克风可取消。", { transient: false, kind: "status" });
+  setRuntimeStatus("正在打开麦克风", { mode: "thinking" });
+
+  let stream;
+  try {
+    stream = await captureMicrophone({
+      getUserMedia: (constraints) => navigator.mediaDevices.getUserMedia(constraints),
+      signal: controller.signal
+    });
+    if (token !== voiceInputToken) {
+      for (const track of stream?.getTracks?.() || []) track.stop();
+      return;
+    }
+    const sessionId = String(state.sessionId || "").trim() || generateSessionId();
+    if (!state.sessionId) {
+      state.sessionId = sessionId;
+      scheduleSave(0);
+    }
+    const resources = new RealtimeVoiceCallResources({
+      mediaStream: stream,
+      audioElement: els.voicePlayer
+    });
+    const call = {
+      active: true,
+      stopping: false,
+      stopTask: null,
+      flow: null,
+      resources,
+      stream,
+      sessionId,
+      turns: new Set(),
+      inputTurn: null,
+      openingTurn: false,
+      reconnect: null,
+      transport: null,
+      standbyDetector: null,
+      standbySpeechPending: false,
+      hasBeenReady: false,
+      nextTurnId: 1
+    };
+    call.transport = createRealtimeVoiceCallTransport(call);
+    call.flow = new RealtimeVoiceCallFlow({
+      onListenRequested: () => scheduleNextRealtimeVoiceCallTurn(call)
+    });
+    call.reconnect = new RealtimeVoiceReconnectBackoff({
+      schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      cancel: (timer) => window.clearTimeout(timer),
+      onReconnect: () => {
+        if (!isActiveRealtimeVoiceCall(call)) return;
+        void (async () => {
+          const failedTransport = call.transport;
+          setRuntimeStatus("语音通话中 · 正在恢复监听", { mode: "listening" });
+          await failedTransport?.close("voice_call_reconnect");
+          if (!isActiveRealtimeVoiceCall(call)) return;
+          call.transport = createRealtimeVoiceCallTransport(call);
+          call.flow?.requestNextListeningTurn();
+        })().catch(async (error) => {
+          if (!isActiveRealtimeVoiceCall(call)) return;
+          await stopRealtimeVoiceCall({
+            notice: false,
+            reason: "voice_call_reconnect_failed"
+          });
+          showError(friendlyErrorMessage(formatError(error)));
+        });
+      },
+      onExhausted: () => {
+        if (!isActiveRealtimeVoiceCall(call)) return;
+        void (async () => {
+          await stopRealtimeVoiceCall({
+            notice: false,
+            reason: "voice_realtime_reconnect_exhausted"
+          });
+          showError("实时监听连续重连失败，语音通话已结束。");
+        })();
+      }
+    });
+    call.flow.start();
+    realtimeVoiceCall = call;
+    configureRealtimeVoiceStandbyCapture(call);
+    cancelTtsPrewarm();
+    stopTts();
+    setVoiceInputState("recording");
+    setPetEmotion("listening", { persist: false });
+    setPetMotion("thinking");
+    showBubbleText(
+      tookOverReply
+        ? "上一轮已停下，麦克风已打开。你现在说话即可。"
+        : "麦克风已打开。你现在说话即可。",
+      { transient: false, kind: "status" }
+    );
+    setRuntimeStatus("语音通话中 · 连接识别服务", { mode: "listening" });
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+
+    const opened = await openRealtimeVoiceCallTurn(call);
+    if (
+      !opened &&
+      realtimeVoiceCall === call &&
+      !call.stopping &&
+      !call.reconnect?.pending
+    ) {
+      await stopRealtimeVoiceCall({
+        notice: false,
+        reason: "initial_voice_turn_failed"
+      });
+      showError("实时语音没有接通，请再试一次。");
+    }
+  } catch (error) {
+    if (token !== voiceInputToken) return;
+    for (const track of stream?.getTracks?.() || []) track.stop();
+    if (stream && realtimeVoiceCall?.stream === stream) {
+      await stopRealtimeVoiceCall({
+        notice: false,
+        reason: "voice_call_start_failed"
+      });
+    } else {
+      setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+    }
+    showError(describeVoiceError(error));
+  } finally {
+    if (voiceCaptureController === controller) voiceCaptureController = null;
+  }
+}
+
+async function openRealtimeVoiceCallTurn(call) {
+  if (
+    !call?.active ||
+    call.stopping ||
+    realtimeVoiceCall !== call ||
+    call.inputTurn ||
+    call.openingTurn
+  ) {
+    return false;
+  }
+  const flowTurn = call.flow?.beginListening();
+  if (!flowTurn) return false;
+  call.openingTurn = true;
+  const turn = {
+    call,
+    flowTurn,
+    id: call.nextTurnId,
+    voiceTurnId: `${call.sessionId}:voice:${call.nextTurnId}`,
+    audioStreamId: `${call.sessionId}:audio:${call.nextTurnId}`,
+    session: null,
+    detector: null,
+    recorder: null,
+    recorderMimeType: "",
+    recorderChunks: [],
+    recorderStopTask: null,
+    ready: false,
+    transportOpen: false,
+    endpointAccepted: false,
+    endpointTask: null,
+    committed: false,
+    responseActive: false,
+    playbackActive: false,
+    failure: null,
+    failureTask: null,
+    fallbackBlob: null,
+    finalWatchdogId: 0,
+    closed: false,
+    readyAt: 0,
+    hasShownSpeech: false,
+    replySegments: new Map(),
+    replyBubbleText: ""
+  };
+  call.nextTurnId += 1;
+  call.turns.add(turn);
+  call.inputTurn = turn;
+
+  try {
+    startRealtimeCallSafetyRecorder(turn, call.stream);
+    turn.detector = new RealtimeVoiceEndpointDetector({
+      onSpeechStarted: () => {
+        if (!isActiveRealtimeCallTurn(turn) || call.inputTurn !== turn) return;
+        setRuntimeStatus("语音通话中 · 听到你了", { mode: "listening" });
+        const overlapsPlayback = [...call.turns].some(
+          (candidate) =>
+            candidate !== turn &&
+            !candidate.closed &&
+            candidate.playbackActive
+        );
+        if (overlapsPlayback) {
+          turn.session?.reportInterruptionSuspected();
+        }
+      },
+      onEndpoint: (endpoint) => {
+        void handleRealtimeVoiceCallEndpoint(turn, endpoint);
+      }
+    });
+    turn.session = call.transport.createTurn({
+      voiceTurnId: turn.voiceTurnId,
+      audioStreamId: turn.audioStreamId,
+      endpointDetector: turn.detector,
+      callbacks: buildRealtimeVoiceCallCallbacks(turn)
+    });
+    call.standbyDetector?.reset();
+    call.standbySpeechPending = false;
+    await turn.session.start();
+    if (!isActiveRealtimeCallTurn(turn) || call.inputTurn !== turn) return false;
+    turn.transportOpen = true;
+    return true;
+  } catch (error) {
+    await markRealtimeVoiceCallFailure(turn, {
+      reason: "voice_realtime_start_failed",
+      message: friendlyErrorMessage(formatError(error)),
+      terminal: true,
+      committed: false
+    });
+    return false;
+  } finally {
+    call.openingTurn = false;
+  }
+}
+
+function configureRealtimeVoiceStandbyCapture(call) {
+  call.standbyDetector = new RealtimeVoiceEndpointDetector({
+    onSpeechStarted: () => {
+      if (
+        !isActiveRealtimeVoiceCall(call) ||
+        call.inputTurn ||
+        call.standbySpeechPending
+      ) {
+        return;
+      }
+      call.standbySpeechPending = true;
+      call.resources.holdIdleCapture();
+      const hasActiveReply = [...call.turns].some(
+        (turn) => turn.responseActive || turn.playbackActive
+      );
+      setRuntimeStatus(
+        hasActiveReply
+          ? "听到你了 · 已保留这一句，准备接管"
+          : "听到你了 · 正在恢复实时监听",
+        { mode: "listening" }
+      );
+      updateActivityControls();
+    }
+  });
+  call.resources.setIdleCaptureObserver({
+    onPcm: (buffer, frames, sampleRate) => {
+      if (!isActiveRealtimeVoiceCall(call) || call.inputTurn) return;
+      call.standbyDetector?.acceptPcmFrame(buffer, frames, sampleRate);
+    },
+    onError: (error) => {
+      if (!isActiveRealtimeVoiceCall(call)) return;
+      const reason = String(error?.message || "");
+      setRuntimeStatus(
+        reason === "voice_call_idle_capture_overflow"
+          ? "连续收音过长，已保留最近的语音"
+          : "连续收音缓冲异常，当前通话仍在继续",
+        { mode: "error" }
+      );
+      updateActivityControls();
+    }
+  });
+}
+
+function startRealtimeCallSafetyRecorder(turn, stream) {
+  const preferredMimeType = selectVoiceMimeType();
+  const options = preferredMimeType ? { mimeType: preferredMimeType } : undefined;
+  let recorder;
+  try {
+    recorder = new MediaRecorder(stream, options);
+  } catch {
+    recorder = new MediaRecorder(stream);
+  }
+  turn.recorder = recorder;
+  turn.recorderMimeType = recorder.mimeType || preferredMimeType || "audio/webm";
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data?.size > 0) turn.recorderChunks.push(event.data);
+  });
+  recorder.start();
+}
+
+function stopRealtimeCallSafetyRecorder(turn) {
+  if (!turn?.recorder) {
+    return Promise.resolve(
+      new Blob(turn?.recorderChunks || [], {
+        type: turn?.recorderMimeType || "audio/webm"
+      })
+    );
+  }
+  if (turn.recorderStopTask) return turn.recorderStopTask;
+  const recorder = turn.recorder;
+  if (recorder.state === "inactive") {
+    turn.recorderStopTask = Promise.resolve(
+      new Blob(turn.recorderChunks, {
+        type: turn.recorderMimeType || recorder.mimeType || "audio/webm"
+      })
+    );
+    return turn.recorderStopTask;
+  }
+  turn.recorderStopTask = new Promise((resolve, reject) => {
+    const cleanup = () => {
+      recorder.removeEventListener("stop", handleStop);
+      recorder.removeEventListener("error", handleError);
+    };
+    const handleStop = () => {
+      cleanup();
+      resolve(
+        new Blob(turn.recorderChunks, {
+          type: turn.recorderMimeType || recorder.mimeType || "audio/webm"
+        })
+      );
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("voice_recording_failed"));
+    };
+    recorder.addEventListener("stop", handleStop, { once: true });
+    recorder.addEventListener("error", handleError, { once: true });
+    try {
+      recorder.stop();
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
+  return turn.recorderStopTask;
+}
+
+async function handleRealtimeVoiceCallEndpoint(turn, endpoint) {
+  if (!isActiveRealtimeCallTurn(turn) || turn.endpointAccepted || turn.endpointTask) return;
+  const action = String(endpoint?.action || "");
+  if (!turn.call.flow?.acceptEndpoint(turn.flowTurn, action)) return;
+  turn.endpointAccepted = true;
+  turn.endpointTask = (async () => {
+    if (action === "discard") {
+      if (isActiveRealtimeVoiceCall(turn.call)) {
+        turn.endpointAccepted = false;
+        turn.detector?.reset();
+        turn.call.flow?.resumeListening(turn.flowTurn);
+        setRuntimeStatus("没有听到清晰内容，继续听你说", { mode: "listening" });
+        if (!hasVisibleRealtimeVoiceReply(turn.call, turn)) {
+          showBubbleText("刚才没有识别出清晰内容，我还在听。", {
+            transient: true,
+            durationMs: 2200,
+            kind: "status"
+          });
+        }
+      }
+      return;
+    }
+
+    turn.call.inputTurn = null;
+    setRuntimeStatus("听清了，正在结束这一轮输入", { mode: "thinking" });
+    let realtimeAccepted = false;
+    let blob;
+    try {
+      [, blob] = await Promise.all([
+        turn.session.flushAndStopCapture(),
+        stopRealtimeCallSafetyRecorder(turn)
+      ]);
+      if (!isActiveRealtimeCallTurn(turn)) return;
+      realtimeAccepted = await turn.session
+        .finishInput()
+        .then(() => true)
+        .catch((error) => {
+          turn.failure = {
+            reason: "voice_realtime_finalize_failed",
+            message: friendlyErrorMessage(formatError(error)),
+            terminal: true,
+            committed: turn.committed
+          };
+          return false;
+        });
+    } catch (error) {
+      turn.failure = {
+        reason: "voice_recording_stop_failed",
+        message: describeVoiceError(error),
+        terminal: true,
+        committed: turn.committed
+      };
+    }
+    if (!isActiveRealtimeCallTurn(turn)) return;
+    turn.fallbackBlob = turn.committed ? null : blob;
+    if (!realtimeAccepted || turn.failure) {
+      await markRealtimeVoiceCallFailure(
+        turn,
+        turn.failure || {
+          reason: "voice_realtime_finalize_failed",
+          message: "实时语音收尾失败。",
+          terminal: true,
+          committed: turn.committed
+        }
+      );
+      return;
+    }
+    if (!turn.committed) {
+      setRuntimeStatus("语音识别收尾中", { mode: "thinking" });
+      armRealtimeVoiceCallFinalWatchdog(turn);
+    }
+    turn.call.flow?.markResponding(turn.flowTurn);
+  })();
+  await turn.endpointTask;
+  if (action === "discard" && isActiveRealtimeCallTurn(turn)) {
+    turn.endpointTask = null;
+  }
+}
+
+function showFirstRealtimeVoicePlaybackText(turn, header) {
+  const text = String(header?.text || "").trim();
+  if (!text) return false;
+  const appended = appendRealtimeVoicePlaybackText(turn, header, { speaking: false });
+  if (!appended) return false;
+  if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+    setRestingPetEmotion();
+  }
+  return true;
+}
+
+function showStartedRealtimeVoicePlaybackText(turn, header) {
+  const text = String(header?.text || "").trim();
+  setPetMotion("speaking");
+  if (text) appendRealtimeVoicePlaybackText(turn, header, { speaking: true });
+}
+
+function appendRealtimeVoicePlaybackText(turn, header, { speaking = false } = {}) {
+  const text = String(header?.text || "").trim();
+  if (!text) return false;
+  const deliveryId = String(header?.delivery_id || "").trim();
+  const ordinal = Number(header?.ordinal);
+  const key = deliveryId || `${Number.isFinite(ordinal) ? ordinal : turn.replySegments.size}:${text}`;
+  if (turn.replySegments.has(key)) return false;
+  turn.replySegments.set(key, {
+    ordinal: Number.isFinite(ordinal) ? ordinal : turn.replySegments.size,
+    text
+  });
+  turn.replyBubbleText = [...turn.replySegments.values()]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .map((item) => item.text)
+    .join("")
+    .trim();
+  window.clearTimeout(bubbleTimer);
+  if (!turn.hasShownSpeech) {
+    turn.hasShownSpeech = true;
+    showBubbleText(turn.replyBubbleText, {
+      transient: false,
+      speaking,
+      kind: "reply"
+    });
+  } else {
+    displayReplyBubbleText(turn.replyBubbleText, { speaking });
+    els.bubbleText.scrollTop = els.bubbleText.scrollHeight;
+  }
+  return true;
+}
+
+function scheduleRealtimeVoiceBubbleReset(text) {
+  window.clearTimeout(bubbleTimer);
+  const token = bubbleToken;
+  const charCount = Math.max(String(text || "").length, 8);
+  const durationMs = Math.max(6000, Math.min(30000, charCount * 120));
+  bubbleTimer = window.setTimeout(() => hideBubble(token), durationMs);
+}
+
+function applyRealtimeVoicePresentation(turn) {
+  if (!turn.presentation) return;
+  applyPayloadEmotion(turn.presentation);
+  if (turn.presentationApplied) return;
+  turn.presentationApplied = true;
+  applyPayloadActivity(turn.presentation);
+}
+
+function buildRealtimeVoiceCallCallbacks(turn) {
+  const isCurrent = () => isActiveRealtimeCallTurn(turn);
+  return {
+    onReady() {
+      if (!isCurrent()) return;
+      turn.ready = true;
+      turn.readyAt = Date.now();
+      if (turn.call.inputTurn === turn) {
+        const heardInput = hasRealtimeVoiceInputEvidence(turn.detector?.snapshot?.());
+        setRuntimeStatus(
+          heardInput ? "语音通话中 · 听到你了" : "语音通话中 · 正在听",
+          { mode: "listening" }
+        );
+      }
+    },
+    onTranscript({ kind, text, unstableTail }) {
+      if (!isCurrent() || turn.call.inputTurn !== turn) return;
+      const transcript = `${String(text || "")}${String(unstableTail || "")}`.trim();
+      if (!transcript) return;
+      turn.call.reconnect?.reset();
+      const prefix = kind === "checkpoint" ? "听清了" : "正在听";
+      setRuntimeStatus(
+        kind === "checkpoint" ? "语音通话中 · 已听清" : "语音通话中 · 听到你了",
+        { mode: "listening" }
+      );
+      if (!hasVisibleRealtimeVoiceReply(turn.call, turn)) {
+        showBubbleText(`${prefix}：${transcript}`, {
+          transient: false,
+          kind: "status"
+        });
+      }
+    },
+    onFinal(payload) {
+      if (!isCurrent()) return;
+      clearRealtimeVoiceFinalWatchdog(turn);
+      turn.committed = true;
+      turn.call.reconnect?.reset();
+      turn.session?.releaseFallbackPcm();
+      turn.fallbackBlob = null;
+      turn.responseActive = true;
+      refreshRealtimeVoiceCallSending(turn.call);
+      if (payload?.disposition === "interaction") return;
+      const awaitingDecision = payload?.input_state === "finalized";
+      if (!hasVisibleRealtimeVoiceReply(turn.call, turn)) showThinking();
+      const responseStatus = String(payload?.response?.status || "");
+      if (responseStatus && !["started", "completed"].includes(responseStatus)) {
+        setRuntimeStatus("语音已识别，但回复启动失败", { mode: "error" });
+      } else {
+        setRuntimeStatus(awaitingDecision ? "已听清，正在确认是否接管" : "她正在回应", { mode: "thinking" });
+        turn.call.flow?.allowOverlapListening(turn.flowTurn);
+      }
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+    },
+    onInteraction() {
+      if (!isCurrent()) return;
+      finishRealtimeVoiceCallTurn(turn, { ok: true });
+    },
+    onPlaybackEnqueued(header) {
+      if (!isCurrent()) return;
+      showFirstRealtimeVoicePlaybackText(turn, header);
+      setRuntimeStatus("语音已生成，准备播放", { mode: "speaking" });
+    },
+    onPresentation(payload) {
+      if (!isCurrent() || turn.presentation) return;
+      turn.presentation = payload?.presentation;
+      if (turn.call.presentingTurn === turn) applyRealtimeVoicePresentation(turn);
+    },
+    onPlaybackStarted(header) {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      turn.call.presentingTurn = turn;
+      if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+        setRestingPetEmotion();
+      }
+      showStartedRealtimeVoicePlaybackText(turn, header);
+      applyRealtimeVoicePresentation(turn);
+      setRuntimeStatus("语音通话中 · 她正在说", { mode: "speaking" });
+      updateActivityControls();
+    },
+    onPlaybackDucked() {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      setRuntimeStatus("听到新的声音，已暂时压低回复音量", { mode: "listening" });
+      updateActivityControls();
+    },
+    onPlaybackResumed() {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      setRuntimeStatus("继续语音回复", { mode: "speaking" });
+      updateActivityControls();
+    },
+    onPlaybackControlFailed(_control, reason) {
+      if (!isCurrent()) return;
+      void reason;
+      setRuntimeStatus("播放控制未生效，已把真实状态交回服务端", {
+        mode: "error"
+      });
+      updateActivityControls();
+    },
+    onInterruptionAccepted() {
+      if (!isCurrent()) return;
+      setRuntimeStatus("听到你在说话，正在判断是否接管", {
+        mode: "listening"
+      });
+      updateActivityControls();
+    },
+    onInterruptionSkipped() {
+      if (!isCurrent() || turn.call.inputTurn !== turn) return;
+      setRuntimeStatus("语音通话中 · 正在听", { mode: "listening" });
+    },
+    onPlaybackCompleted() {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      if (turn.responseActive) {
+        setPetMotion("thinking");
+        setRuntimeStatus("回复收尾中", { mode: "thinking" });
+      }
+      updateActivityControls();
+    },
+    onPlaybackInterrupted() {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      updateActivityControls();
+    },
+    onPlaybackFailed(_header, reason) {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      void reason;
+      setRuntimeStatus("语音没能播放，已把失败状态交回服务端", {
+        mode: "error"
+      });
+      updateActivityControls();
+    },
+    onResponseCompleted(payload) {
+      if (!isCurrent()) return;
+      if (payload?.delivery_status === "text_only" && !hasVisibleRealtimeVoiceReply(turn.call, turn)) {
+        applyRealtimeVoicePresentation(turn);
+      }
+      const speech = String(payload?.speech || "").trim();
+      const finalText = speech || turn.replyBubbleText;
+      if (finalText) {
+        turn.replyBubbleText = finalText;
+        turn.hasShownSpeech = true;
+        displayReplyBubbleText(finalText, { speaking: false });
+        scheduleRealtimeVoiceBubbleReset(finalText);
+      }
+      finishRealtimeVoiceCallTurn(turn, { ok: true });
+    },
+    onResponseFailed(payload) {
+      if (!isCurrent()) return;
+      finishRealtimeVoiceCallTurn(turn, {
+        ok: false,
+        cancelled: ["cancelled", "discarded"].includes(String(payload?.state || "")),
+        message: String(payload?.message || "这次语音回复没有生成完成。")
+      });
+    },
+    onFailure(failure) {
+      if (!isCurrent()) return;
+      void markRealtimeVoiceCallFailure(turn, failure);
+    },
+    onCancelled() {
+      if (!isCurrent()) return;
+      finishRealtimeVoiceCallTurn(turn, { ok: false, cancelled: true });
+    }
+  };
+}
+
+function isActiveRealtimeVoiceCall(call) {
+  return Boolean(call?.active && !call.stopping && realtimeVoiceCall === call);
+}
+
+function getRealtimeVoiceCallTurns() {
+  return realtimeVoiceCall?.turns ? [...realtimeVoiceCall.turns] : [];
+}
+
+function hasVisibleRealtimeVoiceReply(call, exceptTurn = null) {
+  return Boolean(
+    call?.turns &&
+      [...call.turns].some(
+        (turn) =>
+          turn !== exceptTurn &&
+          !turn.closed &&
+          turn.hasShownSpeech &&
+          (turn.responseActive || turn.playbackActive)
+      )
+  );
+}
+
+function hasRealtimeVoiceCallPlayback() {
+  return getRealtimeVoiceCallTurns().some((turn) => turn.playbackActive);
+}
+
+function hasRealtimeVoiceCallCommittedTurn() {
+  return getRealtimeVoiceCallTurns().some((turn) => turn.committed);
+}
+
+function hasRealtimeVoiceCallFallbackPending() {
+  return getRealtimeVoiceCallTurns().some(
+    (turn) => Boolean(turn.failure && !turn.committed)
+  );
+}
+
+function isActiveRealtimeCallTurn(turn) {
+  return Boolean(
+    turn &&
+      !turn.closed &&
+      isActiveRealtimeVoiceCall(turn.call) &&
+      turn.call.turns.has(turn)
+  );
+}
+
+function refreshRealtimeVoiceCallSending(call) {
+  if (!call) return;
+  sending = [...call.turns].some((turn) => turn.responseActive);
+}
+
+function scheduleNextRealtimeVoiceCallTurn(call) {
+  if (!isActiveRealtimeVoiceCall(call) || call.inputTurn || call.openingTurn) return;
+  window.setTimeout(() => {
+    if (!isActiveRealtimeVoiceCall(call) || call.inputTurn || call.openingTurn) return;
+    void openRealtimeVoiceCallTurn(call);
+  }, 0);
+}
+
+function armRealtimeVoiceCallFinalWatchdog(turn) {
+  clearRealtimeVoiceFinalWatchdog(turn);
+  if (!isActiveRealtimeCallTurn(turn) || turn.committed) return;
+  turn.finalWatchdogId = window.setTimeout(() => {
+    turn.finalWatchdogId = 0;
+    if (!isActiveRealtimeCallTurn(turn) || turn.committed) return;
+    void markRealtimeVoiceCallFailure(turn, {
+      reason: "voice_realtime_final_timeout",
+      message: "实时识别超时，正在改用普通识别。",
+      terminal: true,
+      committed: false
+    });
+  }, REALTIME_VOICE_FINAL_TIMEOUT_MS);
+}
+
+async function markRealtimeVoiceCallFailure(turn, failure) {
+  if (!isActiveRealtimeCallTurn(turn)) return;
+  const normalized = {
+    reason: String(failure?.reason || "voice_realtime_failed"),
+    message: String(failure?.message || "实时语音链路暂时不可用。"),
+    terminal: Boolean(failure?.terminal),
+    committed: Boolean(failure?.committed || turn.committed),
+    retryable: Boolean(failure?.retryable)
+  };
+  if (!normalized.terminal) {
+    setRuntimeStatus(normalized.message, { mode: "error" });
+    return;
+  }
+  if (turn.failureTask) return turn.failureTask;
+  turn.failure = normalized;
+  clearRealtimeVoiceFinalWatchdog(turn);
+  turn.failureTask = (async () => {
+    if (normalized.committed) {
+      finishRealtimeVoiceCallTurn(turn, {
+        ok: false,
+        message: normalized.message
+      });
+      return;
+    }
+    const detectorSnapshot = turn.detector?.snapshot?.() || {};
+    const hasInputEvidence = hasRealtimeVoiceInputEvidence(detectorSnapshot);
+    if (!hasInputEvidence) {
+      try {
+        await stopRealtimeCallSafetyRecorder(turn);
+      } catch {
+        // There is no speech evidence to recover from this recorder.
+      }
+      if (!isActiveRealtimeCallTurn(turn)) return;
+      turn.fallbackBlob = null;
+      turn.recorderChunks = [];
+      turn.session?.releaseFallbackPcm();
+      if (
+        shouldReconnectPassiveVoiceFailure({
+          committed: normalized.committed,
+          retryable: normalized.retryable,
+          detectorSnapshot
+        }) &&
+        turn.call.hasBeenReady
+      ) {
+        const call = turn.call;
+        if (
+          turn.readyAt > 0 &&
+          Date.now() - turn.readyAt >= REALTIME_VOICE_STABLE_LISTENER_MS
+        ) {
+          call.reconnect?.reset();
+        }
+        turn.closed = true;
+        turn.session?.dispose(normalized.reason);
+        call.turns.delete(turn);
+        if (call.inputTurn === turn) call.inputTurn = null;
+        call.flow?.complete(turn.flowTurn, { requestNext: false });
+        refreshRealtimeVoiceCallSending(call);
+        const reconnectState = call.reconnect?.schedule();
+        if (reconnectState === "scheduled" || reconnectState === "pending") {
+          const hasActiveReply = [...call.turns].some(
+            (candidate) => candidate.responseActive || candidate.playbackActive
+          );
+          if (!hasActiveReply) {
+            setVoiceInputState("recording");
+            setPetEmotion("listening", { persist: false });
+            setPetMotion("thinking");
+            showBubbleText("监听短暂断开，正在自动重连……", {
+              transient: true,
+              durationMs: 1600,
+              kind: "status"
+            });
+          }
+          setRuntimeStatus("语音通话中 · 监听正在重连", {
+            mode: "listening"
+          });
+          updateActivityControls();
+          scheduleSettingsSnapshot();
+          return;
+        }
+        if (reconnectState === "exhausted") return;
+      }
+      await stopRealtimeVoiceCall({
+        notice: false,
+        reason: normalized.reason
+      });
+      showError(normalized.message);
+      return;
+    }
+    let blob = turn.session?.buildFallbackPcmBlob?.() || turn.fallbackBlob;
+    if (!blob) {
+      try {
+        blob = await stopRealtimeCallSafetyRecorder(turn);
+      } catch {
+        blob = null;
+      }
+    }
+    turn.session?.releaseFallbackPcm();
+    await stopRealtimeVoiceCall({
+      notice: false,
+      reason: normalized.reason
+    });
+    if (blob?.size >= 512) {
+      showBubbleText("实时链路不可用，已结束通话并改用普通识别……", {
+        transient: false,
+        kind: "status"
+      });
+      setRuntimeStatus("已结束通话，正在改用普通识别", {
+        mode: "thinking"
+      });
+      await transcribeVoiceBlob(blob, {
+        autoSubmit: true,
+        filename: getVoiceFilename(blob.type)
+      });
+      return;
+    }
+    showError(normalized.message);
+  })();
+  return turn.failureTask;
+}
+
+function finishRealtimeVoiceCallTurn(
+  turn,
+  { ok, message = "", cancelled = false } = {}
+) {
+  if (!isActiveRealtimeCallTurn(turn)) return;
+  const call = turn.call;
+  turn.closed = true;
+  clearRealtimeVoiceFinalWatchdog(turn);
+  turn.responseActive = false;
+  turn.playbackActive = false;
+  turn.fallbackBlob = null;
+  turn.session?.releaseFallbackPcm();
+  turn.session?.dispose(cancelled ? "response_cancelled" : "response_terminal");
+  call.turns.delete(turn);
+  if (call.inputTurn === turn) call.inputTurn = null;
+  refreshRealtimeVoiceCallSending(call);
+  if (!ok && !cancelled) {
+    showError(message || "这次语音回复没有生成完成。");
+  } else if (ok && state.currentEmotion === resolveEmotionEntry("thinking").id) {
+    setRestingPetEmotion();
+  }
+  if (isActiveRealtimeVoiceCall(call)) {
+    setVoiceInputState("recording");
+    const continuingPlayback = [...call.turns].some((candidate) => !candidate.closed && candidate.playbackActive);
+    if (continuingPlayback) {
+      setPetMotion("speaking");
+      setRuntimeStatus("语音通话中 · 她正在说", { mode: "speaking" });
+    } else if ([...call.turns].some((candidate) => !candidate.closed && candidate.responseActive)) {
+      setPetEmotion("thinking", { persist: false });
+      setPetMotion("thinking");
+      setRuntimeStatus("语音通话中 · 她正在回应", { mode: "thinking" });
+    } else {
+      setPetEmotion("listening", { persist: false });
+      setPetMotion("thinking");
+      setRuntimeStatus("语音通话中 · 继续听你说", { mode: "listening" });
+    }
+    call.flow?.complete(turn.flowTurn);
+  }
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+async function cancelRealtimeVoiceCallResponse(reason) {
+  const call = realtimeVoiceCall;
+  if (!isActiveRealtimeVoiceCall(call)) return false;
+  const turn = [...call.turns].find(
+    (candidate) => candidate.responseActive || candidate.playbackActive
+  );
+  if (!turn || turn.closed) return false;
+  await cancelRealtimeVoiceResponseTurn(turn, reason);
+  return true;
+}
+
+async function cancelRealtimeVoiceResponseTurn(turn, reason) {
+  if (!isActiveRealtimeCallTurn(turn)) return false;
+  let acknowledged = false;
+  try {
+    acknowledged = Boolean(await turn.session?.cancel(reason));
+  } finally {
+    const alreadyTerminal = !isActiveRealtimeCallTurn(turn);
+    if (isActiveRealtimeCallTurn(turn)) {
+      finishRealtimeVoiceCallTurn(turn, {
+        ok: false,
+        cancelled: true
+      });
+    }
+    if (alreadyTerminal) acknowledged = true;
+  }
+  return acknowledged;
+}
+
+async function stopRealtimeVoiceCall({
+  notice = false,
+  reason = "voice_call_ended"
+} = {}) {
+  const call = realtimeVoiceCall;
+  if (!call) return;
+  if (call.stopTask) return call.stopTask;
+  call.active = false;
+  call.stopping = true;
+  call.reconnect?.stop();
+  call.flow?.stop();
+  realtimeVoiceCall = null;
+  const turns = [...call.turns];
+  for (const turn of turns) {
+    turn.closed = true;
+    clearRealtimeVoiceFinalWatchdog(turn);
+    turn.responseActive = false;
+    turn.playbackActive = false;
+    turn.session?.releaseFallbackPcm();
+  }
+  call.inputTurn = null;
+  call.turns.clear();
+  sending = false;
+  setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+  call.stopTask = (async () => {
+    await Promise.allSettled(
+      turns.map((turn) => stopRealtimeCallSafetyRecorder(turn))
+    );
+    await call.transport?.close(reason);
+    for (const turn of turns) turn.session?.dispose(reason);
+    await call.resources.close(reason);
+    call.stopping = false;
+    if (notice) {
+      showBubbleText("语音通话已结束。", {
+        transient: true,
+        durationMs: 1800,
+        kind: "status"
+      });
+      setRuntimeStatus("语音通话已结束", { mode: "idle" });
+    }
+    if (!els.bubble.classList.contains("visible")) setPetMotion("idle");
+    scheduleMusicEmotionRestore();
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+  })();
+  return call.stopTask;
+}
+
+function startRealtimeVoiceTurn(stream) {
+  closeRealtimeVoiceTurn(realtimeVoiceTurn, "voice_turn_replaced");
+  cancelTtsPrewarm();
+  stopTts();
+  const sessionId = String(state.sessionId || "").trim() || generateSessionId();
+  if (!state.sessionId) {
+    state.sessionId = sessionId;
+    scheduleSave(0);
+  }
+
+  const turn = {
+    session: null,
+    startTask: null,
+    ready: false,
+    committed: false,
+    responseActive: false,
+    playbackActive: false,
+    failure: null,
+    fallbackBlob: null,
+    fallbackStarted: false,
+    finalWatchdogId: 0,
+    closed: false,
+    hasShownSpeech: false
+  };
+  realtimeVoiceTurn = turn;
+
+  try {
+    const session = new RealtimeVoiceSession({
+      websocketUrl: buildVoiceWebSocketUrl(
+        buildBackendEndpointUrl("voiceRealtime", "/voice/realtime", { t: Date.now() })
+      ),
+      mediaStream: stream,
+      audioElement: els.voicePlayer,
+      workletModuleUrl: VOICE_PCM_WORKLET_URL,
+      getVolume: () => state.voiceVolume,
+      openPayload: {
+        profile_user_id: getProfileUserId(),
+        conversation_id: sessionId,
+        session_id: sessionId,
+        character_pack_id: getCurrentCharacterPackId(),
+        language: "zh",
+        disposition: "message"
+      },
+      callbacks: buildRealtimeVoiceCallbacks(turn)
+    });
+    turn.session = session;
+    turn.startTask = session
+      .start()
+      .then(() => {
+        if (realtimeVoiceTurn !== turn || turn.closed) return false;
+        turn.ready = true;
+        return true;
+      })
+      .catch((error) => {
+        markRealtimeVoiceFailure(turn, {
+          reason: "voice_realtime_start_failed",
+          message: friendlyErrorMessage(formatError(error)),
+          terminal: true,
+          committed: false
+        });
+        return false;
+      });
+  } catch (error) {
+    markRealtimeVoiceFailure(turn, {
+      reason: "voice_realtime_start_failed",
+      message: friendlyErrorMessage(formatError(error)),
+      terminal: true,
+      committed: false
+    });
+  }
+}
+
+function buildRealtimeVoiceCallbacks(turn) {
+  const isCurrent = () => realtimeVoiceTurn === turn && !turn.closed;
+  return {
+    onReady() {
+      if (!isCurrent()) return;
+      turn.ready = true;
+      if (voiceInputState === "recording") {
+        setRuntimeStatus("实时语音聆听中", { mode: "listening" });
+      }
+    },
+    onTranscript({ kind, text, unstableTail }) {
+      if (!isCurrent() || voiceInputState !== "recording") return;
+      const transcript = `${String(text || "")}${String(unstableTail || "")}`.trim();
+      if (!transcript) return;
+      const prefix = kind === "checkpoint" ? "听清了" : "正在听";
+      showBubbleText(`${prefix}：${transcript}`, { transient: false, kind: "status" });
+    },
+    onFinal(payload) {
+      if (!isCurrent() || turn.fallbackStarted) return;
+      clearRealtimeVoiceFinalWatchdog(turn);
+      turn.committed = true;
+      turn.fallbackBlob = null;
+      turn.responseActive = true;
+      sending = true;
+      setVoiceInputState("processing");
+      showThinking();
+      const responseStatus = String(payload?.response?.status || "");
+      if (responseStatus && !["started", "completed"].includes(responseStatus)) {
+        setRuntimeStatus("语音已识别，但回复启动失败", { mode: "error" });
+      }
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+    },
+    onInteraction() {
+      if (!isCurrent()) return;
+      finishRealtimeVoiceTurn(turn, { ok: true });
+    },
+    onPlaybackEnqueued(header) {
+      if (!isCurrent()) return;
+      showFirstRealtimeVoicePlaybackText(turn, header);
+      setRuntimeStatus("语音已生成，准备播放", { mode: "speaking" });
+    },
+    onPresentation(payload) {
+      if (!isCurrent() || turn.presentation) return;
+      turn.presentation = payload?.presentation;
+      if (turn.hasStartedPlayback) applyRealtimeVoicePresentation(turn);
+    },
+    onPlaybackStarted(header) {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      turn.hasStartedPlayback = true;
+      if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+        setRestingPetEmotion();
+      }
+      showStartedRealtimeVoicePlaybackText(turn, header);
+      applyRealtimeVoicePresentation(turn);
+      setRuntimeStatus("语音回复中", { mode: "speaking" });
+      updateActivityControls();
+    },
+    onPlaybackDucked() {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      setRuntimeStatus("听到新的声音，已暂时压低回复音量", { mode: "listening" });
+      updateActivityControls();
+    },
+    onPlaybackResumed() {
+      if (!isCurrent()) return;
+      turn.playbackActive = true;
+      setRuntimeStatus("继续语音回复", { mode: "speaking" });
+      updateActivityControls();
+    },
+    onPlaybackControlFailed(_control, reason) {
+      if (!isCurrent()) return;
+      void reason;
+      setRuntimeStatus("播放控制未生效，已把真实状态交回服务端", { mode: "error" });
+      updateActivityControls();
+    },
+    onPlaybackCompleted() {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      if (turn.responseActive) {
+        setPetMotion("thinking");
+        setRuntimeStatus("回复收尾中", { mode: "thinking" });
+      }
+      updateActivityControls();
+    },
+    onPlaybackInterrupted() {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      updateActivityControls();
+    },
+    onPlaybackFailed(_header, reason) {
+      if (!isCurrent()) return;
+      turn.playbackActive = false;
+      void reason;
+      setRuntimeStatus("语音没能播放，已把失败状态交回服务端", { mode: "error" });
+      updateActivityControls();
+    },
+    onResponseCompleted(payload) {
+      if (!isCurrent()) return;
+      if (payload?.delivery_status === "text_only") applyRealtimeVoicePresentation(turn);
+      const speech = String(payload?.speech || "").trim();
+      if (speech && !turn.hasShownSpeech) {
+        showBubbleText(speech, { dismiss: true, kind: "reply" });
+      }
+      finishRealtimeVoiceTurn(turn, { ok: true });
+    },
+    onResponseFailed(payload) {
+      if (!isCurrent()) return;
+      const message = String(payload?.message || "这次语音回复没有生成完成。");
+      finishRealtimeVoiceTurn(turn, {
+        ok: false, message,
+        cancelled: ["cancelled", "discarded"].includes(String(payload?.state || ""))
+      });
+    },
+    onFailure(failure) {
+      if (!isCurrent()) return;
+      markRealtimeVoiceFailure(turn, failure);
+    },
+    onCancelled() {
+      if (!isCurrent()) return;
+      finishRealtimeVoiceTurn(turn, { ok: false, cancelled: true });
+    }
+  };
+}
+
+function markRealtimeVoiceFailure(turn, failure) {
+  if (!turn || turn.closed || realtimeVoiceTurn !== turn) return;
+  const normalized = {
+    reason: String(failure?.reason || "voice_realtime_failed"),
+    message: String(failure?.message || "实时语音链路暂时不可用。"),
+    terminal: Boolean(failure?.terminal),
+    committed: Boolean(failure?.committed || turn.committed)
+  };
+  if (!normalized.terminal) {
+    setRuntimeStatus(normalized.message, { mode: "error" });
+    return;
+  }
+  clearRealtimeVoiceFinalWatchdog(turn);
+  turn.failure = normalized;
+  if (!normalized.committed) turn.session?.dispose(normalized.reason);
+  if (normalized.committed) {
+    finishRealtimeVoiceTurn(turn, { ok: false, message: normalized.message });
+    return;
+  }
+  if (voiceInputState === "recording") {
+    setRuntimeStatus("实时链路不可用，录完后改用普通识别", { mode: "listening" });
+    return;
+  }
+  if (turn.fallbackBlob) void fallbackRealtimeVoiceToBatch(turn);
+}
+
+function armRealtimeVoiceFinalWatchdog(turn) {
+  clearRealtimeVoiceFinalWatchdog(turn);
+  if (!turn || turn.closed || turn.committed || turn.fallbackStarted) return;
+  turn.finalWatchdogId = window.setTimeout(() => {
+    turn.finalWatchdogId = 0;
+    if (
+      !turn ||
+      turn.closed ||
+      turn.committed ||
+      turn.fallbackStarted ||
+      realtimeVoiceTurn !== turn
+    ) {
+      return;
+    }
+    showBubbleText("实时识别超时，正在改用普通识别……", {
+      transient: false,
+      kind: "status"
+    });
+    markRealtimeVoiceFailure(turn, {
+      reason: "voice_realtime_final_timeout",
+      message: "实时识别超时，正在改用普通识别。",
+      terminal: true,
+      committed: false
+    });
+  }, REALTIME_VOICE_FINAL_TIMEOUT_MS);
+}
+
+function clearRealtimeVoiceFinalWatchdog(turn) {
+  if (!turn?.finalWatchdogId) return;
+  window.clearTimeout(turn.finalWatchdogId);
+  turn.finalWatchdogId = 0;
+}
+
+async function fallbackRealtimeVoiceToBatch(turn) {
+  if (!turn || turn.closed || turn.committed || turn.fallbackStarted) return;
+  const blob = turn.fallbackBlob;
+  if (!blob || blob.size < 512) {
+    finishRealtimeVoiceTurn(turn, { ok: false, message: "录音太短啦，我没听清。" });
+    return;
+  }
+  turn.fallbackStarted = true;
+  clearRealtimeVoiceFinalWatchdog(turn);
+  turn.responseActive = false;
+  sending = false;
+  turn.session?.dispose("batch_asr_fallback");
+  turn.closed = true;
+  if (realtimeVoiceTurn === turn) realtimeVoiceTurn = null;
+  const timedOut = turn.failure?.reason === "voice_realtime_final_timeout";
+  const statusText = timedOut
+    ? "实时识别超时，正在改用普通识别"
+    : "实时链路不可用，正在改用普通识别";
+  showBubbleText(`${statusText}……`, { transient: false, kind: "status" });
+  setRuntimeStatus(statusText, { mode: "thinking" });
+  try {
+    await transcribeVoiceBlob(blob, { autoSubmit: true });
+  } finally {
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+  }
+}
+
+function finishRealtimeVoiceTurn(turn, { ok, message = "", cancelled = false }) {
+  if (!turn || turn.closed || realtimeVoiceTurn !== turn) return;
+  turn.closed = true;
+  clearRealtimeVoiceFinalWatchdog(turn);
+  turn.responseActive = false;
+  turn.playbackActive = false;
+  turn.fallbackBlob = null;
+  sending = false;
+  turn.session?.dispose(cancelled ? "response_cancelled" : "response_terminal");
+  realtimeVoiceTurn = null;
+  setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+  if (!ok && !cancelled) {
+    showError(message || "这次语音回复没有生成完成。");
+  } else if (ok) {
+    if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+      setRestingPetEmotion();
+    }
+    setRuntimeStatus("语音回复完成", { mode: "idle" });
+  }
+  if (!els.bubble.classList.contains("visible")) setPetMotion("idle");
+  scheduleMusicEmotionRestore();
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+function closeRealtimeVoiceTurn(turn, reason) {
+  if (!turn || turn.closed) return;
+  const hadActiveResponse = turn.responseActive || turn.playbackActive;
+  turn.closed = true;
+  clearRealtimeVoiceFinalWatchdog(turn);
+  turn.responseActive = false;
+  turn.playbackActive = false;
+  turn.fallbackBlob = null;
+  void turn.session?.cancel(reason);
+  if (realtimeVoiceTurn === turn) realtimeVoiceTurn = null;
+  if (hadActiveResponse) {
+    sending = false;
+    if (voiceInputState === "processing") {
+      setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+    }
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+  }
+}
+
+function stopVoiceRecorderToBlob(recorder) {
+  return new Promise((resolve, reject) => {
+    const handleStop = () => {
+      cleanup();
+      const mimeType = recorder.mimeType || voiceMimeType || "audio/webm";
+      resolve(new Blob(voiceChunks, { type: mimeType }));
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("voice_recording_failed"));
+    };
+    const cleanup = () => {
+      recorder.removeEventListener("stop", handleStop);
+      recorder.removeEventListener("error", handleError);
+    };
+    recorder.addEventListener("stop", handleStop, { once: true });
+    recorder.addEventListener("error", handleError, { once: true });
+    try {
+      recorder.stop();
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
+}
+
+async function transcribeVoiceBlob(blob, { autoSubmit = false, filename = "" } = {}) {
+  const token = ++voiceInputToken;
+  setVoiceInputState("processing");
+  setPetEmotion("thinking", { persist: false });
+  setPetMotion("thinking", { durationMs: 1400 });
+  showBubbleText("我在识别语音……", { transient: false });
+  setRuntimeStatus("语音识别中", { mode: "thinking" });
+
+  const controller = new AbortController();
+  asrController = controller;
+  const timeoutId = window.setTimeout(() => controller.abort(), ASR_TIMEOUT_MS);
+  const form = new FormData();
+  form.append("file", blob, filename || getVoiceFilename(blob?.type));
+  form.append("language", "zh");
+  form.append("user_id", state.sessionId || "desktop_pet_next");
+  form.append("session_id", state.sessionId || "desktop_pet_next");
+  form.append("real_user_id", getProfileUserId());
+  form.append("client_mode", CLIENT_MODE);
+  form.append("character_pack_id", getCurrentCharacterPackId());
+
+  try {
+    const requestInit = {
+      method: "POST",
+      cache: "no-store",
+      body: form,
+      signal: controller.signal
+    };
+    if (isTauriRuntime) {
+      requestInit.connectTimeout = 30_000;
+    }
+
+    const response = await backendFetch(buildBackendEndpointUrl("asr", "/asr", { t: Date.now() }), requestInit);
+    if (token !== voiceInputToken) return;
+    const payload = await readJsonResponse(response);
+    if (token !== voiceInputToken) return;
+    if (!response.ok) {
+      throw new Error(extractBackendErrorMessage(payload) || `ASR HTTP ${response.status}`);
+    }
+
+    const text = String(payload?.text || payload?.transcript || "").trim();
+    if (!payload?.ok || !text) {
+      throw new Error(extractBackendErrorMessage(payload) || "没听清，可以再说一次。");
+    }
+
+    if (autoSubmit) {
+      showBubbleText(`听清了：${text}`, {
+        transient: false,
+        kind: "status"
+      });
+      setRuntimeStatus("语音已识别，正在发送", { mode: "thinking" });
+      await sendMessage(text);
+      return;
+    }
+
+    setChatInputText(text, { append: Boolean(els.chatInput.value.trim()) });
+    setTransientEmotion("success", { durationMs: 2600 });
+    showBubbleText("我听写好了，确认一下再发送。", {
+      transient: true,
+      durationMs: 2400,
+      kind: "status"
+    });
+    setRuntimeStatus("语音已转成文字", { mode: "idle" });
+  } catch (error) {
+    if (token === voiceInputToken && !isAbortLike(error)) {
+      showError(describeVoiceError(error));
+    }
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (asrController === controller) asrController = null;
+    if (token === voiceInputToken) {
+      setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+    }
+  }
+}
+
+async function readJsonResponse(response) {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+async function readBackendErrorMessage(response, fallback = "请求失败") {
+  const statusText = response?.status ? `HTTP ${response.status}` : fallback;
+  const contentType = String(response?.headers?.get?.("content-type") || "").toLowerCase();
+  try {
+    if (contentType.includes("json")) {
+      const payload = await response.json();
+      return extractBackendErrorMessage(payload) || statusText;
+    }
+    const text = String(await response.text()).trim();
+    if (text.startsWith("{")) {
+      try {
+        const payload = JSON.parse(text);
+        const message = extractBackendErrorMessage(payload);
+        if (message) return message;
+      } catch {
+        // Fall back to text below.
+      }
+    }
+    return text ? friendlyErrorMessage(text) : statusText;
+  } catch {
+    return statusText;
+  }
+}
+
+function extractBackendErrorMessage(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const detail = payload.detail;
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  if (detail && typeof detail === "object") {
+    const detailMessage = extractBackendErrorMessage(detail);
+    if (detailMessage) return detailMessage;
+  }
+  for (const key of ["message", "error", "reason"]) {
+    const value = String(payload[key] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function setVoiceInputState(nextState) {
+  voiceInputState = nextState;
+  updateVoiceRecordButton();
+  updateActivityControls();
+  if (!els.chatForm.hidden) scheduleChatInputAutoHide();
+  scheduleSettingsSnapshot();
+}
+
+function updateVoiceRecordButton() {
+  if (!els.voiceRecordButton) return;
+  const effectiveState = state.voiceInputEnabled ? voiceInputState : "disabled";
+  els.voiceRecordButton.classList.toggle("recording", effectiveState === "recording");
+  els.voiceRecordButton.classList.toggle("processing", effectiveState === "processing");
+  els.voiceRecordButton.disabled = effectiveState === "disabled" || effectiveState === "processing";
+  if (realtimeVoiceCall) {
+    els.voiceRecordButton.textContent = "挂";
+    els.voiceRecordButton.title = "结束语音通话";
+    els.voiceRecordButton.disabled = false;
+  } else if (effectiveState === "opening") {
+    els.voiceRecordButton.textContent = "取消";
+    els.voiceRecordButton.title = "取消打开麦克风";
+  } else if (effectiveState === "recording") {
+    els.voiceRecordButton.textContent = "停";
+    els.voiceRecordButton.title = "停止录音";
+  } else if (effectiveState === "processing") {
+    els.voiceRecordButton.textContent = "…";
+    els.voiceRecordButton.title = "正在识别语音";
+  } else {
+    els.voiceRecordButton.textContent = "麦";
+    els.voiceRecordButton.title = state.voiceInputEnabled
+      ? canUseRealtimeVoice()
+        ? "开始语音通话 Ctrl+Shift+Space"
+        : "语音输入 Ctrl+Shift+Space"
+      : "语音输入已关闭";
+  }
+}
+
+function cleanupVoiceRecorder() {
+  for (const track of voiceStream?.getTracks?.() || []) {
+    track.stop();
+  }
+  voiceRecorder = null;
+  voiceStream = null;
+  voiceChunks = [];
+  voiceStartedAt = 0;
+}
+
+function selectVoiceMimeType() {
+  if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return "";
+  return VOICE_MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function getVoiceFilename(mimeTypeValue = voiceMimeType) {
+  const mimeType = String(mimeTypeValue || "").toLowerCase();
+  if (mimeType.includes("wav")) return "akane_voice_input.wav";
+  if (mimeType.includes("ogg")) return "akane_voice_input.ogg";
+  if (mimeType.includes("mp4")) return "akane_voice_input.m4a";
+  return "akane_voice_input.webm";
+}
+
+function describeVoiceError(error) {
+  const name = String(error?.name || "");
+  if (name === "NotAllowedError" || name === "SecurityError") return "没有麦克风权限";
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") return "没有找到可用麦克风";
+  return friendlyErrorMessage(formatError(error));
+}
+
+function scheduleLocalClick() {
+  const bubbleBusy = els.bubble.classList.contains("visible") && !canLocalInteractionReplaceBubble();
+  if (sending || ttsActive || ttsQueue.length > 0 || bubbleBusy || !els.chatForm.hidden || !els.menu.hidden) {
+    return;
+  }
+  cancelLocalClick();
+  clickTimer = window.setTimeout(() => {
+    clickTimer = 0;
+    showLocalInteraction();
+  }, LOCAL_CLICK_DELAY_MS);
+}
+
+function cancelLocalClick() {
+  window.clearTimeout(clickTimer);
+  clickTimer = 0;
+}
+
+function canLocalInteractionReplaceBubble() {
+  if (!els.bubble.classList.contains("visible")) return true;
+  return localInteractionActive || (!sending && !ttsActive && ttsQueue.length === 0 && !replyDisplayActive);
+}
+
+function showLocalInteraction() {
+  if (sending || !els.chatForm.hidden) return;
+  cancelEmotionPreview({ restore: true });
+  const item = pickLocalClickLine();
+  const token = ++localInteractionToken;
+  window.clearTimeout(localInteractionTimer);
+  localInteractionActive = true;
+  setPetMotion("click", { durationMs: 680 });
+  setPetEmotion(item.emotion, { persist: false });
+  showBubbleText(item.text, { transient: true, durationMs: 2600, local: true });
+  localInteractionTimer = window.setTimeout(() => {
+    if (token !== localInteractionToken || sending) return;
+    localInteractionActive = false;
+    setRestingPetEmotion();
+    scheduleMusicEmotionRestore();
+  }, 2700);
+}
+
+function clearLocalInteraction() {
+  localInteractionToken += 1;
+  localInteractionActive = false;
+  window.clearTimeout(localInteractionTimer);
+}
+
+function pickLocalClickLine() {
+  const lines = getProfileLocalClickLines();
+  if (lines.length <= 1) {
+    lastLocalClickIndex = 0;
+    return lines[0];
+  }
+  let index = Math.floor(Math.random() * lines.length);
+  if (index === lastLocalClickIndex) {
+    index = (index + 1 + Math.floor(Math.random() * (lines.length - 1))) % lines.length;
+  }
+  lastLocalClickIndex = index;
+  return lines[index];
+}
+
+function previewEmotion(emotion) {
+  if (sending || !emotion) return false;
+  const previous = previewEmotionRestore || state.currentEmotion || getProfileDefaultEmotion();
+  const token = ++previewEmotionToken;
+  window.clearTimeout(previewEmotionTimer);
+  previewEmotionRestore = previous;
+  const resolved = setPetEmotion(emotion, { persist: false });
+  showBubbleText(`表情预览：${resolved}`, { transient: true, durationMs: 2200 });
+  previewEmotionTimer = window.setTimeout(() => {
+    if (token !== previewEmotionToken || sending) return;
+    cancelEmotionPreview({ restore: true });
+  }, 2300);
+  return true;
+}
+
+function cancelEmotionPreview({ restore = false } = {}) {
+  window.clearTimeout(previewEmotionTimer);
+  previewEmotionTimer = 0;
+  previewEmotionToken += 1;
+  const restoreEmotion = previewEmotionRestore;
+  previewEmotionRestore = "";
+  if (restore && restoreEmotion) {
+    setPetEmotion(restoreEmotion, { persist: false });
+  }
+  scheduleMusicEmotionRestore();
+}
+
+function openContextMenu(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  cancelLocalClick();
+  showMenu({ x: event.clientX, y: event.clientY, source: "pointer" });
+}
+
+function toggleMenuNear(anchor) {
+  if (!els.menu.hidden) {
+    closeMenu();
+    return;
+  }
+  const rect = anchor.getBoundingClientRect();
+  showMenu({ x: rect.right - 2, y: rect.bottom + 8, anchor, source: "anchor" });
+}
+
+function showMenu(anchor) {
+  menuAnchor = normalizeMenuAnchor(anchor);
+  els.menu.hidden = false;
+  els.menu.style.visibility = "hidden";
+  updateConnectionStatus();
+  repositionOpenMenu();
+  els.menu.style.visibility = "";
+  scheduleNativeHitTestSync({ force: true });
+}
+
+function repositionOpenMenu() {
+  if (!menuAnchor || els.menu.hidden) return;
+  const point = resolveMenuAnchorPoint(menuAnchor);
+  placeMenuInsideViewport(point.x, point.y);
+}
+
+function normalizeMenuAnchor(anchor) {
+  const source = anchor && typeof anchor === "object" ? anchor : {};
+  return {
+    x: Number(source.x) || MENU_VIEWPORT_MARGIN,
+    y: Number(source.y) || MENU_VIEWPORT_MARGIN,
+    anchor: source.anchor instanceof Element ? source.anchor : null,
+    source: source.source === "anchor" ? "anchor" : "pointer"
+  };
+}
+
+function resolveMenuAnchorPoint(anchor) {
+  if (anchor.anchor && document.documentElement.contains(anchor.anchor)) {
+    const rect = anchor.anchor.getBoundingClientRect();
+    return { x: rect.right - 2, y: rect.bottom + MENU_VIEWPORT_MARGIN };
+  }
+  return { x: anchor.x, y: anchor.y };
+}
+
+function placeMenuInsideViewport(x, y) {
+  const maxHeight = Math.max(96, Math.min(340, window.innerHeight - MENU_VIEWPORT_MARGIN * 2));
+  els.menu.style.maxHeight = `${maxHeight}px`;
+  const rect = els.menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - MENU_VIEWPORT_MARGIN;
+  const maxY = window.innerHeight - rect.height - MENU_VIEWPORT_MARGIN;
+  const left = clamp(Number(x) || MENU_VIEWPORT_MARGIN, MENU_VIEWPORT_MARGIN, Math.max(MENU_VIEWPORT_MARGIN, maxX));
+  const top = clamp(Number(y) || MENU_VIEWPORT_MARGIN, MENU_VIEWPORT_MARGIN, Math.max(MENU_VIEWPORT_MARGIN, maxY));
+  els.menu.style.left = `${Math.round(left)}px`;
+  els.menu.style.top = `${Math.round(top)}px`;
+}
+
+function closeMenu() {
+  menuAnchor = null;
+  els.menu.hidden = true;
+  els.menu.style.visibility = "";
+  scheduleNativeHitTestSync({ force: true });
+}
+
+function scheduleNativeHitTestSync({ force = false } = {}) {
+  pendingHitSyncForce = pendingHitSyncForce || force;
+  if (hitSyncFrame) return;
+
+  hitSyncFrame = window.requestAnimationFrame(() => {
+    const shouldForce = pendingHitSyncForce;
+    pendingHitSyncForce = false;
+    hitSyncFrame = 0;
+    void syncNativeHitTest({ force: shouldForce });
+  });
+}
+
+async function syncNativeHitTest({ force = false } = {}) {
+  const regions = collectHitRegions();
+  renderHitboxOverlay(regions);
+
+  const signature = JSON.stringify({
+    enabled: state.hitTestEnabled,
+    regions
+  });
+  if (!force && signature === lastHitRegionSignature) return;
+  lastHitRegionSignature = signature;
+
+  if (!isTauriRuntime) return;
+
+  await tauriCall("update_hit_regions", { regions }, { quiet: true });
+  await tauriCall("set_hit_test_enabled", { enabled: state.hitTestEnabled }, { quiet: true });
+}
+
+function collectHitRegions() {
+  const regions = [];
+  const petRegion = buildPetHitRegion();
+  if (petRegion) regions.push(petRegion);
+
+  addElementHitRegion(regions, els.toggle, "debug-toggle");
+  addElementHitRegion(regions, els.close, "close-button");
+  if (els.bubble.classList.contains("visible")) {
+    addElementHitRegion(regions, els.bubble, "speech-bubble");
+  }
+  if (!els.chatForm.hidden) {
+    addElementHitRegion(regions, els.chatForm, "chat-form");
+    const attachments = document.querySelector("#pending-attachments");
+    if (attachments && !attachments.hidden) addElementHitRegion(regions, attachments, "pending-attachments");
+  }
+  if (!els.menu.hidden) addElementHitRegion(regions, els.menu, "debug-menu");
+
+  return regions;
+}
+
+function buildPetHitRegion() {
+  const rect = rectToPhysical(els.hitbox.getBoundingClientRect());
+  if (!isUsableRect(rect)) return null;
+
+  return {
+    kind: "pet",
+    rect,
+    polygon: PET_HIT_POLYGON.map(([x, y]) => ({
+      x: Math.round(rect.x + (rect.width * x) / 100),
+      y: Math.round(rect.y + (rect.height * y) / 100)
+    }))
+  };
+}
+
+function addElementHitRegion(regions, element, kind) {
+  if (!element || element.hidden) return;
+
+  const style = window.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden") return;
+
+  const rect = rectToPhysical(element.getBoundingClientRect());
+  if (!isUsableRect(rect)) return;
+
+  regions.push({ kind, rect, polygon: [] });
+}
+
+function rectToPhysical(rect) {
+  const ratio = window.devicePixelRatio || 1;
+  return {
+    x: Math.round(rect.left * ratio),
+    y: Math.round(rect.top * ratio),
+    width: Math.round(rect.width * ratio),
+    height: Math.round(rect.height * ratio)
+  };
+}
+
+function isUsableRect(rect) {
+  return rect.width > 1 && rect.height > 1;
+}
+
+function renderHitboxOverlay(regions) {
+  if (!els.hitboxOverlay) return;
+  els.hitboxOverlay.replaceChildren();
+  if (!state.hitboxOverlay) return;
+
+  const ratio = window.devicePixelRatio || 1;
+  for (const region of regions) {
+    const marker = document.createElement("div");
+    marker.className = "hitbox-overlay-shape";
+    marker.dataset.kind = region.kind;
+    marker.style.left = `${region.rect.x / ratio}px`;
+    marker.style.top = `${region.rect.y / ratio}px`;
+    marker.style.width = `${region.rect.width / ratio}px`;
+    marker.style.height = `${region.rect.height / ratio}px`;
+
+    const clipPath = buildOverlayClipPath(region);
+    if (clipPath) marker.style.clipPath = clipPath;
+
+    els.hitboxOverlay.append(marker);
+  }
+}
+
+function buildOverlayClipPath(region) {
+  if (!Array.isArray(region.polygon) || region.polygon.length < 3) return "";
+  const width = Math.max(1, region.rect.width);
+  const height = Math.max(1, region.rect.height);
+  const points = region.polygon.map((point) => {
+    const x = ((point.x - region.rect.x) / width) * 100;
+    const y = ((point.y - region.rect.y) / height) * 100;
+    return `${x.toFixed(2)}% ${y.toFixed(2)}%`;
+  });
+  return `polygon(${points.join(", ")})`;
+}
+
+let scaleTimer = 0;
+function scheduleScaleCommit() {
+  window.clearTimeout(scaleTimer);
+  scaleTimer = window.setTimeout(commitVisualScale, 120);
+}
+
+async function commitVisualScale() {
+  const geometry = await tauriCall("set_visual_scale", { scale: state.scale });
+  if (geometry) applyWindowGeometryToState(geometry);
+  repositionOpenMenu();
+  scheduleNativeHitTestSync({ force: true });
+  scheduleSave(0);
+}
+
+function scheduleSave(delay = 500) {
+  if (!isTauriRuntime) return;
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(saveNow, delay);
+}
+
+async function saveNow() {
+  if (!isTauriRuntime) return;
+  try {
+    const geometry = await invoke("get_window_geometry");
+    applyWindowGeometryToState(geometry);
+    persistCurrentCharacterRuntimeState();
+    await invoke("save_pet_state", {
+      state: {
+        ...state,
+        care: null,
+        characters: buildCharacterRuntimeSnapshot()
+      }
+    });
+  } catch (error) {
+    setStatus(`Save failed: ${formatError(error)}`);
+  }
+}
+
+function applyWindowGeometryToState(geometry) {
+  if (!geometry || typeof geometry !== "object") return;
+  lastWindowGeometry = {
+    x: normalizeNullableInteger(geometry.x) ?? 0,
+    y: normalizeNullableInteger(geometry.y) ?? 0,
+    width: normalizePositiveInteger(geometry.width) ?? lastWindowGeometry?.width ?? Math.round(window.outerWidth || window.innerWidth || 340),
+    height: normalizePositiveInteger(geometry.height) ?? lastWindowGeometry?.height ?? Math.round(window.outerHeight || window.innerHeight || 560)
+  };
+  state.x = normalizeNullableInteger(geometry.x);
+  state.y = normalizeNullableInteger(geometry.y);
+  state.width = null;
+  state.height = null;
+}
+
+async function closePetWindow() {
+  closeMenu();
+  hideChatInput();
+  interruptReply({ announce: false });
+  await cancelVoiceRecording();
+  if (!isTauriRuntime) {
+    setStatus("Close is Tauri only");
+    return;
+  }
+
+  await saveNow();
+  await tauriCall("close_pet_app", {});
+}
+
+async function quitAkane() {
+  interruptReply({ announce: false });
+  await cancelVoiceRecording();
+  await saveNow();
+  setRuntimeStatus("正在退出 Akane…", { mode: "idle" });
+  try {
+    await invoke("quit_akane", {});
+  } catch (error) {
+    setStatus(`退出失败：${friendlyErrorMessage(formatError(error))}`);
+  }
+}
+
+async function openSettingsWindow() {
+  closeMenu();
+  if (!isTauriRuntime) {
+    setStatus("设置窗口仅 Tauri 可用");
+    return;
+  }
+  await tauriCall("open_settings_window", {});
+  scheduleSettingsSnapshot(120);
+}
+
+async function openPanelWindow() {
+  closeMenu();
+  if (!isTauriRuntime) {
+    setStatus("面板仅 Tauri 可用");
+    return;
+  }
+  await tauriCall("open_panel_window", {});
+  schedulePanelStateSync(80);
+}
+
+function buildPanelStatePayload() {
+  const control = buildActiveMediaControlSnapshot();
+  const local = control.target === MEDIA_CONTROL_TARGETS.local;
+  const media = local ? {
+    title: getMusicDisplayName(), artist: "", positionSeconds: els.musicPlayer?.currentTime,
+    durationSeconds: els.musicPlayer?.duration, playbackRate: els.musicPlayer?.playbackRate,
+  } : systemMedia || {};
+  const playing = control.isPlaying;
+  return {
+    instanceId: state.instanceId,
+    hostId: state.hostId,
+    boundBotId: state.boundBotId,
+    backendUrl: state.backendUrl,
+    characterName: getProfileIdentityText("name", CHARACTER_NAME),
+    emotion: state.currentEmotion || getProfileDefaultEmotion(),
+    avatarSrc: els.petImage?.src || "",
+    musicPlaying: playing,
+    musicTitle: media.title || "",
+    musicArtist: media.artist || "",
+    musicPosition: local ? Number(media.positionSeconds) || 0 : mediaPosition(media) || 0,
+    musicPlaybackStatus: control.playbackStatus,
+    musicPlaybackRate: Number.isFinite(media.playbackRate) ? media.playbackRate : 1,
+    musicDuration: Number(media.durationSeconds) || 0,
+    musicPositionAt: playing ? Date.now() : 0,
+    musicController: panelMusicController,
+    muted: !state.voiceEnabled,
+    scale: state.scale,
+    opacity: state.opacity,
+    careFeature: { ...getCareFeatureStatus() },
+    shopAvailable: isCareRuntimeActive() && getProfileCareConfig().shopItems.length > 0,
+  };
+}
+
+function schedulePanelStateSync(delayMs = 500) {
+  clearTimeout(panelSyncTimer);
+  panelSyncTimer = setTimeout(pushPanelStateUpdate, delayMs);
+}
+
+async function pushPanelStateUpdate() {
+  if (!isTauriRuntime) return;
+  try {
+    await emitPanelEvent("panel:state-update", buildPanelStatePayload());
+  } catch {
+    // Panel may not be open; silent failure is fine
+  }
+}
+
+async function emitPanelEvent(eventName, payload) {
+  try {
+    await emitTo("panel", eventName, payload);
+  } catch {
+    await emit(eventName, payload);
+  }
+}
+
+function getPanelProfileUserId() {
+  return String(getProfileUserId() || state.profileUserId || "master").trim() || "master";
+}
+
+function panelMusicControllerFromControls(controls) {
+  if (!controls || typeof controls !== "object") return panelMusicController;
+  const allEnabled = PANEL_MUSIC_CONTROLS.every((name) => controls[name] !== false);
+  return allEnabled ? "model" : "user";
+}
+
+function updatePanelMusicController(controller) {
+  panelMusicController = controller === "user" ? "user" : "model";
+  schedulePanelStateSync(0);
+}
+
+async function refreshPanelMusicController() {
+  if (!isTauriRuntime) return;
+  const response = await backendFetch(
+    buildBackendEndpointUrl("music_control_permissions", "/capabilities/music/control_permissions", {
+      user_id: state.sessionId || "desktop_pet_next",
+      real_user_id: getPanelProfileUserId(),
+      t: Date.now()
+    }),
+    {
+      method: "GET",
+      cache: "no-store",
+      connectTimeout: 3000
+    }
+  ).catch(() => null);
+  const payload = response?.ok ? await readJsonResponse(response) : null;
+  if (payload?.ok && payload.controls && typeof payload.controls === "object") {
+    updatePanelMusicController(panelMusicControllerFromControls(payload.controls));
+  }
+}
+
+async function setPanelMusicController(controller) {
+  if (!isTauriRuntime) return;
+  const normalized = controller === "user" ? "user" : "model";
+  const previous = panelMusicController;
+  const enabled = normalized === "model";
+  const response = await backendFetch(
+    buildBackendEndpointUrl("music_control_permissions", "/capabilities/music/control_permissions", {
+      user_id: state.sessionId || "desktop_pet_next",
+      real_user_id: getPanelProfileUserId(),
+      t: Date.now()
+    }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      connectTimeout: 3000,
+      body: JSON.stringify({
+        controls: Object.fromEntries(PANEL_MUSIC_CONTROLS.map((name) => [name, enabled]))
+      })
+    }
+  ).catch(() => null);
+  const payload = response?.ok ? await readJsonResponse(response) : null;
+  if (payload?.ok && payload.controls && typeof payload.controls === "object") {
+    updatePanelMusicController(panelMusicControllerFromControls(payload.controls));
+  } else {
+    updatePanelMusicController(previous);
+  }
+}
+
+function formatPanelRecentTrack(item) {
+  const title = String(item?.title || "").trim() || "某首歌";
+  const artist = String(item?.artist || "").trim();
+  const label = String(item?.last_listened_label || item?.timestamp_display || "").trim();
+  const main = artist ? `${title} · ${artist}` : title;
+  return label ? `${main}（${label}）` : main;
+}
+
+async function refreshPanelCoListenSummary() {
+  if (!isTauriRuntime) return;
+  const media = mediaKind(systemMedia) === "music" ? systemMedia : {};
+  const response = await backendFetch(
+    buildBackendEndpointUrl("music_co_listen_summary", "/capabilities/music/co_listen_summary", {
+      user_id: state.sessionId || "desktop_pet_next",
+      real_user_id: getPanelProfileUserId(),
+      t: Date.now()
+    }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      connectTimeout: 5000,
+      body: JSON.stringify({
+        title: String(media.title || "").trim(),
+        artist: String(media.artist || "").trim(),
+        album: String(media.album || "").trim(),
+        source_kind: media.ok ? "system_media" : "",
+        source_app: String(media.sourceApp || "").trim(),
+        system_media: Boolean(media.ok),
+        recent_limit: 5
+      })
+    }
+  ).catch(() => null);
+  const payload = response?.ok ? await readJsonResponse(response) : null;
+  if (!payload?.ok) return;
+  const recent = Array.isArray(payload.recent) ? payload.recent : [];
+  if (recent.length) {
+    const items = recent.map(formatPanelRecentTrack).filter(Boolean).slice(0, 5);
+    if (items.length) {
+      void emitPanelEvent("panel:recent-update", items);
+    }
+  }
+  if (Array.isArray(payload.enabled_music_controls)) {
+    const enabledSet = new Set(payload.enabled_music_controls.map((name) => String(name)));
+    updatePanelMusicController(
+      PANEL_MUSIC_CONTROLS.every((name) => enabledSet.has(name)) ? "model" : "user"
+    );
+  }
+}
+
+async function openWorkspaceWindow() {
+  closeMenu();
+  if (!isTauriRuntime) {
+    setStatus("手边物品窗口仅 Tauri 可用");
+    return;
+  }
+  await saveNow();
+  await tauriCall("open_workspace_window", {});
+  scheduleSettingsSnapshot(120);
+}
+
+async function openShopWindow() {
+  closeMenu();
+  if (!isCareFeatureEnabled(getCareFeatureStatus())) {
+    rejectDisabledCareAction();
+    return;
+  }
+  const careConfig = getProfileCareConfig();
+  if (!careConfig.enabled || !careConfig.shopItems.length) {
+    setStatus("这个角色还没有配置商店。", { durationMs: 2200 });
+    return;
+  }
+  if (!isTauriRuntime) {
+    setStatus("商店窗口仅 Tauri 可用");
+    return;
+  }
+  if (!isCareRuntimeActive() && !(await refreshDesktopCareState({ importLegacy: true }))) return;
+  await refreshDesktopCareState({ silent: true });
+  await saveNow();
+  await tauriCall("open_shop_window", {});
+  scheduleSettingsSnapshot(120);
+}
+
+async function openWorkshopWindow() {
+  closeMenu();
+  if (!isTauriRuntime) {
+    setStatus("角色工坊窗口仅 Tauri 可用");
+    return;
+  }
+  await saveNow();
+  await tauriCall("open_workshop_window", {});
+  scheduleSettingsSnapshot(120);
+}
+
+async function updateBackendUrlFromInput() {
+  await updateBackendUrl(els.backendUrl.value);
+}
+
+async function updateBackendUrl(value) {
+  const candidateUrl = normalizeBackendUrl(value);
+  const previousUrl = state.backendUrl;
+  if (backendSwitchPending) {
+    setStatus("正在验证另一个后端地址，请稍候。", { durationMs: 1800 });
+    els.backendUrl.value = previousUrl;
+    return false;
+  }
+
+  const switchToken = ++backendSwitchToken;
+  backendSwitchPending = true;
+  els.backendSave.disabled = true;
+  els.backendUrl.disabled = true;
+  setStatus(`正在验证实例 ${state.instanceId}。`, { durationMs: 2200 });
+  try {
+    const binding = await verifyBackendInstance(candidateUrl);
+    if (switchToken !== backendSwitchToken) return false;
+    await resetInstanceBoundRuntimeForBackendSwitch();
+    state.backendUrl = candidateUrl;
+    els.backendUrl.value = candidateUrl;
+    clearBackendRetry();
+    scheduleSave(0);
+    setStatus(`已连接实例 ${binding.instanceId}，正在加载资源。`, { durationMs: 2200 });
+    const healthy = await reloadCharacterResources({ userTriggered: true });
+    if (healthy) void ensureBackendSession();
+    return healthy;
+  } catch (error) {
+    if (switchToken === backendSwitchToken) {
+      state.backendUrl = previousUrl;
+      els.backendUrl.value = previousUrl;
+      setStatus(`拒绝切换后端：${friendlyBackendBindingError(error)}`, { mode: "error", durationMs: 4200 });
+    }
+    return false;
+  } finally {
+    if (switchToken === backendSwitchToken) {
+      backendSwitchPending = false;
+      els.backendSave.disabled = false;
+      els.backendUrl.disabled = false;
+    }
+  }
+}
+
+async function updateBoundBot(value) {
+  const nextBotId = normalizeBotId(value);
+  const previousBotId = normalizeBotId(state.boundBotId);
+  if (!nextBotId) {
+    throw new Error("invalid_bound_bot_id");
+  }
+  if (nextBotId === previousBotId) {
+    setStatus("已经在使用这个 Bot。", { durationMs: 1800 });
+    return true;
+  }
+
+  await verifyBackendInstance(state.backendUrl);
+  const catalog = await fetchBotCatalog();
+  const target = catalog.bots.find((item) => item.botId === nextBotId);
+  if (!target) throw new Error("bot_not_registered");
+  if (!target.available) throw new Error(target.reason || "bot_runtime_unavailable");
+
+  setStatus(`正在切换到 ${target.displayName || nextBotId}。`, { durationMs: 2200 });
+  await resetInstanceBoundRuntimeForBackendSwitch();
+  state.boundBotId = nextBotId;
+  validatedBotBindingKey = `${state.backendUrl.replace(/\/+$/, "")}|${nextBotId}`;
+  try {
+    const healthy = await reloadCharacterResources({ userTriggered: false, silent: true });
+    if (!healthy) throw new Error(resourceState.healthMessage || "bot_route_unavailable");
+    const session = await ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
+    if (!session) throw new Error("bot_session_unavailable");
+    await saveNow();
+    setStatus(`已切换到 ${target.displayName || nextBotId}。`, { durationMs: 2600 });
+    await broadcastSettingsSnapshot();
+    return true;
+  } catch (error) {
+    state.boundBotId = previousBotId;
+    validatedBotBindingKey = "";
+    await reloadCharacterResources({ userTriggered: false, silent: true });
+    await saveNow();
+    throw error;
+  }
+}
+
+async function fetchBotCatalog() {
+  const url = new URL("/api/bots", `${state.backendUrl.replace(/\/+$/, "")}/`);
+  url.searchParams.set("t", String(Date.now()));
+  const response = await backendFetch(url.toString(), {
+    method: "GET",
+    cache: "no-store",
+    connectTimeout: 5000
+  });
+  if (!response.ok) throw new Error(`bot_catalog_http_${response.status}`);
+  const payload = await readJsonResponse(response);
+  const bots = Array.isArray(payload?.bots)
+    ? payload.bots
+        .map((item) => ({
+          botId: normalizeBotId(item?.botId || item?.bot_id),
+          displayName: String(item?.displayName || item?.display_name || item?.botId || "").trim(),
+          available: item?.available !== false,
+          reason: String(item?.reason || "").trim()
+        }))
+        .filter((item) => item.botId)
+    : [];
+  return { bots, defaultBotId: normalizeBotId(payload?.defaultBotId || payload?.default_bot_id) };
+}
+
+async function resetInstanceBoundRuntimeForBackendSwitch() {
+  interruptReply({ announce: false });
+  await cancelVoiceRecording();
+  clearBackendRetry();
+  desktopFileDeliveryHandled.clear();
+  resourceState.manifest = null;
+  resourceState.health = "checking";
+  resourceState.healthMessage = "Verifying instance";
+  resourceState.contractVersion = "";
+  resourceState.contractSource = "unknown";
+  resourceState.capabilities = [];
+  resourceState.endpoints = {};
+  markCareAuthorityUnavailable("backend_switch");
+  updateConnectionStatus();
+}
+
+async function updateOutfitFromInput() {
+  await updateOutfit(els.outfit.value);
+}
+
+async function updateOutfit(value) {
+  const outfit = normalizeOutfitName(value);
+  state.outfit = outfit || getProfileDefaultOutfit();
+  els.outfit.value = state.outfit;
+  cancelEmotionPreview({ restore: true });
+  scheduleSave(0);
+  setStatus(`服装已设置：${state.outfit}`);
+  await reloadCharacterResources({ userTriggered: true });
+}
+
+async function refreshCharacterPacksFromSettings(value) {
+  const options = value && typeof value === "object" ? value : { selectPackId: value };
+  const refreshed = await refreshRuntimeCharacterPacks({ userTriggered: true });
+  const selectPackId = String(options.selectPackId || "").trim();
+  if (refreshed && selectPackId && options.apply !== false) {
+    await updateCharacterPack(selectPackId);
+    return;
+  }
+  if (refreshed) {
+    setStatus("角色包列表已刷新。", { durationMs: 1600 });
+  }
+}
+
+async function refreshRuntimeCharacterPacks({
+  userTriggered = false,
+  silent = false,
+  scheduleSnapshot = true
+} = {}) {
+  if (!isTauriRuntime) return false;
+  const packs = await tauriCall("list_character_packs", {}, { quiet: true });
+  if (!Array.isArray(packs)) {
+    if (!silent && userTriggered) setStatus("角色包列表刷新失败。", { durationMs: 1800 });
+    return false;
+  }
+  runtimeCharacterPacks = packs;
+  setRuntimeCharacterPacks(packs);
+  refreshLocalResourceAssets();
+  if (scheduleSnapshot) scheduleSettingsSnapshot();
+  return true;
+}
+
+async function updateCharacterPack(value) {
+  const requestedPackId = String(value || "").trim();
+  if (!requestedPackId) {
+    throw new Error("角色包 ID 不能为空。");
+  }
+  if (isTauriRuntime) {
+    await refreshRuntimeCharacterPacks({ silent: true });
+  }
+  const availablePack = listCharacterPacks().find((item) => item.id === requestedPackId);
+  if (!availablePack) {
+    throw new Error(`角色包 ${requestedPackId} 未加载，已保留当前角色。`);
+  }
+
+  const previousPackId = state.characterPackId || getActiveCharacterPackId();
+  if (isTauriRuntime) {
+    await saveNow();
+  } else {
+    persistCurrentCharacterRuntimeState(previousPackId);
+  }
+  const pack = selectCharacterPack(availablePack.id);
+  if (pack.packId !== requestedPackId) {
+    throw new Error(`角色包解析结果不一致：请求 ${requestedPackId}，得到 ${pack.packId}。`);
+  }
+  state.characterPackId = pack.packId;
+  resourceState.manifest = null;
+  resourceState.source = "character_pack";
+  refreshLocalResourceAssets();
+  applyCharacterRuntimeState(pack.packId, pack.profile);
+  applyCharacterChrome();
+  applyVisualState();
+  setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { persist: false, force: true });
+
+  if (pack.packId === previousPackId) {
+    scheduleSave(0);
+    setStatus(`角色包已是：${pack.profile.identity.name}`);
+    await reloadCharacterResources({ userTriggered: true });
+    setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { persist: false, force: true });
+    return {
+      requestedPackId,
+      activePackId: state.characterPackId,
+      characterName: pack.profile.identity.name,
+      resourceSource: resourceState.source
+    };
+  }
+
+  setStatus(`角色包已切换为 ${pack.profile.identity.name}，正在应用。`, { durationMs: 2400 });
+  if (isTauriRuntime) {
+    await saveNow();
+  }
+  await reloadCharacterResources({ userTriggered: true });
+  setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { persist: false, force: true });
+  scheduleNativeWindowStateApply({ forceHitTest: true });
+  void ensureBackendSession({ restoreLatest: state.restoreLatestOnStartup });
+  return {
+      requestedPackId,
+    activePackId: state.characterPackId,
+    characterName: pack.profile.identity.name,
+    resourceSource: resourceState.source
+  };
+}
+
+async function setAlwaysOnTop(enabled) {
+  state.alwaysOnTop = Boolean(enabled);
+  updateMenuLabels();
+  await tauriCall("set_always_on_top", { enabled: state.alwaysOnTop });
+  scheduleSave(0);
+}
+
+async function setSkipTaskbar(enabled) {
+  state.skipTaskbar = Boolean(enabled);
+  updateMenuLabels();
+  await tauriCall("set_taskbar_visible", { visible: !state.skipTaskbar });
+  scheduleSave(0);
+}
+
+async function setHitTestEnabled(enabled) {
+  state.hitTestEnabled = Boolean(enabled);
+  updateMenuLabels();
+  await tauriCall("set_hit_test_enabled", { enabled: state.hitTestEnabled });
+  scheduleNativeHitTestSync({ force: true });
+  scheduleSave(0);
+}
+
+function setHitboxOverlay(enabled) {
+  state.hitboxOverlay = Boolean(enabled);
+  applyVisualState();
+  scheduleNativeHitTestSync({ force: true });
+  scheduleSave(0);
+}
+
+function toggleWebglProbe() {
+  const enabled = !els.stage.classList.contains("show-webgl");
+  els.stage.classList.toggle("show-webgl", enabled);
+  updateMenuLabels();
+  scheduleSettingsSnapshot();
+  if (enabled) startWebglProbe();
+}
+
+async function resetWindowPlacement() {
+  Object.assign(state, {
+    x: null,
+    y: null,
+    width: null,
+    height: null,
+    scale: 1
+  });
+  applyVisualState();
+  await tauriCall("reset_window_geometry", {});
+  await tauriCall("set_hit_test_enabled", { enabled: state.hitTestEnabled });
+  scheduleNativeHitTestSync({ force: true });
+  scheduleSave(0);
+  setStatus("位置已重置");
+}
+
+async function resetVisuals() {
+  state.scale = 1;
+  state.opacity = 1;
+  applyVisualState();
+  await commitVisualScale();
+  scheduleSave(0);
+  setStatus("大小和透明度已恢复默认。", { durationMs: 1800 });
+}
+
+async function startNewSession() {
+  interruptReply({ announce: false });
+  screenObservation.clear();
+  screenObservationLastSentAt = 0;
+  state.sessionId = generateSessionId();
+  persistCurrentCharacterRuntimeState();
+  lastTurnSignature = "";
+  lastTurnTextKey = "";
+  cancelEmotionPreview({ restore: false });
+  closeMenu();
+  setPetEmotion(getProfileDefaultEmotion());
+  setRuntimeStatus("新对话", { mode: "idle" });
+  showBubbleText("新的对话已经准备好了。", { transient: true, durationMs: 2400 });
+  scheduleSave(0);
+  if (resourceState.health === "online") {
+    await ensureBackendSession();
+  }
+  updateConnectionStatus();
+}
+
+async function reloadCharacterResources({ startup = false, userTriggered = false, silent = false } = {}) {
+  resourceState.health = "checking";
+  resourceState.healthMessage = "Checking";
+  updateConnectionStatus();
+
+  const healthy = await checkBackendHealth();
+  if (!healthy) {
+    markCareAuthorityUnavailable("backend_offline");
+    useBundledResources();
+    if (canRenderCurrentLocalResources()) {
+      setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
+    } else {
+      state.currentEmotion = getProfileDefaultEmotion();
+    }
+    scheduleBackendRetry();
+    const message = "本地待机中：后端暂时连不上。";
+    if (!silent && (startup || userTriggered)) showBubbleText(message, { transient: true, durationMs: 3200 });
+    setRuntimeStatus(message, { mode: "offline" });
+    return false;
+  }
+
+  try {
+    clearBackendRetry();
+    const manifest = await fetchResourceManifest();
+    applyResourceManifest(manifest);
+    await refreshDesktopCareState({ importLegacy: true, silent });
+    setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
+    const count = getActiveEmotions().length;
+    const message = `资源已加载：${getActiveOutfit().id} / ${count}`;
+    if (!silent && userTriggered) showBubbleText(message, { transient: true });
+    if (!silent || runtimeMode === "offline" || runtimeMode === "checking") {
+      setRuntimeStatus(message, { mode: "idle" });
+    }
+    if (state.voiceEnabled) {
+      scheduleTtsPrewarm({ delayMs: startup ? 900 : 300 });
+    }
+    return true;
+  } catch (error) {
+    markCareAuthorityUnavailable("resource_reload_failed");
+    resourceState.healthMessage = formatError(error);
+    useBundledResources();
+    if (canRenderCurrentLocalResources()) {
+      setPetEmotion(state.currentEmotion || getProfileDefaultEmotion(), { force: true });
+    } else {
+      state.currentEmotion = getProfileDefaultEmotion();
+    }
+    const message = `资源暂时没拉到：${friendlyErrorMessage(formatError(error))}`;
+    if (!silent && (startup || userTriggered)) showBubbleText(message, { transient: true, durationMs: 3600 });
+    setRuntimeStatus(message, { mode: "error" });
+    return false;
+  } finally {
+    updateConnectionStatus();
+  }
+}
+
+async function verifyBackendInstance(backendUrl) {
+  const normalizedUrl = normalizeBackendUrl(backendUrl);
+  if (isTauriRuntime) {
+    const result = await invoke("verify_backend_instance", { backendUrl: normalizedUrl });
+    if (!result?.ok) {
+      const error = new Error(String(result?.reason || result?.status || "instance_verification_failed"));
+      error.bindingStatus = String(result?.status || "rejected");
+      error.bindingReason = String(result?.reason || "instance_verification_failed");
+      error.actualInstanceId = String(result?.actualInstanceId || "");
+      throw error;
+    }
+    return result;
+  }
+
+  const response = await window.fetch(`${normalizedUrl}${PUBLIC_HEALTH_PATH}`, {
+    method: "GET",
+    cache: "no-store"
+  });
+  if (!response.ok) throw new Error(`health_http_${response.status}`);
+  const payload = await response.json();
+  const actualInstanceId = String(payload?.instance_id || "").trim();
+  if (
+    String(payload?.status || "") !== "ok" ||
+    String(payload?.root_binding || "") !== "valid" ||
+    actualInstanceId !== state.hostId
+  ) {
+    const error = new Error("instance_id_mismatch");
+    error.bindingStatus = "rejected";
+    error.bindingReason = "instance_id_mismatch";
+    error.actualInstanceId = actualInstanceId;
+    throw error;
+  }
+  return { ok: true, status: "verified", reason: "", instanceId: actualInstanceId };
+}
+
+function friendlyBackendBindingError(error) {
+  const reason = String(error?.bindingReason || formatError(error) || "").trim();
+  const actual = String(error?.actualInstanceId || "").trim();
+  if (reason === "instance_id_mismatch") {
+    return actual
+      ? `目标是 Host ${actual}，当前客户端只允许 ${state.hostId}`
+      : `后端 Host 身份与 ${state.hostId} 不匹配`;
+  }
+  if (reason === "missing_admin_token") return "命名实例缺少管理凭据";
+  if (reason.includes("health") || reason.includes("connect") || reason.includes("request")) {
+    return "无法通过公开 health 验证实例身份";
+  }
+  return reason || "实例验证失败";
+}
+
+async function checkBackendHealth() {
+  try {
+    await verifyBackendInstance(state.backendUrl);
+    await ensureBoundBotRegistered();
+  } catch (error) {
+    resourceState.health = "offline";
+    resourceState.healthMessage = friendlyBackendBindingError(error);
+    resourceState.healthEndpoint = PUBLIC_HEALTH_PATH;
+    resourceState.contractSource = "instance_rejected";
+    if (String(error?.bindingReason || "") === "instance_id_mismatch") {
+      clearBackendRetry();
+    } else {
+      scheduleBackendRetry();
+    }
+    updateConnectionStatus();
+    return false;
+  }
+
+  const query = new URLSearchParams({
+    user_id: state.sessionId || "desktop_pet_next_health",
+    real_user_id: getProfileUserId(),
+    ...buildBackendCharacterContext(),
+    t: String(Date.now())
+  });
+
+  try {
+    const response = await backendFetch(buildBackendEndpointUrl("health", DESKTOP_HEALTH_PATH, query), {
+      method: "GET",
+      cache: "no-store",
+      connectTimeout: 3500
+    });
+    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+    const payload = await readJsonResponse(response);
+    applyBackendHealthPayload(payload, { endpoint: DESKTOP_HEALTH_PATH, contractSource: "desktop_pet" });
+    resourceState.health = "online";
+    resourceState.healthMessage = "Connected";
+    clearBackendRetry();
+    updateConnectionStatus();
+    return true;
+  } catch (error) {
+    resourceState.health = "offline";
+    resourceState.healthMessage = formatError(error);
+    resourceState.healthEndpoint = DESKTOP_HEALTH_PATH;
+    resourceState.contractSource = "unavailable";
+    scheduleBackendRetry();
+    updateConnectionStatus();
+    return false;
+  }
+}
+
+async function ensureBoundBotRegistered() {
+  const currentBotId = normalizeBotId(state.boundBotId);
+  const bindingKey = `${state.backendUrl.replace(/\/+$/, "")}|${currentBotId}`;
+  if (currentBotId && validatedBotBindingKey === bindingKey) return currentBotId;
+
+  const catalog = await fetchBotCatalog();
+  let target = catalog.bots.find((item) => item.botId === currentBotId);
+  if (!target) {
+    target = catalog.bots.find((item) => item.botId === catalog.defaultBotId);
+    if (!target) throw new Error("default_bot_not_registered");
+    state.boundBotId = target.botId;
+    scheduleSave(0);
+    scheduleSettingsSnapshot(0);
+  }
+  if (!target.available) throw new Error(target.reason || "bot_runtime_unavailable");
+  validatedBotBindingKey = `${state.backendUrl.replace(/\/+$/, "")}|${target.botId}`;
+  return target.botId;
+}
+
+function applyBackendHealthPayload(payload, { endpoint, contractSource } = {}) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const tts = data.tts && typeof data.tts === "object" ? data.tts : {};
+  const asr = data.asr && typeof data.asr === "object" ? data.asr : {};
+  resourceState.healthEndpoint = endpoint || DESKTOP_HEALTH_PATH;
+  resourceState.contractVersion = String(data.contract_version || data.contractVersion || "");
+  resourceState.contractSource = contractSource || (resourceState.contractVersion ? "desktop_pet" : "legacy");
+  resourceState.capabilities = Array.isArray(data.capabilities)
+    ? data.capabilities.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  resourceState.endpoints = data.endpoints && typeof data.endpoints === "object" ? { ...data.endpoints } : {};
+  resourceState.tts = {
+    enabled: typeof tts.enabled === "boolean" ? tts.enabled : null,
+    endpoint: String(tts.endpoint || resourceState.endpoints.tts || "/tts"),
+    responseMediaType: String(tts.response_media_type || tts.responseMediaType || "audio/mpeg")
+  };
+  resourceState.asr = {
+    available: Boolean(resourceState.endpoints.asr || asr.endpoint || resourceState.capabilities.includes("asr")),
+    endpoint: String(asr.endpoint || resourceState.endpoints.asr || "/asr"),
+    uploadField: String(asr.upload_field || asr.uploadField || "file")
+  };
+  applyCareFeatureStatus(resolveCareFeatureFromHealth(data));
+}
+
+function scheduleBackendRetry(delay = BACKEND_RETRY_MS) {
+  if (!isTauriRuntime || backendRetryTimer || resourceState.health === "online") return;
+  backendRetryTimer = window.setTimeout(async () => {
+    backendRetryTimer = 0;
+    const recovered = await reloadCharacterResources({ silent: true });
+    if (recovered) {
+      scheduleSave(0);
+      void ensureBackendSession();
+      if (!isReplyActive() && els.chatForm.hidden) {
+        showBubbleText("后端已经连回来了。", { transient: true, durationMs: 2200 });
+      }
+    }
+    scheduleSettingsSnapshot();
+  }, delay);
+  scheduleSettingsSnapshot();
+}
+
+function clearBackendRetry() {
+  if (!backendRetryTimer) return;
+  window.clearTimeout(backendRetryTimer);
+  backendRetryTimer = 0;
+  scheduleSettingsSnapshot();
+}
+
+async function fetchResourceManifest() {
+  const query = new URLSearchParams({
+    user_id: state.sessionId,
+    real_user_id: getProfileUserId(),
+    client: CLIENT_MODE,
+    character_pack_id: getCurrentCharacterPackId(),
+    outfit: state.outfit || getProfileDefaultOutfit(),
+    emotion: state.currentEmotion || getProfileDefaultEmotion(),
+    t: String(Date.now())
+  });
+  const response = await backendFetch(buildBackendEndpointUrl("resource_manifest", "/resource-manifest", query), {
+    method: "GET",
+    cache: "no-store",
+    connectTimeout: 5000
+  });
+  if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+  return response.json();
+}
+
+function applyResourceManifest(manifest) {
+  syncResourceContractFromManifest(manifest);
+  const outfits = Array.isArray(manifest?.characters?.outfits) ? manifest.characters.outfits : [];
+  const defaultOutfit = getManifestDefaultOutfit(manifest);
+  const outfit =
+    findEntry(outfits, state.outfit) ||
+    findEntry(outfits, defaultOutfit) ||
+    findEntry(outfits, getProfileDefaultOutfit()) ||
+    outfits[0] ||
+    null;
+
+  if (!outfit || !Array.isArray(outfit.emotions) || outfit.emotions.length === 0) {
+    throw new Error("manifest has no character emotions");
+  }
+
+  const emotions = outfit.emotions
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      ...item,
+      id: String(item.id || item.name || "").trim(),
+      name: String(item.name || item.id || "").trim(),
+      aliases: Array.isArray(item.aliases) ? item.aliases.map((alias) => String(alias || "").trim()).filter(Boolean) : [],
+      url: resolveAssetUrl(item.path || item.url || item.src, state.backendUrl)
+    }))
+    .filter((item) => item.id && item.url);
+
+  if (emotions.length === 0) {
+    throw new Error("manifest emotions have no image paths");
+  }
+
+  resourceState.manifest = manifest;
+  resourceState.outfit = {
+    ...outfit,
+    id: String(outfit.id || getProfileDefaultOutfit()),
+    name: String(outfit.name || outfit.id || getProfileDefaultOutfit()),
+    aliases: Array.isArray(outfit.aliases) ? outfit.aliases : [],
+    emotions
+  };
+  resourceState.source = "manifest";
+  resourceState.loadedAt = Date.now();
+  state.outfit = resourceState.outfit.id;
+}
+
+function syncResourceContractFromManifest(manifest) {
+  const desktop = getDesktopManifestContract(manifest);
+  if (!desktop) return;
+  resourceState.contractVersion = String(
+    desktop.contract_version || desktop.contractVersion || resourceState.contractVersion || ""
+  );
+  if (resourceState.contractVersion) {
+    resourceState.contractSource = "desktop_pet";
+  }
+}
+
+function getDesktopManifestContract(manifest) {
+  const clients = manifest?.clients;
+  if (!clients || typeof clients !== "object") return null;
+  const desktop = clients.desktop_pet;
+  return desktop && typeof desktop === "object" ? desktop : null;
+}
+
+function getManifestDefaultOutfit(manifest) {
+  const desktop = getDesktopManifestContract(manifest);
+  return String(
+    desktop?.default_outfit ||
+      desktop?.defaultOutfit ||
+      manifest?.defaults?.desktop_pet_outfit ||
+      manifest?.defaults?.outfit ||
+      getProfileDefaultOutfit()
+  );
+}
+
+function getManifestDefaultEmotion(manifest) {
+  const desktop = getDesktopManifestContract(manifest);
+  return String(
+    desktop?.default_emotion ||
+      desktop?.defaultEmotion ||
+      manifest?.defaults?.desktop_pet_emotion ||
+      manifest?.defaults?.emotion ||
+      getProfileDefaultEmotion()
+  );
+}
+
+function useBundledResources() {
+  resourceState.manifest = null;
+  resourceState.outfit = findEntry(localOutfits, state.outfit) || getDefaultLocalOutfit();
+  resourceState.source = getLocalResourceSource();
+  resourceState.loadedAt = Date.now();
+  if (!state.outfit) state.outfit = resourceState.outfit.id;
+}
+
+function canRenderCurrentLocalResources() {
+  if (resourceState.source !== "bundled") return true;
+  return canUseBundledEmotionFallback();
+}
+
+function canUseBundledEmotionFallback() {
+  const packId = normalizeEntryKey(getCurrentCharacterPackId());
+  const identityId = normalizeEntryKey(getActiveCharacterProfile()?.identity?.id);
+  return packId === "akane_v1" || identityId === "akane_v1";
+}
+
+async function ensureBackendSession({ restoreLatest = false, retriedCharacterMismatch = false } = {}) {
+  if (resourceState.health !== "online") return null;
+  try {
+    const response = await backendFetch(buildBackendEndpointUrl("session_ensure", "/sessions/ensure", { t: Date.now() }), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      connectTimeout: 5000,
+      body: JSON.stringify({
+        user_id: state.sessionId,
+        session_id: state.sessionId,
+        real_user_id: getProfileUserId(),
+        display_title: getActiveCharacterText("sessionDisplayTitle"),
+        ...buildBackendCharacterContext()
+      })
+    });
+
+    if (!response.ok) {
+      const errorPayload = await readOptionalJsonResponse(response);
+      if (response.status === 409 && !retriedCharacterMismatch && isSessionCharacterMismatch(errorPayload)) {
+        state.sessionId = generateSessionId();
+        persistCurrentCharacterRuntimeState();
+        lastTurnSignature = "";
+        lastTurnTextKey = "";
+        scheduleSave(0);
+        setRuntimeStatus("已为当前角色切换到独立会话", { mode: "idle" });
+        return ensureBackendSession({ restoreLatest: false, retriedCharacterMismatch: true });
+      }
+      throw new Error(formatBackendErrorPayload(errorPayload) || await readBackendErrorMessage(response, `HTTP ${response.status}`));
+    }
+    const bundle = await response.json();
+    if (restoreLatest && restoreLatestReply(bundle)) {
+      setRuntimeStatus("已恢复上一轮回复", { mode: "idle" });
+    } else {
+      setRuntimeStatus("后端已就绪", { mode: "idle" });
+    }
+    return bundle;
+  } catch (error) {
+    resourceState.health = "offline";
+    resourceState.healthMessage = formatError(error);
+    scheduleBackendRetry();
+    updateConnectionStatus();
+    setRuntimeStatus(`本地待机中：${friendlyErrorMessage(formatError(error))}`, { mode: "offline" });
+    return null;
+  }
+}
+
+async function readOptionalJsonResponse(response) {
+  try {
+    return await response.clone().json();
+  } catch (_error) {
+    return null;
+  }
+}
+
+function isSessionCharacterMismatch(payload) {
+  return String(payload?.error || "").trim() === "session_character_mismatch";
+}
+
+function formatBackendErrorPayload(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  return String(payload.message || payload.error || payload.status || "").trim();
+}
+
+function restoreLatestReply(bundle) {
+  const payload = bundle?.latest_final_json;
+  if (!payload || typeof payload !== "object") return false;
+  return renderPayload(payload, {
+    source: "restore",
+    speaking: false,
+    persistEmotion: false,
+    force: true
+  });
+}
+
+function scheduleSystemMediaPoll({ immediate = false } = {}) {
+  window.clearTimeout(systemMediaPollTimer);
+  systemMediaPollTimer = 0;
+  if (!isTauriRuntime) return;
+
+  const delay = immediate ? 0 : SYSTEM_MEDIA_POLL_MS;
+  systemMediaPollTimer = window.setTimeout(async () => {
+    systemMediaPollTimer = 0;
+    await refreshSystemMediaSnapshot();
+    scheduleSystemMediaPoll();
+  }, delay);
+}
+
+function refreshSystemMediaSnapshot() {
+  if (!systemMediaReadPending) {
+    systemMediaReadPending = readAndApplySystemMediaSnapshot().finally(() => { systemMediaReadPending = null; });
+  }
+  return systemMediaReadPending;
+}
+
+async function readAndApplySystemMediaSnapshot() {
+  const previous = systemMedia;
+  const snapshot = await tauriCall("get_current_system_media", {}, { quiet: true });
+  systemMedia = normalizeSystemMediaSnapshot(snapshot);
+  const trackChanged = systemMedia.trackKey !== previous.trackKey;
+  const statusChanged =
+    systemMedia.playbackStatus !== previous.playbackStatus ||
+    systemMedia.status !== previous.status ||
+    systemMedia.isPlaying !== previous.isPlaying;
+  const progressChanged = Math.abs(safePositiveSeconds(systemMedia.positionSeconds) - safePositiveSeconds(previous.positionSeconds)) >= 1.2;
+  const positionJumped = mediaPosition(previous) !== null && systemMedia.positionSeconds !== null
+    && Math.abs(systemMedia.positionSeconds - mediaPosition(previous)) > 3;
+  if (state.screenVisionEnabled && ["video", "browser_media"].includes(mediaKind(systemMedia))
+      && (trackChanged || positionJumped)) {
+    // A seek/switch invalidates the scene behind an in-flight proactive remark.
+    if (proactiveWakeRunning) interruptReply({ announce: false });
+    screenObservation.clear();
+    screenObservationLastSentAt = 0;
+    scheduleScreenVisionCapture({ immediate: true });
+  }
+  if (trackChanged) {
+    applySystemMediaLyricsForTrack(systemMedia);
+    if (previous.title && previous.trackKey && mediaKind(previous) === "music") {
+      const entry = `${previous.title}${previous.artist ? " · " + previous.artist : ""}`;
+      const idx = recentTracksHistory.indexOf(entry);
+      if (idx !== -1) recentTracksHistory.splice(idx, 1);
+      recentTracksHistory.unshift(entry);
+      if (recentTracksHistory.length > 5) recentTracksHistory.length = 5;
+      void emitPanelEvent("panel:recent-update", recentTracksHistory.slice());
+    }
+  }
+  if (isFreshSystemMedia(systemMedia) && mediaKind(systemMedia) === "music") {
+    void ensureSystemMediaLyrics(systemMedia);
+  } else if (trackChanged || statusChanged) {
+    systemMediaLyrics = emptySystemMediaLyricsSnapshot({
+      trackKey: systemMedia.trackKey || "",
+      status: systemMedia.status === "unavailable" ? "unavailable" : "not-found",
+      reason: systemMedia.reason || "system_media_unavailable"
+    });
+  }
+  if (trackChanged || statusChanged) {
+    if (isMusicEmotionSourceActive()) {
+      scheduleMusicEmotionRestore({ delayMs: 0 });
+    } else if (!musicPlaying) {
+      setMusicEmotion(false);
+    }
+  }
+  if (trackChanged || statusChanged) {
+    scheduleMusicSnapshot(120);
+  }
+  if (
+    trackChanged ||
+    statusChanged ||
+    (systemMedia.ok && progressChanged)
+  ) {
+    schedulePanelStateSync(200);
+  }
+}
+
+function emptySystemMediaSnapshot() {
+  return {
+    ok: false,
+    status: "unavailable",
+    reason: "not-polled",
+    capturedAt: 0,
+    platform: "",
+    trackKey: "",
+    title: "",
+    artist: "",
+    album: "",
+    sourceApp: "",
+    playbackStatus: "unknown",
+    isPlaying: false,
+    positionSeconds: 0,
+    durationSeconds: 0
+  };
+}
+
+function normalizeSystemMediaSnapshot(value) {
+  if (!value || typeof value !== "object") return emptySystemMediaSnapshot();
+  const title = cleanSystemMediaText(value.title, 120);
+  const artist = cleanSystemMediaText(value.artist, 100);
+  const album = cleanSystemMediaText(value.album, 120);
+  const sourceApp = cleanSystemMediaText(value.sourceApp || value.source_app, 120);
+  const playbackStatus = String(value.playbackStatus || value.playback_status || "unknown").trim().toLowerCase() || "unknown";
+  const trackKey =
+    cleanSystemMediaText(value.trackKey || value.track_key, 220) ||
+    simpleHash(`${sourceApp}|${title}|${artist}|${album}`);
+  const capturedAt = Number(value.capturedAt || value.captured_at || Date.now());
+  return {
+    ok: Boolean(value.ok) && Boolean(title || artist) && !isOwnSystemMediaSource(sourceApp),
+    status: String(value.status || "").trim().toLowerCase() || (value.ok ? "ready" : "unavailable"),
+    reason: cleanSystemMediaText(value.reason, 180),
+    capturedAt: Number.isFinite(capturedAt) ? capturedAt : Date.now(),
+    platform: cleanSystemMediaText(value.platform, 40),
+    trackKey,
+    title,
+    artist,
+    album,
+    sourceApp,
+    playbackStatus,
+    isPlaying: Boolean(value.isPlaying || value.is_playing || playbackStatus === "playing"),
+    mediaType: mediaKind(value),
+    playbackRate: Number.isFinite(Number(value.playbackRate)) && value.playbackRate != null ? Number(value.playbackRate) : 1,
+    timelineUpdatedAt: Number(value.timelineUpdatedAt || 0),
+    positionSeconds: value.positionSeconds == null && value.position_seconds == null ? null : safePositiveSeconds(value.positionSeconds ?? value.position_seconds),
+    durationSeconds: safePositiveSeconds(value.durationSeconds ?? value.duration_seconds)
+  };
+}
+
+function cleanSystemMediaText(value, limit = 120) {
+  const text = String(value || "").replace(/\x00/g, " ").replace(/\s+/g, " ").trim();
+  return limit > 0 && text.length > limit ? text.slice(0, limit) : text;
+}
+
+function safePositiveSeconds(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+}
+
+function isOwnSystemMediaSource(sourceApp) {
+  const source = String(sourceApp || "").toLowerCase();
+  return source.includes("akane_desktop_pet_next") || source.includes("akane desktop pet");
+}
+
+function isFreshSystemMedia(snapshot = systemMedia) {
+  if (!isControllableSystemMedia(snapshot)) return false;
+  return snapshot.playbackStatus !== "stopped";
+}
+
+function isControllableSystemMedia(snapshot = systemMedia) {
+  if (!snapshot?.ok || snapshot.status !== "ready") return false;
+  if (!snapshot.title && !snapshot.artist) return false;
+  if (snapshot.playbackStatus === "closed") return false;
+  const capturedAt = Number(snapshot.capturedAt || 0);
+  return capturedAt > 0 && Date.now() - capturedAt <= SYSTEM_MEDIA_MAX_AGE_MS;
+}
+
+function isMusicEmotionSourceActive() {
+  return Boolean(musicPlaying || (isFreshSystemMedia(systemMedia) && systemMedia.isPlaying && mediaKind(systemMedia) === "music"));
+}
+
+function summarizeSystemMedia(snapshot = systemMedia) {
+  return {
+    ok: Boolean(snapshot?.ok),
+    status: snapshot?.status || "unavailable",
+    reason: snapshot?.reason || "",
+    capturedAt: Number(snapshot?.capturedAt || 0),
+    platform: snapshot?.platform || "",
+    trackKey: snapshot?.trackKey || "",
+    title: snapshot?.title || "",
+    artist: snapshot?.artist || "",
+    album: snapshot?.album || "",
+    sourceApp: snapshot?.sourceApp || "",
+    playbackStatus: snapshot?.playbackStatus || "unknown",
+    isPlaying: Boolean(snapshot?.isPlaying),
+    mediaType: mediaKind(snapshot),
+    positionSeconds: mediaPosition(snapshot),
+    durationSeconds: safePositiveSeconds(snapshot?.durationSeconds),
+    fresh: isFreshSystemMedia(snapshot),
+    controllable: isControllableSystemMedia(snapshot)
+  };
+}
+
+function emptySystemMediaLyricsSnapshot(overrides = {}) {
+  return {
+    ok: false,
+    status: "unavailable",
+    reason: "not-polled",
+    trackKey: "",
+    source: "",
+    confidence: "",
+    lineCount: 0,
+    segments: [],
+    cached: false,
+    updatedAt: 0,
+    ...overrides
+  };
+}
+
+function applySystemMediaLyricsForTrack(snapshot = systemMedia) {
+  systemMediaLyricsLastAttemptAt = 0;
+  const trackKey = String(snapshot?.trackKey || "").trim();
+  if (!trackKey) {
+    systemMediaLyrics = emptySystemMediaLyricsSnapshot({ reason: "track_key_missing" });
+    return;
+  }
+  const cached = systemMediaLyricsCache.get(trackKey);
+  if (cached) {
+    systemMediaLyrics = { ...cached, cached: true, segments: Array.isArray(cached.segments) ? [...cached.segments] : [] };
+    return;
+  }
+  systemMediaLyrics = emptySystemMediaLyricsSnapshot({
+    status: "pending",
+    reason: "lyrics_lookup_pending",
+    trackKey
+  });
+}
+
+async function ensureSystemMediaLyrics(snapshot = systemMedia, options = {}) {
+  if (!isFreshSystemMedia(snapshot)) return;
+  const trackKey = String(snapshot.trackKey || "").trim();
+  if (!trackKey || !snapshot.title) return;
+  const cached = systemMediaLyricsCache.get(trackKey);
+  if (cached) {
+    if (systemMediaLyrics.trackKey !== trackKey || systemMediaLyrics.status === "pending") {
+      systemMediaLyrics = { ...cached, cached: true, segments: Array.isArray(cached.segments) ? [...cached.segments] : [] };
+      scheduleMusicSnapshot(120);
+    }
+    return;
+  }
+  const pendingRequest = systemMediaLyricsRequests.get(trackKey);
+  if (pendingRequest) return pendingRequest;
+  const now = Date.now();
+  const force = Boolean(options.force);
+  if (!force && systemMediaLyricsLastAttemptAt && now - systemMediaLyricsLastAttemptAt < SYSTEM_MEDIA_LYRICS_RETRY_MS) return;
+  if (resourceState.health !== "online") {
+    systemMediaLyrics = emptySystemMediaLyricsSnapshot({
+      status: "unavailable",
+      reason: "backend_offline",
+      trackKey
+    });
+    scheduleMusicSnapshot(120);
+    return;
+  }
+
+  systemMediaLyricsLoading = true;
+  systemMediaLyricsLastAttemptAt = now;
+  const currentTrackKey = String(systemMedia.trackKey || "").trim();
+  if (currentTrackKey === trackKey || systemMediaLyrics.trackKey === trackKey) {
+    systemMediaLyrics = {
+      ...systemMediaLyrics,
+      trackKey,
+      status: systemMediaLyrics.status === "ready" ? systemMediaLyrics.status : "pending",
+      reason: "lyrics_lookup_pending"
+    };
+  }
+  scheduleMusicSnapshot(120);
+
+  const request = (async () => {
+    try {
+      const sessionId = state.sessionId || "desktop_pet_next";
+      const profileUserId = getProfileUserId();
+      const response = await backendFetch(
+        buildBackendEndpointUrl("music_lyrics", "/capabilities/music/lyrics", {
+          user_id: sessionId,
+          session_id: sessionId,
+          real_user_id: profileUserId,
+          t: Date.now()
+        }),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({
+            user_id: sessionId,
+            session_id: sessionId,
+            real_user_id: profileUserId,
+            trackKey,
+            title: snapshot.title || "",
+            artist: snapshot.artist || "",
+            album: snapshot.album || "",
+            source: "system_media",
+            positionSeconds: safePositiveSeconds(snapshot.positionSeconds)
+          }),
+          connectTimeout: 20_000
+        }
+      );
+      const payload = await readJsonResponse(response);
+      const normalized = normalizeSystemMediaLyricsSnapshot(payload, trackKey);
+      if (normalized.status !== "pending" && normalized.status !== "unavailable") {
+        systemMediaLyricsCache.set(trackKey, normalized);
+      }
+      if (normalized.status === "disabled") {
+        systemMediaLyricsCache.set(trackKey, normalized);
+      }
+      if (String(systemMedia.trackKey || "").trim() === trackKey || systemMediaLyrics.trackKey === trackKey) {
+        systemMediaLyrics = normalized;
+      }
+      return normalized;
+    } catch {
+      const failed = emptySystemMediaLyricsSnapshot({
+        status: "unavailable",
+        reason: "lyrics_request_failed",
+        trackKey
+      });
+      if (String(systemMedia.trackKey || "").trim() === trackKey || systemMediaLyrics.trackKey === trackKey) {
+        systemMediaLyrics = failed;
+      }
+      return failed;
+    } finally {
+      systemMediaLyricsRequests.delete(trackKey);
+      systemMediaLyricsLoading = systemMediaLyricsRequests.size > 0;
+      scheduleMusicSnapshot(120);
+    }
+  })();
+  systemMediaLyricsRequests.set(trackKey, request);
+  return request;
+}
+
+function isLyricsFocusedTurnMessage(message) {
+  const text = String(message || "").trim().toLowerCase();
+  if (!text) return false;
+  return /歌词|唱到|唱的是|哪一句|这一句|当前.*(歌|音乐)|这首|正在放|播放|听/.test(text);
+}
+
+function shouldWaitForSystemMediaLyricsForTurn(message, options = {}) {
+  if (mediaKind(systemMedia) !== "music" || options.turnKind === "desktop_pet_proactive") return false;
+  if (options.waitForLyricsHydration === false) return false;
+  if (options.waitForLyricsHydration === true) return true;
+  return isLyricsFocusedTurnMessage(message);
+}
+
+function waitForSystemMediaLyrics(request, timeoutMs) {
+  if (!request || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve({ timedOut: false });
+  let timeoutId = 0;
+  return Promise.race([
+    Promise.resolve(request).then((value) => ({ timedOut: false, value })),
+    new Promise((resolve) => {
+      timeoutId = window.setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+    })
+  ]).finally(() => {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  });
+}
+
+async function hydrateSystemMediaLyricsForTurn(message, options = {}) {
+  if (!isFreshSystemMedia(systemMedia) || mediaKind(systemMedia) !== "music") return { waited: false, status: "unavailable" };
+  const trackKey = String(systemMedia.trackKey || "").trim();
+  if (!trackKey || !systemMedia.title) return { waited: false, status: "unavailable" };
+  const cached = systemMediaLyricsCache.get(trackKey);
+  if (cached) {
+    systemMediaLyrics = { ...cached, cached: true, segments: Array.isArray(cached.segments) ? [...cached.segments] : [] };
+    return { waited: false, status: "cached" };
+  }
+  if (
+    systemMediaLyrics.trackKey === trackKey &&
+    systemMediaLyrics.status === "ready" &&
+    Array.isArray(systemMediaLyrics.segments) &&
+    systemMediaLyrics.segments.length > 0
+  ) {
+    return { waited: false, status: "ready" };
+  }
+  const focused = isLyricsFocusedTurnMessage(message);
+  const shouldWait = shouldWaitForSystemMediaLyricsForTurn(message, options);
+  const timeoutMs = shouldWait
+    ? (focused ? SYSTEM_MEDIA_LYRICS_TURN_WAIT_FOCUSED_MS : SYSTEM_MEDIA_LYRICS_TURN_WAIT_MS)
+    : 0;
+  const force =
+    focused ||
+    (systemMediaLyrics.trackKey === trackKey && systemMediaLyrics.reason === "backend_offline");
+  const request = ensureSystemMediaLyrics(systemMedia, { force });
+  if (!timeoutMs) return { waited: false, status: "background" };
+  const result = await waitForSystemMediaLyrics(request, timeoutMs);
+  if (
+    result.timedOut &&
+    String(systemMedia.trackKey || "").trim() === trackKey &&
+    systemMediaLyrics.trackKey === trackKey &&
+    systemMediaLyrics.status === "pending"
+  ) {
+    systemMediaLyrics = {
+      ...systemMediaLyrics,
+      reason: "lyrics_lookup_slow",
+      updatedAt: Date.now()
+    };
+    scheduleMusicSnapshot(120);
+  }
+  return {
+    waited: true,
+    timedOut: Boolean(result.timedOut),
+    status: systemMediaLyrics.status || "unavailable"
+  };
+}
+
+function normalizeSystemMediaLyricsSnapshot(payload, fallbackTrackKey = "") {
+  const value = payload && typeof payload === "object" ? payload : {};
+  const status = String(value.status || (value.ok ? "ready" : "unavailable")).trim().toLowerCase() || "unavailable";
+  const confidence = String(value.confidence || "").trim().toLowerCase();
+  const source = cleanSystemMediaText(value.source || value.provider || "", 80);
+  const segments =
+    status === "ready" && confidence !== "low"
+      ? normalizeTimelineLyricSegments(value.segments)
+      : [];
+  return emptySystemMediaLyricsSnapshot({
+    ok: Boolean(value.ok) && status === "ready" && segments.length > 0,
+    status,
+    reason: cleanSystemMediaText(value.reason, 120),
+    trackKey: cleanSystemMediaText(value.trackKey || value.track_key || fallbackTrackKey, 220),
+    source,
+    confidence,
+    lineCount: segments.length || Number(value.lineCount || value.line_count || 0) || 0,
+    segments,
+    cached: Boolean(value.cached),
+    updatedAt: Date.now()
+  });
+}
+
+function buildSystemMediaLyricSnapshot(timeSeconds = safePositiveSeconds(systemMedia.positionSeconds)) {
+  const trackKey = String(systemMedia.trackKey || "").trim();
+  if (!trackKey || systemMediaLyrics.trackKey !== trackKey) return null;
+  const status = String(systemMediaLyrics.status || "unavailable").trim().toLowerCase();
+  const lines = Array.isArray(systemMediaLyrics.segments) ? systemMediaLyrics.segments : [];
+  if (status !== "ready" || !lines.length || systemMediaLyrics.confidence === "low") {
+    return {
+      source: systemMediaLyrics.source ? `online:${systemMediaLyrics.source}` : "online",
+      status,
+      reason: systemMediaLyrics.reason || "",
+      confidence: systemMediaLyrics.confidence || "",
+      lineCount: Number(systemMediaLyrics.lineCount || 0),
+      index: -1,
+      timeSeconds: 0,
+      text: "",
+      previousText: "",
+      nextText: ""
+    };
+  }
+  let currentIndex = -1;
+  const currentTime = Number.isFinite(timeSeconds) ? Math.max(0, timeSeconds) : 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const start = safePositiveSeconds(lines[index].timeSeconds);
+    const end = safePositiveSeconds(lines[index].endSeconds);
+    if (start <= currentTime + 0.12) currentIndex = index;
+    if (end > currentTime + 0.12) break;
+  }
+  const current = currentIndex >= 0 ? lines[currentIndex] : null;
+  const previous = currentIndex > 0 ? lines[currentIndex - 1] : null;
+  const next = lines[Math.max(0, currentIndex + 1)] || null;
+  return {
+    source: systemMediaLyrics.source ? `online:${systemMediaLyrics.source}` : "online",
+    status,
+    reason: systemMediaLyrics.reason || "",
+    confidence: systemMediaLyrics.confidence || "",
+    lineCount: lines.length,
+    index: currentIndex,
+    timeSeconds: current?.timeSeconds ?? 0,
+    text: cleanSystemMediaText(current?.text || "", 120),
+    previousText: cleanSystemMediaText(previous?.text || "", 100),
+    nextText: cleanSystemMediaText(next?.text || "", 100)
+  };
+}
+
+function summarizeSystemMediaLyrics() {
+  const lyric = buildSystemMediaLyricSnapshot();
+  if (!lyric) {
+    return {
+      ok: false,
+      status: systemMediaLyrics.status || "unavailable",
+      reason: systemMediaLyrics.reason || "",
+      source: systemMediaLyrics.source || "",
+      confidence: systemMediaLyrics.confidence || "",
+      lineCount: Number(systemMediaLyrics.lineCount || 0),
+      cached: Boolean(systemMediaLyrics.cached),
+      index: -1,
+      current: "",
+      previous: "",
+      next: ""
+    };
+  }
+  return {
+    ok: Boolean(lyric.text),
+    status: lyric.status || "unavailable",
+    reason: lyric.reason || "",
+    source: lyric.source || "",
+    confidence: lyric.confidence || "",
+    lineCount: Number(lyric.lineCount || 0),
+    cached: Boolean(systemMediaLyrics.cached),
+    index: lyric.index ?? -1,
+    current: lyric.text || "",
+    previous: lyric.previousText || "",
+    next: lyric.nextText || ""
+  };
+}
+
+function screenObservationScope() {
+  const scope = JSON.stringify([state.backendUrl, state.boundBotId, getProfileUserId(), getCurrentCharacterPackId(), state.sessionId]);
+  if (screenObservation.scope && screenObservation.scope !== scope) screenObservation.clear();
+  return scope;
+}
+
+function scheduleScreenVisionCapture({ immediate = false } = {}) {
+  window.clearTimeout(screenVisionTimer);
+  screenVisionTimer = 0;
+  if (!isTauriRuntime || !state.screenVisionEnabled) return;
+  const delay = immediate ? 0 : normalizeScreenObservationSettings(state).screenVisionSampleIntervalSec * 1000;
+  screenVisionTimer = window.setTimeout(async () => {
+    screenVisionTimer = 0;
+    try {
+      await captureScreenVisionFrame();
+    } catch (error) {
+      const nextStatus = "error";
+      const nextError = formatError(error).slice(0, 160);
+      if (screenVisionStatus !== nextStatus || screenVisionError !== nextError) {
+        screenVisionStatus = nextStatus;
+        screenVisionError = nextError;
+        scheduleSettingsSnapshot();
+      }
+    } finally {
+      scheduleScreenVisionCapture();
+    }
+  }, delay);
+}
+
+async function ensureScreenVisionCapture() {
+  if (screenVisionStream && screenVisionVideo) return true;
+  if (screenVisionCapturePending) return screenVisionCapturePending;
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    screenVisionStatus = "unsupported";
+    screenVisionError = "当前 WebView 不支持屏幕捕获";
+    return false;
+  }
+  const revision = screenVisionCaptureRevision;
+  const pending = (async () => {
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      if (!state.screenVisionEnabled || revision !== screenVisionCaptureRevision) {
+        stream.getTracks().forEach((track) => track.stop());
+        return false;
+      }
+      const video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      await video.play();
+      if (!state.screenVisionEnabled || revision !== screenVisionCaptureRevision) {
+        stream.getTracks().forEach((track) => track.stop());
+        return false;
+      }
+      screenVisionStream = stream;
+      screenVisionVideo = video;
+      screenVisionCanvas = document.createElement("canvas");
+      stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+        if (screenVisionStream !== stream) return;
+        state.screenVisionEnabled = false;
+        stopScreenVisionCapture();
+        scheduleSave(0);
+        scheduleSettingsSnapshot();
+      });
+      screenVisionStatus = "watching";
+      screenVisionError = "";
+      return true;
+    } catch (error) {
+      stream?.getTracks().forEach((track) => track.stop());
+      if (revision === screenVisionCaptureRevision) {
+        screenVisionStatus = "error";
+        screenVisionError = error?.name === "InvalidStateError"
+          ? "请在桌宠弹出的快捷菜单点击「屏幕共享」后选择共享区域（需要采集窗口中的点击授权）"
+          : formatError(error).slice(0, 160);
+        if (error?.name === "InvalidStateError") showScreenCaptureActivationPrompt();
+      }
+      return false;
+    }
+  })();
+  screenVisionCapturePending = pending;
+  try {
+    return await pending;
+  } finally {
+    if (screenVisionCapturePending === pending) screenVisionCapturePending = null;
+  }
+}
+
+function showScreenCaptureActivationPrompt() {
+  showMenu({ x: window.innerWidth - 20, y: 40, source: "pointer" });
+  if (isTauriRuntime) void currentWindow.setFocus().catch(() => {});
+}
+
+async function captureScreenVisionFrame() {
+  if (!state.screenVisionEnabled) return;
+  const revision = screenVisionCaptureRevision;
+  const scope = screenObservationScope();
+  if (!(await ensureScreenVisionCapture())) {
+    if (revision === screenVisionCaptureRevision) {
+      state.screenVisionEnabled = false;
+      screenObservation.clear();
+      screenObservationLastSentAt = 0;
+      scheduleSave(0);
+      scheduleSettingsSnapshot();
+    }
+    return;
+  }
+  if (!state.screenVisionEnabled || revision !== screenVisionCaptureRevision || scope !== screenObservationScope()) return;
+  if (!screenVisionVideo?.videoWidth || !screenVisionVideo?.videoHeight) return;
+  const frame = readCompressedScreenVisionFrame();
+  if (!frame) return;
+  screenObservation.push(frame, scope, state);
+  const statusChanged = screenVisionStatus !== "watching" || screenVisionError !== "";
+  screenVisionStatus = "watching";
+  screenVisionError = "";
+  if (statusChanged) {
+    scheduleSettingsSnapshot(120);
+  }
+}
+
+async function latestDesktopScreenFramesForThink() {
+  if (!state.screenVisionEnabled) return [];
+  const scope = screenObservationScope();
+  const revision = screenObservation.revision;
+  const frames = screenObservation.snapshot(scope, state);
+  const packed = await packScreenObservation(frames, state);
+  if (!state.screenVisionEnabled || scope !== screenObservationScope() || revision !== screenObservation.revision) return [];
+  return packed;
+}
+
+function readCompressedScreenVisionFrame() {
+  const sourceWidth = screenVisionVideo.videoWidth;
+  const sourceHeight = screenVisionVideo.videoHeight;
+  if (!sourceWidth || !sourceHeight) return null;
+  const maxEdge = normalizeScreenObservationSettings(state).screenVisionMaxEdge;
+  const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  screenVisionCanvas.width = width;
+  screenVisionCanvas.height = height;
+  const ctx = screenVisionCanvas.getContext("2d", { alpha: false });
+  if (!ctx) throw new Error("screen_canvas_unavailable");
+  ctx.drawImage(screenVisionVideo, 0, 0, width, height);
+  return {
+    captured_at: Date.now() / 1000,
+    width,
+    height,
+    data_url: screenVisionCanvas.toDataURL("image/jpeg", SCREEN_VISION_JPEG_QUALITY)
+  };
+}
+
+function stopScreenVisionCapture() {
+  screenVisionCaptureRevision += 1;
+  window.clearTimeout(screenVisionTimer);
+  screenVisionTimer = 0;
+  const stream = screenVisionStream;
+  screenVisionStream = null;
+  stream?.getTracks().forEach((track) => track.stop());
+  screenVisionVideo = null;
+  screenVisionCanvas = null;
+  screenObservation.clear();
+  screenObservationLastSentAt = 0;
+  screenVisionStatus = "off";
+}
+
+function clearScreenVisionWorkspace({ quiet = false } = {}) {
+  screenObservation.clear();
+  screenObservationLastSentAt = 0;
+  if (!quiet) setRuntimeStatus("最近屏幕画面已清空", { mode: "idle" });
+  scheduleSettingsSnapshot();
+}
+
+function interruptReply({ announce = false, reason = "user_stopped_reply" } = {}) {
+  const hadActivity = isReplyActive();
+  if (announce && sending) {
+    void requestActiveTurnStop(reason);
+    showBubbleText("正在请求停止当前任务……", {
+      transient: true,
+      durationMs: 1800
+    });
+    setRuntimeStatus("正在请求停止", { mode: "stopping" });
+    updateActivityControls();
+    return true;
+  }
+  if (!announce && sending) {
+    // Lifecycle takeovers still discard local presentation immediately, but
+    // must not leave the host turn alive.
+    void requestActiveTurnStop(reason);
+  }
+  activeTurnToken += 1;
+  sending = false;
+  proactiveWakeRunning = false;
+
+  if (hasRealtimeVoiceCallPlayback() || hasRealtimeVoiceCallCommittedTurn()) {
+    void cancelRealtimeVoiceCallResponse(reason);
+  }
+
+  if (
+    realtimeVoiceTurn?.responseActive ||
+    realtimeVoiceTurn?.playbackActive ||
+    voiceInputState === "processing"
+  ) {
+    closeRealtimeVoiceTurn(realtimeVoiceTurn, reason);
+    setVoiceInputState(state.voiceInputEnabled ? "idle" : "disabled");
+  }
+
+  if (thinkController) {
+    thinkController.abort();
+    thinkController = null;
+  }
+
+  cancelTtsPrewarm();
+  stopTts();
+  clearLocalInteraction();
+  lastTurnSignature = "";
+  lastTurnTextKey = "";
+  resetStreamingTtsState();
+  resetStreamedReplySegments();
+  desktopFileDeliveryHandled.clear();
+  window.clearTimeout(bubbleTimer);
+  window.clearTimeout(segmentTimer);
+  bubbleToken += 1;
+  bubbleKind = "none";
+  replyDisplayActive = false;
+
+  if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+    setRestingPetEmotion();
+  }
+  setPetMotion("idle");
+  scheduleMusicEmotionRestore();
+
+  if (announce) {
+    showBubbleText(hadActivity ? "已停止回复。" : "现在没有正在回复的内容。", {
+      transient: true,
+      durationMs: hadActivity ? 1800 : 1500
+    });
+    setRuntimeStatus(hadActivity ? "已停止回复" : "空闲中", { mode: hadActivity ? "stopped" : "idle" });
+  } else {
+    hideBubble();
+  }
+
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+  return hadActivity;
+}
+
+function isTurnActive(turnToken) {
+  return turnToken === activeTurnToken;
+}
+
+function isReplyActive() {
+  return (
+    sending ||
+    ttsActive ||
+    ttsQueue.length > 0 ||
+    replyDisplayActive ||
+    Boolean(realtimeVoiceTurn?.responseActive) ||
+    Boolean(realtimeVoiceTurn?.playbackActive) ||
+    hasRealtimeVoiceCallPlayback() ||
+    getRealtimeVoiceCallTurns().some((turn) => turn.responseActive)
+  );
+}
+
+function isAbortLike(error) {
+  const name = String(error?.name || "").toLowerCase();
+  const message = formatError(error).toLowerCase();
+  return name === "aborterror" || message.includes("abort") || message.includes("cancel");
+}
+
+function nowForTurnLatency() {
+  return window.performance?.now ? window.performance.now() : Date.now();
+}
+
+function isTurnLatencyDebugEnabled() {
+  try {
+    const storage = window.localStorage;
+    return storage?.getItem("akane.debug.turn") === "1" || storage?.getItem("akane.debug.latency") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function createTurnLatencyTrace(kind, turnToken, details = {}) {
+  if (!isTurnLatencyDebugEnabled()) return null;
+  const startedAt = nowForTurnLatency();
+  const seen = new Set();
+  const trace = {
+    turnToken,
+    mark(event, eventDetails = {}) {
+      if (!isTurnActive(turnToken)) return;
+      const elapsedMs = Math.round((nowForTurnLatency() - startedAt) * 10) / 10;
+      console.debug("[Akane Turn]", event, {
+        ms: elapsedMs,
+        kind,
+        turnToken,
+        ...details,
+        ...eventDetails
+      });
+    },
+    markOnce(event, eventDetails = {}) {
+      if (seen.has(event)) return;
+      seen.add(event);
+      trace.mark(event, eventDetails);
+    }
+  };
+  trace.mark("turn-created");
+  return trace;
+}
+
+function markTurnLatency(event, details = {}) {
+  activeTurnLatencyTrace?.mark(event, details);
+}
+
+function markTurnLatencyOnce(event, details = {}) {
+  activeTurnLatencyTrace?.markOnce(event, details);
+}
+
+function finishTurnLatencyTrace(turnToken) {
+  if (activeTurnLatencyTrace?.turnToken === turnToken) {
+    activeTurnLatencyTrace = null;
+  }
+}
+
+async function sendMessage(text) {
+  if (pendingAttachments.importing()) {
+    restoreFailedInput(String(text || ""));
+    setRuntimeStatus("附件正在接收，完成后再发送。", { mode: "working" });
+    return false;
+  }
+  const trimmed = String(text || "").trim() || (pendingAttachments.list().length ? "请查看这些附件。" : "");
+  if (!trimmed) return;
+  const attachmentBatch = pendingAttachments.take();
+  const attachmentIds = attachmentBatch.items.map(item => item.attachmentId);
+
+  rememberInputHistory(trimmed);
+  if (proactiveWakeRunning) interruptReply({ announce: false });
+  if (sending) {
+    const accepted = await submitTurnSteer(trimmed, attachmentIds);
+    if (!accepted && !pendingAttachments.restore(attachmentBatch) && pendingAttachments.scope() === attachmentBatch.scope) {
+      setRuntimeStatus("追加未成功；待发送区已满，原附件仍保留在工作台。", { mode: "error" });
+    }
+    return accepted;
+  }
+  interruptReply({ announce: false });
+  const turnToken = ++activeTurnToken;
+  activeTurnLatencyTrace = createTurnLatencyTrace("user", turnToken, { messageLength: trimmed.length });
+  sending = true;
+  let restoreText = "";
+  cancelEmotionPreview({ restore: true });
+  clearLocalInteraction();
+  lastTurnSignature = "";
+  lastTurnTextKey = "";
+  resetStreamingTtsState(turnToken);
+  desktopFileDeliveryHandled.clear();
+  showThinking();
+  markTurnLatency("thinking-shown");
+  scheduleSettingsSnapshot();
+
+  try {
+    if (resourceState.health !== "online") {
+      markTurnLatency("resource-reload-start", { health: resourceState.health });
+      const healthy = await reloadCharacterResources();
+      markTurnLatency("resource-reload-finished", { healthy, health: resourceState.health });
+      if (!healthy) throw new Error("后端未连接");
+    }
+    if (!isTurnActive(turnToken)) return;
+    if (pendingAttachments.scope() !== attachmentBatch.scope) return;
+    const stream = sendThinkStream(trimmed, turnToken, { attachmentIds });
+    const rendered = await processThinkStream(stream, turnToken);
+    if (!rendered) throw new Error("未收到回复");
+  } catch (error) {
+    if (!isTurnActive(turnToken)) return;
+    restoreText = trimmed;
+    const restored = pendingAttachments.restore(attachmentBatch);
+    const attachmentNotice = !restored && pendingAttachments.scope() === attachmentBatch.scope
+      ? "；待发送区已满，原附件仍保留在工作台。" : "";
+    showError((isAbortLike(error) ? "请求超时" : formatError(error)) + attachmentNotice);
+  } finally {
+    markTurnLatency("turn-finished");
+    if (isTurnActive(turnToken)) {
+      sending = false;
+      if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+        setRestingPetEmotion();
+      }
+      if (!els.bubble.classList.contains("visible")) {
+        setPetMotion("idle");
+      }
+      scheduleMusicEmotionRestore();
+      if (restoreText) {
+        restoreFailedInput(restoreText);
+      }
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+    }
+    finishTurnLatencyTrace(turnToken);
+  }
+}
+
+function createDesktopSourceMessageId() {
+  return typeof globalThis.crypto?.randomUUID === "function"
+    ? `desktop:${globalThis.crypto.randomUUID()}`
+    : `desktop:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+}
+
+function buildTurnControlPayload(message = "", attachmentIds = []) {
+  return {
+    user_id: state.sessionId,
+    real_user_id: getProfileUserId(),
+    actor_stable_id: `desktop:${getProfileUserId()}`,
+    actor_display_name: "",
+    source_message_id: createDesktopSourceMessageId(),
+    message: String(message || "").trim(),
+    current_attachment_ids: attachmentIds,
+    timestamp: Math.floor(Date.now() / 1000),
+    client_mode: CLIENT_MODE,
+    client_capabilities: buildClientCapabilities(),
+    character_pack_id: getCurrentCharacterPackId(),
+    current_visual: buildCurrentVisual(),
+    desktop_activity: buildDesktopMusicActivity()
+  };
+}
+
+async function postTurnControl(action, message = "", attachmentIds = []) {
+  const response = await backendFetch(
+    buildBackendEndpointUrl(`think_${action}`, `/think/${action}`, { t: Date.now() }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(buildTurnControlPayload(message, attachmentIds))
+    }
+  );
+  let result = {};
+  try {
+    result = await response.json();
+  } catch {
+    result = {};
+  }
+  return { response, result };
+}
+
+async function submitTurnSteer(message, attachmentIds = []) {
+  try {
+    const { response, result } = await postTurnControl("steer", message, attachmentIds);
+    if (!response.ok || !result?.ok) {
+      restoreFailedInput(message);
+      const reason = String(result?.reason || "active_turn_unavailable");
+      const text = reason === "active_turn_finalizing"
+        ? "当前任务正在收尾，这条还没有加入；我已放回输入框。"
+        : "这条调整暂时没有加入当前任务，我已放回输入框。";
+      showBubbleText(text, { transient: true, durationMs: 2200, kind: "status" });
+      setRuntimeStatus(text, { mode: "error" });
+      return false;
+    }
+    setRuntimeStatus("已追加任务要求", { mode: "working" });
+    return true;
+  } catch (error) {
+    restoreFailedInput(message);
+    const text = `追加失败：${formatError(error)}`;
+    showBubbleText(text, { transient: true, durationMs: 2200, kind: "status" });
+    setRuntimeStatus(text, { mode: "error" });
+    return false;
+  }
+}
+
+async function requestActiveTurnStop(reason = "user_stopped_reply") {
+  try {
+    const { response, result } = await postTurnControl("stop", reason);
+    if (!response.ok || !result?.ok) {
+      setRuntimeStatus("当前任务未能收到停止请求", { mode: "error" });
+      return false;
+    }
+    setRuntimeStatus("停止请求已送达，等待安全结束", { mode: "stopping" });
+    return true;
+  } catch (error) {
+    setRuntimeStatus(`停止请求失败：${formatError(error)}`, { mode: "error" });
+    return false;
+  }
+}
+
+async function prepareProactiveObservation() {
+  if (!isTauriRuntime || !state.proactiveWakeEnabled || resourceState.health !== "online") return;
+  const scope = screenObservationScope();
+  const pending = proactivePreparation.begin(scope, async () => {
+    const request = backendFetch(buildBackendEndpointUrl("tool_exposure", "/capabilities/tool-exposure", {
+      user_id: state.sessionId, real_user_id: getProfileUserId(), character_pack_id: getCurrentCharacterPackId()
+    }), { method: "GET", cache: "no-store", connectTimeout: 5000 }).then(async (response) => {
+      const payload = await readJsonResponse(response);
+      if (!response.ok || !payload?.ok) throw Error("观察能力准备失败，正式请求时会重试");
+    });
+    const result = await waitForSystemMediaLyrics(request, 30000);
+    if (result.timedOut) throw Error("观察能力准备超过 30 秒，首次请求仍可能较慢");
+  });
+  scheduleSettingsSnapshot();
+  await pending;
+  if (scope === screenObservationScope()) scheduleSettingsSnapshot();
+}
+
+function scheduleProactiveWake({ immediate = false, delayMs = null } = {}) {
+  window.clearTimeout(proactiveWakeTimer);
+  proactiveWakeTimer = 0;
+  if (!isTauriRuntime || !state.proactiveWakeEnabled) return;
+  const now = Date.now();
+  const delay = proactiveWakeDelay({ now, nextAllowedAt: proactiveWakeNextAllowedAt, intervalMs: getProactiveWakeIntervalMs(), immediate, delayMs });
+  proactiveWakeTimer = window.setTimeout(() => {
+    proactiveWakeTimer = 0;
+    void runProactiveWake();
+  }, delay);
+}
+
+async function runProactiveWake() {
+  if (!state.proactiveWakeEnabled) return;
+  if (resourceState.health === "online" && proactivePreparation.scope !== screenObservationScope()) void prepareProactiveObservation();
+  if (proactivePreparation.status === "preparing") {
+    scheduleProactiveWake({ delayMs: PROACTIVE_WAKE_RETRY_MS });
+    return;
+  }
+  const remainingMs = proactiveWakeNextAllowedAt - Date.now();
+  if (remainingMs > 0) {
+    scheduleProactiveWake({ delayMs: remainingMs });
+    return;
+  }
+  if (state.screenVisionEnabled && (!screenObservation.ready(screenObservationScope(), state)
+      || (state.screenVisionPacking === "contact_sheet" && state.screenVisionSheetCount > 1
+        && Date.now() - screenObservationLastSentAt < observationDuration(state) * 1000))) {
+    scheduleProactiveWake({ delayMs: normalizeScreenObservationSettings(state).screenVisionSampleIntervalSec * 1000 });
+    return;
+  }
+  if (!canStartProactiveWake()) {
+    scheduleProactiveWake({ delayMs: Math.max(PROACTIVE_WAKE_RETRY_MS, getProactiveWakeRemainingMs()) });
+    return;
+  }
+  await sendProactiveWake();
+  scheduleProactiveWake();
+}
+
+function getProactiveWakeIntervalMs() {
+  return normalizeProactiveWakeIntervalSec(state.proactiveWakeIntervalSec) * 1000;
+}
+
+function getProactiveWakeRemainingMs() {
+  return Math.max(0, proactiveWakeNextAllowedAt - Date.now());
+}
+
+function canStartProactiveWake() {
+  if (sceneOwnsPlayback()) return false;
+  if (proactiveWakeRunning || sending || ttsActive || ttsQueue.length > 0 || replyDisplayActive) return false;
+  if (["opening", "recording", "processing"].includes(voiceInputState)) return false;
+  if (!els.chatForm.hidden || !els.menu.hidden) return false;
+  if (localInteractionActive) return false;
+  const bubbleVisible = els.bubble.classList.contains("visible");
+  if (bubbleVisible && !["status", "vision", "none"].includes(bubbleKind)) return false;
+  return true;
+}
+
+async function sendProactiveWake() {
+  const turnToken = ++activeTurnToken;
+  let didReply = false;
+  activeTurnLatencyTrace = createTurnLatencyTrace("proactive", turnToken);
+  const startedAt = Date.now();
+  proactiveWakeLastAt = startedAt;
+  proactiveWakeNextAllowedAt = startedAt + getProactiveWakeIntervalMs();
+  proactiveWakeRunning = true;
+  sending = true;
+  lastTurnSignature = "";
+  lastTurnTextKey = "";
+  resetStreamingTtsState(turnToken);
+  desktopFileDeliveryHandled.clear();
+  scheduleSettingsSnapshot();
+
+  try {
+    if (resourceState.health !== "online") {
+      markTurnLatency("resource-reload-start", { health: resourceState.health });
+      const healthy = await reloadCharacterResources({ silent: true });
+      markTurnLatency("resource-reload-finished", { healthy, health: resourceState.health });
+      if (!healthy) return;
+    }
+    if (!isTurnActive(turnToken)) return;
+    const desktopScreenFrames = await latestDesktopScreenFramesForThink();
+    if (!isTurnActive(turnToken)) return;
+    if (state.screenVisionEnabled && !desktopScreenFrames.length) {
+      screenVisionStatus = screenVisionError ? "error" : "waiting";
+      scheduleSettingsSnapshot();
+      return;
+    }
+    screenObservationLastSentAt = Date.now();
+    const stream = sendThinkStream(buildProactiveWakeMessage(), turnToken, {
+      turnKind: "desktop_pet_proactive",
+      transientUserMessage: true,
+      desktopScreenFrames
+    });
+    didReply = await processThinkStream(stream, turnToken, { backgroundObservation: true });
+    proactiveWakeLastAt = startedAt;
+  } catch (error) {
+    if (!isTurnActive(turnToken) || isAbortLike(error)) return;
+    setRuntimeStatus(`主动搭话暂时失败：${formatError(error)}`, { mode: "error" });
+  } finally {
+    markTurnLatency("turn-finished");
+    if (isTurnActive(turnToken)) {
+      proactiveWakeRunning = false;
+      sending = false;
+      if (didReply && state.currentEmotion === resolveEmotionEntry("thinking").id) {
+        setRestingPetEmotion();
+      }
+      if (didReply && !els.bubble.classList.contains("visible")) {
+        setPetMotion("idle");
+      }
+      if (didReply) scheduleMusicEmotionRestore();
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+    }
+    finishTurnLatencyTrace(turnToken);
+  }
+}
+
+function buildProactiveWakeMessage() {
+  const prompt = getActiveCharacterText(
+    "proactiveWakePrompt",
+    "主人暂时没有说话。你像坐在旁边陪他一样，自然地轻声搭一句话。"
+  );
+  return `角色搭话风格参考（不代表必须开口）：\n${prompt}\n\n${MODERATE_PROACTIVE_PROMPT}`;
+}
+
+async function* readNdjsonEvents(response) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // Fallback: response body streaming not available.
+    const raw = await response.text();
+    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const tail = !lines.length && raw.trim() ? [raw.trim()] : [];
+    for (const line of [...lines, ...tail]) {
+      try { yield JSON.parse(line); } catch { /* skip */ }
+    }
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const segments = buffer.split(/\r?\n/);
+    buffer = segments.pop() || "";
+
+    for (const segment of segments) {
+      const trimmed = segment.trim();
+      if (!trimmed) continue;
+      try {
+        yield JSON.parse(trimmed);
+      } catch {
+        // Skip malformed stream lines.
+      }
+    }
+  }
+
+  buffer += decoder.decode();
+  const tail = buffer.trim();
+  if (tail) {
+    try { yield JSON.parse(tail); } catch { /* skip */ }
+  }
+}
+
+async function* sendThinkStream(message, turnToken, options = {}) {
+  const controller = new AbortController();
+  thinkController = controller;
+  const timeoutId = window.setTimeout(() => controller.abort(), THINK_TIMEOUT_MS);
+  markTurnLatency("turn-context-start");
+  if (isTauriRuntime) {
+    await waitForSystemMediaLyrics(refreshSystemMediaSnapshot(), 500);
+    markTurnLatency("media-snapshot-ready");
+  }
+  const lyricsHydrationPromise = hydrateSystemMediaLyricsForTurn(message, options)
+    .then((result) => {
+      markTurnLatency("lyrics-hydration-ready", {
+        waited: Boolean(result?.waited),
+        timedOut: Boolean(result?.timedOut),
+        status: String(result?.status || systemMediaLyrics.status || "")
+      });
+      return result;
+    })
+    .catch((error) => {
+      markTurnLatency("lyrics-hydration-error", { error: formatError(error).slice(0, 120) });
+      return { waited: false, status: "error" };
+    });
+  if (shouldWaitForSystemMediaLyricsForTurn(message, options)) {
+    await lyricsHydrationPromise;
+  } else {
+    markTurnLatency("lyrics-hydration-background");
+  }
+  if (!isTurnActive(turnToken)) {
+    window.clearTimeout(timeoutId);
+    if (thinkController === controller) thinkController = null;
+    return;
+  }
+  let desktopScreenFrames;
+  try {
+    desktopScreenFrames = Array.isArray(options.desktopScreenFrames)
+      ? options.desktopScreenFrames
+      : await latestDesktopScreenFramesForThink();
+  } catch (error) {
+    window.clearTimeout(timeoutId);
+    if (thinkController === controller) thinkController = null;
+    throw error;
+  }
+  if (!isTurnActive(turnToken)) {
+    window.clearTimeout(timeoutId);
+    if (thinkController === controller) thinkController = null;
+    return;
+  }
+  const requestPayload = attachDesktopCareContext({
+    user_id: state.sessionId,
+    real_user_id: getProfileUserId(),
+    source_message_id: createDesktopSourceMessageId(),
+    message,
+    turn_kind: String(options.turnKind || ""),
+    ...(Array.isArray(options.attachmentIds) ? { current_attachment_ids: options.attachmentIds } : {}),
+    transient_user_message: Boolean(options.transientUserMessage),
+    client_mode: CLIENT_MODE,
+    character_pack_id: getCurrentCharacterPackId(),
+    client_capabilities: buildClientCapabilities(),
+    current_visual: buildCurrentVisual(),
+    desktop_screen_frames: desktopScreenFrames,
+    desktop_activity: buildDesktopMusicActivity({ excludePaused: desktopScreenFrames.length > 0 || options.turnKind === "desktop_pet_proactive" })
+  }, buildDesktopCareContext(), getCareFeatureStatus());
+  const requestInit = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify(requestPayload)
+  };
+
+  if (isTauriRuntime) {
+    requestInit.connectTimeout = 30_000;
+  } else {
+    requestInit.signal = controller.signal;
+  }
+
+  let response;
+  try {
+    markTurnLatency("think-request-start");
+    response = await backendFetch(buildBackendEndpointUrl("think", "/think", { t: Date.now() }), requestInit);
+    markTurnLatency("think-response-headers", { status: response.status });
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (thinkController === controller) thinkController = null;
+  }
+
+  if (!isTurnActive(turnToken)) return;
+  if (!response.ok) {
+    throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+  }
+
+  for await (const event of readNdjsonEvents(response)) {
+    if (!isTurnActive(turnToken)) return;
+    yield event;
+  }
+}
+
+async function processThinkStream(stream, turnToken, { backgroundObservation = false } = {}) {
+  let partialSpeech = "";
+  let rendered = false;
+  let streamErrored = false;
+  let streamErrorMessage = "";
+  const speechReplay = new SpeechStageReplay();
+  let acceptedSpeechIndex = 0;
+  resetStreamedReplySegments(turnToken);
+
+  for await (const event of stream) {
+    if (!isTurnActive(turnToken)) return false;
+    const type = String(event?.type || "").trim().toLowerCase();
+
+    if (type === "turn_start") {
+      markTurnLatency("stream-turn-start");
+      if (!rendered && !backgroundObservation) {
+        showThinking();
+      }
+    } else if (type === "ui") {
+      if (!backgroundObservation || rendered) applyPayloadEmotion(event);
+    } else if (type === "speech_chunk") {
+      const chunk = String(event?.text || "");
+      if (chunk) {
+        partialSpeech += chunk;
+        // Keep chunks as transport progress only. They are not stable display
+        // units and may end halfway through a sentence. The authoritative
+        // speech_segment events below own stable sentence delivery.
+      }
+    } else if (type === "speech_segment") {
+      const text = speechReplay.push(event?.text, event?.index);
+      if (!text) continue;
+      if (text) markTurnLatencyOnce("first-speech-segment", { chars: text.length, index: event?.index });
+      if (queueStreamedReplySegment(text, turnToken)) rendered = true;
+      queueStreamedTtsSegment(text, turnToken, acceptedSpeechIndex++);
+    } else if (type === "assistant_stage_decision") {
+      speechReplay.finishStage();
+    } else if (type === "speech_reset") {
+      partialSpeech = String(event?.speech || "");
+    } else if (type === "file_ready" || type === "generated_file_ready") {
+      void handleDesktopFileDeliveryEvent(event);
+    } else if (type === "browser_open_requested") {
+      void handleBrowserOpenEvent(event);
+    } else if (type === "assistant_working") {
+      showToolWorking(event, { hasShownReply: rendered });
+    } else if (type === "turn_steer_applied") {
+      setRuntimeStatus("已按新增要求继续处理", { mode: "working" });
+    } else if (type === "turn_steer_failed") {
+      setRuntimeStatus("新增要求未能写入当前上下文", { mode: "error" });
+    } else if (type === "turn_stopped") {
+      rendered = true;
+      showBubbleText("当前任务已停止。", { transient: true, durationMs: 1800, kind: "status" });
+      setRuntimeStatus("当前任务已停止", { mode: "stopped" });
+    } else if (type === "turn_queued") {
+      rendered = true;
+      const text = event?.status === "duplicate"
+        ? "这条消息已经收到，正在按顺序处理。"
+        : "这条消息已排队，稍后会继续回复。";
+      showBubbleText(text, { transient: true, durationMs: 2200, kind: "status" });
+      setRuntimeStatus(text, { mode: "working" });
+    } else if (type === "final" || type === "final_ui") {
+      const payload = event?.payload || event;
+      if (payload?._deliberate_silence) {
+        partialSpeech = "";
+        continue;
+      }
+      const canonicalSpeech = String(payload?.speech || payload?.text || "").trim();
+      const finalSegments = canonicalSpeech
+        ? splitSpeechText(canonicalSpeech)
+        : normalizeSegments(payload?.speech_segments || payload?.segments);
+      for (const segment of missingFinalReplySegments(finalSegments)) {
+        if (queueStreamedReplySegment(segment, turnToken)) {
+          rendered = true;
+          queueStreamedTtsSegment(segment, turnToken);
+        }
+      }
+      const hasStreamedReply = streamedReplyTexts.length > 0;
+      if (renderPayload(payload, { suppressSpeech: hasStreamedReply, turnToken })) {
+        rendered = true;
+      }
+    } else if (type === "npc_turn") {
+      if (!rendered && renderPayload(event, { turnToken })) {
+        rendered = true;
+      }
+    } else if (type === "stream_error" || type === "error") {
+      streamErrored = true;
+      streamErrorMessage = String(event?.message || "Stream error");
+      if (event?.partial && !rendered) {
+        if (renderPayload(event.partial, { turnToken })) rendered = true;
+      }
+    } else if (type === "stream_end") {
+      flushStreamingTtsPending({ turnToken });
+      if (event?.partial && !rendered) {
+        if (renderPayload(event.partial, { turnToken })) rendered = true;
+      }
+    }
+  }
+
+  if (!isTurnActive(turnToken)) return false;
+  flushStreamingTtsPending({ turnToken });
+  if (!rendered && partialSpeech.trim()) {
+    rendered = renderPayload({ speech: partialSpeech.trim() }, { turnToken });
+  }
+
+  if (!rendered && streamErrored) {
+    throw new Error(streamErrorMessage || "未收到完整回应");
+  }
+  if (!rendered && bubbleKind === "thinking") {
+    hideBubble();
+  }
+  return rendered;
+}
+
+function renderPayload(
+  payload,
+  {
+    source = "live",
+    speaking = source === "live",
+    persistEmotion = true,
+    force = false,
+    suppressSpeech = false,
+    turnToken = 0
+  } = {}
+) {
+  if (!payload || typeof payload !== "object") return false;
+  if (payload._deliberate_silence) return false;
+  applyPayloadCareSnapshot(payload, { source });
+  applyPayloadEmotion(payload, { persist: persistEmotion });
+  // Restored/replayed frames are presentation data. Tool effects are owned by
+  // the live execution path and must never be re-issued by history rendering.
+  if (source === "live") {
+    applyPayloadActivity(payload, { turnToken });
+    applyPayloadFileDeliveries(payload);
+    applyPayloadBrowserEvents(payload);
+  }
+  if (suppressSpeech) return false;
+
+  const speech = String(payload.speech || payload.text || "").trim();
+  const segments = speech
+    ? splitSpeechText(speech)
+    : normalizeSegments(payload.speech_segments || payload.segments);
+  if (segments.length > 0) {
+    const signature = `segments:${segments.join("\u241e")}`;
+    const textKey = buildSpeechTextKey(segments.join(""));
+    if (!force && (signature === lastTurnSignature || (textKey && textKey === lastTurnTextKey))) return false;
+    lastTurnSignature = signature;
+    lastTurnTextKey = textKey;
+    showSpeechSegments(segments, { speaking, syncToAudio: source === "live" && shouldSyncReplyToTts() });
+    if (source === "live") setRuntimeStatus("回复中", { mode: "replying" });
+    if (source === "live") queueLiveTtsPayloadItems(segments, signature);
+    return true;
+  }
+
+  return false;
+}
+
+function applyPayloadEmotion(payload, { persist = true } = {}) {
+  const emotion = String(payload?.emotion || "").trim();
+  if (emotion) setPetEmotion(emotion, { persist });
+}
+
+function applyPayloadCareSnapshot(payload, { source = "live" } = {}) {
+  if (source !== "live") return false;
+  const snapshot = payload?.care_state || payload?.careState;
+  return applyAuthoritativeCareSnapshot(snapshot);
+}
+
+function isSystemMediaControlAction(action) {
+  return ["play", "resume", "pause", "stop", "next", "skip", "previous", "prev"].includes(String(action || "").trim().toLowerCase());
+}
+
+function normalizeSystemMediaControlAction(action) {
+  const normalized = String(action || "").trim().toLowerCase();
+  if (normalized === "resume") return "play";
+  if (normalized === "skip") return "next";
+  if (normalized === "prev") return "previous";
+  return normalized;
+}
+
+function normalizeSystemMediaControlActionLabel(action) {
+  const normalized = normalizeSystemMediaControlAction(action);
+  if (normalized === "play") return "播放";
+  if (normalized === "pause") return "暂停";
+  if (normalized === "stop") return "停止";
+  if (normalized === "next") return "切到下一首";
+  if (normalized === "previous") return "切到上一首";
+  return "媒体";
+}
+
+function activityExplicitlyTargetsSystemMedia(activity, sourceId) {
+  const source = String(sourceId || "").trim().toLowerCase();
+  const handle = String(activity?.handle || activity?.target || "").trim().toLowerCase();
+  return (
+    source.startsWith("system_media:") ||
+    source === "system_media_current" ||
+    handle === "system_media" ||
+    handle === "system_media_current" ||
+    activity?.system_media === true ||
+    String(activity?.source_kind || activity?.sourceKind || "").trim().toLowerCase() === "system_media"
+  );
+}
+
+function shouldControlSystemMediaForActivity(activity, action, sourceId) {
+  if (!isSystemMediaControlAction(action) || !isFreshSystemMedia(systemMedia)) return false;
+  if (activityExplicitlyTargetsSystemMedia(activity, sourceId)) return true;
+  if (!musicTrack) return true;
+  const normalized = normalizeSystemMediaControlAction(action);
+  if (!musicPlaying && systemMedia.isPlaying && ["pause", "stop", "next", "previous"].includes(normalized)) return true;
+  if (!musicPlaying && !musicPaused && ["play", "next", "previous"].includes(normalized)) return true;
+  return false;
+}
+
+function systemMediaControlMessage(action, result) {
+  const normalized = normalizeSystemMediaControlAction(action);
+  const title = [result?.title || systemMedia.title, result?.artist || systemMedia.artist].filter(Boolean).join(" - ");
+  const suffix = title ? `：${title}` : "";
+  if (normalized === "play") return `已请求系统播放器继续播放${suffix}`;
+  if (normalized === "pause") return `已请求系统播放器暂停${suffix}`;
+  if (normalized === "stop") return `已请求系统播放器停止${suffix}`;
+  if (normalized === "next") return "已请求系统播放器切到下一首。";
+  if (normalized === "previous") return "已请求系统播放器切到上一首。";
+  return "已请求系统播放器执行操作。";
+}
+
+/**
+ * 播"伸手"CSS 动画并在峰值（600ms）时 resolve。
+ * 1200ms 后 class 自动移除。
+ * Live2D 接入时：用 Live2D motion API 替换 classList 操作，保持 Promise 接口不变。
+ */
+function triggerPetReachGesture() {
+  const PEAK_MS = 600;
+  const TOTAL_MS = 1200;
+  return new Promise((resolve) => {
+    const stage = els.stage;
+    if (!stage) {
+      resolve();
+      return;
+    }
+    stage.classList.remove("is-reaching");
+    void stage.offsetWidth;
+    stage.classList.add("is-reaching");
+    window.setTimeout(resolve, PEAK_MS);
+    window.setTimeout(() => stage.classList.remove("is-reaching"), TOTAL_MS);
+  });
+}
+
+async function controlSystemMediaPlayback(action, { operationId = "" } = {}) {
+  if (!isTauriRuntime) {
+    notifyMusicActivityUnavailable("系统媒体控制只在桌面端可用。");
+    return { ok: false, status: "unavailable", reason: "desktop_runtime_required" };
+  }
+  const normalized = normalizeSystemMediaControlAction(action);
+  if (!["play", "pause", "stop", "next", "previous"].includes(normalized)) {
+    return { ok: false, status: "invalid_action", reason: "invalid_action", action: normalized };
+  }
+
+  const effectiveOperationId = String(operationId || `ui:${Date.now()}:${Math.random().toString(16).slice(2)}`).trim();
+  if (executedActivityOperationIds.has(`system:${effectiveOperationId}`)) {
+    return {
+      ok: false,
+      status: "duplicate",
+      reason: "operation_already_submitted",
+      action: normalized,
+      operationId: effectiveOperationId
+    };
+  }
+  // Reserve before the gesture/IPC awaits so repeated frames or double clicks
+  // cannot enqueue a second non-idempotent system-media command.
+  rememberActivityOperation(`system:${effectiveOperationId}`);
+
+  void triggerPetReachGesture();
+
+  const result = await tauriCall("control_system_media", {
+    action: normalized,
+    operationId: effectiveOperationId
+  }, { quiet: true });
+  if (result?.ok) {
+    const message = systemMediaControlMessage(normalized, result);
+    setRuntimeStatus(message, { mode: normalized === "pause" || normalized === "stop" ? "music-paused" : "music" });
+    showBubbleText(message, { transient: true, durationMs: 2200, kind: "music" });
+    await refreshSystemMediaSnapshot().catch(() => {});
+    return { ...result, action: normalized };
+  }
+  if (result?.status === "execution_unknown") {
+    const message = `已向系统播放器发送${normalizeSystemMediaControlActionLabel(normalized)}指令，但还没有确认到播放状态变化。`;
+    setRuntimeStatus(message, { mode: "music" });
+    showBubbleText(message, { transient: true, durationMs: 2200, kind: "music" });
+    await refreshSystemMediaSnapshot().catch(() => {});
+    return { ...result, ok: false, action: normalized };
+  }
+  const reason = String(result?.reason || "unavailable").trim();
+  const message = reason === "no_active_session"
+    ? "现在没有可控制的系统播放器。"
+    : reason === "session_rejected"
+      ? "这个播放器暂时不接受系统媒体控制。"
+      : "系统媒体控制暂时不可用。";
+  notifyMusicActivityUnavailable(message);
+  return { ...result, ok: false, status: result?.status || "unavailable", reason, action: normalized };
+}
+
+function activityOperationId(payload, activity, turnToken = 0) {
+  const explicit = String(
+    activity?.operation_id || activity?.operationId || payload?.operation_id || payload?.operationId || ""
+  ).trim();
+  const upstream = String(
+    payload?.trace_id || payload?.traceId || payload?.turn_id || payload?.turnId || payload?.delivery_id || payload?.deliveryId || ""
+  ).trim();
+  const scope = explicit || upstream || (turnToken ? `turn:${turnToken}` : "");
+  const action = String(activity?.action || "").trim().toLowerCase();
+  const source = String(activity?.source_id || activity?.sourceId || activity?.target || "current").trim();
+  if (scope) return `activity:${scope}:${action}:${source}`;
+  return `activity:legacy:${simpleHash(JSON.stringify({ action, source }))}`;
+}
+
+function rememberActivityOperation(operationId) {
+  if (!operationId) return;
+  executedActivityOperationIds.add(operationId);
+  if (executedActivityOperationIds.size > 512) {
+    const first = executedActivityOperationIds.values().next().value;
+    if (first) executedActivityOperationIds.delete(first);
+  }
+}
+
+function payloadHasSystemMediaExecution(payload) {
+  const events = Array.isArray(payload?.tool_events) ? payload.tool_events : [];
+  return events.some((event) => {
+    if (!event || typeof event !== "object") return false;
+    const toolType = String(event.tool_type || event.toolType || event.tool || "").trim().toLowerCase();
+    return toolType === "system_media_control";
+  });
+}
+
+function applyPayloadActivity(payload, { turnToken = 0 } = {}) {
+  const activity = payload?.activity;
+  if (!activity || typeof activity !== "object") return;
+
+  // A native system_media_control result is already the execution authority
+  // for this turn. A model-authored activity field may accompany the final
+  // prose for compatibility, but it must not submit a second media command.
+  if (payloadHasSystemMediaExecution(payload)) return;
+
+  const action = String(activity.action || "").trim().toLowerCase();
+  if (!action) return;
+  const sourceId = String(activity.source_id || activity.sourceId || "").trim();
+  const operationId = activityOperationId(payload, activity, turnToken);
+  if (executedActivityOperationIds.has(operationId)) return;
+
+  if (shouldControlSystemMediaForActivity(activity, action, sourceId)) {
+    void controlSystemMediaPlayback(action, { operationId });
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+    return;
+  }
+
+  if (action === "next" || action === "skip") {
+    if (!hasNextMusicTrack()) {
+      notifyMusicActivityUnavailable("后面没有更多歌曲了。");
+      return;
+    }
+    rememberActivityOperation(operationId);
+    void playNextMusicTrack();
+  } else if (action === "previous" || action === "prev") {
+    if (!hasPreviousMusicTrack()) {
+      notifyMusicActivityUnavailable("前面没有歌曲了。");
+      return;
+    }
+    rememberActivityOperation(operationId);
+    void playPreviousMusicTrack();
+  } else if (action === "play") {
+    if (sourceId) {
+      const requestedIndex = findMusicTrackIndexBySourceId(sourceId);
+      if (requestedIndex >= 0) {
+        if (requestedIndex === musicQueueIndex && musicPlaying) return;
+        if (requestedIndex === musicQueueIndex && !musicPlaying) {
+          rememberActivityOperation(operationId);
+          void toggleMusicPlayback();
+          updateActivityControls();
+          scheduleSettingsSnapshot();
+          return;
+        }
+        rememberActivityOperation(operationId);
+        void playMusicQueueIndex(requestedIndex, {
+          message: `切到这首：《${musicQueue[requestedIndex].displayName}》。`
+        });
+      } else if (/^workspace:(attachment|generated):.+/.test(sourceId)) {
+        const parts = sourceId.split(":");
+        rememberActivityOperation(operationId);
+        void playWorkspaceAudioItem({
+          itemType: parts[1],
+          handle: parts.slice(2).join(":"),
+          title: ""
+        });
+      } else {
+        const catalogItem = workspaceAudioCatalog.find((rec) =>
+          rec.sourceId === sourceId || rec.handle === sourceId
+        );
+        if (catalogItem && catalogItem.handle) {
+          rememberActivityOperation(operationId);
+          void playWorkspaceAudioItem({
+            itemType: catalogItem.itemType || "attachment",
+            handle: catalogItem.handle,
+            title: catalogItem.title || ""
+          });
+        } else {
+          notifyMusicActivityUnavailable("这首还没有加入播放队列。");
+          return;
+        }
+      }
+    } else if (musicPaused) {
+      rememberActivityOperation(operationId);
+      void toggleMusicPlayback();
+    } else if (musicPlaying) {
+      return;
+    } else {
+      const queueIndex = getSafeMusicQueueIndex();
+      if (queueIndex < 0) {
+        notifyMusicActivityUnavailable("我手边还没有可播放的音乐，可以先拖入一首，或者从推荐里点一首。");
+        return;
+      }
+      void playMusicQueueIndex(queueIndex, {
+        message: `播放：《${musicQueue[queueIndex].displayName}》。`
+      });
+      rememberActivityOperation(operationId);
+    }
+  } else if (action === "pause") {
+    if (musicPlaying) {
+      rememberActivityOperation(operationId);
+      els.musicPlayer.pause();
+      musicPlaying = false;
+      musicPaused = true;
+      setMusicEmotion(false);
+      setRuntimeStatus(`音乐已暂停：${getMusicDisplayName()}`, { mode: "music-paused" });
+    } else {
+      notifyMusicActivityUnavailable("现在没有正在播放的音乐。");
+      return;
+    }
+  } else if (action === "resume") {
+    if (musicPaused) {
+      rememberActivityOperation(operationId);
+      void toggleMusicPlayback();
+    } else if (musicPlaying) {
+      notifyMusicActivityUnavailable("音乐已经在播放了。");
+      return;
+    } else {
+      const queueIndex = getSafeMusicQueueIndex();
+      if (queueIndex < 0) {
+        notifyMusicActivityUnavailable("我手边还没有可播放的音乐。");
+        return;
+      }
+      void playMusicQueueIndex(queueIndex, {
+        message: `播放：《${musicQueue[queueIndex].displayName}》。`
+      });
+      rememberActivityOperation(operationId);
+    }
+  } else if (action === "stop") {
+    if (!musicTrack) {
+      notifyMusicActivityUnavailable("现在没有正在播放的音乐。");
+      return;
+    }
+    rememberActivityOperation(operationId);
+    stopMusic({ announce: false });
+  } else {
+    return;
+  }
+
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+function applyPayloadFileDeliveries(payload) {
+  const events = Array.isArray(payload?.tool_events) ? payload.tool_events : [];
+  for (const event of events) {
+    const type = String(event?.type || "").trim().toLowerCase();
+    if (type === "file_ready" || type === "generated_file_ready") {
+      void handleDesktopFileDeliveryEvent(event);
+    }
+  }
+}
+
+function applyPayloadBrowserEvents(payload) {
+  const events = Array.isArray(payload?.tool_events) ? payload.tool_events : [];
+  for (const event of events) {
+    const type = String(event?.type || "").trim().toLowerCase();
+    if (type === "browser_open_requested") {
+      void handleBrowserOpenEvent(event);
+    }
+  }
+}
+
+const browserOpenHandled = new Set();
+
+async function handleBrowserOpenEvent(event) {
+  if (!event || typeof event !== "object") return;
+  const url = normalizePublicBrowserUrl(event.url);
+  if (!url) {
+    setRuntimeStatus("浏览器打开请求被拦截：网址不安全", { mode: "error" });
+    showBubbleText("这个网址看起来不适合直接打开，我先拦住了。", {
+      transient: true,
+      durationMs: 2600,
+      kind: "error"
+    });
+    return;
+  }
+  const key = `browser:${url}`;
+  if (browserOpenHandled.has(key)) return;
+  browserOpenHandled.add(key);
+  const label = String(event.label || event.title || "").trim() || url;
+  const result = await tauriCall("open_external_url", { url }, { quiet: true });
+  if (result !== null) {
+    setRuntimeStatus(`已打开网页：${label}`, { mode: "idle" });
+  } else {
+    setRuntimeStatus("打开网页失败", { mode: "error" });
+    showBubbleText("网页没有打开成功，可能是桌面端暂时接不上系统浏览器。", {
+      transient: true,
+      durationMs: 2600,
+      kind: "error"
+    });
+  }
+}
+
+function normalizePublicBrowserUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 1600 || /\s|[\u0000-\u001f]/.test(raw)) return "";
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return "";
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) return "";
+  if (parsed.username || parsed.password) return "";
+  const host = parsed.hostname.toLowerCase();
+  if (!host || host === "localhost" || host.endsWith(".local")) return "";
+  if (/^(127\.|10\.|0\.|169\.254\.|192\.168\.)/.test(host)) return "";
+  const private172 = host.match(/^172\.(\d+)\./);
+  if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return "";
+  if (host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return "";
+  return parsed.href;
+}
+
+async function handleDesktopFileDeliveryEvent(event) {
+  if (!event || typeof event !== "object" || !event.send_to_user) return;
+  const fileRef = resolveDesktopFileDeliveryRef(event);
+  if (!fileRef) return;
+  const action = normalizeDesktopDeliveryAction(
+    event.delivery_action || event.desktop_delivery?.action || event.handoff_action
+  );
+  const key = desktopFileDeliveryEventKey(event, fileRef, action);
+  if (!key || desktopFileDeliveryHandled.has(key)) return;
+  desktopFileDeliveryHandled.add(key);
+
+  await notifyWorkspaceRefresh();
+  if (!action) {
+    setRuntimeStatus(`文件已放到手边：${fileRef.name || fileRef.handle || "成果"}`, { mode: "idle" });
+    return;
+  }
+
+  // M66-D: Use handle-based open_workspace_item; no longer call /location to get
+  // an absolute path. Tauri downloads bytes from /content and acts on staged file.
+  const handle = String(fileRef.handle || event.desktop_delivery?.handle || "").trim();
+  const itemType = String(fileRef.itemType || "generated").trim();
+  const displayName = fileRef.name || handle || "文件";
+
+  if (!handle) {
+    setRuntimeStatus("文件已生成，但暂时找不到 handle", { mode: "error" });
+    showBubbleText("文件做好了，但找不到引用。", { transient: true, durationMs: 2400, kind: "error" });
+    return;
+  }
+
+  const workspaceItemParams = {
+    handle,
+    backendUrl: state.backendUrl,
+    botId: state.boundBotId,
+    itemType,
+    action,
+    userId: state.sessionId || "",
+    sessionId: state.sessionId || "",
+    realUserId: getProfileUserId(),
+    fileName: buildDesktopDeliveryFileName(fileRef) || "",
+  };
+
+  if (action === "open") {
+    const result = await tauriCall("open_workspace_item", workspaceItemParams, { quiet: true });
+    announceDesktopFileDeliveryResult(result !== null, `已打开：${displayName}`, "文件做好了，我打开给你看啦。", "打开文件失败了。");
+  } else if (action === "reveal") {
+    const result = await tauriCall("open_workspace_item", workspaceItemParams, { quiet: true });
+    announceDesktopFileDeliveryResult(result !== null, `已定位：${displayName}`, "文件位置打开啦。", "打开文件位置失败了。");
+  } else if (action === "save_desktop") {
+    const result = await tauriCall("open_workspace_item", workspaceItemParams, { quiet: true });
+    const exportedPath = String(result?.path || "").trim();
+    announceDesktopFileDeliveryResult(
+      result !== null,
+      exportedPath ? `已保存到桌面：${exportedPath}` : `已保存到桌面：${displayName}`,
+      "文件已经放到桌面 Akane Outputs 里啦。",
+      "保存到桌面失败了。"
+    );
+  } else if (action === "copy_path") {
+    // copy_path is only meaningful locally; gracefully skip if handle has no local path.
+    announceDesktopFileDeliveryResult(false, "", "", "当前模式不支持复制本地路径。");
+  }
+}
+
+function resolveDesktopFileDeliveryRef(event) {
+  const type = String(event?.type || "").trim().toLowerCase();
+  const raw = type === "generated_file_ready"
+    ? event.generated_file
+    : event.file || event.generated_file;
+  if (!raw || typeof raw !== "object") return null;
+  const sourceType = String(raw.source_type || (type === "generated_file_ready" ? "generated" : "")).trim().toLowerCase();
+  const handle = String(raw.handle || raw.generated_handle || raw.attachment_handle || "").trim();
+  return {
+    itemType: sourceType === "generated" || raw.generated_id || raw.generated_handle ? "generated" : "attachment",
+    handle,
+    path: String(raw.absolute_path || raw.path || raw.file_path || "").trim(),
+    name: String(raw.name || raw.output_title || raw.title || raw.origin_name || handle || "").trim(),
+    format: String(raw.file_ext || raw.output_format || raw.format || "").trim().replace(/^\.+/, "")
+  };
+}
+
+function desktopFileDeliveryEventKey(event, fileRef, action) {
+  const id = String(
+    fileRef.path ||
+      event?.file?.source_id ||
+      event?.generated_file?.generated_id ||
+      fileRef.handle ||
+      ""
+  ).trim();
+  return id ? `${String(event?.type || "")}:${action || "workspace"}:${id}` : "";
+}
+
+function normalizeDesktopDeliveryAction(value) {
+  const text = String(value || "").trim().toLowerCase().replace(/-/g, "_");
+  if (["open", "open_file"].includes(text)) return "open";
+  if (["reveal", "show", "show_in_folder", "show_folder", "folder", "location"].includes(text)) return "reveal";
+  if (["save_desktop", "export_desktop", "save_to_desktop", "desktop"].includes(text)) return "save_desktop";
+  if (["copy_path", "path", "clipboard"].includes(text)) return "copy_path";
+  return "";
+}
+
+function buildDesktopDeliveryFileName(fileRef) {
+  const name = String(fileRef?.name || fileRef?.handle || "akane-output").trim() || "akane-output";
+  const format = String(fileRef?.format || "").trim().replace(/^\.+/, "");
+  if (!format || name.toLowerCase().endsWith(`.${format.toLowerCase()}`)) return name;
+  return `${name}.${format}`;
+}
+
+function announceDesktopFileDeliveryResult(ok, statusText, bubbleText, errorText) {
+  if (ok) {
+    setRuntimeStatus(statusText, { mode: "idle" });
+    if (bubbleText) showBubbleText(bubbleText, { transient: true, durationMs: 2600, kind: "status" });
+  } else {
+    setRuntimeStatus(errorText || "文件交付失败", { mode: "error" });
+    if (errorText) showBubbleText(errorText, { transient: true, durationMs: 2600, kind: "error" });
+  }
+}
+
+function normalizeSegments(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (item && typeof item === "object") return item.text || item.speech || item.content || "";
+      return item;
+    })
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function buildClientCapabilities() {
+  return [...BASE_CAPABILITIES, AUDIO_PLAYBACK_CAPABILITY];
+}
+
+function buildSpeechTextKey(text) {
+  return String(text || "").replace(/\s+/g, "").trim();
+}
+
+function splitSpeechText(text) {
+  const source = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!source) return [];
+  return segmentSpeechForDelivery(source, { minChars: 2, maxChars: CLIENT_SEGMENT_SOFT_LIMIT, allowHardCut: false });
+}
+
+function showThinking() {
+  setPetEmotion("thinking");
+  setPetMotion("thinking");
+  setRuntimeStatus("思考中", { mode: "thinking" });
+  showBubbleText("……", { transient: false, kind: "thinking" });
+}
+
+function showToolWorking(event, { hasShownReply = false } = {}) {
+  // Backend emits assistant_working ("我查一下。") right before a tool runs, so
+  // the pet can show it's actively working instead of looking frozen on
+  // "thinking" through a multi-second tool call (web search, memory, …).
+  const message = String(event?.message || "").trim() || "我查一下。";
+  setPetMotion("thinking");
+  setRuntimeStatus("查一下…", { mode: "thinking" });
+  if (hasShownReply) {
+    // The model already spoke a pre-tool line; don't clobber that expressive
+    // bubble (INV-1) — the motion + status above are enough of a working hint.
+    return;
+  }
+  // Nothing shown yet (e.g. native tool with empty pre-speech): surface the
+  // working line as a thinking-kind bubble. It is replaced by the real reply
+  // and, if the turn ends with nothing rendered, cleared by the stream_end
+  // leftover-thinking guard.
+  setPetEmotion("thinking");
+  showBubbleText(message, { transient: false, kind: "thinking" });
+}
+
+function showError(message) {
+  const friendly = friendlyErrorMessage(message);
+  setTransientEmotion("confused", { durationMs: 3600 });
+  setRuntimeStatus(friendly, { mode: "error" });
+  showBubbleText(friendly, { transient: true, durationMs: 3500, kind: "error" });
+}
+
+function shouldSyncReplyToTts() {
+  return Boolean(state.voiceEnabled && els.voicePlayer && resourceState.tts?.enabled !== false);
+}
+
+function showSpeechSegments(segments, { speaking = true, syncToAudio = false } = {}) {
+  const items = Array.isArray(segments) ? segments.filter(Boolean) : [];
+  if (!items.length) return;
+  if (syncToAudio) {
+    resetStreamedReplySegments(activeTurnToken);
+    streamedReplySegments.push(...items);
+    showBubbleText(items[0], { transient: false, kind: "reply" });
+    setPetMotion("thinking");
+    return;
+  }
+
+  clearLocalInteraction();
+  window.clearTimeout(bubbleTimer);
+  window.clearTimeout(segmentTimer);
+  const token = ++bubbleToken;
+  bubbleKind = "reply";
+  replyDisplayActive = true;
+  let index = 0;
+
+  const showNext = () => {
+    if (token !== bubbleToken) return;
+    const text = items[index];
+    displayReplyBubbleText(text, { speaking });
+    index += 1;
+
+    if (index < items.length) {
+      segmentTimer = window.setTimeout(showNext, getSegmentDisplayDelay(text));
+      return;
+    }
+
+    scheduleBubbleReset(Math.max(text.length, 4), token);
+  };
+
+  showNext();
+}
+
+function resetStreamedReplySegments(turnToken = 0) {
+  window.clearTimeout(segmentTimer);
+  segmentTimer = 0;
+  streamedReplyTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  streamedReplySegments = [];
+  streamedReplyTexts = [];
+  streamedReplySegmentActive = false;
+}
+
+function queueStreamedReplySegment(text, turnToken) {
+  // This is a delivery queue derived from the model's canonical `speech`
+  // field. It must never become a second body-authoring surface.
+  const normalized = String(text || "").trim();
+  const normalizedTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  if (!normalized || !isTurnActive(normalizedTurnToken)) return false;
+  if (streamedReplyTurnToken !== normalizedTurnToken) resetStreamedReplySegments(normalizedTurnToken);
+  const textKey = buildSpeechTextKey(normalized);
+  if (!textKey) return false;
+  streamedReplyTexts.push(normalized);
+  streamedReplySegments.push(normalized);
+  if (shouldSyncReplyToTts()) {
+    // Preview the first sentence while synthesis runs. Further sentences are
+    // displayed by the audio queue when that exact audio begins playing.
+    if (bubbleKind !== "reply" && normalized.length > TTS_SHORT_SEGMENT_MAX_CHARS) {
+      const preview = streamingTtsPendingShort ? `${streamingTtsPendingShort} ${normalized}` : normalized;
+      showBubbleText(preview, { transient: false, kind: "reply" });
+      setPetMotion("thinking");
+    }
+  } else if (!streamedReplySegmentActive) {
+    showNextStreamedReplySegment(normalizedTurnToken);
+  }
+  return true;
+}
+
+function missingFinalReplySegments(segments) {
+  return missingReplySegments(segments, streamedReplyTexts);
+}
+
+function showNextStreamedReplySegment(turnToken) {
+  if (!isTurnActive(turnToken) || streamedReplyTurnToken !== turnToken) return;
+  const text = streamedReplySegments.shift();
+  if (!text) {
+    streamedReplySegmentActive = false;
+    return;
+  }
+  streamedReplySegmentActive = true;
+  window.clearTimeout(bubbleTimer);
+  displayReplyBubbleText(text, { speaking: true });
+  segmentTimer = window.setTimeout(() => {
+    segmentTimer = 0;
+    if (streamedReplySegments.length) {
+      showNextStreamedReplySegment(turnToken);
+      return;
+    }
+    streamedReplySegmentActive = false;
+    scheduleBubbleReset(Math.max(text.length, 4), bubbleToken);
+  }, getSegmentDisplayDelay(text));
+}
+
+function displayReplyBubbleText(text, { speaking = true } = {}) {
+  bubbleKind = "reply";
+  replyDisplayActive = true;
+  setBubbleContent(text);
+  els.bubble.classList.add("visible");
+  scheduleNativeHitTestSync({ force: true });
+  if (speaking) setPetMotion("speaking");
+  updateActivityControls();
+}
+
+function getSegmentDisplayDelay(text) {
+  return getBubbleSegmentDisplayDelay(text);
+}
+
+function showBubbleText(
+  text,
+  { transient = false, dismiss = false, durationMs = 1800, speaking = false, local = false, kind = "" } = {}
+) {
+  const nextKind = kind || (local ? "local" : "status");
+  if (!local) clearLocalInteraction();
+  window.clearTimeout(bubbleTimer);
+  window.clearTimeout(segmentTimer);
+  const token = ++bubbleToken;
+  bubbleKind = text ? nextKind : "none";
+  replyDisplayActive = text ? nextKind === "reply" : false;
+  setBubbleContent(text || "");
+  if (text) {
+    els.bubble.classList.add("visible");
+    if (speaking) setPetMotion("speaking");
+  } else {
+    els.bubble.classList.remove("visible");
+  }
+  scheduleNativeHitTestSync({ force: true });
+  updateActivityControls();
+
+  if (dismiss) {
+    scheduleBubbleReset(Math.max(String(text || "").length, 4), token);
+  } else if (transient) {
+    bubbleTimer = window.setTimeout(() => {
+      if (token !== bubbleToken) return;
+      hideBubble(token);
+    }, durationMs);
+  }
+}
+
+function scheduleBubbleReset(charCount, token) {
+  const ms = Math.max(3000, Math.min(15000, (charCount || 40) * 70));
+  bubbleTimer = window.setTimeout(() => {
+    if (token !== bubbleToken) return;
+    hideBubble(token);
+  }, ms);
+}
+
+function hideBubble(token = null) {
+  if (token !== null && token !== bubbleToken) return;
+  window.clearTimeout(bubbleTimer);
+  window.clearTimeout(segmentTimer);
+  if (token === null) bubbleToken += 1;
+  if (bubbleKind !== "local") clearLocalInteraction();
+  bubbleKind = "none";
+  replyDisplayActive = false;
+  els.bubble.classList.remove("visible");
+  setBubbleContent("");
+  scheduleNativeHitTestSync({ force: true });
+  restoreMotionAfterBubble();
+  scheduleMusicEmotionRestore();
+  updateActivityControls();
+}
+
+function setBubbleContent(text) {
+  const value = String(text || "").trim();
+  els.bubbleText.textContent = value;
+  els.bubbleText.scrollTop = 0;
+  els.bubble.dataset.size = getBubbleSizeForText(value);
+}
+
+function getBubbleSizeForText(text) {
+  const value = String(text || "");
+  if (!value) return "empty";
+  const lineCount = value.split(/\r?\n/u).length;
+  if (value.length <= 18 && lineCount <= 1) return "short";
+  if (value.length >= 50 || lineCount >= 3) return "long";
+  return "medium";
+}
+
+function setPetMotion(motion, { durationMs = 0 } = {}) {
+  window.clearTimeout(motionTimer);
+  const next = motion && motion !== "idle" ? motion : "idle";
+  visualRenderer.setMotion(next, { restart: next === "click" });
+  if (durationMs > 0) {
+    motionTimer = window.setTimeout(() => {
+      if (sending) return;
+      visualRenderer.setMotion(physicsTimer ? "thrown" : "idle");
+    }, durationMs);
+  }
+}
+
+function restoreMotionAfterBubble() {
+  if (dragState) {
+    visualRenderer.setMotion("dragging");
+    return;
+  }
+  if (physicsTimer) {
+    visualRenderer.setMotion("thrown");
+    return;
+  }
+  visualRenderer.setMotion(
+    hasLocalTtsPlayback() || realtimeVoiceTurn?.playbackActive || hasRealtimeVoiceCallPlayback()
+      ? "speaking"
+      : "idle"
+  );
+}
+
+function showFileDropHint() {
+  if (musicDropHover) return;
+  musicDropHover = true;
+  setRuntimeStatus(`把文件拖给 ${getProfileIdentityText("name", CHARACTER_NAME)}，会先放进手边工作台`, { mode: "idle" });
+  if (!sending && !replyDisplayActive) {
+    showBubbleText("递给我就行。", { transient: true, durationMs: 1400, kind: "status" });
+  }
+}
+
+async function handleDroppedFiles(paths) {
+  const files = Array.isArray(paths) ? paths.map((item) => String(item || "")).filter(Boolean) : [];
+  if (!files.length) return;
+  setRuntimeStatus("正在接收附件…", { mode: sending ? "working" : "idle" });
+  try {
+    const importResult = await importDroppedFilesToWorkspace(files);
+    if (importResult?.status === "cancelled") return;
+    const imported = Array.isArray(importResult?.items) ? importResult.items.length : Number(importResult?.imported || 0);
+    if (imported > 0) {
+      const skipped = (importResult?.skipped || []).filter(item => item.reason !== "duplicate_source").length;
+      setRuntimeStatus(
+        skipped > 0 ? `待发送：${imported} 个附件，跳过 ${skipped} 个` : `待发送：${imported} 个附件`,
+        { mode: "idle" }
+      );
+      if (!sending && !replyDisplayActive) showBubbleText(`收到 ${imported} 个附件，可以补充问题后发送。音频不会自动播放。`, {
+        transient: true,
+        durationMs: 2400,
+        kind: "status"
+      });
+      showChatInput();
+      return;
+    }
+
+    showBubbleText("这个文件暂时还不能放进手边。", {
+      transient: true,
+      durationMs: 2400,
+      kind: "status"
+    });
+    setRuntimeStatus("拖入的文件不是当前支持的类型", { mode: "error" });
+  } catch (error) {
+    const importError = friendlyErrorMessage(formatError(error));
+    showBubbleText(importError || "这个文件暂时还不能放进手边。", {
+      transient: true,
+      durationMs: 2400,
+      kind: "status"
+    });
+    setRuntimeStatus(importError || "拖入的文件不是当前支持的类型", { mode: "error" });
+  }
+}
+
+// M66-D: importDroppedFilesToWorkspace now delegates to Tauri import_dropped_files.
+// Absolute paths are read locally in Rust and uploaded as bytes; they never
+// reach the backend as path strings. Requires /import-file multipart endpoint.
+async function importDroppedFilesToWorkspace(paths) {
+  const normalizedPaths = Array.isArray(paths)
+    ? paths.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (!normalizedPaths.length) return { ok: false, reason: "no_paths", imported: 0 };
+  return importAttachmentEntries(normalizedPaths);
+}
+
+async function importClipboardAttachments(files) {
+  if (!Array.isArray(files) || !files.length) return { ok: false, reason: "no_files" };
+  return importAttachmentEntries(files);
+}
+
+async function importAttachmentEntries(entries) {
+  if (!state.sessionId) {
+    state.sessionId = generateSessionId();
+    scheduleSave(0);
+    scheduleSettingsSnapshot();
+    void ensureBackendSession();
+  }
+  const draftScope = pendingAttachments.scope();
+  const finishImport = pendingAttachments.beginImport();
+  try {
+    const result = await enqueueWorkspaceImport(entries);
+    if (result?.status === "cancelled") return result;
+    if (!result?.ok && !Number(result?.imported || 0)) {
+      throw new Error(summarizeWorkspaceImportSkipped(result) || result?.reason || "没有可导入的文件");
+    }
+    pendingAttachments.add(result.items, draftScope);
+    await notifyWorkspaceRefresh();
+    return result;
+  } finally {
+    finishImport();
+  }
+}
+
+async function uploadClipboardAttachments(files, scope) {
+  if (files.length > 40) throw new Error("too_many_files");
+  const form = new FormData();
+  form.append("user_id", scope.sessionId);
+  form.append("session_id", scope.sessionId);
+  form.append("real_user_id", scope.realUserId);
+  form.append("character_pack_id", scope.characterPackId);
+  let total = 0;
+  for (const file of files) {
+    const dataUrl = String(file?.dataUrl || "");
+    const match = /^data:([^;,]*);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+    if (!match || match[2].length > 12 * 1024 * 1024) throw new Error("invalid_clipboard_file");
+    const raw = atob(match[2]);
+    total += raw.length;
+    if (raw.length > 8 * 1024 * 1024 || total > 20 * 1024 * 1024) throw new Error("clipboard_files_too_large");
+    form.append("files", new Blob([Uint8Array.from(raw, ch => ch.charCodeAt(0))], { type: match[1] || "application/octet-stream" }), String(file.name || "clipboard.png"));
+  }
+  const url = new URL(botScopedPath(scope.botId, "/desktop-pet/workspace/import-file"), `${scope.backendUrl.replace(/\/+$/, "")}/`);
+  const response = await backendFetch(url.toString(), { method: "POST", body: form, cache: "no-store", connectTimeout: 30_000 });
+  if (!response.ok) throw new Error(await readBackendErrorMessage(response, `HTTP ${response.status}`));
+  return response.json();
+}
+
+function renderPendingAttachments() {
+  const container = document.querySelector("#pending-attachments");
+  if (!container) return;
+  const items = pendingAttachments.list();
+  container.replaceChildren();
+  container.hidden = !items.length && !pendingAttachments.importing();
+  if (pendingAttachments.importing()) {
+    const status = document.createElement("div");
+    status.textContent = "正在接收附件…";
+    status.className = "pending-attachment";
+    container.append(status);
+  }
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "pending-attachment";
+    const label = document.createElement("span");
+    label.textContent = `${item.kind === "audio" ? "音频材料" : "附件"} · ${item.title}`;
+    label.title = item.title;
+    row.append(label);
+    if (item.kind === "audio") {
+      const play = document.createElement("button");
+      play.type = "button";
+      play.textContent = "播放";
+      play.addEventListener("click", () => { void playWorkspaceAudioItem(item); });
+      row.append(play);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "移除";
+    remove.addEventListener("click", () => pendingAttachments.remove(item.attachmentId));
+    row.append(remove);
+    container.append(row);
+  }
+  scheduleNativeHitTestSync();
+}
+
+function buildWorkspaceAudioSourceId(itemType, handle) {
+  const normalizedType = itemType === "generated" ? "generated" : "attachment";
+  const normalizedHandle = String(handle || "").trim();
+  return normalizedHandle ? `workspace:${normalizedType}:${normalizedHandle}` : "";
+}
+
+function findMusicQueueIndexByWorkspaceAudio(itemType, handle) {
+  const sourceId = buildWorkspaceAudioSourceId(itemType, handle);
+  if (!sourceId) return -1;
+  return musicQueue.findIndex((track) =>
+    track?.sourceId === sourceId ||
+    track?.queueDedupeKey === sourceId ||
+    (
+      String(track?.workspaceItemType || "") === (itemType === "generated" ? "generated" : "attachment") &&
+      String(track?.workspaceHandle || "") === String(handle || "").trim()
+    )
+  );
+}
+
+async function playWorkspaceAudioItem(item) {
+  const value = item && typeof item === "object" ? item : {};
+  const itemType = value.itemType === "generated" ? "generated" : "attachment";
+  const handle = String(value.handle || "").trim();
+  const title = String(value.title || "").trim();
+  if (!handle) {
+    showBubbleText("这首没有可播放的编号。", { transient: true, durationMs: 1800, kind: "music" });
+    return;
+  }
+
+  const existingIndex = findMusicQueueIndexByWorkspaceAudio(itemType, handle);
+  if (existingIndex >= 0) {
+    await playMusicQueueIndex(existingIndex, { message: `播放《${musicQueue[existingIndex]?.displayName || title}》。` });
+    scheduleSettingsSnapshot();
+    return;
+  }
+
+  try {
+    setRuntimeStatus("正在从手边取音乐", { mode: "music" });
+    const path = await stageWorkspaceItem({ itemType, handle, title, format: value.format });
+    const workspaceSourceId = buildWorkspaceAudioSourceId(itemType, handle);
+    await addDroppedAudioFiles(
+      [{ path, lyricPath: "", workspaceMetadata: { sourceId: workspaceSourceId, queueDedupeKey: workspaceSourceId, workspaceItemType: itemType, workspaceHandle: handle, displayName: title } }],
+      { playSourceIdAfterAdd: workspaceSourceId, clearQueueOnError: false }
+    );
+  } catch (error) {
+    const message = friendlyErrorMessage(formatError(error));
+    setRuntimeStatus(`手边音乐播放失败：${message}`, { mode: "error" });
+    showBubbleText("这首手边音乐暂时放不了。", { transient: true, durationMs: 2200, kind: "music" });
+  }
+}
+
+async function stageWorkspaceItem({ itemType, handle, title = "", format = "" }) {
+  const sessionId = String(state.sessionId || "").trim();
+  if (!sessionId) throw new Error("会话还没准备好");
+  const cleanFormat = String(format || "").trim().replace(/^\.+/, "");
+  const cleanTitle = String(title || handle || "workspace-audio").trim();
+  const fileName = cleanFormat && !cleanTitle.toLowerCase().endsWith(`.${cleanFormat.toLowerCase()}`)
+    ? `${cleanTitle}.${cleanFormat}`
+    : cleanTitle;
+  const result = await tauriCall(
+    "open_workspace_item",
+    {
+      handle: String(handle || "").trim(),
+      itemType: itemType === "generated" ? "generated" : "attachments",
+      action: "stage",
+      backendUrl: state.backendUrl,
+      botId: state.boundBotId,
+      userId: sessionId,
+      sessionId,
+      realUserId: getProfileUserId(),
+      fileName
+    },
+    { quiet: true }
+  );
+  const localPath = String(result?.local_path || "").trim();
+  if (!localPath) throw new Error("手边音频暂存失败");
+  return localPath;
+}
+
+function summarizeWorkspaceImportSkipped(payload) {
+  const first = Array.isArray(payload?.skipped) ? payload.skipped[0] : null;
+  const reason = String(first?.reason || "").trim();
+  if (!reason) return "";
+  const labels = {
+    unsupported_type: "这个文件类型暂时还不支持",
+    empty_file: "文件是空的",
+    file_too_large: "文件太大了",
+    not_found: "没有找到这个路径",
+    file_read_failed: "文件无法读取，可能已被移动或正在被占用",
+    upload_failed: "上传失败，请检查后端连接后重试",
+    upload_rejected: "后端没有接受这个文件",
+    duplicate_source: "这个音频已经在手边了，没有重复导入",
+    total_too_large: "这批文件总大小超出上限",
+    directory_scan_limit: "这个文件夹太大了，先挑具体文件给我",
+    max_files_reached: "一次给的文件有点多，已经达到上限"
+  };
+  return labels[reason] || "文件暂时不能导入手边";
+}
+
+async function notifyWorkspaceRefresh() {
+  if (!isTauriRuntime) return;
+  try {
+    await emit(WORKSPACE_REFRESH_EVENT, { t: Date.now() });
+  } catch {
+    // The workspace window may not be open yet.
+  }
+  scheduleWorkspaceMusicRecommendationsRefresh();
+}
+
+function isSupportedMusicPath(path) {
+  const extension = String(path || "").split(/[\\/]/u).pop()?.split(".").pop()?.toLowerCase() || "";
+  return MUSIC_FILE_EXTENSIONS.has(extension);
+}
+
+function isSupportedLyricPath(path) {
+  const extension = String(path || "").split(/[\\/]/u).pop()?.split(".").pop()?.toLowerCase() || "";
+  return MUSIC_LYRIC_EXTENSIONS.has(extension);
+}
+
+function buildDroppedAudioItems(files) {
+  const lyricMap = new Map();
+  for (const path of files.filter(isSupportedLyricPath)) {
+    const key = pathStemKey(path);
+    if (key && !lyricMap.has(key)) lyricMap.set(key, path);
+  }
+  return files
+    .filter(isSupportedMusicPath)
+    .map((path) => ({
+      path,
+      lyricPath: lyricMap.get(pathStemKey(path)) || ""
+    }));
+}
+
+function pathStemKey(path) {
+  const name = String(path || "").split(/[\\/]/u).pop() || "";
+  const dotIndex = name.lastIndexOf(".");
+  return (dotIndex > 0 ? name.slice(0, dotIndex) : name).trim().toLowerCase();
+}
+
+async function addDroppedAudioFiles(items, options = {}) {
+  if (!isTauriRuntime) return;
+  const audioItems = Array.isArray(items)
+    ? items
+        .map((item) => {
+          if (typeof item === "string") return { path: item, lyricPath: "" };
+          return {
+            path: String(item?.path || ""),
+            lyricPath: String(item?.lyricPath || ""),
+            workspaceMetadata: item?.workspaceMetadata || null
+          };
+        })
+        .filter((item) => item.path)
+    : [];
+  if (!audioItems.length) return;
+  musicLoading = true;
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+  setRuntimeStatus(audioItems.length > 1 ? `正在准备 ${audioItems.length} 首音乐` : "正在准备音乐", { mode: "music" });
+  try {
+    const tracks = [];
+    const errors = [];
+    for (const item of audioItems) {
+      try {
+        const asset = await invoke("prepare_audio_asset", {
+          path: item.path,
+          lyricPath: item.lyricPath || null
+        });
+        tracks.push(normalizeMusicTrack(asset, item.workspaceMetadata || undefined));
+      } catch (error) {
+        errors.push(formatError(error));
+      }
+    }
+    if (!tracks.length) {
+      throw new Error(errors[0] || "没有可播放的音频文件");
+    }
+    await enqueueMusicTracks(tracks, options);
+  } catch (error) {
+    if (options.clearQueueOnError !== false) {
+      stopMusic({ silent: true, clearQueue: true });
+    }
+    setRuntimeStatus(`音乐准备失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+    showBubbleText("这首好像暂时放不了。", { transient: true, durationMs: 2200, kind: "music" });
+  } finally {
+    musicLoading = false;
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+  }
+}
+
+async function enqueueMusicTracks(tracks, options = {}) {
+  const items = Array.isArray(tracks) ? tracks.filter((track) => track?.cachedPath) : [];
+  if (!items.length) return;
+
+  const playSourceId = options.playSourceIdAfterAdd ? String(options.playSourceIdAfterAdd).trim() : "";
+  const findTargetIndex = () => playSourceId
+    ? musicQueue.findIndex((track) => track.sourceId === playSourceId || track.queueDedupeKey === playSourceId)
+    : -1;
+
+  const uniqueItems = items.filter((track) => {
+    const key = track.queueDedupeKey || track.sourceId || "";
+    return !key || !musicQueue.some((existing) => existing.queueDedupeKey === key || existing.sourceId === key);
+  });
+
+  if (!uniqueItems.length) {
+    const existingIndex = findTargetIndex();
+    if (existingIndex >= 0) {
+      await playMusicQueueIndex(existingIndex);
+      scheduleSettingsSnapshot();
+    }
+    return;
+  }
+
+  const shouldStart = !musicTrack || musicQueueIndex < 0 || !musicQueue.length || (!musicPlaying && !musicPaused);
+
+  if (shouldStart && !playSourceId) {
+    musicQueue = uniqueItems;
+    musicQueueIndex = 0;
+    await playMusicQueueIndex(0, {
+      message: uniqueItems.length > 1 ? `收到，先放《${uniqueItems[0].displayName}》。` : `收到，放《${uniqueItems[0].displayName}》。`
+    });
+    return;
+  }
+
+  const startIndex = musicQueue.length;
+  musicQueue.push(...uniqueItems);
+
+  if (playSourceId) {
+    const targetIndex = findTargetIndex();
+    if (targetIndex >= 0) {
+      await playMusicQueueIndex(targetIndex);
+      scheduleSettingsSnapshot();
+      return;
+    }
+    if (shouldStart) {
+      await playMusicQueueIndex(startIndex);
+      scheduleSettingsSnapshot();
+      return;
+    }
+  }
+
+  const text = uniqueItems.length > 1 ? `已加入 ${uniqueItems.length} 首，队列现在 ${musicQueue.length} 首。` : `已加入队列：《${uniqueItems[0].displayName}》。`;
+  setRuntimeStatus(text, { mode: "music" });
+  showBubbleText(text, { transient: true, durationMs: 2400, kind: "music" });
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+async function playMusicQueueIndex(index, { message = "" } = {}) {
+  if (sceneOwnsPlayback()) return false;
+  if (index < 0 || index >= musicQueue.length) return false;
+  resetMusicElement();
+  musicQueueIndex = index;
+  musicTrack = musicQueue[index];
+  if (!musicTrack.cachedPath) throw new Error("缺少可播放音频路径");
+
+  els.musicPlayer.src = convertFileSrc(musicTrack.cachedPath);
+  els.musicPlayer.currentTime = 0;
+  els.musicPlayer.volume = state.voiceVolume;
+  await els.musicPlayer.play();
+
+  musicPlaying = true;
+  musicPaused = false;
+  setMusicEmotion(true);
+  const name = getMusicDisplayName();
+  const queueLabel = getMusicQueueLabel();
+  setRuntimeStatus(`播放中：${name}${queueLabel ? ` · ${queueLabel}` : ""}`, { mode: "music" });
+  if (message) showBubbleText(message, { transient: true, durationMs: 2400, kind: "music" });
+  scheduleBackendMusicTimeline(musicTrack, { immediate: true });
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+  return true;
+}
+
+async function playNextMusicTrack({ auto = false } = {}) {
+  if (!hasNextMusicTrack()) {
+    if (!auto) showBubbleText("后面没有下一首啦。", { transient: true, durationMs: 1800, kind: "music" });
+    return false;
+  }
+  const next = musicQueue[musicQueueIndex + 1];
+  return playMusicQueueIndex(musicQueueIndex + 1, {
+    message: auto ? `下一首，《${next.displayName}》。` : `切到下一首：《${next.displayName}》。`
+  });
+}
+
+async function playPreviousMusicTrack() {
+  if (!hasPreviousMusicTrack()) {
+    showBubbleText("前面没有上一首啦。", { transient: true, durationMs: 1800, kind: "music" });
+    return false;
+  }
+  const previous = musicQueue[musicQueueIndex - 1];
+  return playMusicQueueIndex(musicQueueIndex - 1, {
+    message: `切回上一首：《${previous.displayName}》。`
+  });
+}
+
+async function playMusicTrackBySourceId(sourceId) {
+  const index = findMusicTrackIndexBySourceId(sourceId);
+  if (index < 0) {
+    showBubbleText("这首不在当前队列里。", { transient: true, durationMs: 1800, kind: "music" });
+    return false;
+  }
+  if (index === musicQueueIndex) {
+    if (!musicPlaying) await toggleMusicPlayback();
+    return true;
+  }
+  return playMusicQueueIndex(index, {
+    message: `切到这首：《${musicQueue[index].displayName}》。`
+  });
+}
+
+async function removeMusicTrackBySourceId(sourceId) {
+  const index = findMusicTrackIndexBySourceId(sourceId);
+  if (index < 0) {
+    showBubbleText("队列里找不到这首啦。", { transient: true, durationMs: 1800, kind: "music" });
+    return false;
+  }
+
+  const removed = musicQueue[index];
+  const wasCurrent = index === musicQueueIndex;
+  musicQueue.splice(index, 1);
+
+  if (!musicQueue.length) {
+    stopMusic({ announce: true, silent: false, clearQueue: true });
+    return true;
+  }
+
+  if (wasCurrent) {
+    const nextIndex = Math.min(index, musicQueue.length - 1);
+    await playMusicQueueIndex(nextIndex, {
+      message: `已移除《${removed.displayName}》，接着放《${musicQueue[nextIndex].displayName}》。`
+    });
+    return true;
+  }
+
+  if (index < musicQueueIndex) musicQueueIndex -= 1;
+  const text = `已从队列移除：《${removed.displayName}》。`;
+  setRuntimeStatus(text, { mode: musicPlaying ? "music" : "music-paused" });
+  showBubbleText(text, { transient: true, durationMs: 2000, kind: "music" });
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+  return true;
+}
+
+async function handleMusicEnded() {
+  if (!musicTrack) return;
+  if (state.musicPlayMode === "单曲循环" && musicQueueIndex >= 0) {
+    await playMusicQueueIndex(musicQueueIndex, {
+      message: `单曲循环：《${musicTrack.displayName}》。`
+    });
+    return;
+  }
+  if (state.musicPlayMode === "随机播放" && musicQueue.length > 1) {
+    let nextIndex = musicQueueIndex;
+    while (nextIndex === musicQueueIndex) {
+      nextIndex = Math.floor(Math.random() * musicQueue.length);
+    }
+    await playMusicQueueIndex(nextIndex, {
+      message: `随机播放：《${musicQueue[nextIndex].displayName}》。`
+    });
+    return;
+  }
+  if (await playNextMusicTrack({ auto: true })) return;
+  if (state.musicPlayMode === "列表循环" && musicQueue.length > 1) {
+    await playMusicQueueIndex(0, {
+      message: `列表循环：《${musicQueue[0].displayName}》。`
+    });
+    return;
+  }
+  stopMusic({ ended: true });
+}
+
+async function handleMusicPlaybackError() {
+  if (!musicTrack) return;
+  const failed = musicTrack;
+  const failedIndex = musicQueueIndex;
+  const name = getMusicDisplayName();
+  if (musicQueue.length > 1 && failedIndex >= 0) {
+    musicQueue.splice(failedIndex, 1);
+    const nextIndex = Math.min(failedIndex, musicQueue.length - 1);
+    try {
+      await playMusicQueueIndex(nextIndex, {
+        message: `《${name}》暂时放不了，先跳到《${musicQueue[nextIndex].displayName}》。`
+      });
+      return;
+    } catch (error) {
+      setRuntimeStatus(`音乐播放失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+    }
+  }
+  stopMusic({ silent: true, clearQueue: true });
+  setRuntimeStatus(`音乐播放失败${name ? `：${name}` : ""}`, { mode: "error" });
+  showBubbleText("这首歌好像没放出来……", { transient: true, durationMs: 2200, kind: "music" });
+  if (failed?.displayName) scheduleSettingsSnapshot();
+}
+
+async function toggleMusicPlayback() {
+  if (!musicTrack) {
+    showBubbleText("把音频文件拖给我就能放啦。", { transient: true, durationMs: 2200, kind: "music" });
+    setRuntimeStatus("等待拖入音频文件", { mode: "idle" });
+    return false;
+  }
+  if (musicPlaying) {
+    els.musicPlayer.pause();
+    musicPlaying = false;
+    musicPaused = true;
+    setMusicEmotion(false);
+    setRuntimeStatus(`音乐已暂停：${getMusicDisplayName()}`, { mode: "music-paused" });
+  } else {
+    try {
+      await els.musicPlayer.play();
+      musicPlaying = true;
+      musicPaused = false;
+      setMusicEmotion(true);
+      const queueLabel = getMusicQueueLabel();
+      setRuntimeStatus(`播放中：${getMusicDisplayName()}${queueLabel ? ` · ${queueLabel}` : ""}`, { mode: "music" });
+      scheduleBackendMusicTimeline(musicTrack, { immediate: true });
+    } catch (error) {
+      setRuntimeStatus(`音乐继续失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+      return false;
+    }
+  }
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+  return true;
+}
+
+function buildActiveMediaControlSnapshot() {
+  return resolveActiveMediaControl({
+    localTrack: musicTrack,
+    localPlaying: musicPlaying,
+    localPaused: musicPaused,
+    systemMedia,
+    systemControllable: isControllableSystemMedia(systemMedia)
+  });
+}
+
+const controlActiveMusic = createMediaCommandQueue(executeActiveMusicCommand);
+
+async function executeActiveMusicCommand(action, payload = {}) {
+  const control = buildActiveMediaControlSnapshot();
+  const normalized = normalizeMediaControlAction(action);
+  const resolvedAction = resolveMediaControlAction(normalized, control);
+  const operationId = String(payload?.operationId || "").trim();
+  let outcome;
+
+  if (!normalized) {
+    outcome = { ok: false, status: "invalid_action", reason: "invalid_media_action" };
+  } else if (control.target === MEDIA_CONTROL_TARGETS.none) {
+    showBubbleText("现在没有可控制的音乐。", { transient: true, durationMs: 1800, kind: "music" });
+    setRuntimeStatus("暂无可控制的音乐", { mode: "idle" });
+    outcome = { ok: false, status: "unavailable", reason: "no_active_media" };
+  } else if (control.target === MEDIA_CONTROL_TARGETS.system) {
+    const result = await controlSystemMediaPlayback(resolvedAction, { operationId });
+    outcome = {
+      ok: Boolean(result?.ok),
+      status: result?.ok ? "completed" : result?.status || "failed",
+      reason: result?.reason || "",
+      providerStatus: result?.status || "",
+      playbackStatus: result?.playbackStatus || result?.playback_status || ""
+    };
+  } else {
+    let ok = false;
+    if (resolvedAction === "play") {
+      ok = musicPlaying ? true : await toggleMusicPlayback();
+    } else if (resolvedAction === "pause") {
+      ok = musicPlaying ? await toggleMusicPlayback() : musicPaused;
+    } else if (resolvedAction === "next") {
+      ok = await playNextMusicTrack();
+    } else if (resolvedAction === "previous") {
+      ok = await playPreviousMusicTrack();
+    } else if (resolvedAction === "stop") {
+      stopMusic({ announce: true });
+      ok = true;
+    }
+    outcome = {
+      ok,
+      status: ok ? "completed" : "failed",
+      reason: ok ? "" : `local_media_${resolvedAction}_failed`,
+      playbackStatus: buildActiveMediaControlSnapshot().playbackStatus
+    };
+  }
+
+  lastSettingsCommandResult = {
+    command: "controlActiveMusic",
+    operationId,
+    target: control.target,
+    targetId: control.targetId,
+    action: resolvedAction || normalized,
+    ...outcome,
+    at: Date.now()
+  };
+  scheduleSettingsSnapshot(0);
+  return lastSettingsCommandResult;
+}
+
+function seekMusicPlayback(seconds) {
+  if (!musicTrack || !els.musicPlayer) {
+    setRuntimeStatus("暂无可跳转的音乐", { mode: "idle" });
+    return;
+  }
+  const duration = Number(els.musicPlayer.duration || 0);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    setRuntimeStatus("音乐时长仍在读取中", { mode: "idle" });
+    return;
+  }
+  const nextTime = clamp(Number(seconds || 0), 0, duration);
+  try {
+    els.musicPlayer.currentTime = nextTime;
+    setRuntimeStatus(`已跳转音乐进度：${getMusicDisplayName()}`, {
+      mode: musicPlaying ? "music" : musicPaused ? "music-paused" : "idle"
+    });
+    scheduleMusicSnapshot(80);
+  } catch {
+    setRuntimeStatus("音乐进度跳转失败", { mode: "error" });
+  }
+}
+
+function stopMusic({ announce = false, ended = false, silent = false, clearQueue = false } = {}) {
+  const hadTrack = Boolean(musicTrack);
+  const name = getMusicDisplayName();
+  musicPlaying = false;
+  musicPaused = false;
+  musicLoading = false;
+  clearBackendMusicTimelineTimer();
+  if (els.musicPlayer) {
+    els.musicPlayer.pause();
+    try {
+      els.musicPlayer.currentTime = 0;
+    } catch {
+      // Some media backends reject currentTime until metadata is ready.
+    }
+    if (clearQueue) {
+      resetMusicElement();
+    }
+  }
+  if (clearQueue) {
+    musicTrack = null;
+    musicQueue = [];
+    musicQueueIndex = -1;
+  }
+  setMusicEmotion(false);
+  if (!silent && hadTrack) {
+    const message = ended ? `《${name}》放完啦。` : `已停止音乐${name ? `：${name}` : ""}`;
+    setRuntimeStatus(message, { mode: ended ? "idle" : "stopped" });
+    if (announce || ended) {
+      showBubbleText(ended ? "这首放完啦。" : "音乐停好啦。", { transient: true, durationMs: 1900, kind: "music" });
+    }
+  }
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+function clearMusicQueue({ announce = false } = {}) {
+  if (!musicTrack && !musicQueue.length) {
+    showBubbleText("队列现在是空的。", { transient: true, durationMs: 1600, kind: "music" });
+    return;
+  }
+  stopMusic({ announce, clearQueue: true });
+}
+
+function setMusicEmotion(active) {
+  window.clearTimeout(musicEmotionRestoreTimer);
+  musicEmotionRestoreTimer = 0;
+  if (active) {
+    musicEmotionActive = true;
+    scheduleMusicEmotionRestore({ delayMs: 0 });
+    return;
+  }
+  if (isMusicEmotionSourceActive()) {
+    musicEmotionActive = true;
+    scheduleMusicEmotionRestore();
+    return;
+  }
+  if (musicEmotionActive && state.currentEmotion === resolveEmotionEntry(getProfileMusicEmotion()).id) {
+    setPetEmotion(getProfileDefaultEmotion(), { persist: false });
+  }
+  musicEmotionActive = false;
+}
+
+function scheduleMusicEmotionRestore({ delayMs = MUSIC_EMOTION_RESTORE_DELAY_MS } = {}) {
+  window.clearTimeout(musicEmotionRestoreTimer);
+  musicEmotionRestoreTimer = 0;
+  if (!isMusicEmotionSourceActive()) return;
+  musicEmotionActive = true;
+  const delay = Math.max(0, Number(delayMs) || 0);
+  musicEmotionRestoreTimer = window.setTimeout(() => {
+    musicEmotionRestoreTimer = 0;
+    applyMusicEmotionWhenIdle();
+  }, delay);
+}
+
+function applyMusicEmotionWhenIdle() {
+  if (!isMusicEmotionSourceActive()) return;
+  if (!canApplyMusicEmotionNow()) {
+    scheduleMusicEmotionRestore();
+    return;
+  }
+  setPetEmotion(getProfileMusicEmotion(), { persist: false });
+}
+
+function canApplyMusicEmotionNow() {
+  if (sending || ttsActive || ttsQueue.length > 0) return false;
+  if (["opening", "recording", "processing"].includes(voiceInputState)) return false;
+  if (dragState || physicsTimer || playState.heldEmotion) return false;
+  if (localInteractionActive || previewEmotionRestore) return false;
+  if (!els.chatForm.hidden || !els.menu.hidden) return false;
+  return true;
+}
+
+function setRestingPetEmotion({ persist = false } = {}) {
+  return setPetEmotion(getRestingPetEmotion(), { persist });
+}
+
+function getRestingPetEmotion() {
+  return isMusicEmotionSourceActive() ? getProfileMusicEmotion() : getProfileDefaultEmotion();
+}
+
+function normalizeMusicTrack(asset, metadata) {
+  const value = asset && typeof asset === "object" ? asset : {};
+  const fileName = String(value.fileName || "audio");
+  const cachedPath = String(value.cachedPath || "");
+  const lyricFileName = String(value.lyricFileName || "").trim();
+  const lyrics = parseLrcText(value.lyricText || "");
+  const sizeBytes = Number(value.sizeBytes || value.size_bytes || 0);
+  let metaSourceId = "", metaDisplayName = "", metaQueueDedupeKey = "", metaWorkspaceItemType = "", metaWorkspaceHandle = "";
+  if (metadata && typeof metadata === "object") {
+    metaSourceId = String(metadata.sourceId || "").trim();
+    metaDisplayName = String(metadata.displayName || "").trim();
+    metaQueueDedupeKey = String(metadata.queueDedupeKey || "").trim();
+    metaWorkspaceItemType = metadata.workspaceItemType === "generated" ? "generated" : metadata.workspaceItemType === "attachment" ? "attachment" : "";
+    metaWorkspaceHandle = String(metadata.workspaceHandle || "").trim();
+  }
+  return {
+    originalPath: String(value.originalPath || ""),
+    cachedPath,
+    sourceId: metaSourceId || `local:${fileName}:${simpleHash(cachedPath || fileName)}`,
+    queueDedupeKey: metaQueueDedupeKey || metaSourceId || "",
+    workspaceItemType: metaWorkspaceItemType || "",
+    workspaceHandle: metaWorkspaceHandle || "",
+    fileName,
+    displayName: metaDisplayName || String(value.displayName || value.fileName || "未命名音乐"),
+    extension: String(value.extension || "").toLowerCase(),
+    sizeBytes,
+    lyricFileName,
+    lyricLineCount: lyrics.length,
+    lyrics,
+    backendAttachment: null,
+    timeline: null,
+    timelineStatus: lyrics.length ? "skipped_lrc" : "idle",
+    timelineQuality: "",
+    timelineError: "",
+    timelineLyrics: [],
+    timelineLyricLineCount: 0,
+    timelineUpdatedAt: 0,
+    timelineLoading: false
+  };
+}
+
+function shouldUseBackendMusicTimeline(track) {
+  if (!isTauriRuntime || !track?.cachedPath) return false;
+  return !hasLocalMusicLyrics(track);
+}
+
+function hasLocalMusicLyrics(track) {
+  return Number(track?.lyricLineCount || 0) > 0 || (Array.isArray(track?.lyrics) && track.lyrics.length > 0);
+}
+
+function clearBackendMusicTimelineTimer() {
+  window.clearTimeout(musicTimelineTimer);
+  musicTimelineTimer = 0;
+  musicTimelineSourceId = "";
+}
+
+function scheduleBackendMusicTimeline(track, { immediate = false, delayMs = null } = {}) {
+  window.clearTimeout(musicTimelineTimer);
+  musicTimelineTimer = 0;
+  musicTimelineSourceId = "";
+  if (!shouldUseBackendMusicTimeline(track)) return;
+  if (track.timelineStatus === "ready" && Array.isArray(track.timelineLyrics) && track.timelineLyrics.length) return;
+
+  const sourceId = String(track.sourceId || "").trim();
+  if (!sourceId) return;
+  musicTimelineSourceId = sourceId;
+  const delay = immediate
+    ? MUSIC_TIMELINE_INITIAL_DELAY_MS
+    : Number.isFinite(delayMs)
+      ? Math.max(1200, delayMs)
+      : MUSIC_TIMELINE_POLL_MS;
+  musicTimelineTimer = window.setTimeout(() => {
+    musicTimelineTimer = 0;
+    if (!musicTrack || musicTrack.sourceId !== sourceId || musicTimelineSourceId !== sourceId) return;
+    void ensureBackendMusicTimeline(musicTrack);
+  }, delay);
+}
+
+async function ensureBackendMusicTimeline(track, { force = false } = {}) {
+  if (!track || musicTrack?.sourceId !== track.sourceId || !shouldUseBackendMusicTimeline(track)) return;
+  if (track.timelineLoading) return;
+  if (!force && track.timelineStatus === "ready" && Array.isArray(track.timelineLyrics) && track.timelineLyrics.length) return;
+
+  track.timelineLoading = true;
+  if (!track.timelineStatus || track.timelineStatus === "idle") track.timelineStatus = "uploading";
+  track.timelineError = "";
+  scheduleSettingsSnapshot();
+
+  try {
+    if (!track.backendAttachment?.handle) {
+      track.backendAttachment = await uploadMusicTrackForTimeline(track);
+      track.timelineStatus = "pending";
+      scheduleSettingsSnapshot();
+    }
+
+    const result = await prepareBackendMusicTimeline(track);
+    applyBackendMusicTimeline(track, result);
+
+    if (musicTrack?.sourceId !== track.sourceId) return;
+    if (track.timelineStatus === "ready") {
+      setRuntimeStatus(`后端歌词线索已准备好：${track.timelineLyricLineCount || 0} 行`, {
+        mode: musicPlaying ? "music" : musicPaused ? "music-paused" : null
+      });
+      return;
+    }
+    if (track.timelineStatus === "pending" || track.timelineStatus === "processing") {
+      scheduleBackendMusicTimeline(track, { delayMs: MUSIC_TIMELINE_POLL_MS });
+      return;
+    }
+    scheduleBackendMusicTimeline(track, { delayMs: MUSIC_TIMELINE_RETRY_MS });
+  } catch (error) {
+    if (musicTrack?.sourceId === track.sourceId) {
+      track.timelineStatus = "failed";
+      track.timelineError = friendlyErrorMessage(formatError(error));
+      scheduleBackendMusicTimeline(track, { delayMs: MUSIC_TIMELINE_RETRY_MS });
+    }
+  } finally {
+    track.timelineLoading = false;
+    scheduleSettingsSnapshot();
+  }
+}
+
+async function uploadMusicTrackForTimeline(track) {
+  const assetUrl = convertFileSrc(track.cachedPath);
+  const assetResponse = await window.fetch(assetUrl);
+  if (!assetResponse.ok) {
+    throw new Error(`读取本地音频失败：HTTP ${assetResponse.status}`);
+  }
+
+  let blob = await assetResponse.blob();
+  const mimeType = blob.type || inferMusicMimeType(track);
+  if (mimeType && blob.type !== mimeType) {
+    blob = new Blob([blob], { type: mimeType });
+  }
+
+  const form = new FormData();
+  form.append("file", blob, track.fileName || "akane_music.audio");
+  form.append("user_id", state.sessionId || "desktop_pet_next");
+  form.append("session_id", state.sessionId || "desktop_pet_next");
+  form.append("real_user_id", state.profileUserId || PROFILE_USER_ID);
+  form.append("client_mode", CLIENT_MODE);
+  form.append("character_pack_id", getCurrentCharacterPackId());
+
+  const response = await backendFetch(
+    buildBackendEndpointUrl("desktop_audio_upload", "/desktop-pet/attachments/audio", { t: Date.now() }),
+    {
+      method: "POST",
+      cache: "no-store",
+      body: form,
+      connectTimeout: 60_000
+    }
+  );
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(extractBackendErrorMessage(payload) || `音频上传失败：HTTP ${response.status}`);
+  }
+  const attachment = normalizeBackendAttachment(payload?.attachment);
+  if (!payload?.ok || !attachment.handle) {
+    throw new Error(extractBackendErrorMessage(payload) || "后端没有返回可用音频附件");
+  }
+  return attachment;
+}
+
+async function prepareBackendMusicTimeline(track) {
+  const activity = buildDesktopMusicActivity();
+  if (!activity) throw new Error("当前没有可分析的音乐");
+  const attachment = track.backendAttachment || {};
+  const payload = {
+    user_id: state.sessionId || "desktop_pet_next",
+    session_id: state.sessionId || "desktop_pet_next",
+    real_user_id: getProfileUserId(),
+    ...buildBackendCharacterContext(),
+    activity: {
+      ...activity,
+      attachment_handle: attachment.handle || activity.attachment_handle || "",
+      attachment_id: attachment.attachmentId || activity.attachment_id || "",
+      handle: attachment.handle || activity.handle || "current"
+    }
+  };
+  const response = await backendFetch(
+    buildBackendEndpointUrl("desktop_music_timeline_prepare", "/desktop-pet/music-timeline/prepare", { t: Date.now() }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify(payload),
+      connectTimeout: 60_000
+    }
+  );
+  const result = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(extractBackendErrorMessage(result) || `音乐歌词线索准备失败：HTTP ${response.status}`);
+  }
+  if (!result?.ok) {
+    throw new Error(extractBackendErrorMessage(result) || "后端暂时找不到这首音乐");
+  }
+  return result;
+}
+
+function applyBackendMusicTimeline(track, result) {
+  const timeline = result?.timeline && typeof result.timeline === "object" ? result.timeline : null;
+  if (!timeline) {
+    track.timelineStatus = result?.ok ? "pending" : "failed";
+    track.timelineError = extractBackendErrorMessage(result);
+    return;
+  }
+  const status = String(timeline.status || "pending").trim().toLowerCase() || "pending";
+  track.timeline = timeline;
+  track.timelineStatus = status;
+  track.timelineQuality = String(timeline.quality || "").trim();
+  track.timelineUpdatedAt = Number(timeline.updated_at || Date.now() / 1000) || 0;
+  track.timelineError = extractBackendErrorMessage(timeline) || extractBackendErrorMessage(result);
+  const lines = status === "ready" ? normalizeTimelineLyricSegments(timeline.segments) : [];
+  track.timelineLyrics = lines;
+  track.timelineLyricLineCount = lines.length || Number(timeline.segment_count || 0) || 0;
+}
+
+function normalizeBackendAttachment(payload) {
+  const value = payload && typeof payload === "object" ? payload : {};
+  const handle = String(value.handle || value.attachment_handle || value.source_id || value.attachment_id || "").trim();
+  return {
+    attachmentId: String(value.attachment_id || value.attachmentId || "").trim(),
+    handle,
+    sourceId: String(value.source_id || handle).trim(),
+    title: String(value.title || value.origin_name || "").trim(),
+    url: String(value.url || "").trim(),
+    mimeType: String(value.mime_type || value.mimeType || "").trim(),
+    sizeBytes: Number(value.size_bytes || value.sizeBytes || 0)
+  };
+}
+
+function normalizeTimelineLyricSegments(segments) {
+  return (Array.isArray(segments) ? segments : [])
+    .map((segment) => {
+      const text = String(segment?.text || "").replace(/\s+/gu, " ").trim();
+      if (!text) return null;
+      const start = Number(segment.start ?? segment.start_seconds ?? segment.timeSeconds ?? 0);
+      const end = Number(segment.end ?? segment.end_seconds ?? start);
+      return {
+        timeSeconds: Number.isFinite(start) ? Math.max(0, start) : 0,
+        endSeconds: Number.isFinite(end) ? Math.max(0, end) : Number.isFinite(start) ? Math.max(0, start) : 0,
+        text
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.timeSeconds - right.timeSeconds)
+    .filter((line, index, source) => {
+      const previous = source[index - 1];
+      return !previous || previous.timeSeconds !== line.timeSeconds || previous.text !== line.text;
+    });
+}
+
+function inferMusicMimeType(track) {
+  const extension = String(track?.extension || "").toLowerCase();
+  return (
+    {
+      mp3: "audio/mpeg",
+      wav: "audio/wav",
+      flac: "audio/flac",
+      ogg: "audio/ogg",
+      oga: "audio/ogg",
+      opus: "audio/ogg",
+      m4a: "audio/mp4",
+      aac: "audio/aac",
+      webm: "audio/webm"
+    }[extension] || "application/octet-stream"
+  );
+}
+
+function getMusicDisplayName() {
+  return String(musicTrack?.displayName || musicTrack?.fileName || "").trim();
+}
+
+function parseLrcText(value) {
+  const text = String(value || "").replace(/\r\n?/gu, "\n");
+  if (!text.trim()) return [];
+  const lines = [];
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const matches = [...line.matchAll(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/gu)];
+    if (!matches.length) continue;
+    const lyricText = line.replace(/\[[^\]]+\]/gu, "").trim();
+    if (!lyricText) continue;
+    for (const match of matches) {
+      const minutes = Number(match[1] || 0);
+      const seconds = Number(match[2] || 0);
+      const fraction = String(match[3] || "");
+      const millis = fraction ? Number(fraction.padEnd(3, "0").slice(0, 3)) : 0;
+      const timeSeconds = minutes * 60 + seconds + millis / 1000;
+      if (Number.isFinite(timeSeconds)) {
+        lines.push({ timeSeconds, text: lyricText });
+      }
+    }
+  }
+  return lines
+    .sort((left, right) => left.timeSeconds - right.timeSeconds)
+    .filter((line, index, source) => {
+      const previous = source[index - 1];
+      return !previous || previous.timeSeconds !== line.timeSeconds || previous.text !== line.text;
+    });
+}
+
+function resetMusicElement() {
+  if (!els.musicPlayer) return;
+  els.musicPlayer.pause();
+  els.musicPlayer.removeAttribute("src");
+  els.musicPlayer.load();
+}
+
+function hasPreviousMusicTrack() {
+  return musicQueueIndex > 0 && musicQueueIndex < musicQueue.length;
+}
+
+function hasNextMusicTrack() {
+  return musicQueueIndex >= 0 && musicQueueIndex < musicQueue.length - 1;
+}
+
+function getPreviousMusicTrack() {
+  return hasPreviousMusicTrack() ? musicQueue[musicQueueIndex - 1] : null;
+}
+
+function getNextMusicTrack() {
+  return hasNextMusicTrack() ? musicQueue[musicQueueIndex + 1] : null;
+}
+
+function getMusicQueueLabel() {
+  if (!musicQueue.length || musicQueueIndex < 0) return "";
+  return musicQueue.length > 1 ? `${musicQueueIndex + 1}/${musicQueue.length}` : "";
+}
+
+function summarizeMusicTrack(track) {
+  if (!track || typeof track !== "object") return null;
+  return {
+    sourceId: track.sourceId,
+    fileName: track.fileName,
+    displayName: track.displayName,
+    extension: track.extension,
+    sizeBytes: track.sizeBytes,
+    lyricFileName: track.lyricFileName || "",
+    lyricLineCount: Number(track.lyricLineCount || 0),
+    timelineStatus: track.timelineStatus || "",
+    timelineQuality: track.timelineQuality || "",
+    timelineLyricLineCount: Number(track.timelineLyricLineCount || 0),
+    timelineLoading: Boolean(track.timelineLoading),
+    backendAttachmentHandle: track.backendAttachment?.handle || ""
+  };
+}
+
+function findMusicTrackIndexBySourceId(sourceId) {
+  const normalized = String(sourceId || "").trim();
+  if (!normalized) return -1;
+  return musicQueue.findIndex((track) =>
+    track?.sourceId === normalized || track?.queueDedupeKey === normalized
+  );
+}
+
+function getSafeMusicQueueIndex() {
+  if (!musicQueue.length) return -1;
+  if (musicQueueIndex >= 0 && musicQueueIndex < musicQueue.length) return musicQueueIndex;
+  return 0;
+}
+
+function notifyMusicActivityUnavailable(message) {
+  setRuntimeStatus(message, { mode: "music" });
+  showBubbleText(message, { transient: true, durationMs: 2200, kind: "music" });
+}
+
+function getProfileCareConfig() {
+  const care = getActiveCharacterProfile()?.care || {};
+  return {
+    enabled: Boolean(care.enabled),
+    initialCoins: clampCareValue(care.initialCoins, 0, 999999),
+    initialHunger: clampCareValue(care.initialHunger, 0, 100),
+    initialEnergy: clampCareValue(care.initialEnergy, 0, 100),
+    initialAffection: clampCareValue(care.initialAffection, 0, 100),
+    work: normalizeCareWorkConfig(care.work),
+    allowance: normalizeCareAllowanceConfig(care.allowance),
+    decay: normalizeCareDecayConfig(care.decay),
+    shopItems: Array.isArray(care.shopItems) ? care.shopItems : []
+  };
+}
+
+function normalizeCareState(value, config = getProfileCareConfig()) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const inventory = source.inventory && typeof source.inventory === "object" && !Array.isArray(source.inventory)
+    ? source.inventory
+    : {};
+  const normalizedInventory = {};
+  for (const [id, count] of Object.entries(inventory)) {
+    const itemId = String(id || "").trim();
+    const amount = Math.max(0, Math.round(Number(count) || 0));
+    if (itemId && amount > 0) normalizedInventory[itemId] = amount;
+  }
+  return {
+    enabled: Boolean(config.enabled),
+    coins: clampCareValue(source.coins ?? config.initialCoins, 0, 999999),
+    hunger: clampCareValue(source.hunger ?? config.initialHunger, 0, 100),
+    energy: clampCareValue(source.energy ?? config.initialEnergy, 0, 100),
+    affection: clampCareValue(source.affection ?? config.initialAffection, 0, 100),
+    inventory: normalizedInventory,
+    workTask: normalizeCareWorkTask(source.workTask || source.work_task),
+    lastAllowanceAt: Math.max(0, Math.round(Number(source.lastAllowanceAt || source.last_allowance_at || 0))),
+    lastDecayAt: Math.max(0, Math.round(Number(source.lastDecayAt || source.last_decay_at || 0))),
+    updatedAt: Math.max(0, Math.round(Number(source.updatedAt || source.updated_at || 0)))
+  };
+}
+
+function normalizeCareDecayConfig(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    hungerPerHour: clampCareValue(
+      source.hungerPerHour ?? source.hunger_per_hour ?? CARE_DEFAULT_HUNGER_DECAY_PER_HOUR,
+      0,
+      100
+    ),
+    energyPerReply: clampCareValue(
+      source.energyPerReply ?? source.energy_per_reply ?? CARE_DEFAULT_ENERGY_COST_PER_REPLY,
+      0,
+      20
+    ),
+    energyPerProactive: clampCareValue(
+      source.energyPerProactive ?? source.energy_per_proactive ?? CARE_DEFAULT_ENERGY_COST_PER_PROACTIVE,
+      0,
+      20
+    )
+  };
+}
+
+function normalizeCareWorkConfig(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const minReward = clampCareValue(source.rewardCoinsMin ?? source.reward_coins_min ?? 5, 0, 999999);
+  const maxReward = clampCareValue(source.rewardCoinsMax ?? source.reward_coins_max ?? minReward, 0, 999999);
+  return {
+    enabled: Boolean(source.enabled),
+    durationSeconds: clampCareValue(source.durationSeconds ?? source.duration_seconds ?? 20, 1, 3600),
+    rewardCoinsMin: Math.min(minReward, maxReward),
+    rewardCoinsMax: Math.max(minReward, maxReward),
+    minHunger: clampCareValue(source.minHunger ?? source.min_hunger ?? 20, 0, 100),
+    minEnergy: clampCareValue(source.minEnergy ?? source.min_energy ?? 25, 0, 100),
+    hungerCost: clampCareValue(source.hungerCost ?? source.hunger_cost ?? 12, 0, 100),
+    energyCost: clampCareValue(source.energyCost ?? source.energy_cost ?? 25, 0, 100),
+    startFeedback: normalizeCareFeedback(source.startFeedback || source.start_feedback),
+    completeFeedback: normalizeCareFeedback(source.completeFeedback || source.complete_feedback)
+  };
+}
+
+function normalizeCareAllowanceConfig(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    enabled: Boolean(source.enabled),
+    coins: clampCareValue(source.coins ?? 4, 1, 999999),
+    cooldownSeconds: clampCareValue(source.cooldownSeconds ?? source.cooldown_seconds ?? 300, 0, 86400),
+    maxCoins: clampCareValue(source.maxCoins ?? source.max_coins ?? 6, 1, 999999),
+    feedback: normalizeCareFeedback(source.feedback)
+  };
+}
+
+function normalizeCareFeedback(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const bubble = source.bubble && typeof source.bubble === "object" && !Array.isArray(source.bubble) ? source.bubble : {};
+  return {
+    emotion: String(source.emotion || "").trim(),
+    bubble: {
+      text: String(bubble.text || "").trim(),
+      durationMs: clampCareValue(bubble.durationMs ?? bubble.duration_ms ?? 0, 0, 60000)
+    }
+  };
+}
+
+function normalizeCareWorkTask(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const completeAt = Math.max(0, Math.round(Number(source.completeAt || source.complete_at || 0)));
+  if (!completeAt) return null;
+  return {
+    status: "active",
+    startedAt: Math.max(0, Math.round(Number(source.startedAt || source.started_at || 0))),
+    completeAt,
+    rewardCoins: clampCareValue(source.rewardCoins ?? source.reward_coins ?? 0, 0, 999999)
+  };
+}
+
+function scheduleCarePassiveTick() {
+  window.clearTimeout(carePassiveTimer);
+  carePassiveTimer = 0;
+  if (!isCareRuntimeActive()) return;
+  carePassiveTimer = window.setTimeout(async () => {
+    await refreshDesktopCareState({ silent: true });
+  }, CARE_PASSIVE_TICK_MS);
+}
+
+function buildDesktopCareContext() {
+  if (!isCareRuntimeActive()) return null;
+  const config = getProfileCareConfig();
+  if (!config.enabled) return null;
+  const care = normalizeCareState(state.care, config);
+  return {
+    enabled: true,
+    now: Date.now(),
+    hunger: care.hunger,
+    energy: care.energy,
+    affection: care.affection,
+    coins: care.coins,
+    work_task_active: Boolean(care.workTask),
+    thresholds: {
+      hunger_low: 25,
+      hunger_critical: 12,
+      energy_low: 25,
+      energy_critical: 12,
+      affection_warm: 45,
+      affection_close: 75
+    }
+  };
+}
+
+async function buyShopItem(itemId) {
+  if (!isCareConfiguredForCurrentCharacter()) return rejectDisabledCareAction();
+  const item = findCareShopItem(itemId);
+  if (!item) {
+    notifyShopStatus("这个商品暂时买不了。", "error");
+    return false;
+  }
+  const result = await performDesktopCareAction("buy", { itemId: item.id });
+  if (!result?.ok) {
+    const message = describeCareActionFailure(result);
+    notifyShopStatus(message, "warn");
+    showBubbleText(message, { transient: true, durationMs: 1600, kind: "shop" });
+    return false;
+  }
+  notifyShopStatus(`买到了：${item.name}`, "ok");
+  showBubbleText(`买到了 ${item.name}。`, { transient: true, durationMs: 1600, kind: "shop" });
+  return true;
+}
+
+async function feedInventoryItem(itemId) {
+  if (!isCareConfiguredForCurrentCharacter()) return rejectDisabledCareAction();
+  const item = findCareShopItem(itemId);
+  if (!item) {
+    notifyShopStatus("这个商品暂时不能使用。", "error");
+    return false;
+  }
+  const result = await performDesktopCareAction("feed", { itemId: item.id });
+  if (!result?.ok) {
+    const message = describeCareActionFailure(result);
+    notifyShopStatus(message, "warn");
+    showBubbleText(message, { transient: true, durationMs: 1600, kind: "shop" });
+    return false;
+  }
+  const care = normalizeCareState(result.snapshot, getProfileCareConfig());
+  const effects = result.effects_applied && typeof result.effects_applied === "object"
+    ? result.effects_applied
+    : {};
+  const hungerDelta = Number(effects.hunger || 0);
+  const affectionDelta = Number(effects.affection || 0);
+  const energyDelta = Number(effects.energy || 0);
+  applyCareFeedback(item);
+  notifyShopStatus(`投喂了：${item.name}`, "ok");
+  void sendCareFeedReply({ item, care, hungerDelta, energyDelta, affectionDelta });
+  return true;
+}
+
+async function sendCareFeedReply({ item, care, hungerDelta, energyDelta, affectionDelta }) {
+  if (!isCareRuntimeActive()) return;
+  if (sending || ttsActive || replyDisplayActive) return;
+  const itemName = String(item?.name || "").trim();
+  if (!itemName) return;
+  const turnToken = ++activeTurnToken;
+  activeTurnLatencyTrace = createTurnLatencyTrace("care_feed", turnToken, { itemName });
+  sending = true;
+  lastTurnSignature = "";
+  lastTurnTextKey = "";
+  resetStreamingTtsState(turnToken);
+  desktopFileDeliveryHandled.clear();
+  scheduleSettingsSnapshot();
+
+  try {
+    if (resourceState.health !== "online") {
+      const healthy = await reloadCharacterResources({ silent: true });
+      if (!healthy) return;
+    }
+    if (!isTurnActive(turnToken)) return;
+    const message = [
+      `刚才发生的互动：我投喂了你「${itemName}」。`,
+      `状态变化：饥饿 ${formatSignedCareDelta(hungerDelta)}，精力 ${formatSignedCareDelta(energyDelta)}，好感 ${formatSignedCareDelta(affectionDelta)}。`,
+      `当前状态：饥饿 ${care.hunger}/100，精力 ${care.energy}/100，好感 ${care.affection}/100。`
+    ].join("\n");
+    const stream = sendThinkStream(message, turnToken, {
+      turnKind: "desktop_pet_care_feed"
+    });
+    await processThinkStream(stream, turnToken);
+  } catch (error) {
+    if (!isTurnActive(turnToken) || isAbortLike(error)) return;
+    setRuntimeStatus(`投喂回复暂时失败：${formatError(error)}`, { mode: "error" });
+  } finally {
+    markTurnLatency("turn-finished");
+    if (isTurnActive(turnToken)) {
+      sending = false;
+      if (state.currentEmotion === resolveEmotionEntry("thinking").id) {
+        setRestingPetEmotion();
+      }
+      if (!els.bubble.classList.contains("visible")) {
+        setPetMotion("idle");
+      }
+      scheduleMusicEmotionRestore();
+      updateActivityControls();
+      scheduleSettingsSnapshot();
+    }
+    finishTurnLatencyTrace(turnToken);
+  }
+}
+
+function formatSignedCareDelta(value) {
+  const number = Math.round(Number(value) || 0);
+  return number > 0 ? `+${number}` : String(number);
+}
+
+async function startCareWork() {
+  if (!isCareConfiguredForCurrentCharacter()) return rejectDisabledCareAction();
+  const config = getProfileCareConfig();
+  if (!config.enabled || !config.work.enabled) {
+    notifyShopStatus("这个角色还没有配置外出。", "error");
+    return false;
+  }
+  const result = await performDesktopCareAction("start_work");
+  if (!result?.ok) {
+    const message = describeCareActionFailure(result);
+    notifyShopStatus(message, "warn");
+    showBubbleText(message, { transient: true, durationMs: 2000, kind: "work" });
+    return false;
+  }
+  applyCareFeedback(config.work.startFeedback, {
+    fallbackText: "我出去转一圈，很快回来。",
+    kind: "work",
+    durationMs: 1800
+  });
+  syncCareAwayVisualState();
+  scheduleCareWorkCompletion();
+  notifyShopStatus("她出门啦，等一会儿就回来。", "ok");
+  return true;
+}
+
+async function claimCareAllowance() {
+  if (!isCareConfiguredForCurrentCharacter()) return rejectDisabledCareAction();
+  const config = getProfileCareConfig();
+  const allowance = config.allowance;
+  if (!config.enabled || !allowance.enabled) {
+    notifyShopStatus("这个角色还没有配置补给。", "error");
+    return false;
+  }
+  const result = await performDesktopCareAction("claim_allowance");
+  if (!result?.ok) {
+    const message = describeCareActionFailure(result);
+    notifyShopStatus(message, "warn");
+    showBubbleText(message, { transient: true, durationMs: 1800, kind: "shop" });
+    return false;
+  }
+  const grant = Math.max(0, Math.round(Number(result.coins_granted || 0)));
+  applyCareFeedback(allowance.feedback, {
+    fallbackText: `拿到 ${grant} 枚应急金币。`,
+    replacements: { coins: grant },
+    kind: "shop",
+    durationMs: 1800
+  });
+  notifyShopStatus(`领取补给：+${grant} 金币`, "ok");
+  return true;
+}
+
+async function settleCareWorkIfDue({ silent = false } = {}) {
+  if (!isCareRuntimeActive()) return false;
+  const config = getProfileCareConfig();
+  const care = normalizeCareState(state.care, config);
+  if (!care.workTask) {
+    scheduleCareWorkCompletion();
+    return false;
+  }
+  const result = await performDesktopCareAction("settle_work", { silent: true });
+  if (!result?.ok) {
+    if (result?.reason === "work_not_due") scheduleCareWorkCompletion();
+    else if (!silent) notifyShopStatus(describeCareActionFailure(result), "warn");
+    return false;
+  }
+  const reward = Math.max(0, Math.round(Number(result.reward_coins || 0)));
+  syncCareAwayVisualState();
+  applyCareFeedback(config.work.completeFeedback, {
+    fallbackText: `我回来啦，带回 ${reward} 枚金币。`,
+    replacements: { reward },
+    kind: "work",
+    durationMs: 2200
+  });
+  notifyShopStatus(`外出完成：+${reward} 金币`, "ok");
+  return true;
+}
+
+function scheduleCareWorkCompletion() {
+  window.clearTimeout(careWorkTimer);
+  careWorkTimer = 0;
+  if (!isCareRuntimeActive()) {
+    stopCareRuntime();
+    return;
+  }
+  const care = normalizeCareState(state.care, getProfileCareConfig());
+  const task = care.workTask;
+  syncCareAwayVisualState(care);
+  if (!task) return;
+  const delay = Math.max(0, task.completeAt - Date.now());
+  careWorkTimer = window.setTimeout(() => {
+    void settleCareWorkIfDue();
+  }, Math.min(delay, 2147483647));
+}
+
+function syncCareAwayVisualState(care = normalizeCareState(state.care, getProfileCareConfig())) {
+  if (!isCareRuntimeActive()) {
+    if (els?.stage) els.stage.classList.remove("is-away");
+    void setCareAwayClickThrough(false);
+    return;
+  }
+  const away = Boolean(care.workTask);
+  els.stage.classList.toggle("is-away", away);
+  void setCareAwayClickThrough(away);
+  if (away) {
+    hideChatInput();
+    els.bubble.classList.remove("visible");
+  }
+}
+
+async function setCareAwayClickThrough(enabled) {
+  const next = Boolean(enabled);
+  if (careAwayClickThrough === next) return;
+  careAwayClickThrough = next;
+  state.clickThrough = next;
+  if (!isTauriRuntime) return;
+  try {
+    await invoke("set_click_through", { enabled: next });
+  } catch {
+    careAwayClickThrough = !next;
+    state.clickThrough = !next;
+  }
+}
+
+function applyCareFeedback(item) {
+  const feedback = item?.feedback || item || {};
+  if (feedback.emotion) {
+    setTransientEmotion(feedback.emotion, { durationMs: 2200 });
+  }
+  const fallbackText = arguments[1]?.fallbackText || `${item.name}，收下啦。`;
+  const replacements = arguments[1]?.replacements || {};
+  const text = formatCareFeedbackText(String(feedback.bubble?.text || fallbackText).trim(), replacements);
+  const durationMs = Math.max(1000, Number(feedback.bubble?.durationMs || arguments[1]?.durationMs || 1800));
+  showBubbleText(text, { transient: true, durationMs, local: true, kind: arguments[1]?.kind || "feed" });
+}
+
+function formatCareFeedbackText(text, replacements = {}) {
+  return String(text || "")
+    .replace(/\{reward\}/g, String(replacements.reward ?? ""))
+    .replace(/\{coins\}/g, String(replacements.coins ?? ""));
+}
+
+function notifyShopStatus(message, tone = "info") {
+  void emitTo("shop", SHOP_STATUS_EVENT, { message, tone, t: Date.now() }).catch(() => {});
+}
+
+function findCareShopItem(itemId) {
+  if (!isCareConfiguredForCurrentCharacter()) return null;
+  const id = String(itemId || "").trim();
+  return getProfileCareConfig().shopItems.find((item) => item.id === id) || null;
+}
+
+function clampCareValue(value, min, max) {
+  const number = Math.round(Number(value));
+  return Math.min(max, Math.max(min, Number.isFinite(number) ? number : min));
+}
+
+function buildCurrentLyricSnapshot(timeSeconds = Number(els.musicPlayer?.currentTime || 0)) {
+  const lrcLines = Array.isArray(musicTrack?.lyrics) ? musicTrack.lyrics : [];
+  const timelineLines = Array.isArray(musicTrack?.timelineLyrics) ? musicTrack.timelineLyrics : [];
+  const source = lrcLines.length ? "lrc" : timelineLines.length ? "timeline" : "";
+  const lines = source === "lrc" ? lrcLines : timelineLines;
+  if (!lines.length) return null;
+  let currentIndex = -1;
+  const currentTime = Number.isFinite(timeSeconds) ? Math.max(0, timeSeconds) : 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].timeSeconds <= currentTime + 0.12) currentIndex = index;
+    else break;
+  }
+  const current = currentIndex >= 0 ? lines[currentIndex] : null;
+  const previous = currentIndex > 0 ? lines[currentIndex - 1] : null;
+  const next = lines[Math.max(0, currentIndex + 1)] || null;
+  return {
+    source,
+    fileName: source === "lrc" ? musicTrack.lyricFileName || "" : musicTrack.timeline?.transcript_generated_handle || "",
+    quality: source === "timeline" ? musicTrack.timelineQuality || "" : "",
+    lineCount: lines.length,
+    index: currentIndex,
+    timeSeconds: current?.timeSeconds ?? 0,
+    text: current?.text || "",
+    previousText: previous?.text || "",
+    nextText: next?.text || ""
+  };
+}
+
+function isWorkspaceAudioItem(item) {
+  if (!item || typeof item !== "object") return false;
+  if (String(item.kind || "").trim().toLowerCase() === "audio") return true;
+  const subtitle = String(item.subtitle || "").toLowerCase();
+  if (subtitle.includes("音频")) return true;
+  const format = String(item.format || "").toLowerCase().replace(/^\.+/, "");
+  if (MUSIC_FILE_EXTENSIONS.has(format)) return true;
+  const name = String(item.title || item.name || "").toLowerCase();
+  const ext = name.split(".").pop();
+  if (ext && MUSIC_FILE_EXTENSIONS.has(ext)) return true;
+  return false;
+}
+
+function buildWorkspaceMusicRecommendationFromItem(item, section) {
+  const handle = String(item.handle || item.id || "").trim();
+  const title = String(item.title || item.name || item.fileName || "").trim();
+  const format = String(item.format || "").trim();
+  const prefix = section === "outputs" ? "workspace:generated" : "workspace:attachment";
+  const durationSeconds = Number(item.durationSeconds || item.duration_seconds || 0);
+  return {
+    id: handle ? `${prefix}:${handle}` : `${section}_${title}_${format}`,
+    sourceId: handle ? `${prefix}:${handle}` : "",
+    itemType: section === "outputs" ? "generated" : "attachment",
+    handle,
+    title,
+    format,
+    sizeBytes: Number(item.sizeBytes || item.size_bytes || 0),
+    durationSeconds: Number.isFinite(durationSeconds) ? Math.max(0, durationSeconds) : 0,
+    durationLabel: formatPlaylistDuration(durationSeconds),
+    reason: section === "outputs" ? "生成音频" : "手边音频",
+    playable: true
+  };
+}
+
+function dedupeMusicRecommendations(items) {
+  const seenHandles = new Set();
+  const seenSoftKeys = new Set();
+  return items.filter((item) => {
+    const itemType = String(item.itemType || "").trim().toLowerCase();
+    const handle = String(item.handle || "").trim();
+    const handleKey = handle ? `${itemType}:${handle}` : "";
+    if (handleKey && seenHandles.has(handleKey)) return false;
+    const title = String(item.title || "").trim().toLowerCase();
+    const format = String(item.format || "").trim().toLowerCase().replace(/^\.+/, "");
+    const sizeBytes = Number(item.sizeBytes || item.size_bytes || 0);
+    const hasSoftKey = Boolean(title) && Number.isFinite(sizeBytes) && sizeBytes > 0;
+    const softKey = hasSoftKey ? `${title}|${format}|${sizeBytes}` : "";
+    if (softKey && seenSoftKeys.has(softKey)) return false;
+    if (handleKey) seenHandles.add(handleKey);
+    if (softKey) seenSoftKeys.add(softKey);
+    return true;
+  });
+}
+
+function setWorkspaceMusicRecommendations(nextRecommendations) {
+  const next = Array.isArray(nextRecommendations) ? nextRecommendations : [];
+  if (JSON.stringify(workspaceMusicRecommendations) === JSON.stringify(next)) return;
+  workspaceMusicRecommendations = next;
+  scheduleSettingsSnapshot();
+}
+
+async function refreshWorkspaceMusicRecommendations() {
+  if (workspaceMusicRecommendationsLoading) return;
+  workspaceMusicRecommendationsLoading = true;
+  try {
+    const profileUserId = String(state.profileUserId || PROFILE_USER_ID);
+    const sessionId = String(state.sessionId || "");
+    if (!sessionId || resourceState.health !== "online") {
+      setWorkspaceMusicRecommendations([]);
+      workspaceAudioCatalog = [];
+      return;
+    }
+    const url = buildBackendEndpointUrl("workspaceSummary", "/desktop-pet/workspace/summary", {
+      user_id: sessionId,
+      real_user_id: profileUserId,
+      ...buildBackendCharacterContext(),
+      limit: 24,
+      t: String(Date.now())
+    });
+    const response = await backendFetch(url, {
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      setWorkspaceMusicRecommendations([]);
+      workspaceAudioCatalog = [];
+      return;
+    }
+    const payload = await response.json().catch(() => null);
+    const sections = payload?.sections || payload;
+    const candidates = [];
+    for (const sectionName of ["files", "outputs"]) {
+      const items = Array.isArray(sections[sectionName]) ? sections[sectionName] : [];
+      for (const item of items) {
+        if (isWorkspaceAudioItem(item)) {
+          candidates.push(buildWorkspaceMusicRecommendationFromItem(item, sectionName));
+        }
+      }
+    }
+    const nextRecs = dedupeMusicRecommendations(candidates).slice(0, 3);
+    setWorkspaceMusicRecommendations(nextRecs);
+    workspaceAudioCatalog = dedupeMusicRecommendations(candidates).slice(0, 12);
+  } catch {
+    setWorkspaceMusicRecommendations([]);
+    workspaceAudioCatalog = [];
+  } finally {
+    workspaceMusicRecommendationsLoading = false;
+  }
+}
+
+function scheduleWorkspaceMusicRecommendationsRefresh(delay = 300) {
+  window.clearTimeout(workspaceMusicRecommendationsRefreshTimer);
+  workspaceMusicRecommendationsRefreshTimer = window.setTimeout(() => {
+    workspaceMusicRecommendationsRefreshTimer = 0;
+    void refreshWorkspaceMusicRecommendations();
+  }, delay);
+}
+
+function buildQueueMusicRecommendationsSnapshot(limit = 3) {
+  if (!musicQueue.length) return [];
+  if (musicQueue.length === 1) {
+    const current = musicQueue[0];
+    const durationSeconds = Number(els.musicPlayer?.duration || 0);
+    return [{
+      id: current.sourceId || "current",
+      sourceId: String(current.sourceId || ""),
+      title: String(current.displayName || current.fileName || ""),
+      artist: "",
+      durationSeconds: Number.isFinite(durationSeconds) ? Math.max(0, durationSeconds) : 0,
+      durationLabel: formatPlaylistDuration(durationSeconds),
+      reason: "当前播放",
+      playable: true
+    }];
+  }
+  const recommendations = [];
+  const maxIterations = Math.min(musicQueue.length - 1, limit);
+  for (let offset = 1; offset <= maxIterations && recommendations.length < limit; offset += 1) {
+    const index = (musicQueueIndex + offset) % musicQueue.length;
+    const track = musicQueue[index];
+    if (!track) continue;
+    recommendations.push({
+      id: track.sourceId || `rec_${index}`,
+      sourceId: String(track.sourceId || ""),
+      title: String(track.displayName || track.fileName || ""),
+      artist: "",
+      durationSeconds: 0,
+      durationLabel: "",
+      reason: offset === 1 ? "下一首" : "队列中",
+      playable: true
+    });
+  }
+  return recommendations;
+}
+
+function buildMusicRecommendationsSnapshot(limit = 3) {
+  if (workspaceMusicRecommendations.length > 0) {
+    return workspaceMusicRecommendations.slice(0, limit);
+  }
+  return buildQueueMusicRecommendationsSnapshot(limit);
+}
+
+function formatPlaylistDuration(seconds) {
+  const sec = Math.max(0, Math.round(Number(seconds) || 0));
+  if (!sec) return "";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function buildMusicSnapshot() {
+  const previous = getPreviousMusicTrack();
+  const next = getNextMusicTrack();
+  const progress = Number(els.musicPlayer?.currentTime || 0);
+  const duration = Number(els.musicPlayer?.duration || 0);
+  const currentLyric = buildCurrentLyricSnapshot(progress);
+  return {
+    track: summarizeMusicTrack(musicTrack),
+    queue: musicQueue.map(summarizeMusicTrack).filter(Boolean),
+    queueIndex: musicQueueIndex,
+    queueCount: musicQueue.length,
+    queueLabel: getMusicQueueLabel(),
+    hasPrevious: hasPreviousMusicTrack(),
+    hasNext: hasNextMusicTrack(),
+    previousDisplayName: previous?.displayName || "",
+    nextDisplayName: next?.displayName || "",
+    progressSeconds: Number.isFinite(progress) ? Math.max(0, progress) : 0,
+    durationSeconds: Number.isFinite(duration) ? Math.max(0, duration) : 0,
+    currentLyric,
+    playing: musicPlaying,
+    paused: musicPaused,
+    loading: musicLoading,
+    displayName: getMusicDisplayName(),
+    systemMedia: summarizeSystemMedia(),
+    systemLyrics: summarizeSystemMediaLyrics(),
+    recommendations: buildMusicRecommendationsSnapshot(),
+    control: buildActiveMediaControlSnapshot()
+  };
+}
+
+function simpleHash(value) {
+  const text = String(value || "");
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function buildDesktopMusicActivity({ excludePaused = false } = {}) {
+  const recs = buildMusicRecommendationsSnapshot();
+  const recsSummary = recs.map(({ title, reason, sourceId }) => ({ title, reason, source_id: sourceId || "" }));
+  const catalog = buildPlayableMusicCatalog();
+  const systemActivity = buildSystemMediaActivity({ recommendations: recsSummary, catalog });
+
+  if (shouldUseSystemMediaActivity(systemActivity)) return excludePaused && systemActivity.status !== "running" ? null : systemActivity;
+  if (excludePaused && !musicPlaying) return null;
+
+  if (!musicTrack) {
+    if (recs.length > 0 || catalog.length > 0) {
+      return { type: "audio_recommendations", status: "idle", recommendations: recsSummary, catalog };
+    }
+    return null;
+  }
+
+  const currentTime = Number(els.musicPlayer?.currentTime || 0);
+  const duration = Number(els.musicPlayer?.duration || 0);
+  const currentLyric = buildCurrentLyricSnapshot(currentTime);
+  const status = musicPlaying ? "running" : musicPaused ? "paused" : "stopped";
+  const progressSeconds = Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0;
+  if (status === "stopped" && progressSeconds <= 0 && recs.length === 0 && catalog.length === 0) return null;
+  return {
+    type: "audio_playback",
+    title: getMusicDisplayName() || "未命名音乐",
+    source_id: musicTrack.sourceId || "local_music_current",
+    handle: "current",
+    status,
+    progress_seconds: progressSeconds,
+    duration_seconds: Number.isFinite(duration) ? Math.max(0, duration) : 0,
+    source_kind: "local_file",
+    file_name: musicTrack.fileName,
+    extension: musicTrack.extension,
+    attachment_handle: musicTrack.backendAttachment?.handle || "",
+    attachment_id: musicTrack.backendAttachment?.attachmentId || "",
+    timeline_id: musicTrack.timeline?.timeline_id || "",
+    timeline_status: musicTrack.timelineStatus || "",
+    timeline_quality: musicTrack.timelineQuality || "",
+    queue_count: musicQueue.length,
+    queue_index: musicQueueIndex >= 0 ? musicQueueIndex + 1 : 0,
+    queue_titles: musicQueue.map((track) => track.displayName).filter(Boolean).slice(0, 8),
+    previous_title: getPreviousMusicTrack()?.displayName || "",
+    next_title: getNextMusicTrack()?.displayName || "",
+    lyric_file_name: currentLyric?.fileName || "",
+    lyric_line_count: currentLyric?.lineCount || 0,
+    lyric_index: currentLyric?.index ?? -1,
+    lyric_current: currentLyric?.text || "",
+    lyric_previous: currentLyric?.previousText || "",
+    lyric_next: currentLyric?.nextText || "",
+    recommendations: recsSummary,
+    catalog
+  };
+}
+
+function shouldUseSystemMediaActivity(systemActivity) {
+  return Boolean(systemActivity && buildActiveMediaControlSnapshot().target === MEDIA_CONTROL_TARGETS.system);
+}
+
+function buildSystemMediaActivity({ recommendations = [], catalog = [] } = {}) {
+  if (!isFreshSystemMedia(systemMedia)) return null;
+  const titleParts = [systemMedia.title, systemMedia.artist].filter(Boolean);
+  const title = titleParts.length ? titleParts.join(" - ") : "系统媒体";
+  const kind = mediaKind(systemMedia);
+  const position = mediaPosition(systemMedia);
+  const currentLyric = kind === "music" ? buildSystemMediaLyricSnapshot(position) : null;
+  const status = systemMedia.isPlaying
+    ? "running"
+    : systemMedia.playbackStatus === "paused"
+      ? "paused"
+      : "stopped";
+  if (status === "stopped") return null;
+  return {
+    type: kind === "music" ? "audio_playback" : kind === "video" ? "video_playback" : "media_playback",
+    media_kind: kind,
+    captured_at: Date.now() / 1000,
+    source_captured_at: systemMedia.capturedAt / 1000,
+    timeline_updated_at: systemMedia.timelineUpdatedAt / 1000,
+    title,
+    source_id: `system_media:${systemMedia.trackKey || simpleHash(title)}`,
+    handle: "system_media_current",
+    status,
+    progress_seconds: position,
+    duration_seconds: safePositiveSeconds(systemMedia.durationSeconds),
+    source_kind: "system_media",
+    source_app: systemMedia.sourceApp || "",
+    artist: systemMedia.artist || "",
+    album: systemMedia.album || "",
+    system_media: true,
+    playback_status: systemMedia.playbackStatus || "unknown",
+    ...(kind === "music" ? {
+    lyric_file_name: currentLyric?.text ? currentLyric.source || "online" : "",
+    lyric_line_count: currentLyric?.text ? currentLyric.lineCount || 0 : 0,
+    lyric_index: currentLyric?.text ? currentLyric.index ?? -1 : -1,
+    lyric_current: currentLyric?.text || "",
+    lyric_previous: currentLyric?.previousText || "",
+    lyric_next: currentLyric?.nextText || "",
+    lyric_status: currentLyric?.status || systemMediaLyrics.status || "unavailable",
+    lyric_reason: currentLyric?.reason || systemMediaLyrics.reason || "",
+    lyric_confidence: currentLyric?.confidence || systemMediaLyrics.confidence || "",
+    lyric_source: currentLyric?.source || systemMediaLyrics.source || "",
+    recommendations,
+    catalog
+    } : {})
+  };
+}
+
+function buildPlayableMusicCatalog() {
+  const seen = new Set();
+  const catalog = [];
+
+  const addItem = (item) => {
+    if (!item || !item.sourceId || !item.title) return;
+    const key = item.sourceId || item.title;
+    if (seen.has(key)) return;
+    seen.add(key);
+    catalog.push({
+      source_id: item.sourceId,
+      title: item.title,
+      source: item.itemType ? `workspace:${item.itemType}` : "queue",
+      item_type: item.itemType || "",
+      handle: item.handle || "",
+      reason: item.reason || "",
+      playable: true
+    });
+  };
+
+  for (const track of musicQueue) {
+    if (track?.displayName) {
+      addItem({
+        sourceId: track.sourceId || track.queueDedupeKey || "",
+        title: String(track.displayName || ""),
+        itemType: "",
+        handle: "",
+        reason: "播放队列"
+      });
+    }
+  }
+
+  for (const rec of workspaceAudioCatalog) {
+    addItem({
+      sourceId: rec.sourceId,
+      title: rec.title,
+      itemType: rec.itemType,
+      handle: rec.handle,
+      reason: rec.reason || "手边音频"
+    });
+  }
+
+  return catalog.slice(0, 12);
+}
+
+function resetStreamingTtsState(turnToken = 0) {
+  clearStreamingTtsPending();
+  streamingTtsTurnToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  streamingTtsText = "";
+  streamingTtsSegmentKeys.clear();
+}
+
+function ensureStreamingTtsTurn(turnToken) {
+  const normalizedToken = Number.isFinite(Number(turnToken)) ? Number(turnToken) : 0;
+  if (streamingTtsTurnToken === normalizedToken) return;
+  resetStreamingTtsState(normalizedToken);
+}
+
+function queueStreamedTtsSegment(text, turnToken, segmentIndex = null) {
+  const normalized = normalizeTtsText(text);
+  if (!normalized || !isTurnActive(turnToken) || !state.voiceEnabled) return;
+  if (resourceState.tts?.enabled === false) return;
+
+  ensureStreamingTtsTurn(turnToken);
+  const textKey = buildSpeechTextKey(normalized);
+  if (!textKey) return;
+  const numericIndex = segmentIndex === null || segmentIndex === undefined ? NaN : Number(segmentIndex);
+  const segmentKey = Number.isFinite(numericIndex)
+    ? `${numericIndex}:${textKey}`
+    : `tail:${streamingTtsSegmentKeys.size}:${textKey}`;
+  if (streamingTtsSegmentKeys.has(segmentKey)) return;
+
+  streamingTtsSegmentKeys.add(segmentKey);
+  streamingTtsText = normalizeTtsText(streamingTtsText ? `${streamingTtsText}${normalized}` : normalized);
+  bufferStreamingTtsSegment(normalized, turnToken, segmentKey);
+}
+
+function bufferStreamingTtsSegment(text, turnToken, segmentKey = "") {
+  const normalized = normalizeTtsText(text);
+  if (!normalized || !isTurnActive(turnToken) || !state.voiceEnabled) return;
+
+  window.clearTimeout(streamingTtsPendingShortTimer);
+  streamingTtsPendingShortTimer = 0;
+  const combined = normalizeTtsText(
+    streamingTtsPendingShort ? `${streamingTtsPendingShort} ${normalized}` : normalized
+  );
+  const combinedKey = [streamingTtsPendingShortKey, segmentKey].filter(Boolean).join("+");
+  streamingTtsPendingShort = "";
+  streamingTtsPendingShortKey = "";
+
+  if (combined.length <= TTS_SHORT_SEGMENT_MAX_CHARS) {
+    streamingTtsPendingShort = combined;
+    streamingTtsPendingShortKey = combinedKey;
+    streamingTtsPendingShortTimer = window.setTimeout(() => {
+      streamingTtsPendingShortTimer = 0;
+      flushStreamingTtsPending({ turnToken });
+    }, TTS_SHORT_SEGMENT_HOLD_MS);
+    return;
+  }
+
+  queueTtsItems([combined], `stream:${turnToken}:${combinedKey || buildSpeechTextKey(combined)}`, {
+    append: true,
+    preserveSegments: true,
+    reply: true
+  });
+}
+
+function flushStreamingTtsPending({ turnToken = streamingTtsTurnToken } = {}) {
+  const text = streamingTtsPendingShort;
+  const segmentKey = streamingTtsPendingShortKey;
+  clearStreamingTtsPending();
+  if (!text || !isTurnActive(turnToken) || !state.voiceEnabled) return false;
+  queueTtsItems([text], `stream:${turnToken}:${segmentKey || buildSpeechTextKey(text)}`, {
+    append: true,
+    preserveSegments: true,
+    reply: true
+  });
+  return true;
+}
+
+function clearStreamingTtsPending() {
+  window.clearTimeout(streamingTtsPendingShortTimer);
+  streamingTtsPendingShortTimer = 0;
+  streamingTtsPendingShort = "";
+  streamingTtsPendingShortKey = "";
+}
+
+function queueLiveTtsPayloadItems(items, signature = "") {
+  const normalized = (Array.isArray(items) ? items : [items])
+    .map((item) => normalizeTtsText(item))
+    .filter(Boolean);
+  if (!normalized.length) return;
+
+  if (streamingTtsText) {
+    const tail = removeStreamingTtsPrefix(normalized.join(""));
+    if (tail) {
+      const tailSegments = splitSpeechText(tail);
+      for (const segment of tailSegments.length ? tailSegments : [tail]) {
+        bufferStreamingTtsSegment(segment, activeTurnToken, `tail:${buildSpeechTextKey(segment)}`);
+      }
+    }
+    flushStreamingTtsPending({ turnToken: activeTurnToken });
+    return;
+  }
+
+  queueTtsItems(normalized, signature, { reply: true });
+}
+
+function removeStreamingTtsPrefix(text) {
+  const finalText = normalizeTtsText(text);
+  const prefix = normalizeTtsText(streamingTtsText);
+  if (!finalText || !prefix) return finalText;
+  if (finalText.startsWith(prefix)) return normalizeTtsText(finalText.slice(prefix.length));
+
+  const finalKey = buildSpeechTextKey(finalText);
+  const prefixKey = buildSpeechTextKey(prefix);
+  if (!prefixKey || !finalKey.startsWith(prefixKey)) return "";
+  if (finalKey.length <= prefixKey.length) return "";
+
+  let compactCount = 0;
+  let sliceIndex = 0;
+  for (let index = 0; index < finalText.length; index += 1) {
+    if (!/\s/.test(finalText[index])) compactCount += 1;
+    if (compactCount >= prefixKey.length) {
+      sliceIndex = index + 1;
+      break;
+    }
+  }
+  return normalizeTtsText(finalText.slice(sliceIndex));
+}
+
+function scheduleTtsPrewarm({ force = false, delayMs = TTS_PREWARM_DELAY_MS } = {}) {
+  window.clearTimeout(ttsPrewarmTimer);
+  ttsPrewarmTimer = 0;
+  if (!canRunTtsPrewarm()) return;
+  ttsPrewarmTimer = window.setTimeout(() => {
+    ttsPrewarmTimer = 0;
+    void runTtsPrewarm({ force });
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function cancelTtsPrewarm() {
+  window.clearTimeout(ttsPrewarmTimer);
+  ttsPrewarmTimer = 0;
+  if (ttsPrewarmController) {
+    ttsPrewarmController.abort();
+    ttsPrewarmController = null;
+  }
+  ttsPrewarmInFlightKey = "";
+}
+
+function canRunTtsPrewarm() {
+  if (!state.voiceEnabled || resourceState.health !== "online" || resourceState.tts?.enabled === false) return false;
+  if (sending || ttsActive || ttsQueue.length > 0 || replyDisplayActive || proactiveWakeRunning) return false;
+  if (["opening", "recording", "processing"].includes(voiceInputState)) return false;
+  return true;
+}
+
+function getTtsPrewarmKey() {
+  return [
+    getCharacterRuntimeKey(),
+    String(resourceState.tts?.endpoint || ""),
+    String(resourceState.tts?.responseMediaType || "")
+  ].join("::");
+}
+
+async function runTtsPrewarm({ force = false } = {}) {
+  if (!canRunTtsPrewarm()) return;
+  const key = getTtsPrewarmKey();
+  const warmedAt = Number(ttsPrewarmReadyAtByKey.get(key) || 0);
+  if (!force && warmedAt && Date.now() - warmedAt < TTS_PREWARM_COOLDOWN_MS) return;
+  if (ttsPrewarmInFlightKey === key) return;
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), TTS_PREWARM_TIMEOUT_MS);
+  const startedAt = performance.now();
+  ttsPrewarmController = controller;
+  ttsPrewarmInFlightKey = key;
+
+  try {
+    const requestInit = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      signal: controller.signal,
+      body: JSON.stringify({
+        text: TTS_PREWARM_TEXT,
+        ...buildBackendCharacterContext()
+      })
+    };
+    if (isTauriRuntime) requestInit.connectTimeout = TTS_PREWARM_TIMEOUT_MS;
+
+    const response = await backendFetch(buildBackendEndpointUrl("tts", "/tts", { t: Date.now() }), requestInit);
+    if (response.ok) {
+      await response.arrayBuffer();
+      ttsPrewarmReadyAtByKey.set(key, Date.now());
+      logTtsTiming("prewarm-ready", {
+        requestMs: Math.round(performance.now() - startedAt),
+        character: getCurrentCharacterPackId()
+      });
+    } else {
+      logTtsTiming("prewarm-skipped", { status: response.status });
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      logTtsTiming("prewarm-failed", { error: formatError(error) });
+    }
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (ttsPrewarmController === controller) ttsPrewarmController = null;
+    if (ttsPrewarmInFlightKey === key) ttsPrewarmInFlightKey = "";
+  }
+}
+
+function queueTtsItems(items, signature = "", { append = false, preserveSegments = false, reply = false } = {}) {
+  if (sceneOwnsPlayback()) return;
+  const normalized = (Array.isArray(items) ? items : [items])
+    .map((item) => normalizeTtsText(item))
+    .filter(Boolean);
+  if (!state.voiceEnabled || !normalized.length) return;
+  if (resourceState.tts?.enabled === false) {
+    setRuntimeStatus("后端语音暂未开启", { mode: "error" });
+    return;
+  }
+  const nextItems = reply
+    ? normalized.flatMap((displayText) => buildTtsQueueItems([displayText], { preserveSegments: true })
+      .map((text) => ({ text, reply, displayText })))
+    : buildTtsQueueItems(normalized, { preserveSegments }).map((text) => ({ text, reply }));
+  if (!nextItems.length) return;
+  cancelTtsPrewarm();
+
+  if (append) {
+    ttsQueue.push(...nextItems);
+    if (!ttsActive) {
+      ttsToken += 1;
+      void runTtsQueue(ttsToken);
+    } else {
+      ttsPrefetch?.();
+    }
+    return;
+  }
+
+  if (signature && signature === lastTtsSignature) return;
+
+  stopTts({ resetSignature: false });
+  lastTtsSignature = signature || `tts:${normalized.join("\u241e")}`;
+  ttsToken += 1;
+  const token = ttsToken;
+  ttsQueue = nextItems;
+  void runTtsQueue(token);
+}
+
+async function testTts() {
+  if (!state.voiceEnabled) {
+    setVoiceEnabled(true);
+  }
+  queueTtsItems([getActiveCharacterText("ttsTestText")], `test:${Date.now()}`);
+}
+
+async function previewTts(text) {
+  const normalized = normalizeTtsText(text) || getActiveCharacterText("ttsTestText");
+  if (!state.voiceEnabled) {
+    setVoiceEnabled(true);
+  }
+  queueTtsItems([normalized], `preview:${Date.now()}`);
+}
+
+function stopTts({ resetSignature = true } = {}) {
+  clearStreamingTtsPending();
+  ttsPrefetch = null;
+  ttsToken += 1;
+  ttsQueue = [];
+  if (resetSignature) lastTtsSignature = "";
+  if (ttsController) {
+    ttsController.abort();
+    ttsController = null;
+  }
+  finishTtsWait(false);
+  stopTtsAudio();
+  setTtsActive(false);
+}
+
+async function runTtsQueue(token) {
+  setTtsActive(true);
+  let pendingPrepared = null;
+  // A later model sentence may arrive after playback has begun. Wake this
+  // owner's single lookahead slot immediately instead of waiting for ended.
+  const prefetch = () => {
+    if (token === ttsToken && state.voiceEnabled && !pendingPrepared) {
+      pendingPrepared = startNextTtsPrepare(token);
+    }
+  };
+  ttsPrefetch = prefetch;
+  try {
+    while (token === ttsToken && state.voiceEnabled) {
+      prefetch();
+      if (!pendingPrepared) break;
+
+      const prepared = await pendingPrepared;
+      pendingPrepared = null;
+      if (prepared?.audio && (token !== ttsToken || !state.voiceEnabled)) {
+        discardPreparedTtsAudio(prepared.audio);
+        break;
+      }
+
+      prefetch();
+      if (prepared?.error) {
+        reportTtsError(prepared.error, token);
+        if (prepared.reply) await showFailedTtsReply(prepared.displayText || prepared.text, token);
+      } else if (prepared?.audio) {
+        try {
+          await playPreparedTtsAudio(prepared.audio, token, { reply: prepared.reply, displayText: prepared.displayText });
+          if (token === ttsToken && pendingPrepared) {
+            setPetMotion("thinking");
+            setRuntimeStatus("语音生成中…", { mode: "thinking" });
+          }
+        } catch (error) {
+          reportTtsError(error, token);
+          if (prepared.reply) await showFailedTtsReply(prepared.displayText || prepared.text, token);
+        }
+      }
+    }
+  } finally {
+    if (ttsPrefetch === prefetch) ttsPrefetch = null;
+    if (token !== ttsToken || !state.voiceEnabled) {
+      discardPendingTtsPrepare(pendingPrepared);
+    }
+    if (token === ttsToken) {
+      ttsQueue = [];
+      if (shouldSyncReplyToTts()) streamedReplySegments = [];
+      setTtsActive(false);
+      if (bubbleKind === "reply") scheduleBubbleReset(els.bubbleText.textContent.length, bubbleToken);
+    }
+  }
+}
+
+function startNextTtsPrepare(token) {
+  while (ttsQueue.length > 0) {
+    const item = ttsQueue.shift();
+    if (!item?.text) continue;
+    return fetchTtsAudio(item.text, token)
+      .then((audio) => ({ ...item, audio }))
+      .catch((error) => ({ ...item, error }));
+  }
+  return null;
+}
+
+async function fetchTtsAudio(text, token) {
+  const controller = new AbortController();
+  const startedAt = performance.now();
+  const timeoutId = window.setTimeout(() => controller.abort(), TTS_TIMEOUT_MS);
+  const slowTimerId = window.setTimeout(() => {
+    if (token === ttsToken && ttsController === controller && !controller.signal.aborted && els.voicePlayer.paused) {
+      setRuntimeStatus("语音生成中…", { mode: "thinking" });
+    }
+  }, TTS_SLOW_REQUEST_MS);
+  ttsController = controller;
+
+  try {
+    const requestInit = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      signal: controller.signal,
+      body: JSON.stringify({
+        text,
+        ...buildBackendCharacterContext()
+      })
+    };
+    if (isTauriRuntime) requestInit.connectTimeout = 30_000;
+
+    const response = await backendFetch(buildBackendEndpointUrl("tts", "/tts", { t: Date.now() }), requestInit);
+    if (!response.ok) throw new Error(await readBackendErrorMessage(response, `TTS HTTP ${response.status}`));
+
+    const arrayBuffer = await response.arrayBuffer();
+    if (token !== ttsToken) return null;
+    if (controller.signal.aborted) throw createAbortError();
+
+    const contentType = response.headers.get("content-type") || "audio/mpeg";
+    const blob = new Blob([arrayBuffer], { type: contentType });
+    const finishedAt = performance.now();
+    const audio = {
+      text,
+      contentType,
+      objectUrl: URL.createObjectURL(blob),
+      requestMs: Math.round(finishedAt - startedAt)
+    };
+    logTtsTiming("prepared", {
+      requestMs: audio.requestMs,
+      textLength: text.length,
+      contentType: audio.contentType
+    });
+    return audio;
+  } finally {
+    window.clearTimeout(timeoutId);
+    window.clearTimeout(slowTimerId);
+    if (ttsController === controller) ttsController = null;
+  }
+}
+
+async function playPreparedTtsAudio(prepared, token, { reply = false, displayText = "" } = {}) {
+  if (sceneOwnsPlayback() || (isTauriRuntime && await invoke("scene_playback_active"))) return;
+  if (!prepared?.objectUrl || token !== ttsToken) return;
+  const objectUrl = prepared.objectUrl;
+  ttsObjectUrl = objectUrl;
+  prepared.objectUrl = "";
+  try {
+    els.voicePlayer.src = objectUrl;
+    els.voicePlayer.currentTime = 0;
+    els.voicePlayer.volume = state.voiceVolume;
+    const playRequestedAt = performance.now();
+    await waitForTtsAudio(token, () => {
+      ttsPlaybackToken = token;
+      setRuntimeStatus("语音播放中", { mode: "speaking" });
+      setPetMotion("speaking");
+      if (reply) presentTtsReplyText(displayText || prepared.text);
+      logTtsTiming("playback-started", {
+        requestMs: prepared.requestMs,
+        playStartupMs: Math.round(performance.now() - playRequestedAt),
+        textLength: prepared.text?.length || 0
+      });
+    });
+  } finally {
+    if (ttsPlaybackToken === token) ttsPlaybackToken = 0;
+    scheduleSettingsSnapshot();
+    // A cancelled play() can settle after another reply has acquired the player.
+    if (ttsObjectUrl === objectUrl) {
+      els.voicePlayer.pause();
+      cleanupTtsObjectUrl();
+    } else URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function showFailedTtsReply(text, token) {
+  if (token !== ttsToken) return;
+  presentTtsReplyText(text);
+  setPetMotion("idle");
+  // Keep failed speech readable, then continue the queue. This wait is cancelled
+  // by the same stop owner as audio playback.
+  await new Promise((resolve) => {
+    const finish = () => {
+      window.clearTimeout(timer);
+      if (resolveTtsWait === finish) resolveTtsWait = null;
+      resolve();
+    };
+    const timer = window.setTimeout(finish, getSegmentDisplayDelay(text));
+    resolveTtsWait = finish;
+  });
+}
+
+function presentTtsReplyText(text) {
+  // Several audio chunks can belong to one visible sentence. Its preview is
+  // already on screen; starting that audio must not reset the same bubble.
+  window.clearTimeout(bubbleTimer);
+  if (bubbleKind === "reply" && els.bubbleText.textContent === text) return;
+  showBubbleText(text, { transient: false, kind: "reply" });
+}
+
+function discardPreparedTtsAudio(prepared) {
+  if (!prepared?.objectUrl) return;
+  URL.revokeObjectURL(prepared.objectUrl);
+  prepared.objectUrl = "";
+}
+
+function discardPendingTtsPrepare(pendingPrepared) {
+  if (!pendingPrepared) return;
+  pendingPrepared
+    .then((prepared) => {
+      if (prepared?.audio) discardPreparedTtsAudio(prepared.audio);
+    })
+    .catch(() => {});
+}
+
+function reportTtsError(error, token) {
+  if (token !== ttsToken) return;
+  setRuntimeStatus(`语音播放失败：${friendlyErrorMessage(formatError(error))}`, { mode: "error" });
+}
+
+function createAbortError() {
+  const error = new Error("请求超时");
+  error.name = "AbortError";
+  return error;
+}
+
+function logTtsTiming(event, details = {}) {
+  try {
+    if (window.localStorage?.getItem("akane.debug.tts") !== "1") return;
+  } catch {
+    return;
+  }
+  console.debug("[Akane TTS]", event, details);
+}
+
+function waitForTtsAudio(token, onStarted) {
+  return new Promise((resolve, reject) => {
+    const player = els.voicePlayer;
+    let settled = false;
+    let started = false;
+    let ended = false;
+    let timer;
+    const finish = (completed = false, error = null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      player.removeEventListener("ended", handleEnded);
+      player.removeEventListener("error", handleError);
+      if (resolveTtsWait === finish) resolveTtsWait = null;
+      if (error) reject(error);
+      else resolve(completed && token === ttsToken);
+    };
+    const handleEnded = () => {
+      ended = true;
+      if (started) finish(true);
+    };
+    const handleError = () => finish(false, new Error("音频播放失败，请检查输出设备。"));
+    resolveTtsWait = finish;
+    // Listen before play(): short audio may finish before its promise resolves.
+    player.addEventListener("ended", handleEnded, { once: true });
+    player.addEventListener("error", handleError, { once: true });
+    timer = window.setTimeout(() => finish(false, new Error("音频启动超时，请检查输出设备。")), 15000);
+    Promise.resolve().then(() => {
+      if (settled || token !== ttsToken) { finish(); return; }
+      return player.play();
+    }).then(() => {
+      if (settled || token !== ttsToken) { finish(); return; }
+      started = true;
+      onStarted();
+      window.clearTimeout(timer);
+      if (ended || player.ended) { finish(true); return; }
+      const durationMs = Number.isFinite(player.duration) ? player.duration * 1000 : 120000;
+      timer = window.setTimeout(() => finish(false, new Error("音频播放中断，请检查输出设备。")), Math.max(15000, durationMs + 10000));
+    }).catch((error) => finish(false, error));
+  });
+}
+
+function finishTtsWait(completed) {
+  if (!resolveTtsWait) return;
+  const resolve = resolveTtsWait;
+  resolveTtsWait = null;
+  resolve(completed);
+}
+
+function stopTtsAudio() {
+  if (!els.voicePlayer) return;
+  els.voicePlayer.pause();
+  els.voicePlayer.removeAttribute("src");
+  els.voicePlayer.load();
+  cleanupTtsObjectUrl();
+}
+
+function cleanupTtsObjectUrl() {
+  if (!ttsObjectUrl) return;
+  URL.revokeObjectURL(ttsObjectUrl);
+  ttsObjectUrl = "";
+}
+
+function hasLocalTtsPlayback() {
+  return ttsActive && ttsPlaybackToken === ttsToken;
+}
+
+function setTtsActive(active) {
+  const next = Boolean(active);
+  if (ttsActive === next) return;
+  ttsActive = next;
+  if (ttsActive) {
+    setPetMotion("thinking");
+    setRuntimeStatus("语音生成中…", { mode: "thinking" });
+  } else {
+    setPetMotion("idle");
+    scheduleMusicEmotionRestore();
+    updateActivityControls();
+    scheduleSettingsSnapshot();
+  }
+}
+
+function normalizeTtsText(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function buildTtsQueueItems(items, { preserveSegments = false } = {}) {
+  const source = (Array.isArray(items) ? items : [items])
+    .map((item) => normalizeTtsText(item))
+    .filter(Boolean);
+  if (!source.length) return [];
+  if (preserveSegments) {
+    return source.flatMap((item) =>
+      item.length > TTS_CHUNK_SOFT_LIMIT ? splitTtsTextForLatency(item) : [item]
+    );
+  }
+
+  const chunks = [];
+  let current = "";
+  const pushCurrent = () => {
+    if (!current.trim()) return;
+    chunks.push(current.trim());
+    current = "";
+  };
+
+  for (const item of source) {
+    const pieces = splitTtsTextForLatency(item);
+    for (const piece of pieces) {
+      const text = normalizeTtsText(piece);
+      if (!text) continue;
+      const glue = current && /[。！？!?；;，,、…]$/.test(current) ? "" : "，";
+      const next = current ? `${current}${glue}${text}` : text;
+      if (current && next.length > TTS_CHUNK_SOFT_LIMIT) {
+        pushCurrent();
+        current = text;
+      } else {
+        current = next;
+      }
+    }
+  }
+
+  pushCurrent();
+  return chunks.length ? chunks : source;
+}
+
+function splitTtsTextForLatency(text) {
+  const normalized = normalizeTtsText(text);
+  if (!normalized) return [];
+  return segmentSpeechForDelivery(normalized, { minChars: 1, maxChars: TTS_CHUNK_SOFT_LIMIT });
+}
+
+async function probeClickThrough(durationMs) {
+  if (!isTauriRuntime) {
+    setStatus("仅 Tauri 可用");
+    return;
+  }
+
+  setStatus("临时穿透中");
+  try {
+    state.clickThrough = true;
+    await invoke("set_click_through", { enabled: true });
+    window.setTimeout(async () => {
+      state.clickThrough = false;
+      await invoke("set_click_through", { enabled: false });
+      setStatus("已恢复交互");
+    }, durationMs);
+  } catch (error) {
+    state.clickThrough = false;
+    setStatus(`穿透失败：${formatError(error)}`);
+  }
+}
+
+async function tauriCall(command, args, { quiet = false } = {}) {
+  if (!isTauriRuntime) return null;
+  try {
+    return await invoke(command, args);
+  } catch (error) {
+    if (!quiet) setStatus(`${command}: ${formatError(error)}`);
+    return null;
+  }
+}
+
+function backendFetch(input, init) {
+  if (isTauriRuntime) {
+    return tauriFetch(input, init);
+  }
+  return window.fetch(input, init);
+}
+
+function buildBackendEndpointUrl(name, fallbackPath, params = null) {
+  const endpoint = scopeBackendEndpointToBoundBot(getBackendEndpoint(name, fallbackPath));
+  const base = `${state.backendUrl.replace(/\/+$/, "")}/`;
+  const url = new URL(endpoint, base);
+  const entries =
+    params instanceof URLSearchParams
+      ? [...params.entries()]
+      : Object.entries(params || {});
+  for (const [key, value] of entries) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+}
+
+function scopeBackendEndpointToBoundBot(endpoint) {
+  return botScopedPath(state.boundBotId, endpoint);
+}
+
+function getBackendEndpoint(name, fallbackPath) {
+  const endpoints = resourceState.endpoints && typeof resourceState.endpoints === "object" ? resourceState.endpoints : {};
+  const specialized =
+    name === "tts"
+      ? resourceState.tts?.endpoint
+      : name === "asr"
+        ? resourceState.asr?.endpoint
+        : "";
+  const value = String(specialized || endpoints[name] || fallbackPath || "").trim();
+  if (!value) return "/";
+  if (/^https?:\/\//i.test(value)) return value;
+  return value.startsWith("/") ? value : `/${value}`;
+}
+
+function setStatus(message, { transient = true, durationMs = 1800 } = {}) {
+  setRuntimeStatus(message);
+  showBubbleText(message, { transient, durationMs, kind: "status" });
+}
+
+function setRuntimeStatus(message, { mode = null } = {}) {
+  if (mode) runtimeMode = mode;
+  els.status.textContent = message;
+  updateActivityControls();
+  scheduleSettingsSnapshot();
+}
+
+function updateActivityControls() {
+  const mediaControl = buildActiveMediaControlSnapshot();
+  if (els.stopReply) {
+    els.stopReply.disabled = !isReplyActive();
+  }
+  if (els.toggleMusic) {
+    els.toggleMusic.disabled = !mediaControl.available || musicLoading;
+    els.toggleMusic.textContent = mediaControl.isPlaying ? "暂停音乐" : mediaControl.available ? "继续音乐" : "音乐";
+  }
+  if (els.stopMusic) {
+    els.stopMusic.disabled = musicLoading || !mediaControl.available;
+  }
+  if (els.clearMusicQueue) {
+    els.clearMusicQueue.disabled = musicLoading || (!musicTrack && !musicQueue.length);
+  }
+  if (els.previousMusic) {
+    els.previousMusic.disabled = musicLoading || !mediaControl.available || (mediaControl.target === MEDIA_CONTROL_TARGETS.local && !hasPreviousMusicTrack());
+  }
+  if (els.nextMusic) {
+    els.nextMusic.disabled = musicLoading || !mediaControl.available || (mediaControl.target === MEDIA_CONTROL_TARGETS.local && !hasNextMusicTrack());
+  }
+}
+
+function updateConnectionStatus() {
+  const healthLabel = {
+    online: "已连接",
+    offline: "离线",
+    checking: "检查中",
+    unknown: "未知"
+  }[resourceState.health] || "未知";
+  const outfit = getActiveOutfit();
+  const count = getActiveEmotions().length;
+  const source = resourceSourceLabel(resourceState.source);
+  const contract = resourceState.contractVersion || (resourceState.contractSource === "legacy" ? "legacy" : "");
+  els.connectionStatus.textContent = `后端：${healthLabel}${contract ? ` · ${contract}` : ""} · ${source} · ${outfit.id}(${count})`;
+  els.connectionStatus.title = `点击重新检查后端与资源${resourceState.healthEndpoint ? ` · ${resourceState.healthEndpoint}` : ""}`;
+  updateMenuLabels();
+}
+
+function setTransientEmotion(emotion, { durationMs = 2400 } = {}) {
+  const token = ++transientEmotionToken;
+  window.clearTimeout(transientEmotionTimer);
+  const resolved = setPetEmotion(emotion, { persist: false });
+  transientEmotionTimer = window.setTimeout(() => {
+    if (token !== transientEmotionToken || sending || ttsActive || voiceInputState === "recording") return;
+    setRestingPetEmotion();
+    scheduleMusicEmotionRestore();
+  }, durationMs);
+  return resolved;
+}
+
+function clearTransientEmotionRestore() {
+  transientEmotionToken += 1;
+  window.clearTimeout(transientEmotionTimer);
+  transientEmotionTimer = 0;
+}
+
+function setPetEmotion(emotion, { persist = true, force = false } = {}) {
+  if (persist || force) clearTransientEmotionRestore();
+  if (persist && previewEmotionRestore) {
+    cancelEmotionPreview({ restore: false });
+  }
+  let entry = resolveEmotionEntry(emotion);
+  if (entry && !entry.url && entry.path && isTauriRuntime) {
+    try {
+      entry = { ...entry, url: convertFileSrc(entry.path) };
+    } catch (error) {
+      console.error("[setPetEmotion] convertFileSrc failed:", entry.path, error);
+    }
+  }
+  if (entry && !entry.url && canUseBundledEmotionFallback()) {
+    const fallback = findEntry(bundledOutfit.emotions, emotion) || bundledOutfit.emotions[0];
+    if (fallback?.url) {
+      console.warn("[setPetEmotion] falling back to bundled emotion:", emotion, fallback);
+      entry = { ...fallback };
+    }
+  }
+  if (!entry?.url) {
+    console.error("[setPetEmotion] resolved entry has no image URL:", emotion, entry);
+    setStatus(`立绘地址缺失：${emotion}`, { durationMs: 3600 });
+    if (entry?.id) state.currentEmotion = entry.id;
+    scheduleSettingsSnapshot();
+    updateMenuLabels();
+    if (persist) scheduleSave(0);
+    return entry?.id || String(emotion || "").trim();
+  }
+  if (!force && state.currentEmotion === entry.id && els.petImage.src) return entry.id;
+  state.currentEmotion = entry.id;
+  visualRenderer.setExpression(entry, { force });
+  scheduleSettingsSnapshot();
+  updateMenuLabels();
+  if (persist) scheduleSave(0);
+  return entry.id;
+}
+
+function resolveEmotionEntry(value) {
+  const emotions = getActiveEmotions();
+  const candidates = buildEmotionCandidates(value);
+  for (const candidate of candidates) {
+    const match = findEntry(emotions, candidate);
+    if (match) return match;
+  }
+  return findEntry(emotions, getProfileDefaultEmotion()) || findEntry(emotions, "normal") || emotions[0] || getDefaultLocalOutfit().emotions[0];
+}
+
+function buildEmotionCandidates(value) {
+  const raw = String(value || "").trim();
+  const result = [];
+  const add = (item) => {
+    const text = String(item || "").trim();
+    if (text && !result.includes(text)) result.push(text);
+  };
+
+  add(raw);
+  const key = normalizeEntryKey(raw);
+  for (const item of getProfileEmotionAliases()[key] || []) add(item);
+  add(getProfileDefaultEmotion());
+  add("normal");
+  return result;
+}
+
+function buildCurrentVisual() {
+  const outfit = getActiveOutfit();
+  const emotions = getActiveEmotions();
+  const emotion = resolveEmotionEntry(state.currentEmotion).id;
+  const characterPackId = getCurrentCharacterPackId();
+  return {
+    character_pack_id: characterPackId,
+    emotion,
+    character: {
+      character_pack_id: characterPackId,
+      outfit: outfit.id,
+      available_emotions: emotions.map((item) => ({
+        id: item.id,
+        name: item.name || item.id,
+        aliases: Array.isArray(item.aliases) ? item.aliases : []
+      }))
+    },
+    scene: {},
+    available_emotions: emotions.map((item) => item.id)
+  };
+}
+
+function getProfileDefaultOutfit() {
+  return String(getActiveCharacterProfile()?.appearance?.defaultOutfit || DEFAULT_OUTFIT).trim() || DEFAULT_OUTFIT;
+}
+
+function getProfileDefaultEmotion() {
+  return String(getActiveCharacterProfile()?.appearance?.defaultEmotion || DEFAULT_EMOTION).trim() || DEFAULT_EMOTION;
+}
+
+function getProfileMusicEmotion() {
+  return String(getActiveCharacterProfile()?.appearance?.musicEmotion || MUSIC_EMOTION).trim() || getProfileDefaultEmotion();
+}
+
+function getProfileRequiredEmotions() {
+  const values = getActiveCharacterProfile()?.appearance?.requiredEmotions;
+  return Array.isArray(values) && values.length ? values : [getProfileDefaultEmotion()];
+}
+
+function getProfileRecommendedEmotions() {
+  const values = getActiveCharacterProfile()?.appearance?.recommendedEmotions;
+  return Array.isArray(values) ? values : RECOMMENDED_EMOTIONS;
+}
+
+function getProfileEmotionAliases() {
+  return getActiveCharacterProfile()?.emotionAliases || COMMON_EMOTION_CANDIDATES;
+}
+
+function getProfileLocalClickLines() {
+  const lines = getActiveCharacterProfile()?.dialogue?.localClickLines;
+  return Array.isArray(lines) && lines.length ? lines : LOCAL_CLICK_LINES;
+}
+
+function getProfileText(key, fallback) {
+  return String(getActiveCharacterProfile()?.dialogue?.[key] || fallback || "").trim();
+}
+
+function getProfileIdentityText(key, fallback) {
+  return String(getActiveCharacterProfile()?.identity?.[key] || fallback || "").trim();
+}
+
+function getCurrentCharacterPackId() {
+  return state.characterPackId || getActiveCharacterPackId();
+}
+
+function getActiveOutfit() {
+  return resourceState.outfit || getDefaultLocalOutfit();
+}
+
+function getActiveEmotions() {
+  const emotions = Array.isArray(getActiveOutfit()?.emotions) ? getActiveOutfit().emotions : [];
+  return emotions.length ? emotions : getDefaultLocalOutfit().emotions;
+}
+
+function getManifestOutfits() {
+  return Array.isArray(resourceState.manifest?.characters?.outfits)
+    ? resourceState.manifest.characters.outfits.filter((item) => item && typeof item === "object")
+    : [];
+}
+
+function getAvailableOutfits() {
+  const outfits = getManifestOutfits();
+  return outfits.length ? outfits : localOutfits;
+}
+
+function serializeOutfit(outfit) {
+  const id = String(outfit?.id || outfit?.name || "").trim();
+  const name = String(outfit?.name || outfit?.id || "").trim();
+  const aliases = normalizeAliases(outfit?.aliases);
+  const emotions = listOutfitEmotions(outfit);
+  const issues = buildResourceIssues(outfit, emotions);
+  const active = findEntry([outfit], getActiveOutfit().id) !== null;
+  return {
+    id,
+    name,
+    aliases,
+    active,
+    source: resourceState.source,
+    emotionCount: emotions.length,
+    allowedEmotionCount: Array.isArray(outfit?.allowed_emotions) ? outfit.allowed_emotions.length : 0,
+    missingRequired: issues.missingRequired,
+    missingRecommended: issues.missingRecommended
+  };
+}
+
+function serializeEmotion(emotion) {
+  const id = String(emotion?.id || emotion?.name || "").trim();
+  return {
+    id,
+    name: String(emotion?.name || emotion?.id || "").trim(),
+    aliases: normalizeAliases(emotion?.aliases),
+    image: String(emotion?.image || emotion?.url || "").trim(),
+    path: String(emotion?.path || "").trim(),
+    url: String(emotion?.url || "").trim()
+  };
+}
+
+function listOutfitEmotions(outfit) {
+  return (Array.isArray(outfit?.emotions) ? outfit.emotions : [])
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      ...item,
+      id: String(item.id || item.name || "").trim(),
+      name: String(item.name || item.id || "").trim(),
+      aliases: normalizeAliases(item.aliases)
+    }))
+    .filter((item) => item.id);
+}
+
+function buildResourceIssues(outfit, emotions = listOutfitEmotions(outfit)) {
+  const keys = new Set(
+    (Array.isArray(emotions) ? emotions : [])
+      .flatMap((item) => [item.id, item.name, ...normalizeAliases(item.aliases)])
+      .map(normalizeEntryKey)
+      .filter(Boolean)
+  );
+  return {
+    missingRequired: getProfileRequiredEmotions().filter((item) => !keys.has(normalizeEntryKey(item))),
+    missingRecommended: getProfileRecommendedEmotions().filter((item) => !keys.has(normalizeEntryKey(item)))
+  };
+}
+
+function resourceSourceLabel(source) {
+  return {
+    manifest: "当前角色包",
+    character_pack: "本地角色包",
+    bundled: "内置兜底"
+  }[String(source || "")] || "本地兜底";
+}
+
+function getLocalResourceSource() {
+  return runtimeCharacterPackOutfits.length || characterPackOutfits.length ? "character_pack" : "bundled";
+}
+
+function getDefaultLocalOutfit() {
+  return findEntry(localOutfits, getProfileDefaultOutfit()) || localOutfits[0] || bundledOutfit;
+}
+
+function refreshLocalResourceAssets() {
+  const activePackId = getCurrentCharacterPackId();
+  runtimeCharacterPackOutfits = buildRuntimeCharacterPackOutfits(activePackId);
+  characterPackOutfits = buildCharacterPackOutfits(activePackId);
+  localOutfits = buildLocalOutfits();
+  if (resourceState.source !== "manifest") {
+    resourceState.outfit = findEntry(localOutfits, state.outfit) || getDefaultLocalOutfit();
+    resourceState.source = getLocalResourceSource();
+    resourceState.loadedAt = Date.now();
+  }
+}
+
+function buildLocalOutfits() {
+  const outfits = [...runtimeCharacterPackOutfits, ...characterPackOutfits];
+  return outfits.length ? outfits : [bundledOutfit];
+}
+
+function buildRuntimeCharacterPackOutfits(activePackId = getCurrentCharacterPackId()) {
+  const pack = runtimeCharacterPacks.find((item) => String(item?.id || item?.packId || "").trim() === activePackId);
+  const outfits = Array.isArray(pack?.outfits) ? pack.outfits : [];
+  const built = outfits
+    .map((outfit) => {
+      const outfitId = String(outfit?.id || outfit?.name || "").trim();
+      const emotions = (Array.isArray(outfit?.emotions) ? outfit.emotions : [])
+        .map((emotion) => {
+          const id = String(emotion?.id || emotion?.name || "").trim();
+          const path = String(emotion?.path || "").trim();
+          let url = "";
+          if (path) {
+            try {
+              url = isTauriRuntime ? convertFileSrc(path) : path;
+            } catch (error) {
+              console.error("[buildRuntimeCharacterPackOutfits] convertFileSrc failed:", path, error);
+            }
+          }
+          return {
+            id,
+            name: String(emotion?.name || id).trim(),
+            aliases: [],
+            url: String(url || "").trim(),
+            path
+          };
+        })
+        .filter((emotion) => emotion.id && emotion.url);
+      return {
+        id: outfitId,
+        name: String(outfit?.name || outfitId).trim(),
+        aliases: [],
+        emotions: sortEmotions(emotions)
+      };
+    })
+    .filter((outfit) => outfit.id && outfit.emotions.length)
+    .sort(compareOutfitEntries);
+  return built.length ? built : [];
+}
+
+function buildCharacterPackOutfits(activePackId = getActiveCharacterPackId()) {
+  const grouped = new Map();
+  for (const [path, url] of Object.entries(characterPackCharacterAssets)) {
+    const match = path.match(/\/characters\/([^/]+)\/assets\/characters\/([^/]+)\/([^/]+)\.(png|jpe?g|webp)$/i);
+    if (!match) continue;
+    const packId = decodeURIComponent(match[1] || "").trim();
+    const outfitId = decodeURIComponent(match[2] || "").trim();
+    const emotionId = decodeURIComponent(match[3] || "").trim();
+    if (packId !== activePackId) continue;
+    if (!outfitId || !emotionId || !url) continue;
+    const entry = grouped.get(outfitId) || [];
+    entry.push({
+      id: emotionId,
+      name: emotionId,
+      aliases: [],
+      url: String(url || ""),
+      path
+    });
+    grouped.set(outfitId, entry);
+  }
+
+  return [...grouped.entries()]
+    .map(([outfitId, emotions]) => ({
+      id: outfitId,
+      name: outfitId,
+      aliases: [],
+      emotions: sortEmotions(emotions)
+    }))
+    .filter((outfit) => outfit.emotions.length)
+    .sort(compareOutfitEntries);
+}
+
+function buildBundledOutfit() {
+  const emotions = Object.entries(bundledCharacterAssets)
+    .map(([path, url]) => {
+      const id = decodeURIComponent(path.split("/").pop()?.replace(/\.(png|jpe?g|webp)$/i, "") || "");
+      return {
+        id,
+        name: id,
+        aliases: [],
+        url: String(url || "")
+      };
+    })
+    .filter((item) => item.id && item.url)
+    .sort(compareEmotionEntries);
+
+  return {
+    id: DEFAULT_OUTFIT,
+    name: DEFAULT_OUTFIT,
+    aliases: [],
+    emotions
+  };
+}
+
+function sortEmotions(emotions) {
+  return [...emotions].sort(compareEmotionEntries);
+}
+
+function compareOutfitEntries(a, b) {
+  const defaultOutfit = getProfileDefaultOutfit();
+  if (a.id === defaultOutfit) return -1;
+  if (b.id === defaultOutfit) return 1;
+  return String(a.id || "").localeCompare(String(b.id || ""), "zh-CN");
+}
+
+function compareEmotionEntries(a, b) {
+  const defaultEmotion = getProfileDefaultEmotion();
+  if (a.id === defaultEmotion) return -1;
+  if (b.id === defaultEmotion) return 1;
+  return String(a.id || "").localeCompare(String(b.id || ""), "zh-CN");
+}
+
+function findEntry(items, value) {
+  const raw = String(value || "").trim();
+  if (!raw || !Array.isArray(items)) return null;
+  const key = normalizeEntryKey(raw);
+  return (
+    items.find((item) => {
+      if (!item || typeof item !== "object") return false;
+      return entryLookupValues(item).some((option) => option === raw || normalizeEntryKey(option) === key);
+    }) || null
+  );
+}
+
+function entryLookupValues(entry) {
+  const values = [];
+  for (const key of ["id", "name"]) {
+    const value = String(entry?.[key] || "").trim();
+    if (value && !values.includes(value)) values.push(value);
+  }
+  for (const alias of entry?.aliases || []) {
+    const value = String(alias || "").trim();
+    if (value && !values.includes(value)) values.push(value);
+  }
+  return values;
+}
+
+function normalizeAliases(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function normalizeEntryKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+}
+
+function resolveAssetUrl(path, backendUrl) {
+  const raw = String(path || "").trim();
+  if (!raw) return "";
+  if (/^(https?:|file:|data:|blob:)/i.test(raw)) return encodeURI(raw);
+  const base = String(backendUrl || "").trim().replace(/\/+$/, "");
+  if (!base) return encodeURI(raw);
+  if (raw.startsWith("/")) return encodeURI(`${base}${raw}`);
+  return encodeURI(`${base}/${raw.replace(/^\/+/, "")}`);
+}
+
+function startWebglProbe() {
+  if (webglProbe) {
+    webglProbe.running = true;
+    webglProbe.frame = requestAnimationFrame(renderWebglProbe);
+    return;
+  }
+
+  const gl = els.canvas.getContext("webgl", {
+    alpha: true,
+    premultipliedAlpha: false,
+    antialias: true
+  });
+
+  if (!gl) {
+    setStatus("WebGL unavailable");
+    return;
+  }
+
+  const vertexSource = `
+    attribute vec2 position;
+    uniform float time;
+    void main() {
+      float sway = sin(time + position.y * 2.4) * 0.08;
+      gl_Position = vec4(position.x + sway, position.y, 0.0, 1.0);
+    }
+  `;
+  const fragmentSource = `
+    precision mediump float;
+    uniform float time;
+    void main() {
+      gl_FragColor = vec4(1.0, 0.28 + sin(time) * 0.12, 0.42, 0.72);
+    }
+  `;
+
+  const program = createProgram(gl, vertexSource, fragmentSource);
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(
+    gl.ARRAY_BUFFER,
+    new Float32Array([
+      -0.22, -0.2,
+      0.22, -0.2,
+      0, 0.3
+    ]),
+    gl.STATIC_DRAW
+  );
+
+  webglProbe = {
+    gl,
+    program,
+    buffer,
+    position: gl.getAttribLocation(program, "position"),
+    time: gl.getUniformLocation(program, "time"),
+    running: true,
+    startedAt: performance.now(),
+    frame: 0
+  };
+
+  setStatus("WebGL ready");
+  webglProbe.frame = requestAnimationFrame(renderWebglProbe);
+}
+
+function renderWebglProbe(now) {
+  if (!webglProbe?.running || !els.stage.classList.contains("show-webgl")) {
+    if (webglProbe) webglProbe.running = false;
+    return;
+  }
+
+  const { gl, program, position, time } = webglProbe;
+  resizeCanvasToDisplaySize(els.canvas);
+  gl.viewport(0, 0, els.canvas.width, els.canvas.height);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(program);
+  gl.enableVertexAttribArray(position);
+  gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+  gl.uniform1f(time, (now - webglProbe.startedAt) / 1000);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  webglProbe.frame = requestAnimationFrame(renderWebglProbe);
+}
+
+function createProgram(gl, vertexSource, fragmentSource) {
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+  const program = gl.createProgram();
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(program) ?? "WebGL link failed");
+  }
+  return program;
+}
+
+function compileShader(gl, type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(shader) ?? "WebGL compile failed");
+  }
+  return shader;
+}
+
+function resizeCanvasToDisplaySize(canvas) {
+  const width = Math.max(1, Math.floor(canvas.clientWidth * window.devicePixelRatio));
+  const height = Math.max(1, Math.floor(canvas.clientHeight * window.devicePixelRatio));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+}
+
+function normalizeBackendUrl(url) {
+  return String(url || "").trim().replace(/\/+$/, "") || DEFAULT_BACKEND_URL;
+}
+
+function normalizeCharacterPackId(value) {
+  const requested = String(value || "").trim();
+  if (!requested) return getActiveCharacterPackId();
+  const normalized = normalizeEntryKey(requested);
+  const packs = listCharacterPacks();
+  const match =
+    packs.find((pack) => pack.id === requested) ||
+    packs.find((pack) => normalizeEntryKey(pack.id) === normalized) ||
+    packs.find((pack) => pack.characterId === requested) ||
+    packs.find((pack) => normalizeEntryKey(pack.characterId) === normalized);
+  return String(match?.id || getActiveCharacterPackId()).trim();
+}
+
+function normalizeOutfitName(value) {
+  return String(value || "").trim() || getProfileDefaultOutfit();
+}
+
+function generateSessionId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return `desktop_pet_next_${crypto.randomUUID()}`;
+  }
+  return `desktop_pet_next_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min));
+}
+
+function readCssPx(name, fallback) {
+  const value = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function shortId(value) {
+  const text = String(value || "");
+  return text.length > 10 ? text.slice(-10) : text;
+}
+
+function formatError(error) {
+  if (error?.name === "AbortError") return "请求超时";
+  return error instanceof Error ? error.message : String(error);
+}
+
+function friendlyErrorMessage(message) {
+  const text = String(message || "").trim();
+  if (!text) return "请求失败，稍后再试。";
+  if (/麦克风|microphone|notallowed|securityerror|permission/i.test(text)) return "没有麦克风权限。";
+  if (/notfound|devicesnotfound|no device/i.test(text)) return "没有找到可用麦克风。";
+  if (/ASR|语音识别|录音/i.test(text)) return "语音识别暂时失败，可以再试一次。";
+  if (/TTS|语音播放/i.test(text)) return "语音播放暂时失败，文字回复还在。";
+  if (/workspace|手边|summary/i.test(text)) return "手边物品暂时打不开，请确认后端已经启动。";
+  if (/后端未连接|failed to fetch|connection|network|fetch|dns|refused|timed out|timeout|请求超时/i.test(text)) {
+    return "后端暂时连不上，请确认服务已经启动。";
+  }
+  if (/HTTP 5\d\d/i.test(text)) return "后端处理时出错了，稍后再试。";
+  if (/HTTP 4\d\d/i.test(text)) return "请求没有被后端接受。";
+  return text.length > 44 ? `${text.slice(0, 44)}…` : text;
+}

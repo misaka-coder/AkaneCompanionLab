@@ -1,0 +1,1385 @@
+[
+  {
+    "name": "list_companions",
+    "description": "List the owner's live Minecraft companions (name + id). Call this first to see who you can drive.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "create_companion",
+    "description": "Summon a new companion into the world by name (3–16 letters, digits, or underscore). It arrives in a moment; call list_companions to confirm, then drive it directly — no 'take control' step.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The new companion's name (3–16 letters, digits, or underscore)."
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "name": "delete_companion",
+    "description": "Permanently dismiss a companion — it drops its inventory and is gone for good. Takes its name or id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to dismiss — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ]
+    }
+  },
+  {
+    "name": "get_events",
+    "description": "Long-poll the companion's inbox: returns the moment something urgent arrives (the owner speaking to it shows up as a <query>; world happenings as <event>s), or whatever accumulated once wait_seconds runs out. Events are consumed on read and nothing is lost between calls — call this about every 2 seconds while you drive the companion.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        },
+        "wait_seconds": {
+          "type": "integer",
+          "description": "How long to wait for something urgent before returning, in seconds (0–50, default 2). 0 = return at once. Leave it unset for the normal drive loop; raise it only to park and wait for the owner."
+        }
+      },
+      "required": [
+        "companion"
+      ]
+    }
+  },
+  {
+    "name": "say",
+    "description": "Speak as the companion: the text appears in-game as its chat line, speech bubble, and voice (if one is bound). Use it to answer the owner's <query> events and to narrate what you are doing. Consecutive calls queue up and play in order.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        },
+        "text": {
+          "type": "string",
+          "description": "What the companion says, in its own voice/persona."
+        }
+      },
+      "required": [
+        "companion",
+        "text"
+      ]
+    }
+  },
+  {
+    "name": "goto",
+    "description": "Travel to ONE new destination with full terrain pathfinding: walks, jumps, swims, climbs, opens doors and gates, parkours, and auto-equips tools. Which fields you fill IS your intent — fill exactly one pattern:\n• x+z — go to a place. Y resolves to the surface. This is the DEFAULT for exploration or \"go there\"; omit y.\n• block — e.g. block:'minecraft:crafting_table'. Walks up BESIDE the one she can reach most easily and never damages it. Easiest to reach is not always closest in a straight line, so it may not be the first block scan_blocks listed — give coordinates when it has to be a specific one.\n• x+y+z — stand EXACTLY in that cell. A block occupying it would have to be dug out (needs may_alter_terrain), so never aim this at a chest, furnace or anything you want to keep — use block or x+z for those.\n• y — climb/descend to that elevation.\nTERRAIN: by default the walk never breaks or places a block — walls, floors, other people's builds and the landscape stay exactly as they were. If the only route would need digging, bridging or pillaring, the call FAILS and lists exactly which blocks that route would break or place; read the list (planks/glass/bricks near the surface are usually someone's build; stone/dirt underground usually are not) and, if altering them is acceptable, re-send the SAME call with may_alter_terrain=true. Underground travel and climbing out of pits usually need it. Every call reports what it actually broke or placed.\nVEHICLES: start a goto while sitting in a boat (see <riding>) and she pilots it over the water toward the target — a destination on the water keeps her aboard, a destination ashore has her step off at the shore and finish on foot. Any other vehicle is stepped off the moment walking begins. Boarding is interact_entity right on the boat.\nBACKGROUND: a successful call means movement is already running. Do not call goto again or launch another body action while <current_task> exists; wait for matching task_finished. status=done means that destination is complete, so advance the plan and never resend identical coordinates. Only status=timeout permits the same call to resume.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Target X. Null for an elevation-only move (y alone)."
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Target Y (block height). LEAVE NULL to go to a location (x+z) — Y is auto-resolved to the surface. Only set it for an exact cell (x+y+z) or an elevation move (y alone)."
+        },
+        "z": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Target Z. Null for an elevation-only move (y alone)."
+        },
+        "block": {
+          "type": "string",
+          "description": "Namespaced block id to walk up BESIDE (e.g. 'crafting_table' or 'minecraft:chest') — never broken or buried. Give it ALONE (no coordinates); she picks the one easiest to reach. ALWAYS use this form for a block you intend to use or mine."
+        },
+        "may_alter_terrain": {
+          "type": "boolean",
+          "description": "Consent to dig through, bridge or pillar on the way. Omit/false = leave every block untouched (default). Set true only after a failed goto listed the blocks a route would alter and you judge that acceptable, or when you already know the way is underground/through natural terrain."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "attack",
+    "description": "Attack one or more SPECIFIC entities by runtime id from scan_nearby_entities. The body picks how: it closes in and swings when it can reach the target, shoots with a bow or crossbow when it cannot get there, and keeps its distance from things that explode. It also picks the strongest weapon you own AGAINST THAT TARGET (Smite matters against undead), and walks over the drops afterwards. Do not ask for a weapon — you cannot see the distance, the line of sight or the arrow count it decides from. OMIT entity_ids to fight off EVERY hostile near you instead of named targets: that is the only way to handle things that split (slimes, magma cubes), because splitting replaces them with brand-new ids. It ends when nothing is coming after you any more. BACKGROUND: acceptance means combat is already running; do not resend ids, poll, or launch another body action until task_finished reports the outcome.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entity_ids": {
+          "type": "array",
+          "description": "Runtime entity ids from scan_nearby_entities (1-20 distinct targets). Omit entirely to fight off every hostile near you.",
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 1,
+          "maxItems": 20
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "locate_structure",
+    "description": "Find the nearest structure of a given type and get its coordinates, compass direction and distance. `structure` is a structure id — minecraft:stronghold, minecraft:fortress, minecraft:bastion_remnant, minecraft:ancient_city, minecraft:end_city, minecraft:monument, minecraft:mansion, minecraft:pillager_outpost — or a #tag for families like #minecraft:village or #minecraft:ruined_portal. Searches YOUR CURRENT dimension only: fortresses/bastions exist in the Nether, end cities in the End. For the stronghold this is the eye-free equivalent of throwing eyes of ender — save the eyes for the 12 portal frames. The returned y is approximate; navigate by x/z and scan_blocks when you arrive.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "structure": {
+          "type": "string",
+          "description": "Structure id (e.g. minecraft:fortress) or #tag (e.g. #minecraft:village)."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "structure",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "locate_biome",
+    "description": "Find the nearest biome of a given type and get its coordinates, compass direction and distance — no walking needed. `biome` is a biome id — minecraft:warped_forest (endermen for pearls), minecraft:soul_sand_valley, minecraft:desert, minecraft:plains, minecraft:dark_forest — or a #tag for families like #minecraft:is_forest or #minecraft:is_ocean. Searches YOUR CURRENT dimension only, ~6400 blocks out. Biome edges are fuzzy: the answer is accurate to ~64 blocks, so goto the x/z (pick a sensible y) and confirm with scan_blocks or scan_nearby_entities when you arrive.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "biome": {
+          "type": "string",
+          "description": "Biome id (e.g. minecraft:warped_forest) or #tag (e.g. #minecraft:is_forest)."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "biome",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "collect_items",
+    "description": "Pick up dropped items off the ground nearby. The entity travels to each dropped item (it auto-absorbs items it gets close to) until none remain in range — terrain is handled automatically: it digs and bridges on its own if drops landed in a pit or across a gap. Optionally restrict to specific item_ids (omit to collect everything). Optional radius (default 16). Use after manual interactions; attack collects its own drops. BACKGROUND: acceptance means collection is already running; wait for task_finished, do not poll or resend unchanged.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item_ids": {
+          "type": "array",
+          "description": "Optional namespaced item id(s) to collect; omit to collect all.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "radius": {
+          "type": "integer",
+          "description": "Optional search radius in blocks (default 16).",
+          "minimum": 1,
+          "maximum": 48
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "fish",
+    "description": "Fish repeatedly from nearby water. Requires a vanilla fishing rod in inventory. If currently in water, moves up to 12 blocks onto a safe dry fishing stance; it does not search long-distance for a biome or water body. `count` is successful bites reeled in; vanilla fishing may produce fish, junk, or treasure. Uses native casting, loot, rod durability, sounds, and stats. BACKGROUND task: returns task_id immediately; the outcome arrives in task_finished.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "description": "How many catches to reel in. OMIT to keep fishing indefinitely — she stays on it until you give her something else to do.",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "follow",
+    "description": "Tag along with someone, following them wherever they go — your owner by default, or any entity you name. This is a STANDING job: there is nothing to finish, so you will keep at it until you are given something else to do. Use it when the owner asks you to come along or stick close, or to shadow a particular mob or player. You go quiet while you are already beside them. Following a named entity ends by itself if that entity dies or leaves the loaded area; following your owner just waits when they log off. TERRAIN: by default she never breaks or places a block to keep up. When the only way to them would need digging, bridging or pillaring, following ENDS with a failure that lists exactly which blocks; if altering them is acceptable, re-send follow with may_alter_terrain=true (ask the owner when it is not obviously natural terrain).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "distance": {
+          "type": "integer",
+          "description": "How close to stay, in blocks. Defaults to 3.",
+          "minimum": 2,
+          "maximum": 16
+        },
+        "entity_id": {
+          "type": "integer",
+          "description": "Who to follow, by runtime entity id from scan_nearby_entities. Leave it out to follow your owner.",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "may_alter_terrain": {
+          "type": "boolean",
+          "description": "Consent to dig through, bridge or pillar to keep up. Omit/false = leave every block untouched (default). Set true after a failed follow listed the blocks in the way and you judge that acceptable, or when the owner said so."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "mine",
+    "description": "Gather blocks by type and count. Give block id(s) and how many ITEMS you want — it finds the nearest matches, travels to each with full terrain-traversing navigation (digs to buried ores, pillars up cliffs, bridges gaps), mines, and repeats until `count` NEW items are gained or none remain nearby. No coordinates or goto needed. count is items, not blocks (redstone_ore drops ~4). Include all variants in block_ids (iron_ore AND deepslate_iron_ore). Only mines what its tools actually harvest, and stops naming the needed tier if nothing qualifies (to destroy blocks regardless of drops, use break_block). BACKGROUND: a successful call is already running; do not call mine/goto again while <current_task> exists and do not poll. task_finished status=done means the requested count is complete; only timeout permits resending the same arguments.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "block_ids": {
+          "type": "array",
+          "description": "Namespaced block id(s) to gather; include all variants.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "count": {
+          "type": "integer",
+          "description": "How many ITEMS to gather (not blocks) — a block may drop several, and it counts only items gained on top of what you already hold.",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "block_ids",
+        "count",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "equip_item",
+    "description": "Equip an item from your OWN inventory: tool/weapon to the main hand, armor and modded accessories (Curios/Trinkets) auto-routed to their slots; the previous item is stowed back. Or take gear OFF: action=unequip with a slot stows it into the inventory ('armor' strips all four pieces, 'mainhand' frees your hand); fails if there is no room.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "equip (default): wear/wield item_id. unequip: empty a slot back into the inventory.",
+          "enum": [
+            "equip",
+            "unequip"
+          ]
+        },
+        "item_id": {
+          "type": "string",
+          "description": "Namespaced id of the item to equip; must be in the inventory. Required to equip, ignored for unequip."
+        },
+        "slot": {
+          "type": "string",
+          "description": "equip: omit to auto-route by item type, set only to force a hand or a specific armor piece. unequip: required — the slot to empty; 'armor' means all four armor pieces.",
+          "enum": [
+            "mainhand",
+            "offhand",
+            "head",
+            "chest",
+            "legs",
+            "feet",
+            "armor"
+          ]
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "build",
+    "description": "Construct or clear blocks as ONE background task, expressed as a single ordered `ops` stream — write ops in build order, later ops overwrite earlier cells. Load the building_design skill (load_skill) BEFORE designing anything non-trivial. Ops: `set` one cell (block_id, x,y,z, optional facing/axis/half/properties — precise details like stairs and torches; a bare set with none of those is placed like a real player right-click: it faces her naturally and mods hooking item placement apply); `box` corners x1,y1,z1..x2,y2,z2 (hollow = outer shell); `walls` vertical perimeter ring only, NO top/bottom face — the right primitive for wall rings; `line` two points; `cylinder` bottom-center x1,y1,z1 + radius + height (hollow = tube); `sphere` center + radius (hollow = shell); `roof` over base rect x1,y1,z1..x2,z2 — give a SLAB block as block_id (stone_brick_slab, deepslate_tile_slab, spruce_slab...) and it lays a real tiled slope: the surface climbs HALF a block per cell so there are no full-block steps, shallow at the eaves and steepening toward the ridge. Slabs, not stairs, are what a good roof is made of. Then `roof_shape` (xuanshan / wudian / xieshan / zuanjian / shed), `overhang` 1-4, `ridge_block` for the ridges that stand proud of the tiles, `eave_block` for the drip band around the edge, `gable_block` for the end walls, `soffit_block` for the underside, `corner_lift` for upturned corners, `hollow` (default true, leaves attic space); `set_door` a full door at x,y,z (lower half) with `facing`; `scatter` sprinkles the block over plane y1 within x1,z1..x2,z2 at optional `density` 0-1 (default 0.25) — flowers, grass, mushrooms. PALETTES: any block_id may name a weighted MIX instead of one block — \"stone_bricks*8, mossy_stone_bricks*2, cracked_stone_bricks\" — and each cell picks one deterministically. A flat single-colour surface is the number one thing that makes a build look fake, so mix 10-20% of a weathered variant into every large wall, floor and roof. block_id `air` CLEARS the cell (drops harvest normally). Liquids are NOT handled: leave water and lava out of the ops — dig the basin and let the player pour it. Compose whole buildings like stacking toy bricks in ONE call, up to 16384 cells — enough for a whole house, so use it. She walks to the site once, then works inside it, placing cells in batches from the ground up. MATERIALS: in creative she builds freely. In survival every cell consumes 1 matching item and the whole job is refused up front, PLACING NOTHING, if anything is short — so put the ENTIRE building (foundation, walls, roof, openings, details) in ONE call. Split it across several calls and the walls go up before anyone discovers the roof material is missing, leaving a half-built shell. Treat a shortfall as an invitation to gather together, not an error, and never promise the player a survival build costs nothing. For prebuilt structure files use the blueprint tool. BACKGROUND: after acceptance wait for task_finished; never resend while running or after status=done.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "ops": {
+          "type": "array",
+          "description": "Ordered build instructions; later ops overwrite earlier cells.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": [
+                  "set",
+                  "box",
+                  "walls",
+                  "line",
+                  "cylinder",
+                  "sphere",
+                  "roof",
+                  "set_door",
+                  "scatter"
+                ]
+              },
+              "block_id": {
+                "type": "string",
+                "description": "Block for this op, e.g. minecraft:stone_bricks; minecraft:air clears. May be a weighted mix — \"stone_bricks*8, mossy_stone_bricks*2, cracked_stone_bricks\" — each cell picks one deterministically. Mix a weathered variant into every large surface; flat single-colour walls read as fake."
+              },
+              "hollow": {
+                "type": "boolean",
+                "description": "box/cylinder/sphere: keep only the outer shell. roof: leave the space under the slopes open (default true)."
+              },
+              "overhang": {
+                "type": "integer",
+                "description": "roof: eaves extending past the walls, 0-4. 1-2 reads far better than 0; East Asian roofs want 2-4."
+              },
+              "roof_shape": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "roof: xuanshan (alias gable) = two slopes with a ridge along the longer axis, the two ends closed by a bargeboard; the everyday roof, Chinese and Western alike. wudian (alias hip) = four slopes with four diagonal hip ridges and no gable ends — the highest rank, save it for the grandest hall on a site. zuanjian (alias pyramid) = the four slopes meet at a point, for a square footprint: towers, gazebos, pavilions. xieshan (alias half_hip) = four slopes below, a gable with two decorated ends above; second in rank and the most ornate silhouette. shed = a single slope one way, for lean-tos, porches and anything added on. Default xuanshan.",
+                "enum": [
+                  "xuanshan",
+                  "wudian",
+                  "xieshan",
+                  "zuanjian",
+                  "shed",
+                  "gable",
+                  "hip",
+                  "half_hip",
+                  "pyramid",
+                  null
+                ]
+              },
+              "roof_curve": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "roof: concave (default) = shallow at the eaves and steepening toward the ridge. This is the real profile of a tiled roof, East Asian or otherwise, and it is what stops a roof reading as a stepped pyramid. straight = constant 1:1 pitch; only ask for it when you specifically want a steep, hard, Gothic or Alpine silhouette.",
+                "enum": [
+                  "concave",
+                  "straight",
+                  null
+                ]
+              },
+              "corner_lift": {
+                "type": "integer",
+                "description": "roof: flick the four eave corners upward by this many blocks, 0-3. The upturned corner is the single most recognisable feature of East Asian roofs; leave it 0 for Western ones."
+              },
+              "gable_block": {
+                "type": "string",
+                "description": "roof: block (or mix) filling the end walls — the triangle under a xuanshan slope, or the decorated panel of a xieshan. Omit and they stay open."
+              },
+              "ridge_block": {
+                "type": "string",
+                "description": "roof: block (or mix) for the RIDGES, which stand proud of the tiles — the crest along the top, the four diagonal hip ridges of a wudian/zanjian, and the bargeboards of a xuanshan. Pick something that contrasts with the roof: this one line is most of what makes a roof read as designed rather than extruded."
+              },
+              "eave_block": {
+                "type": "string",
+                "description": "roof: block (or mix) for the outermost course only — the drip band running right around the edge. A single contrasting ring (copper, dark prismarine, a different wood) does an enormous amount of work for one block of width."
+              },
+              "soffit_block": {
+                "type": "string",
+                "description": "roof: block (or mix) for a second skin one block under the tiles, following the same slope. This is what the roof looks like FROM BELOW and from an open gable; without it the underside is bare half-slabs and the roof reads as a shell. Costs roughly as many cells again, so skip it on roofs nobody will stand under."
+              },
+              "x": {
+                "type": "integer",
+                "description": "set/set_door: cell x."
+              },
+              "y": {
+                "type": "integer",
+                "description": "set/set_door: cell y (door lower half)."
+              },
+              "z": {
+                "type": "integer",
+                "description": "set/set_door: cell z."
+              },
+              "x1": {
+                "type": "integer",
+                "description": "First corner X. box/walls/line/scatter: the rect. cylinder: bottom centre. sphere: centre. roof: base rect."
+              },
+              "y1": {
+                "type": "integer",
+                "description": "First corner Y. cylinder: bottom level. scatter: the single plane it sprinkles on. roof: the level the eaves sit at."
+              },
+              "z1": {
+                "type": "integer",
+                "description": "First corner Z — see x1."
+              },
+              "x2": {
+                "type": "integer",
+                "description": "Opposite corner X. Needed by box/walls/line/scatter/roof."
+              },
+              "y2": {
+                "type": "integer",
+                "description": "Opposite corner Y — REQUIRED by box, walls and line, which are volumes. NOT used by scatter (one plane, y1) or roof (height is derived from the span)."
+              },
+              "z2": {
+                "type": "integer",
+                "description": "Opposite corner Z. Needed by box/walls/line/scatter/roof."
+              },
+              "radius": {
+                "type": "integer",
+                "description": "cylinder/sphere only: radius in blocks."
+              },
+              "height": {
+                "type": "integer",
+                "description": "cylinder only: height in blocks, upward from y1."
+              },
+              "density": {
+                "type": "number",
+                "description": "scatter: fraction of cells to fill, 0-1, default 0.25."
+              },
+              "facing": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "set: block facing; set_door: which way the door faces.",
+                "enum": [
+                  "north",
+                  "south",
+                  "east",
+                  "west",
+                  "up",
+                  "down",
+                  null
+                ]
+              },
+              "axis": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "set: pillar/log axis.",
+                "enum": [
+                  "x",
+                  "y",
+                  "z",
+                  null
+                ]
+              },
+              "half": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "set: slab/stair half.",
+                "enum": [
+                  "top",
+                  "bottom",
+                  null
+                ]
+              },
+              "properties": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "set: extra block-state properties by name.",
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "op",
+              "block_id"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "replace_existing": {
+          "type": "boolean",
+          "description": "Optional, default true. Clear wrong non-protected blocks at requested cells."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "ops",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "blueprint",
+    "description": "Work with structure blueprint files in the server's schematics/ folder — the conventional location, so anything the player already downloaded is available without moving files. Formats: .litematic, .schem, .nbt (structure block export), .snbt (text). action=list shows available blueprints with sizes — call this first, then `blueprint_read` on the one you like to see what it costs before you promise anything. action=build constructs one whole file: give `file` (name without extension), anchor `x`,`y`,`z` = the LOWEST corner (min x/y/z) where the structure will stand, and optional clockwise `rotation` 0/90/180/270. She walks to the site once, then works inside it, placing cells in batches from the ground up with exact states (stairs facing, doors, beds); explicit air cells CLEAR terrain; liquid cells are skipped. MATERIALS & RESUMING: creative builds freely. In survival every cell consumes 1 matching item, and a whole building will NOT fit in one inventory — so she builds as far as her stock goes, then stops and reports what is still needed. That is normal, not a failure: restock her and send THE SAME CALL AGAIN (same file, anchor, rotation) and she carries on from exactly where she stopped, because finished cells are skipped automatically. Expect several supply runs for a large structure, and say so to the player instead of promising one trip. Pick a flat, clear area big enough for the size from list. For freeform construction use the build tool instead. BACKGROUND (build action): wait for task_finished; never resend while running.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "list = show blueprints; build = construct one.",
+          "type": "string",
+          "enum": [
+            "list",
+            "build"
+          ]
+        },
+        "file": {
+          "type": "string",
+          "description": "build only: blueprint name from list, no extension."
+        },
+        "x": {
+          "type": "integer",
+          "description": "build only: anchor minimum X."
+        },
+        "y": {
+          "type": "integer",
+          "description": "build only: anchor bottom Y (floor level)."
+        },
+        "z": {
+          "type": "integer",
+          "description": "build only: anchor minimum Z."
+        },
+        "rotation": {
+          "type": "integer",
+          "description": "build only: optional clockwise rotation (0/90/180/270), default 0."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "action",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "blueprint_read",
+    "description": "Read a blueprint without touching the world: overall size, cell count, the materials it costs (biggest items first), and how its cells are spread across height — the layer profile is what lets you reason about storeys, e.g. where a second floor or a roof starts. Call this BEFORE proposing a build so you can tell the player what it will take; in survival that shopping list is the whole point, since a large structure needs several gathering trips. Pass the optional anchor x,y,z (and rotation) as well and you also get what is ALREADY standing there, what is still missing, and what she is short of right now — use that to resume a part-built structure or to check a site before committing to it. Instant, read-only; use the blueprint tool to actually build.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Blueprint name from `blueprint action=list`, without extension."
+        },
+        "x": {
+          "type": "integer",
+          "description": "Optional anchor minimum X — give all three to also get site progress."
+        },
+        "y": {
+          "type": "integer",
+          "description": "Optional anchor bottom Y."
+        },
+        "z": {
+          "type": "integer",
+          "description": "Optional anchor minimum Z."
+        },
+        "rotation": {
+          "type": "integer",
+          "description": "Optional clockwise rotation (0/90/180/270), matching the build you plan."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "file",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "interact_at",
+    "description": "Aim at a world point and press one mouse button — the full native click for BLOCKS, FLUIDS and the AIR (moving entities use interact_entity). right = use/place/activate; if the aimed block doesn't respond, the held item acts on its own, exactly like a real right-click — so aiming at WATER with a bucket scoops it, with a boat places it. left = attack/break (prefer mine for digging). The result reports what actually changed (hands, aimed block, new entities); no change listed = the click did nothing. It does NOT travel: you must ALREADY be within working reach (~4.5 blocks) of the aim point — goto stops you right beside a block, which is in reach. Farther away it fails and tells you to goto first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "button": {
+          "type": "string",
+          "description": "right = use/activate/throw, left = attack/break.",
+          "enum": [
+            "left",
+            "right"
+          ]
+        },
+        "x": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Aim X. Null (with y,z null) = use the held item straight ahead (eat/drink)."
+        },
+        "y": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Aim Y. Null when aiming forward."
+        },
+        "z": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Aim Z. Null when aiming forward."
+        },
+        "hold_ticks": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "0/null = single press; >0 = hold that many ticks; -1 = hold until done/timeout."
+        },
+        "item_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional namespaced item to equip-and-use, e.g. minecraft:bonemeal. Null = use what's in hand."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "button",
+        "x",
+        "y",
+        "z",
+        "hold_ticks",
+        "item_id",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "sleep",
+    "description": "Get into a bed you are already standing next to, and report whether you are actually asleep. It does NOT travel: find a bed with scan_blocks using #minecraft:beds (that one tag covers every colour), goto it, then call this. Give x/y/z to use one specific bed, or omit them for whichever bed is in reach. Succeeds only when the server confirms you are sleeping; otherwise it hands back Minecraft's own reason — read it. \"Only at night\" means wait (set_timer), not retry. \"Too far away\" means goto. Returns the moment you lie down; night passes on its own and needs no tool.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "X of the bed. Leave null to use whichever bed is in reach."
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Y of the bed. Leave null to use whichever bed is in reach."
+        },
+        "z": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Z of the bed. Leave null to use whichever bed is in reach."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "interact_entity",
+    "description": "Press a mouse button on an ENTITY — the native interaction for moving targets. Auto-paths and FOLLOWS the entity (id from scan_nearby_entities), then acts once the crosshair reaches it (a wall in the way makes it re-position, not hit through). right on a boat/rideable = board it (runtime_state then shows <riding>; goto pilots or steps off — never click your own vehicle again).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "button": {
+          "type": "string",
+          "description": "left = attack/hit, right = use/interact.",
+          "enum": [
+            "left",
+            "right"
+          ]
+        },
+        "entity_id": {
+          "type": "integer",
+          "description": "Target entity id (from scan_nearby_entities)."
+        },
+        "hold_ticks": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "0/null = single press; >0 = hold that many ticks; -1 = hold until done/timeout (e.g. attack until dead)."
+        },
+        "item_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional namespaced item to equip-and-use, e.g. minecraft:wheat. Null = use what's in hand."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "button",
+        "entity_id",
+        "hold_ticks",
+        "item_id",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "eat",
+    "description": "Eat or drink a consumable from your inventory. It's a real timed action — chewing animation, particles and sound play over the eat duration, and only when it finishes does it restore your hunger + saturation and apply the item's effects (e.g. a golden apple's regeneration/absorption). Your HP then regenerates naturally from saturation, the same as a real player — so eat to refill hunger and let health recover. Fails if you don't carry it, it isn't a consumable, or your hunger is already full (the food is kept).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "description": "Namespaced id of the food to eat, e.g. minecraft:cooked_beef."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "item_id",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "task_status",
+    "description": "Read what you have in flight: the background task (id, what it is, running/queued, elapsed time and remaining budget) and your pending timers (id, seconds left, reason). Instant. Normally you don't need it — a task announces its own end as a task_finished event and a timer fires on its own; use it when the owner asks how things are going, or before deciding what to task_stop.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "task_stop",
+    "description": "Cancel something you dispatched. With no id: aborts the background task (the one <current_task> / task_status shows) so the body frees up; its wind-down arrives as a task_finished event with status=stopped. With an id: cancels that task or that timer (tm...). Fails, listing what is actually pending, when nothing matches.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "What to cancel: a task id (e.g. t42) or a timer id (e.g. tm3). Omit to stop the background task, whatever it is."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_timer",
+    "description": "Set a one-shot reminder that fires after a delay in world time. Returns immediately and never occupies the body — she keeps doing whatever she is doing. Use it for things the world will not announce on its own: a furnace finishing, crops growing, waiting for daybreak. Do NOT use it to watch work you dispatched yourself — a background task sends its own task_finished event when it ends. The timer only reminds you; it is not proof that the thing you waited for happened, so inspect the world when it fires. Max 1200s, at most 8 pending. World time stops while a single-player world is paused. task_status lists your timers; task_stop cancels one.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "after_s": {
+          "type": "integer",
+          "description": "Delay in world-time seconds (1-1200; out-of-range values are clamped).",
+          "minimum": 1,
+          "maximum": 1200
+        },
+        "reason": {
+          "type": "string",
+          "description": "What to look at or decide when it fires. The owner sees this too, so name the thing: \"collect the iron from the furnace\" beats \"check back\"."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "after_s",
+        "reason",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "drop_items",
+    "description": "Drop items from your inventory onto the ground in front of you — to hand something to your owner, or to shed junk when your inventory is full and no chest is nearby (when one is, prefer depositing: interact_at the chest, then transfer — dropped items despawn after 5 minutes). count above what you carry drops everything you have of it. Returns how many were dropped and how many remain.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "description": "Namespaced id of the item to drop, e.g. minecraft:cobblestone."
+        },
+        "count": {
+          "type": "integer",
+          "description": "How many to drop (1-999).",
+          "minimum": 1,
+          "maximum": 999
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "item_id",
+        "count",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "take_items",
+    "description": "CREATIVE MODE ONLY: conjure items directly into your inventory, like a creative player pulling from the creative menu. Fails in survival mode — there you must mine, craft, loot or trade for items instead. Overflow beyond inventory space is dropped at your feet.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "description": "Namespaced id of the item, e.g. minecraft:diamond."
+        },
+        "count": {
+          "type": "integer",
+          "description": "How many to take (1-2304).",
+          "minimum": 1,
+          "maximum": 2304
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "item_id",
+        "count",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "inspect_gui",
+    "description": "Look at the GUI you currently have open. After interact_at right-clicks a chest / furnace / machine it shows that container; with NO container open it shows YOUR own inventory menu (which includes a 2x2 crafting grid), so you can craft small recipes without a table. Lists every slot — index, side, item + count, [output] mark — plus the cursor and any machine progress. If a crafting grid is open it draws the grid as a 2D map of slot numbers (handy for hand-loading a modded grid). Use it to choose transfer slot indices and to verify a transfer. Before crafting, call lookup_recipe FIRST to get the exact grid layout, then match that recipe onto this 2D map cell-for-cell (a smaller recipe sits in the top-left). This matters most for 2x2 inventory crafting, where the grid's slot indices are easy to guess wrong — read them here, don't assume. No arguments.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "transfer",
+    "description": "Transfer items between slots in the GUI you have open — reorganize, load a machine, deposit or take. Pass `moves` as a LIST; they run in order, so do the whole job in one call. inspect_gui first for slot indices.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "moves": {
+          "type": "array",
+          "description": "Transfers to run in order (one whole job per call).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "integer",
+                "description": "Source slot index (from inspect_gui)."
+              },
+              "to": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Destination slot. OMIT to route the stack to the other section (deposit/take/feed). Give a slot to place exactly there (empty=move, same item=merge, different item=swap)."
+              },
+              "count": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Exact number to move (needs `to`; default = the whole stack). Ignored when `to` is omitted — routing moves the whole stack."
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "moves",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "close_gui",
+    "description": "Close the container GUI you currently have open — do this when you've finished moving items. No arguments.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_self_status",
+    "description": "Read your body's condition in one call: name, game mode, HP / max HP, hunger / saturation, position, dimension, biome, the structures you are standing in, what you are wearing, and movement state. ALWAYS call this before combat or planning decisions. It does NOT list your backpack — what you carry is already in front of you every turn; use inspect_gui when exact slots matter. No arguments.\n\n你的身体有这些本能,会自动发生,不需要用工具去做:高处坠落时会用水桶或软方块自救,落地后把水收回来;在水里快憋不住气时会自己浮上来换气,头顶被冰面/岩层封住时会游向最近的透气口;身边有危险就自动开打,打法与她自己派的 attack 完全一致;被地形卡住时会自己挣脱出来;说话时会停下面向主人。你的显式动作永远优先——用 equip_item 显式穿戴会钉住那个槽位,本能不再更换它;equip_item 的 item_id 传 \"auto\" 可解除钉,交还本能管理。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_owner_status",
+    "description": "Read your owner's current status: name, online state, HP, hunger, position, distance from you, and held item. Call before any 'follow', 'protect', or 'rendezvous' decision. If the owner is offline the call returns online:false — default to autonomous mode until they return. No arguments.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "lookup_recipe",
+    "description": "Look up how to make an item — like JEI. Returns every recipe whose output is this item, across all stations: crafting (with the grid layout), smelting / blasting / smoking, stonecutting, and smithing — each tagged [crafting] / [smelting] / [stonecutter] / [smithing] / …. Then make it: [crafting] → call craft, which lays out the grid for you; [smelting] → open the furnace and transfer the input + fuel; [stonecutter] / [smithing] → open the station and transfer the inputs. No recipe found = the item is mined or traded, not made.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "description": "Namespaced output item, e.g. minecraft:diamond_pickaxe."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "item_id",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "craft",
+    "description": "Craft an item from materials in your inventory — one call does the whole flow: finds the recipe, lays the ingredients into a real crafting grid, and takes the result. 2x2 recipes work anywhere; a 3x3 recipe needs a crafting table within reach (~4 blocks) — the result tells you where the nearest one is, or that you should place one (a crafting_table is 4 planks, 2x2). Missing materials are reported with exact shortfalls — collect or craft those first, then call again. Crafts up to `count` of the item and stops early (reported) if materials run out or the inventory fills. Only for [crafting] recipes — smelting/stonecutter/smithing still go through interact_at + transfer on their station.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "description": "Namespaced id of the item to craft, e.g. minecraft:iron_pickaxe."
+        },
+        "count": {
+          "type": "integer",
+          "description": "How many of the item you want (default 1).",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "item_id",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "scan_nearby_entities",
+    "description": "List entities within a radius around you, sorted by distance. Use type_filter to narrow: 'hostile' for monsters, 'passive' for animals/items, 'player' for players, 'all' for everything. Returns at most 20 entities; truncated:true means more exist. Each entry has id, type, position, distance, hp, and category. Pass the returned runtime ids to attack; it cannot attack anything outside that set.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "radius": {
+          "type": "number",
+          "description": "Search radius in blocks. Range [1, 64].",
+          "minimum": 1.0,
+          "maximum": 64.0
+        },
+        "type_filter": {
+          "type": "string",
+          "description": "One of: hostile, passive, player, all.",
+          "enum": [
+            "hostile",
+            "passive",
+            "player",
+            "all"
+          ]
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "radius",
+        "type_filter",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "scan_blocks",
+    "description": "Find blocks of given type(s) near you and report where they are, nearest first, up to 32. Surveying only — to actually gather blocks use mine, which finds and digs them itself. Sees terrain that is loaded right now; anything further out is UNKNOWN, not empty, and note says when that happened — walk that way and scan again. Water and lava are scannable, and those matches carry source:true/false (a source cell behaves very differently from flowing). Give every variant of what you want, e.g. both iron_ore and deepslate_iron_ore.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "radius": {
+          "type": "integer",
+          "description": "Spherical search radius in blocks (max 192).",
+          "minimum": 1,
+          "maximum": 192
+        },
+        "block_ids": {
+          "type": "array",
+          "description": "List of namespaced block ids to search for.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "radius",
+        "block_ids",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "scaffold_materials",
+    "description": "Manage which blocks you are willing to spend as throwaway scaffolding — the blocks pathfinding sacrifices to pillar up, bridge a gap or step over a ledge. This is a standing choice that persists across sessions and is used by every move you make, including reflexes like fleeing. Call it with no action to just look. Anything you list WILL be consumed and never comes back, so list what you consider junk here and now: cobblestone is junk in a mineshaft and precious in the End. The reply always carries the full current list plus what you are carrying that is not on it, so one call is enough to decide. Emptying the list is a real choice — do it when what you carry is earmarked for something (the dirt is for a build), and accept that she then cannot pillar or bridge at all. Your owner is told when you change it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "add appends, delete removes, set replaces the whole list, clear empties it so nothing at all may be spent. Omit to just read.",
+          "enum": [
+            "add",
+            "delete",
+            "set",
+            "clear"
+          ]
+        },
+        "block_ids": {
+          "type": "array",
+          "description": "Namespaced block ids, e.g. ['minecraft:cobbled_deepslate']. Required for add / delete / set; ignored by clear.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "look_around",
+    "description": "Your spatial view: a top-down character map of the blocks around you, centred on yourself. `@` is you at the middle, North is up, East is right, each cell is one block. Each cell encodes how you could move onto it, collapsing height into one symbol: `.` flat walkable, `^` step up 1 (jumpable), `,` step down 1-2, `v` drop of 3+ (pit/cliff), `#` wall/blocked, `~` water, `!` lava/hazard, `x` caution (next to a hazard), `T` tree, `?` not loaded. Call this ONCE to grasp terrain, walls, ledges, water and gaps around you instead of many inspect_block calls; to plan a route, trace it cell by cell across the grid. For far-away or specific blocks/entities use scan_blocks / scan_nearby_entities. Optional `radius` (4-16, default 8).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "radius": {
+          "type": "integer",
+          "description": "Half-width of the square view in blocks (4-16, default 8).",
+          "minimum": 4,
+          "maximum": 16
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "inspect_block",
+    "description": "Inspect a single block at the given integer coordinates. Returns block id, its block-state properties when any (e.g. an end_portal_frame's has_eye/facing), hardness, whether you have the correct tool in hand, an estimated dig-tick count, and whether the block is in your 4.5-block mining reach. Call this before mine to confirm the operation will succeed, or to check which end_portal_frame cells still need an ender_eye.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "description": "Block X."
+        },
+        "y": {
+          "type": "integer",
+          "description": "Block Y."
+        },
+        "z": {
+          "type": "integer",
+          "description": "Block Z."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "inspect_block_storage",
+    "description": "Read what a block HOLDS — items, fluid, and energy — directly from the block, WITHOUT opening its GUI. Works on most modded machines, tanks and batteries (chests, furnaces, Create / Mekanism / Thermal machines, fluid tanks, energy cells) because they expose standard item/fluid/energy handlers. Give the block's integer x/y/z. Use this instead of right-click + inspect_gui when you just need a machine's contents or fill levels. Note: storage-network terminals (AE2/RS) show only their local buffer here, not the whole network.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "description": "Block X."
+        },
+        "y": {
+          "type": "integer",
+          "description": "Block Y."
+        },
+        "z": {
+          "type": "integer",
+          "description": "Block Z."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_world_info",
+    "description": "Read the current world state: dimension, game-time tick counter, whether it's bright or dark outside (combat / spawn planning), and weather (clear / rain / thunder, affects sailing and combat). No arguments.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "find_tools",
+    "description": "Load the full definitions of tools listed by name only in <deferred_tools>. Those tools cannot be called until you load them here — you have their one-line summary but not their parameters. Two forms: \"select:name1,name2\" fetches those tools by exact name (use this when the catalogue already told you the name), or plain keywords to search names and summaries. Fetch every tool you expect to need for the task in ONE call — each call costs a round trip during which your body stands still.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Either \"select:name1,name2\" for exact names, or keywords to search."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Which companion to act with — its name or id (see list_companions)."
+        }
+      },
+      "required": [
+        "query",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "load_skill",
+    "description": "Load a specialized skill when the task at hand matches one of the skills listed in the system prompt.\n\nUse this tool to inject the skill's instructions and resources into the current conversation. The output contains detailed workflow guidance for the task.\n\nThe skill name must match one of the skills listed in your system prompt's <available_skills> block.\n\nA skill body may reference supporting files by relative path (e.g. references/roofs.md). Call this tool again with the same name plus `file` to read one — only when the body points you there.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The skill name from <available_skills> in the system prompt."
+        },
+        "file": {
+          "type": "string",
+          "description": "Optional: relative path of a supporting file referenced by the skill body."
+        },
+        "companion": {
+          "type": "string",
+          "description": "Current companion name or ID."
+        }
+      },
+      "required": [
+        "name",
+        "file",
+        "companion"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

@@ -1,0 +1,81 @@
+schema_version = 1
+
+[[plugins]]
+source = "akane_minecraft"
+plugin_id = "akane.minecraft"
+display_name = "Minecraft 同伴陪玩"
+summary = "连接本机 Numen，让当前角色感知游戏、跟随、采集、制作与建造；游戏事件唤起现有 Agent，仅主人可控制。"
+permissions = ["network.read", "event.emit", "context.observe", "connection.numen.read", "capability.prompt.invoke", "event.subscribe", "job.run", "agent.turn.request", "skill.contribute"]
+requirements = ["Python 3.11+、公共 SDK 0.14.2 与支持主人资格声明的宿主、httpx >=0.27,<1；运行中的 Minecraft 与 Numen MCP。", "在插件连接表单填写本机地址、私有密钥、默认同伴；可在 QQ 或桌宠选择当前世界的同伴；每个聊天档案单独配置。主人资格由宿主统一校验，QQ 群按真实发送者判断。", "安装后由主人明确开始陪玩；默认持续到停止或总体目标完成，可选分钟时限，一个身体只接受一个控制会话。停止会撤销控制并确认游戏任务状态。", "非空游戏事件通过现有 Agent 续聊，会使用当前模型服务；空轮询不调用模型。断连或未知动作结果暂停，不自动重试。"]
+
+[[plugins]]
+source = "akane_tts"
+plugin_id = "akane.tts"
+display_name = "语音合成服务"
+summary = "通过既有声线配置合成 Edge 或 GPT-SoVITS 音频，供宿主发声入口调用。"
+permissions = ["service.provide", "resource.read", "artifact.write", "network.read", "connection.tts.read"]
+requirements = ["Python 3.11+、公共 SDK 0.14、capcore-adapter-speech 0.1 与 Edge extra；由部署依赖源提供，不自动安装。", "FFmpeg 在 PATH，用于 MP3 验证。GPT-SoVITS 服务与参考声线须已配置，不启动模型。", "纯 tts v1 服务；安装许可与能力审批分别处理；取消等待实际结算，登记不代表已播放。"]
+
+[[plugins]]
+source = "akane_document_writer"
+plugin_id = "akane.document-writer"
+display_name = "文档创建、修订与样式"
+summary = "生成真实 Word、Excel、PDF 和文本文件；完整内容修订保留旧版本，纯样式修改不重写正文。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write"]
+requirements = ["Python 3.11+；python-docx >=1.1,<2、openpyxl >=3.1,<4、reportlab >=4.2,<5。默认宿主解释器，可用 AKANE_DOCUMENT_PYTHON 指定兼容环境；不会自动安装依赖。", "PDF 需本机允许嵌入且覆盖内容字形的 TrueType 字体，可设 AKANE_DOCUMENT_FONT；不下载或再分发字体。健康检查实际生成并读回 Word/Excel、实际写 PDF。", "公共 SDK 需支持调用工作目录、完整文档表示和产物来源/版本字段；来源解析由宿主拥有，读取 PDF 来源另需 pypdf。", "11 格式：txt/md/html/json/csv/xlsx/docx/pdf/srt/lrc/vtt；Word/PDF 支持有限 Markdown，不执行 LLM、代码、公式或伪造字幕时间。", "full_text 导出全部可提取文本，不保证原版式；未提取图片、批注、编号等时失败，不用预览拼原稿。公式只作为文字导出；多表转 CSV/XLSX 需明确选择并提供表格。", "已有 Word/Excel 样式修改另存原文件，保留已有公式；复杂签名、宏/嵌入对象及不支持的扩展失败，不声称完美保真。", "默认只登记文件，不自动发送；可显式请求文件交付。取消等待解析/渲染子进程退出和工作目录清理，旧版本不覆盖。"]
+
+[[plugins]]
+source = "akane_cover_song"
+plugin_id = "akane.cover-song"
+display_name = "角色音色翻唱"
+summary = "当前材料分轨、RVC 转声和立体声混音；按用户隔离缓存，支持重做与历史点播。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "network.read", "storage.write", "connection.rvc.read"]
+requirements = ["Python 3.11+；requests >=2.31,<3、urllib3 >=2.2,<3；宿主公共 SDK 需支持 RVC 命名连接、产物交付方式和工作目录。", "FFmpeg/FFprobe 在 PATH，或设置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE。", "沿用现有 COVER_SONG / RVC 配置和本机 WebUI 或本机媒体服务，不新建配置仓库，不下载模型或启动服务。", "QQ 默认请求语音交付，其他客户端默认请求文件交付；none 只登记，产物始终保留。登记不代表发送或播放成功。", "新混音 44100 Hz 立体声；历史缓存原样恢复并报告实测格式。音色相似度、唱腔和分轨质量依赖模型与材料。", "取消等待远端终态；断连或无法确认完成会锁住对应服务端点，需操作者重启相关推理服务后明确恢复，不自动重试。", "中风险首次确认；安装不替用户修改审批。"]
+
+[[plugins]]
+source = "akane_image_generation"
+plugin_id = "akane.image-generation"
+display_name = "图片生成与参考图编辑"
+summary = "通过当前模型服务连接生成或编辑图片；只接受会话材料句柄，按实际格式和尺寸登记多图。"
+permissions = ["capability.prompt.invoke", "capability.invoke", "service.provide", "resource.read", "artifact.write", "network.read", "connection.image_generation.read"]
+requirements = ["Python 3.11+；宿主公共 SDK 0.8.2，支持版本化服务、完整结果转交、命名连接和调用工作目录。", "宿主解释器需 requests >=2.31,<3、urllib3 >=2.2,<3、Pillow >=10,<13；健康检查真实测试 PNG/JPEG/WebP 编解码，不访问云端。", "使用现有 Bot 模型服务里的图片连接；需启用并配置支持 Images API 的服务商，不新建配置仓库。", "网络调用可能计费，遵循现有首次确认策略；安装不会替用户修改审批。", "最多 5 张参考图、4 张输出；mask 需与首张参考图同尺寸的含 alpha PNG。服务商可能不支持全部参数；实际尺寸、格式或数量偏离时明确提示。", "已发出的请求取消后等待实际响应；断连无法确认远端结束时失败，不声称已停止推理。", "默认登记不发送、不播放；可用 load_material 看图、send_file 交付或把生成句柄再次用作参考图。不自动安装依赖。"]
+
+[[plugins]]
+source = "akane_voice_dataset"
+plugin_id = "akane.voice-dataset"
+display_name = "语音训练素材整理"
+summary = "静音切片、重采样、质量标记，生成含 WAV 与来源清单的 ZIP；不执行训练。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "capability.invoke"]
+requirements = ["Python 3.11+；宿主提供 CapCore 与支持 capability.invoke 的公共 SDK。", "FFmpeg/FFprobe 在 PATH，或配置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE。", "可选 clean_first 需显式安装启用并获准调用 akane.voice-clean，执行 basic 人声滤波；净化失败来源不冒充已处理。", "最多 20 来源、单来源 30 分钟、总 PCM 512 MiB、ZIP 256 MiB、10000 切片；超限失败而非暗中截短。", "长度上下限是质量标记，不是硬切；推荐片段仍需人工复核，不包含标注或训练。", "默认只登记 ZIP，净化中间音频也登记但不发送；不自动安装依赖、不自动启用用户实例。"]
+
+[[plugins]]
+source = "akane_file_transcription"
+plugin_id = "akane.file-transcription"
+display_name = "文件转写与字幕"
+summary = "现有 Whisper 离线模型或本机媒体服务转写音频/视频，支持批量、五种文字/字幕格式和明确的部分失败。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "network.read"]
+requirements = ["Python 3.11+；宿主提供 CapCore 与 Akane 公共 SDK。", "本地需 FFmpeg/FFprobe 与可运行 faster-whisper 的 AKANE_ASR_PYTHON；默认当前解释器。", "AKANE_ASR_MODEL=small 默认，也支持已缓存 tiny/base/medium/large-v2/large-v3；AKANE_ASR_CACHE_DIR 可指向现有 Hugging Face cache。必须包含模型和 tokenizer，不会自动下载。", "AKANE_ASR_DEVICE=auto|cpu|cuda，AKANE_ASR_COMPUTE_TYPE=auto|float16|float32|int8|int8_float16。", "已有本机媒体服务须显式配置 AKANE_ASR_REMOTE_URL，可设 AKANE_ASR_BACKEND=auto|local|remote；旧实时 ASR 连接不会自动导入。", "同步远端协议不支持取消推理；取消会等待真实完成响应，连接丢失不冒充已停止。远端 device/compute 请在服务端设置。", "默认仅登记产物；自动识别可能有误，字幕时间为音轨时钟。多来源合并字幕按各来源时长顺序拼接。"]
+
+[[plugins]]
+source = "akane_voice_clean"
+plugin_id = "akane.voice-clean"
+display_name = "人声降噪与净化"
+summary = "基础滤波或现有 DeepFilterNet AI 人声增强；输出 WAV/FLAC/MP3，明确报告实际后端和降级。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write"]
+requirements = ["Python 3.11+；宿主提供 CapCore 与 Akane 插件公共 SDK。", "FFmpeg/FFprobe 在 PATH，或配置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE。", "可选 AI：配置兼容 DeepFilterNet/PyTorch/Torchaudio 的 AKANE_CLEAN_PYTHON 和已下载的 AKANE_CLEAN_MODEL_ROOT；设备 AKANE_CLEAN_DEVICE=auto|cpu|cuda。不会隐式安装或下载。", "basic 不运行 AI；auto 在 AI 失败时明确降级；ai 失败不返回基础结果。", "dereverb/deecho 是增强预设，不保证消除混响或声学回声；输出单声道 48kHz。", "只接收当前会话材料句柄；默认登记不发送、不播放。"]
+
+[[plugins]]
+source = "akane_media_convert"
+plugin_id = "akane.media-convert"
+display_name = "媒体格式转换"
+summary = "音频转换与视频提取音频；支持裁剪、采样率、声道、码率、响度、静音、淡入淡出和变速。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write"]
+requirements = ["Python 3.11+；宿主提供 CapCore 和 Akane 插件公共 SDK。", "宿主需安装 FFmpeg 和 FFprobe，包含目标格式编码器。", "置于宿主 PATH，或设置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE；改变环境后重启宿主。", "仅接收独立媒体文件，不处理播放列表、网络流或受保护缓存。", "wheel 不捆绑系统二进制，不隐式安装 Python/系统依赖。"]
+
+[[plugins]]
+source = "akane_audio_separation"
+plugin_id = "akane.audio-separation"
+display_name = "人声／伴奏分轨"
+summary = "使用已准备的 Demucs 或现有本机媒体服务分离人声、伴奏，输出两个 WAV/FLAC/MP3 文件。"
+permissions = ["capability.prompt.invoke", "resource.read", "artifact.write", "network.read"]
+requirements = ["Python 3.11+；宿主提供 CapCore 和 Akane 插件公共 SDK。", "FFmpeg/FFprobe 在 PATH，或设置 AKANE_MEDIA_FFMPEG / AKANE_MEDIA_FFPROBE。", "本地：已安装兼容 Demucs 4/PyTorch/NumPy 的解释器及已缓存模型；可设 AKANE_SEPARATION_PYTHON / MODEL_ROOT / PACKAGE_ROOT。不会自动下载、安装依赖。", "可选 AKANE_SEPARATION_BACKEND=auto|local|remote；MODEL=htdemucs|htdemucs_ft、DEVICE=auto|cpu|cuda 均使用 AKANE_SEPARATION_ 前缀。", "已有本机/隧道媒体服务需显式设置 AKANE_SEPARATION_REMOTE_URL；可设 AKANE_SEPARATION_UVR_MODEL。旧 ASR/RVC 的共享连接配置不会自动导入。", "远端取消等待实际完成响应；无法确认远端结束时返回明确失败，不声称已停止。", "只处理当前会话材料句柄；默认登记两件文件，不自动发送或播放；分轨可能有串音。"]

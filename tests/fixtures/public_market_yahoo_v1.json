@@ -1,0 +1,78 @@
+{
+  "fixture_schema": "akane.public_market.yahoo_shape.v1",
+  "fixture_kind": "schema_contract",
+  "captured_at": "2026-07-11T11:31:25+08:00",
+  "library": {
+    "name": "yfinance",
+    "version": "1.5.1",
+    "license_metadata": "Apache",
+    "homepage": "https://github.com/ranaroussi/yfinance",
+    "usage_notice": "research_and_educational; upstream Yahoo data terms apply; package metadata warns personal use only"
+  },
+  "live_observation": {
+    "ok": false,
+    "status": "unavailable",
+    "reason": "upstream_timeout_in_capture_environment",
+    "symbols_attempted": [
+      "^N225",
+      "^GSPC"
+    ]
+  },
+  "download_contract": {
+    "observed_defaults": {
+      "auto_adjust": true,
+      "multi_level_index": true,
+      "threads": true,
+      "progress": true
+    },
+    "adapter_locked_arguments": {
+      "auto_adjust": false,
+      "multi_level_index": false,
+      "threads": false,
+      "progress": false,
+      "interval": "1d"
+    },
+    "daily_index_type": "DatetimeIndex",
+    "required_columns": [
+      "Open",
+      "High",
+      "Low",
+      "Close"
+    ],
+    "optional_columns": [
+      "Adj Close",
+      "Volume"
+    ],
+    "default_multi_level_example": [
+      [
+        "Open",
+        "^N225"
+      ],
+      [
+        "High",
+        "^N225"
+      ],
+      [
+        "Low",
+        "^N225"
+      ],
+      [
+        "Close",
+        "^N225"
+      ],
+      [
+        "Adj Close",
+        "^N225"
+      ],
+      [
+        "Volume",
+        "^N225"
+      ]
+    ]
+  },
+  "safety": {
+    "contains_market_rows": false,
+    "contains_credentials": false,
+    "approved_test_use": "offline schema and adapter argument validation only"
+  }
+}

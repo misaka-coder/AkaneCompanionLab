@@ -1,0 +1,7 @@
+schema: capability_adapter/v1
+provider:
+  id: broken
+  type: comfyui
+capabilities:
+  - id: broken
+    visible_in: [desktop

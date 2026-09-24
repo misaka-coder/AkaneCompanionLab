@@ -1,0 +1,6627 @@
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import os
+import sys
+import tempfile
+import time
+import unittest
+from contextlib import asynccontextmanager, redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
+
+import config
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
+from companion_v01.background_tasks import BackgroundTaskRunner
+from companion_v01.attachment_inbox import AttachmentInboxService
+from companion_v01.attachment_ingest import AttachmentIngestService
+from companion_v01.care_runtime import CareModulePort
+from companion_v01.capability_registry import ExecutorBroker
+from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
+from companion_v01.durable_session_queue import DurableSessionWorkQueue
+from companion_v01.deployment_security import QQChannelRuntimeConfig
+from companion_v01.host_jobs import HostJobStore
+from companion_v01.host_workflow_jobs import HostWorkflowJobRuntime, WorkflowJobAssetStore
+from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
+from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
+from companion_v01.media_bridge_engine import prefetch_remote_media_links_for_message
+from companion_v01.mcp_stdio_discoverer import McpStdioToolCaller, McpStdioToolDiscoverer
+from companion_v01.music_lyrics import parse_lrc_segments
+from companion_v01.plugin_api import PluginQQCommandResult
+from companion_v01.routes.capabilities import build_capabilities_router
+from companion_v01.session_inbox import SessionInboxStore
+from companion_v01.routes.control_center import (
+    build_control_center_router,
+    build_control_center_snapshot_runtime_providers,
+)
+from companion_v01.routes.core import build_core_router
+from companion_v01.routes.desktop_pet import build_desktop_pet_router
+from companion_v01.routes.gifts import build_gifts_router
+from companion_v01.routes.qq import build_qq_router
+from companion_v01.routes.sessions import build_sessions_router
+from companion_v01.routes.think import build_think_router
+from companion_v01.routes.voice import build_voice_router
+from companion_v01.tool_runtime import ToolMetadata
+from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.store import MemoryStore
+from companion_v01.turn_coordination import TurnCoordinator
+
+
+QQ_BOT_FIXTURE_ID = 10001
+QQ_USER_FIXTURE_ID = 10003
+QQ_GROUP_FIXTURE_ID = 20001
+
+
+def _onebot_message_text(payload: dict[str, Any]) -> str:
+    message = payload.get("message")
+    if isinstance(message, str):
+        return message
+    if not isinstance(message, list):
+        return ""
+    return "".join(
+        str(item.get("data", {}).get("text") or "")
+        for item in message
+        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("data"), dict)
+    )
+
+
+class FakeRuntimeMetrics:
+    def __init__(self) -> None:
+        self.observed: list[tuple[str, bool]] = []
+        self.counters: dict[str, float] = {}
+
+    def observe_request(self, name: str, *, duration_ms: float, ok: bool) -> None:
+        self.observed.append((name, ok))
+
+    def incr(self, key: str, amount: float = 1.0) -> None:
+        self.counters[key] = self.counters.get(key, 0.0) + amount
+
+    def snapshot(self) -> dict[str, float]:
+        return dict(self.counters)
+
+
+class CatalogMetadataHandler:
+    def __init__(self, *, risk: str) -> None:
+        self._metadata = ToolMetadata(risk=risk)
+
+    def tool_metadata(self) -> ToolMetadata:
+        return self._metadata
+
+
+class FakeWorkflowRunner:
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+        self.requests: list[WorkflowExecutionRequest] = []
+
+    def execute_workflow(self, request: WorkflowExecutionRequest) -> dict[str, Any]:
+        self.requests.append(request)
+        return self.result
+
+
+class ExplodingWorkflowRunner:
+    def __init__(self) -> None:
+        self.requests: list[WorkflowExecutionRequest] = []
+
+    def execute_workflow(self, request: WorkflowExecutionRequest) -> dict[str, Any]:
+        self.requests.append(request)
+        raise RuntimeError(r"secret token leaked from C:\Users\ExampleUser\portrait.png")
+
+
+def build_test_workflow_job_runtime(
+    temp_dir: str,
+    *,
+    runner: Any,
+    background: Any,
+) -> HostWorkflowJobRuntime:
+    return HostWorkflowJobRuntime(
+        store=HostJobStore(Path(temp_dir) / "jobs.db"),
+        asset_store=WorkflowJobAssetStore(Path(temp_dir) / "_runtime" / "workflow_jobs"),
+        workflow_runner=runner,
+        background_tasks=background,
+        executor_broker=ExecutorBroker(None),
+    )
+
+
+class FakeGuard:
+    def __init__(self, *, allowed: bool = True) -> None:
+        self.allowed = allowed
+        self.released = 0
+
+    def try_acquire(self):
+        return SimpleNamespace(
+            allowed=self.allowed,
+            acquired=self.allowed,
+            reason="busy",
+            message="busy",
+        )
+
+    def release(self) -> None:
+        self.released += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "enabled": True,
+            "max_concurrent_thinks": 2,
+            "daily_think_limit": 200,
+            "active_thinks": 0,
+            "used_today": 1,
+        }
+
+
+class FakeStore:
+    def __init__(self) -> None:
+        self.sessions: dict[tuple[str, str], dict[str, Any]] = {}
+        self.last_character_pack_id: str | None = None
+        self.messages: list[dict[str, Any]] = [{"seq_no": 1, "role": "assistant", "content": "hello"}]
+
+    def ensure_session(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+        display_title: str | None = None,
+    ) -> dict[str, Any]:
+        self.last_character_pack_id = character_pack_id
+        existing = self.sessions.get((profile_user_id, session_id))
+        if existing is not None:
+            existing_character = str(existing.get("character_pack_id") or "")
+            requested_character = str(character_pack_id or "")
+            if existing_character and requested_character and existing_character != requested_character:
+                raise ValueError(
+                    "session_character_mismatch:"
+                    f" session_id={session_id} existing={existing_character} requested={requested_character}"
+                )
+        session = {
+            "profile_user_id": profile_user_id,
+            "session_id": session_id,
+            "character_pack_id": character_pack_id,
+            "display_title": display_title or session_id,
+        }
+        self.sessions[(profile_user_id, session_id)] = session
+        return session
+
+    def get_session(self, profile_user_id: str, session_id: str) -> dict[str, Any] | None:
+        return self.sessions.get((profile_user_id, session_id))
+
+    def get_character_session(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str = "",
+    ) -> dict[str, Any] | None:
+        self.last_character_pack_id = character_pack_id
+        session = self.sessions.get((profile_user_id, session_id))
+        if session and str(session.get("character_pack_id") or "") == character_pack_id:
+            return session
+        return None
+
+    def list_sessions(
+        self,
+        *,
+        profile_user_id: str,
+        limit: int,
+        character_pack_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.last_character_pack_id = character_pack_id
+        return [
+            session
+            for (stored_profile, _session_id), session in self.sessions.items()
+            if stored_profile == profile_user_id
+            and (character_pack_id is None or str(session.get("character_pack_id") or "") == character_pack_id)
+        ][:limit]
+
+    def get_session_messages(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str | None = None,
+        limit: int,
+        before_seq: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.last_character_pack_id = character_pack_id
+        messages = [
+            item for item in self.messages
+            if before_seq is None or int(item.get("seq_no") or 0) < before_seq
+        ]
+        return messages[-limit:]
+
+    def get_latest_eval_turn_for_session(
+        self,
+        *,
+        profile_user_id: str,
+        session_id: str,
+        character_pack_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.last_character_pack_id = character_pack_id
+        return {"final_json": {"emotion": "normal"}}
+
+
+def resolve_query(request: Request) -> tuple[str, str]:
+    session_id = str(request.query_params.get("user_id") or request.query_params.get("session_id") or "session")
+    profile_user_id = str(
+        request.query_params.get("real_user_id") or request.query_params.get("profileUserId") or session_id
+    )
+    return session_id, profile_user_id
+
+
+def resolve_payload(payload: dict) -> tuple[str, str]:
+    session_id = str(payload.get("user_id") or payload.get("session_id") or "session")
+    profile_user_id = str(payload.get("real_user_id") or session_id)
+    return session_id, profile_user_id
+
+
+def write_valid_cutout_workflow(base_dir: str | Path, profile_user_id: str = "master") -> Path:
+    workflow_path = Path(base_dir) / profile_user_id / "capabilities" / "workflows" / "comfyui" / "portrait_cutout.json"
+    workflow_path.parent.mkdir(parents=True, exist_ok=True)
+    workflow_path.write_text(
+        json.dumps(
+            {
+                "12": {"class_type": "LoadImage", "inputs": {"image": "old.png"}},
+                "20": {"class_type": "SaveImage", "inputs": {"filename_prefix": "old"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return workflow_path
+
+
+class BackendRouteModuleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These route fixtures use Akane as their test account name and count
+        # delivery requests. Login lookup/cache/failure behavior has dedicated
+        # coverage in test_qq_nickname_addressing; don't make route tests contact a
+        # real account or consume a send-response stub as get_login_info.
+        nickname = patch.object(NapCatQQGateway, "_resolve_bot_nickname", return_value="Akane")
+        nickname.start()
+        self.addCleanup(nickname.stop)
+
+    def test_public_health_exposes_only_safe_instance_binding_identity(self) -> None:
+        instance_runtime = SimpleNamespace(
+            public_health_snapshot=lambda: {
+                "status": "ok",
+                "instance_id": "finance-prod",
+                "root_binding": "valid",
+                "profile_ref": "qq.finance",
+                "local_path": "D:/private",
+            }
+        )
+        app = FastAPI()
+        app.include_router(
+            build_core_router(
+                engine=SimpleNamespace(),
+                config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                resolve_identity_from_query=resolve_query,
+                instance_runtime=instance_runtime,
+            )
+        )
+
+        response = TestClient(app).get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"status": "ok", "instance_id": "finance-prod", "root_binding": "valid"},
+        )
+
+    def test_desktop_pet_health_uses_host_care_feature_status(self) -> None:
+        engine = SimpleNamespace(
+            care_feature_status=lambda: {
+                "enabled": False,
+                "status": "disabled",
+                "reason": "feature_disabled",
+                "reset_baseline_on_start": False,
+            }
+        )
+        app = FastAPI()
+        app.include_router(
+            build_core_router(
+                engine=engine,
+                config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+
+        response = TestClient(app).get("/desktop-pet/health?user_id=desktop&real_user_id=master")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["features"]["care"],
+            {
+                "enabled": False,
+                "status": "disabled",
+                "reason": "feature_disabled",
+                "reset_baseline_on_start": False,
+            },
+        )
+
+    def test_core_router_decorates_resource_manifest_for_desktop_pet(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def build_resource_manifest(**kwargs):
+            captured.update(kwargs)
+            return {
+                "schema_version": 2,
+                "characters": {
+                    "outfits": [
+                        {
+                            "id": "cat",
+                            "name": "cat",
+                            "emotions": [{"id": "normal", "name": "normal", "path": "/assets/cat/normal.png"}],
+                        }
+                    ]
+                },
+                "defaults": {"outfit": "cat", "emotion": "normal"},
+            }
+
+        engine = SimpleNamespace(build_resource_manifest=build_resource_manifest)
+        app = FastAPI()
+        app.include_router(
+            build_core_router(
+                engine=engine,
+                config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+
+        response = TestClient(app).get(
+            "/resource-manifest?profileUserId=master&user_id=desktop&client=desktop_pet&character_pack_id=mika_pack"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(captured["client_mode"], "desktop_pet")
+        self.assertEqual(captured["character_pack_id"], "mika_pack")
+        self.assertEqual(payload["clients"]["desktop_pet"]["contract_version"], DESKTOP_PET_RESOURCE_CONTRACT_VERSION)
+        self.assertEqual(payload["clients"]["desktop_pet"]["default_outfit"], "cat")
+
+    def test_sessions_router_ensures_session_without_real_store(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        engine = SimpleNamespace(store=FakeStore())
+        app = FastAPI()
+        app.include_router(
+            build_sessions_router(
+                engine=engine,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/sessions/ensure",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "display_title": "Desktop",
+                "character_pack_id": "kaju",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["session"]["session_id"], "desktop")
+        self.assertEqual(payload["session"]["character_pack_id"], "kaju")
+        self.assertEqual(payload["session"]["display_title"], "Desktop")
+        self.assertEqual(payload["latest_final_json"], {"emotion": "normal"})
+        self.assertEqual(payload["message_page"], {"limit": 120, "has_more": False, "next_before_seq": None})
+        self.assertEqual(engine.store.last_character_pack_id, "kaju")
+        self.assertIn(("sessions_ensure", True), runtime.observed)
+
+    def test_sessions_router_rejects_cross_character_session_reuse(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        store = FakeStore()
+        store.sessions[("master", "desktop")] = {
+            "profile_user_id": "master",
+            "session_id": "desktop",
+            "character_pack_id": "reimu",
+            "display_title": "Reimu",
+        }
+        engine = SimpleNamespace(store=store)
+        app = FastAPI()
+        app.include_router(
+            build_sessions_router(
+                engine=engine,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/sessions/ensure",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "display_title": "Akane",
+                "character_pack_id": "akane_v1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.json()
+        self.assertEqual(payload["error"], "session_character_mismatch")
+        self.assertEqual(store.sessions[("master", "desktop")]["character_pack_id"], "reimu")
+        self.assertIn(("sessions_ensure", False), runtime.observed)
+
+    def test_sessions_router_pages_older_messages_without_mutating_session(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        store = FakeStore()
+        store.ensure_session(profile_user_id="master", session_id="desktop", character_pack_id="reimu")
+        store.messages = [
+            {"seq_no": index, "role": "user" if index % 2 else "assistant", "content": f"message-{index}"}
+            for index in range(1, 151)
+        ]
+        engine = SimpleNamespace(store=store)
+        app = FastAPI()
+        app.include_router(
+            build_sessions_router(
+                engine=engine,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+
+        first = TestClient(app).get(
+            "/sessions/messages?user_id=desktop&real_user_id=master&character_pack_id=reimu&before_seq=91&limit=60"
+        )
+        second = TestClient(app).get(
+            "/sessions/messages?user_id=desktop&real_user_id=master&character_pack_id=reimu&before_seq=31&limit=60"
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual([item["seq_no"] for item in first.json()["messages"]], list(range(31, 91)))
+        self.assertEqual(first.json()["message_page"], {"limit": 60, "has_more": True, "next_before_seq": 31})
+        self.assertEqual([item["seq_no"] for item in second.json()["messages"]], list(range(1, 31)))
+        self.assertEqual(second.json()["message_page"], {"limit": 60, "has_more": False, "next_before_seq": None})
+        self.assertEqual(store.sessions[("master", "desktop")]["character_pack_id"], "reimu")
+        self.assertIn(("sessions_messages", True), runtime.observed)
+
+    def test_desktop_pet_care_routes_preserve_identity_and_return_snapshots(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        captured: list[tuple[str, dict[str, Any]]] = []
+
+        def snapshot(**kwargs):
+            captured.append(("snapshot", kwargs))
+            return {"ok": True, "status": "ok", "snapshot": {"authority": "care_runtime", "coins": 9}}
+
+        def action(**kwargs):
+            captured.append(("action", kwargs))
+            return {
+                "ok": True,
+                "status": "ok",
+                "reason": "item_purchased",
+                "snapshot": {"authority": "care_runtime", "coins": 6},
+            }
+
+        app = FastAPI()
+        app.include_router(
+            build_desktop_pet_router(
+                engine=SimpleNamespace(
+                    build_desktop_care_snapshot=snapshot,
+                    manage_desktop_care_action=action,
+                ),
+                config_module=SimpleNamespace(DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES=1024),
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+        client = TestClient(app)
+        snapshot_response = client.post(
+            "/desktop-pet/care/snapshot",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "character_pack_id": "reimu_demo",
+                "legacy_state": {"coins": 9},
+            },
+        )
+        action_response = client.post(
+            "/desktop-pet/care/action",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "character_pack_id": "reimu_demo",
+                "action": "buy",
+                "item_id": "dango",
+            },
+        )
+
+        self.assertEqual(snapshot_response.status_code, 200)
+        self.assertEqual(snapshot_response.json()["snapshot"]["coins"], 9)
+        self.assertEqual(action_response.json()["snapshot"]["coins"], 6)
+        self.assertEqual(captured[0][1]["profile_user_id"], "master")
+        self.assertEqual(captured[0][1]["legacy_state"], {"coins": 9})
+        self.assertEqual(captured[1][1]["action"], "buy")
+        self.assertEqual(captured[1][1]["item_id"], "dango")
+        self.assertIn(("desktop_pet_care_snapshot", True), runtime.observed)
+        self.assertIn(("desktop_pet_care_action", True), runtime.observed)
+
+    def test_desktop_pet_router_adds_workspace_file_urls(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        def build_panel(**_kwargs):
+            return {
+                "ok": True,
+                "sections": {
+                    "files": [{"id": "att-1", "handle": "att-1", "can_open": True}],
+                    "outputs": [{"id": "gen-1", "handle": "gen-1", "can_open": True}],
+                },
+            }
+
+        engine = SimpleNamespace(build_desktop_pet_workspace_panel=build_panel)
+        app = FastAPI()
+        app.include_router(
+            build_desktop_pet_router(
+                engine=engine,
+                config_module=SimpleNamespace(DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES=1024),
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+
+        response = TestClient(app).get("/desktop-pet/workspace/summary?user_id=desktop&real_user_id=master")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("/desktop-pet/workspace/attachments/att-1/content", payload["sections"]["files"][0]["url"])
+        self.assertIn("/desktop-pet/workspace/generated/gen-1/content", payload["sections"]["outputs"][0]["url"])
+        self.assertIn(("desktop_pet_workspace_summary", True), runtime.observed)
+
+    def test_desktop_pet_router_rejects_shared_filesystem_import_route(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        captured: dict[str, Any] = {}
+
+        engine = SimpleNamespace()
+        app = FastAPI()
+        app.include_router(
+            build_desktop_pet_router(
+                engine=engine,
+                config_module=SimpleNamespace(DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES=1024),
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/desktop-pet/workspace/import-local",
+            json={
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "paths": ["C:/tmp/note.md"],
+                "recursive": True,
+                "max_files": 2,
+            },
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(captured, {})
+
+    def test_desktop_pet_router_retires_screen_summary_endpoints(self) -> None:
+        app = FastAPI()
+        app.include_router(build_desktop_pet_router(
+            engine=SimpleNamespace(),
+            config_module=SimpleNamespace(DESKTOP_PET_AUDIO_UPLOAD_MAX_BYTES=1024),
+            runtime_metrics=FakeRuntimeMetrics(),
+            log_event=lambda *_args, **_kwargs: None,
+            resolve_identity_from_query=resolve_query,
+            resolve_identity_from_payload=resolve_payload,
+        ))
+        client = TestClient(app)
+        for method, endpoint in [("POST", "clip"), ("GET", "latest"), ("POST", "reaction"), ("POST", "clear")]:
+            with self.subTest(endpoint=endpoint):
+                response = client.request(method, "/desktop-pet/vision/" + endpoint)
+                self.assertEqual(response.status_code, 410)
+                self.assertFalse(response.json()["ok"])
+                self.assertEqual(response.json()["reason"], "desktop_screen_summary_retired")
+                self.assertEqual(response.json()["replacement"], "think.desktop_screen_frames")
+
+
+    def test_gifts_router_validates_upload_filename_and_lists_assets(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        engine = SimpleNamespace(
+            list_gift_assets=lambda **_kwargs: [{"asset_id": "gift-1"}],
+        )
+        app = FastAPI()
+        app.include_router(
+            build_gifts_router(
+                engine=engine,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+                resolve_identity_from_query=resolve_query,
+                resolve_identity_from_payload=resolve_payload,
+            )
+        )
+        client = TestClient(app)
+
+        list_response = client.get("/gifts?user_id=desktop&real_user_id=master")
+        upload_response = client.post("/gifts/upload?user_id=desktop&real_user_id=master", content=b"")
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.json()["items"], [{"asset_id": "gift-1"}])
+        self.assertEqual(upload_response.status_code, 400)
+        self.assertEqual(upload_response.json()["detail"], "missing gift filename")
+
+    def test_think_router_handles_once_and_stream_contract_with_fake_engine(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        guard = FakeGuard()
+
+        class FakeEngine:
+            def process_turn(self, payload: dict) -> dict[str, Any]:
+                return {
+                    "status": "ok",
+                    "emotion": "normal",
+                    "speech": f"echo: {payload.get('message')}",
+                    "_debug": {},
+                }
+
+            def process_turn_stream(self, payload: dict):
+                yield {"type": "ui", "emotion": "normal"}
+                yield {"type": "speech_chunk", "text": "hello"}
+                yield {"type": "final", "payload": self.process_turn(payload)}
+
+        app = FastAPI()
+        app.include_router(
+            build_think_router(
+                engine=FakeEngine(),
+                public_guard=guard,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+        client = TestClient(app)
+
+        with redirect_stdout(io.StringIO()):
+            once_response = client.post("/think_once", json={"user_id": "desktop", "message": "hi"})
+            stream_response = client.post("/think", json={"user_id": "desktop", "message": "hi"})
+        stream_lines = [json.loads(line) for line in stream_response.text.splitlines()]
+
+        self.assertEqual(once_response.status_code, 200)
+        self.assertEqual(once_response.json()["speech"], "echo: hi")
+        self.assertEqual(stream_response.status_code, 200)
+        self.assertEqual(stream_response.headers["x-akane-contract"], DESKTOP_PET_CONTRACT_VERSION)
+        self.assertEqual(stream_lines[0]["type"], "stream_start")
+        self.assertEqual(stream_lines[-1]["type"], "stream_end")
+        self.assertEqual(stream_lines[-1]["partial"]["speech"], "echo: hi")
+        self.assertEqual(guard.released, 2)
+
+    def test_think_stream_closes_engine_iterator_when_response_is_closed(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        guard = FakeGuard()
+        close_events: list[str] = []
+
+        class FakeEngine:
+            def process_turn_stream(self, payload: dict):
+                del payload
+                try:
+                    yield {"type": "ui", "emotion": "normal"}
+                    yield {"type": "final", "payload": {"speech": "ok", "emotion": "normal"}}
+                finally:
+                    close_events.append("closed")
+
+        router = build_think_router(
+            engine=FakeEngine(),
+            public_guard=guard,
+            runtime_metrics=runtime,
+            log_event=lambda *_args, **_kwargs: None,
+        )
+        endpoint = next(route.endpoint for route in router.routes if getattr(route, "path", "") == "/think")
+
+        async def exercise_disconnect() -> None:
+            body = json.dumps({"user_id": "desktop", "message": "hi"}).encode()
+
+            async def receive() -> dict[str, Any]:
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            response = await endpoint(Request({"type": "http", "method": "POST", "path": "/think", "headers": []}, receive))
+            first = json.loads((await response.body_iterator.__anext__()).strip())
+            second = json.loads((await response.body_iterator.__anext__()).strip())
+            await response.body_iterator.aclose()
+            self.assertEqual(first["type"], "stream_start")
+            self.assertEqual(second["type"], "ui")
+
+        asyncio.run(exercise_disconnect())
+        self.assertEqual(close_events, ["closed"])
+        self.assertEqual(guard.released, 1)
+        self.assertEqual(runtime.observed, [("think_stream", False)])
+
+    def test_desktop_steer_is_claimed_durably_before_coordinator_accepts_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "inbox.db")
+            queue = DurableSessionWorkQueue(store)
+            offered: list[dict[str, Any]] = []
+
+            class Coordinator:
+                @staticmethod
+                def is_busy(*_args, **_kwargs) -> bool:
+                    return True
+
+                @staticmethod
+                def offer_steer(**kwargs):
+                    offered.append(dict(kwargs))
+                    return {"ok": True, "status": "accepted", "source_id": kwargs["source_id"]}
+
+            app = FastAPI()
+            app.include_router(
+                build_think_router(
+                    engine=SimpleNamespace(),
+                    public_guard=FakeGuard(),
+                    runtime_metrics=FakeRuntimeMetrics(),
+                    log_event=lambda *_args, **_kwargs: None,
+                    turn_coordinator=Coordinator(),
+                    session_work_queue=queue,
+                )
+            )
+
+            response = TestClient(app).post(
+                "/think/steer",
+                json={
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "actor_stable_id": "desktop:owner",
+                    "source_message_id": "desktop-message-1",
+                    "message": "把刚才那一步改一下",
+                    "current_attachment_ids": ["opaque-current-file"],
+                    "timestamp": 1_784_016_100,
+                },
+            )
+
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.json()["status"], "accepted")
+            self.assertEqual(len(offered), 1)
+            item = store.get(offered[0]["receipt_item_id"])
+            self.assertIsNotNone(item)
+            self.assertEqual(item.status, "claimed")
+            self.assertEqual(offered[0]["receipt_claim_token"], item.claim_token)
+            self.assertEqual(item.source_event_id, "desktop-message-1")
+            self.assertEqual(offered[0]["current_attachment_ids"], ["opaque-current-file"])
+            self.assertEqual(item.payload["turn_payload"]["current_attachment_ids"], ["opaque-current-file"])
+
+    def test_recovered_desktop_work_uses_normal_turn_and_satellite_frame(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            queue = DurableSessionWorkQueue(store)
+            processed: list[dict[str, Any]] = []
+            delivered: list[dict[str, Any]] = []
+
+            class Engine:
+                @staticmethod
+                def process_turn(payload):
+                    processed.append(dict(payload))
+                    return {"speech": "恢复后的回复", "emotion": "happy", "_debug": {"hidden": True}}
+
+            async def deliver(frame):
+                delivered.append(dict(frame))
+                return {"ok": True, "status": "delivered"}
+
+            build_think_router(
+                engine=Engine(),
+                public_guard=FakeGuard(),
+                runtime_metrics=FakeRuntimeMetrics(),
+                log_event=lambda *_args, **_kwargs: None,
+                turn_coordinator=TurnCoordinator(),
+                session_work_queue=queue,
+                desktop_agent_frame_delivery=deliver,
+                desktop_agent_event_available=lambda: True,
+            )
+            queued = await queue.enqueue(
+                session_key="owner\0desktop-session",
+                profile_user_id="owner",
+                session_id="desktop-session",
+                kind="turn",
+                payload={
+                    "turn_payload": {
+                        "user_id": "desktop-session",
+                        "real_user_id": "owner",
+                        "actor_stable_id": "desktop:owner",
+                        "message": "恢复这条消息",
+                        "timestamp": 1_784_016_101,
+                    }
+                },
+                source="desktop_pet",
+                source_event_id="desktop-recovered-1",
+                schedule=False,
+            )
+
+            await queue.schedule_session("owner\0desktop-session")
+            while queue.has_work("owner\0desktop-session"):
+                await asyncio.sleep(0.01)
+
+            self.assertEqual(store.get(queued["item_id"]).status, "committed")
+            self.assertEqual(processed[0]["client_mode"], "desktop_pet")
+            self.assertEqual(processed[0]["memory_idempotency_key"], f"session-inbox:{queued['item_id']}")
+            self.assertEqual(delivered[0]["speech"], "恢复后的回复")
+            self.assertNotIn("_debug", delivered[0])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "inbox.db"))
+
+    def test_desktop_once_and_stream_commit_durable_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "inbox.db")
+            queue = DurableSessionWorkQueue(store)
+            processed: list[dict[str, Any]] = []
+
+            class Engine:
+                @staticmethod
+                def process_turn(payload):
+                    processed.append(dict(payload))
+                    return {"status": "ok", "speech": "收到", "emotion": "normal", "_debug": {}}
+
+                @classmethod
+                def process_turn_stream(cls, payload):
+                    yield {"type": "final", "payload": cls.process_turn(payload)}
+
+            app = FastAPI()
+            app.include_router(
+                build_think_router(
+                    engine=Engine(),
+                    public_guard=FakeGuard(),
+                    runtime_metrics=FakeRuntimeMetrics(),
+                    log_event=lambda *_args, **_kwargs: None,
+                    session_work_queue=queue,
+                )
+            )
+            client = TestClient(app)
+
+            once = client.post(
+                "/think_once",
+                json={
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-once-1",
+                    "message": "一次性请求",
+                },
+            )
+            streamed = client.post(
+                "/think",
+                json={
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-stream-1",
+                    "message": "流式请求",
+                },
+            )
+
+            self.assertEqual(once.status_code, 200)
+            self.assertEqual(streamed.status_code, 200)
+            once_item = store.get(store.enqueue(
+                session_key="owner\0desktop-session",
+                profile_user_id="owner",
+                session_id="desktop-session",
+                kind="turn",
+                payload={"turn_payload": {
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-once-1",
+                    "message": "一次性请求",
+                }},
+                source="desktop_pet",
+                source_event_id="desktop-once-1",
+            )["item_id"])
+            stream_item = store.get(store.enqueue(
+                session_key="owner\0desktop-session",
+                profile_user_id="owner",
+                session_id="desktop-session",
+                kind="turn",
+                payload={"turn_payload": {
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-stream-1",
+                    "message": "流式请求",
+                }},
+                source="desktop_pet",
+                source_event_id="desktop-stream-1",
+            )["item_id"])
+            self.assertEqual(once_item.status, "committed")
+            self.assertEqual(stream_item.status, "committed")
+            self.assertEqual(len(processed), 2)
+            self.assertTrue(all(str(item.get("memory_idempotency_key") or "").startswith("session-inbox:") for item in processed))
+
+    def test_desktop_stream_disconnect_requeues_claimed_message(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            scheduled: list[Any] = []
+
+            def hold_schedule(coroutine):
+                coroutine.close()
+                marker = SimpleNamespace(done=lambda: False)
+                scheduled.append(marker)
+                return marker
+
+            queue = DurableSessionWorkQueue(store, schedule_task=hold_schedule)
+
+            class Engine:
+                @staticmethod
+                def process_turn_stream(_payload):
+                    yield {"type": "ui", "emotion": "normal"}
+                    yield {"type": "speech_chunk", "text": "还没有完成"}
+
+            router = build_think_router(
+                engine=Engine(),
+                public_guard=FakeGuard(),
+                runtime_metrics=FakeRuntimeMetrics(),
+                log_event=lambda *_args, **_kwargs: None,
+                session_work_queue=queue,
+            )
+            endpoint = next(route.endpoint for route in router.routes if getattr(route, "path", "") == "/think")
+            body = json.dumps({
+                "user_id": "desktop-session",
+                "real_user_id": "owner",
+                "source_message_id": "desktop-disconnect-1",
+                "message": "继续处理",
+            }).encode()
+
+            async def receive() -> dict[str, Any]:
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            response = await endpoint(Request({"type": "http", "method": "POST", "path": "/think", "headers": []}, receive))
+            await response.body_iterator.__anext__()
+            await response.body_iterator.__anext__()
+            await response.body_iterator.aclose()
+
+            duplicate = store.enqueue(
+                session_key="owner\0desktop-session",
+                profile_user_id="owner",
+                session_id="desktop-session",
+                kind="turn",
+                payload={"turn_payload": {
+                    "user_id": "desktop-session",
+                    "real_user_id": "owner",
+                    "source_message_id": "desktop-disconnect-1",
+                    "message": "继续处理",
+                }},
+                source="desktop_pet",
+                source_event_id="desktop-disconnect-1",
+            )
+            self.assertEqual(duplicate["status"], "duplicate")
+            item = store.get(duplicate["item_id"])
+            self.assertEqual(item.status, "queued")
+            self.assertEqual(item.last_error, "client_disconnected")
+            self.assertEqual(len(scheduled), 1)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "inbox.db"))
+
+    def test_think_router_invalid_payload_does_not_call_engine(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(
+            build_think_router(
+                engine=SimpleNamespace(),
+                public_guard=FakeGuard(),
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        response = TestClient(app).post("/think_once", json=["not", "object"])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_payload")
+        self.assertIn(("think_once", False), runtime.observed)
+
+    def test_qq_router_character_command_switches_without_llm_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeCharacterResources:
+            def list_character_packs(self):
+                return [
+                    {
+                        "pack_id": "reimu",
+                        "name": "Reimu",
+                        "app_name": "Reimu Pet",
+                        "user_title": "你",
+                    }
+                ]
+
+            def build_character_identity(self, character_pack_id: str):
+                if character_pack_id != "reimu":
+                    return {}
+                return {
+                    "character_id": "reimu",
+                    "assistant_name": "Reimu",
+                    "app_name": "Reimu Pet",
+                    "user_label": "你",
+                    "pack_id": "reimu",
+                }
+
+        class FakeEngine:
+            desktop_pet_character_resources = FakeCharacterResources()
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-character-switch-1",
+                    "raw_message": "切换角色 reimu",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_character_command")
+        self.assertEqual(payload["command_status"], "switched")
+        self.assertEqual(payload["character_pack_id"], "reimu")
+        self.assertEqual(gateway.resolve_character_pack_id(f"qq_pri_{QQ_USER_FIXTURE_ID}"), "reimu")
+        self.assertEqual(process_calls, [])
+        mocked_post.assert_called_once()
+        sent_payload = mocked_post.call_args.kwargs["json"]
+        self.assertIn("已切换本 QQ 会话角色为", _onebot_message_text(sent_payload))
+
+    def test_qq_router_returns_structured_disabled_for_care_command(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            def get_care_module(self):
+                return CareModulePort.disabled()
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-care-disabled-1",
+                    "raw_message": "状态",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_economy_command")
+        self.assertEqual(payload["command_status"], "disabled")
+        self.assertFalse(payload["command_ok"])
+        self.assertEqual(process_calls, [])
+        mocked_post.assert_called_once()
+        self.assertIn("养成模块未启用", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
+
+    def test_qq_router_applies_deepseek_thinking_mode_command_without_running_chat(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        applied: list[str] = []
+
+        class FakeLLM:
+            @staticmethod
+            def chat_supports_deepseek_thinking(*, chat_model_override: str = "") -> bool:
+                return True
+
+        class FakeEngine:
+            llm = FakeLLM()
+            settings = SimpleNamespace(llm_thinking_mode="disabled")
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        def set_thinking_mode(mode: str) -> str:
+            applied.append(mode)
+            FakeEngine.settings = SimpleNamespace(llm_thinking_mode=mode)
+            return mode
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+                thinking_mode_setter=set_thinking_mode,
+            )
+        )
+
+        with (
+            patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)),
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request",
+                return_value=FakeResponse(),
+            ) as mocked_post,
+        ):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-thinking-mode-1",
+                    "raw_message": "思考模式 开",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_thinking_mode_command")
+        self.assertEqual(payload["command_status"], "enabled")
+        self.assertTrue(payload["command_ok"])
+        self.assertEqual(payload["thinking_mode"], "enabled")
+        self.assertEqual(applied, ["enabled"])
+        self.assertEqual(process_calls, [])
+        self.assertIn("已开启 DeepSeek 思考模式", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
+
+    def test_qq_router_does_not_intercept_retired_finance_mode_command(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "普通对话继续运行"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request",
+            return_value=FakeResponse(),
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-finance-switch-1",
+                    "raw_message": "开启金融模式",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertNotEqual(payload["reason"], "qq_finance_mode_command")
+        self.assertEqual(len(process_calls), 1, payload)
+        self.assertNotIn("finance_mode", process_calls[0])
+        self.assertNotIn("domain_profile", process_calls[0])
+        self.assertFalse(hasattr(gateway, "finance_mode_overrides"))
+        self.assertFalse(hasattr(gateway, "send_market_charts"))
+        self.assertFalse(hasattr(gateway, "send_finance_reports"))
+        mocked_post.assert_called_once()
+        sent_payload = mocked_post.call_args.kwargs["json"]
+        self.assertIn("普通对话继续运行", _onebot_message_text(sent_payload))
+
+    def test_qq_router_remote_url_security_failure_still_sends_text_reply(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
+        store = MemoryStore(root / "db")
+        inbox = AttachmentInboxService(store=store, base_dir=root / "attachments")
+        ingest = AttachmentIngestService(
+            base_dir=root / "attachments",
+            store=store,
+            attachment_service=inbox,
+            vision_service=None,
+            public_host_resolver=lambda *_args: ("127.0.0.1",),
+        )
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def _get_attachment_ingest_service(self):
+                return ingest
+
+            def prefetch_remote_media_links_for_message(self, **kwargs):
+                return prefetch_remote_media_links_for_message(self, **kwargs)
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "这个链接不安全，请换公开直链给我。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {"message_id": 99}}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-private-url-blocked-1",
+                    "raw_message": "帮我下载 http://127.0.0.1/private?token=topsecret",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "private", response.json())
+        self.assertEqual(len(process_calls), 1)
+        self.assertIn("【链接素材预处理结果】", process_calls[0]["extra_context"])
+        self.assertIn("出于安全原因无法读取", process_calls[0]["extra_context"])
+        self.assertNotIn("topsecret", process_calls[0]["extra_context"])
+        self.assertEqual(process_calls[0]["message"], "帮我下载 [受限的远程链接]")
+        self.assertNotIn("topsecret", repr(process_calls[0]["qq_delivery_context"]))
+        self.assertNotIn("topsecret", response.text)
+        mocked_post.assert_called_once()
+        self.assertNotIn("topsecret", repr(mocked_post.call_args_list))
+        self.assertNotIn("topsecret", repr(log_calls))
+        self.assertIn("请换公开直链", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
+        self.assertEqual(
+            store.list_attachment_inbox_items(
+                profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
+                session_id=f"qq_pri_{QQ_USER_FIXTURE_ID}",
+                limit=10,
+            ),
+            [],
+        )
+
+    def test_qq_router_dispatches_plugin_command_without_llm_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        dispatch_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        class FakeBroker:
+            @staticmethod
+            def handles(command: str) -> bool:
+                return command == "/finance"
+
+            @staticmethod
+            async def dispatch(**kwargs: Any) -> PluginQQCommandResult:
+                dispatch_calls.append(dict(kwargs))
+                return PluginQQCommandResult(handled=True, reply_text="财经命令已处理。")
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.state.akane_plugin_command_broker = FakeBroker()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "plugin-command-1",
+                    "raw_message": "/finance subscribe 000001",
+                    "sender": {"role": "admin"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_plugin_command")
+        self.assertTrue(payload["command_ok"])
+        self.assertEqual(process_calls, [])
+        self.assertEqual(dispatch_calls[0]["idempotency_key"], "plugin-command-1")
+        self.assertEqual(dispatch_calls[0]["args"], "subscribe 000001")
+        self.assertEqual(dispatch_calls[0]["sender_role"], "admin")
+        mocked_post.assert_called_once()
+        self.assertIn("财经命令已处理", _onebot_message_text(mocked_post.call_args.kwargs["json"]))
+
+    def test_qq_router_passively_records_group_message_without_llm_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        record_calls: list[dict[str, Any]] = []
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            def record_passive_qq_message(self, payload: dict):
+                record_calls.append(payload)
+                return {"ok": True, "status": "recorded", "source_id": "passive-1"}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "should not run"}}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "route-passive-group-1",
+                "message": [{"type": "text", "data": {"text": "今晚七点开会"}}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "recorded")
+        self.assertEqual(payload["reason"], "group_passive_observed")
+        self.assertEqual(payload["record_result"]["source_id"], "passive-1")
+        self.assertEqual(len(record_calls), 1)
+        self.assertEqual(record_calls[0]["user_id"], f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+        self.assertEqual(record_calls[0]["real_user_id"], f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}")
+        self.assertEqual(record_calls[0]["message"], f"【QQ {QQ_USER_FIXTURE_ID}】今晚七点开会")
+        self.assertEqual(record_calls[0]["message_addressing"]["mode"], "observed")
+        self.assertFalse(record_calls[0]["message_addressing"]["addressed_to_assistant"])
+        self.assertEqual(process_calls, [])
+        self.assertIn(("qq_napcat_event", True), runtime.observed)
+
+    def test_qq_router_batches_passive_messages_waiting_behind_active_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        scheduled: list[Any] = []
+        batches: list[list[dict[str, Any]]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeCoordinator:
+            @staticmethod
+            def is_busy(*_args, **_kwargs) -> bool:
+                return True
+
+            @staticmethod
+            @asynccontextmanager
+            async def hold(*_args, **_kwargs):
+                yield "passive-batch-turn"
+
+        class FakeSupervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class FakeEngine:
+            def record_passive_qq_messages(self, payloads):
+                batches.append([dict(item) for item in payloads])
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "count": len(payloads),
+                    "recorded_count": len(payloads),
+                    "failed_count": 0,
+                    "results": [],
+                }
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+                async_task_supervisor=FakeSupervisor(),
+                turn_coordinator=FakeCoordinator(),
+            )
+        )
+        client = TestClient(app)
+        base_timestamp = int(time.time())
+        responses = [
+            client.post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": f"passive-batch-{index}",
+                    "time": base_timestamp + index,
+                    "message": [{"type": "text", "data": {"text": f"背景消息 {index}"}}],
+                },
+            )
+            for index in (1, 2)
+        ]
+
+        self.assertEqual([response.json()["status"] for response in responses], ["buffered", "buffered"])
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled.pop())
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(
+            [item["timestamp"] for item in batches[0]],
+            [base_timestamp + 1, base_timestamp + 2],
+        )
+        self.assertEqual(
+            [item["actor_stable_id"] for item in batches[0]],
+            [f"qq:{QQ_USER_FIXTURE_ID}", f"qq:{QQ_USER_FIXTURE_ID}"],
+        )
+        batch_logs = [payload for name, payload in log_calls if name == "qq_passive_group_message_batch_recorded"]
+        self.assertEqual(len(batch_logs), 1)
+        self.assertEqual(batch_logs[0]["batch_count"], 2)
+        self.assertIn("queue_wait_ms", batch_logs[0])
+
+    def test_qq_router_resolves_private_forward_into_current_model_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        gateway.resolve_forward_message_evidence = lambda _event, *, context: {
+            "ok": True,
+            "status": "resolved",
+            "forward_count": 1,
+            "resolved_count": 1,
+            "forwards": [
+                {
+                    "source_part_id": "forward-active-event:1:forward",
+                    "forward_id": "forward-active-1",
+                    "ok": True,
+                    "status": "resolved",
+                    "node_count": 1,
+                    "nodes": [
+                        {
+                            "index": 1,
+                            "actor_id": "30003",
+                            "actor_label": "Alice",
+                            "text": "节点正文 [QQ系统表情 face_id=14]",
+                            "timestamp": 1_700_000_000,
+                            "attachment_count": 0,
+                        }
+                    ],
+                }
+            ],
+            "attachments": [],
+        }
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            @staticmethod
+            def prefetch_remote_media_links_for_message(**_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload):
+                process_calls.append(dict(payload))
+                yield {"type": "final_ui", "payload": {"speech": "我看到了。"}}
+
+            @staticmethod
+            def mark_generated_file_delivery(**_kwargs):
+                return {"ok": True}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda _name, **_kwargs: None,
+            )
+        )
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "forward-active-event",
+                "time": int(time.time()),
+                "message": [{"type": "forward", "data": {"id": "forward-active-1"}}],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(process_calls), 1)
+        self.assertNotIn("qq.forward_reference", process_calls[0]["message"])
+        self.assertNotIn("节点正文 [QQ系统表情 face_id=14]", process_calls[0]["message"])
+        self.assertEqual(
+            process_calls[0]["forward_references"],
+            [
+                {
+                    "source_part_id": "forward-active-event:1:forward",
+                    "forward_id": "forward-active-1",
+                    "ok": True,
+                    "status": "resolved",
+                    "node_count": 1,
+                    "nodes": [
+                        {
+                            "index": 1,
+                            "actor_id": "30003",
+                            "actor_label": "Alice",
+                            "text": "节点正文 [QQ系统表情 face_id=14]",
+                            "timestamp": 1_700_000_000,
+                            "attachment_count": 0,
+                        }
+                    ],
+                }
+            ],
+        )
+
+    def test_qq_router_passive_forward_and_media_are_enriched_off_webhook(self) -> None:
+        self._check_passive_forward_and_media_enrichment(durable=False)
+
+    def test_qq_router_durable_passive_forward_and_media_survive_admission(self) -> None:
+        self._check_passive_forward_and_media_enrichment(durable=True)
+
+    def _check_passive_forward_and_media_enrichment(self, *, durable: bool) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        scheduled: list[Any] = []
+        recorded_batches: list[list[dict[str, Any]]] = []
+        ingest_calls: list[dict[str, Any]] = []
+
+        class FakeSupervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        gateway.resolve_forward_message_evidence = lambda _event, *, context: {
+            "ok": True,
+            "status": "resolved",
+            "forward_count": 1,
+            "resolved_count": 1,
+            "forwards": [
+                {
+                    "source_part_id": "forward-passive-event:1:forward",
+                    "forward_id": "forward-passive-1",
+                    "ok": True,
+                    "status": "resolved",
+                    "nodes": [{"index": 1, "actor_label": "Bob", "text": "静默节点", "attachment_count": 1}],
+                }
+            ],
+            "attachments": [
+                {
+                    "kind": "image",
+                    "file": "forward.png",
+                    "origin_name": "forward.png",
+                    "source_message_id": "forward-node-message",
+                    "forward_id": "forward-passive-1",
+                    "forward_node_index": "1",
+                    "sender_label": "Bob",
+                }
+            ],
+        }
+
+        class FakeEngine:
+            def ingest_qq_attachments(self, **kwargs):
+                ingest_calls.append(dict(kwargs))
+                return [
+                    {
+                        "attachment_id": f"attachment-{index}",
+                        "attachment_handle": f"img_{index:03d}",
+                        "kind": "image",
+                        "status": "pending",
+                        "detail": {
+                            "qq_forward_id": str(item.get("forward_id") or ""),
+                            "qq_forward_node_index": int(item.get("forward_node_index") or 0),
+                            "qq_sender_label": str(item.get("sender_label") or ""),
+                        },
+                    }
+                    for index, item in enumerate(kwargs["attachments"], start=1)
+                ]
+
+            def record_passive_qq_messages(self, payloads):
+                recorded_batches.append([dict(item) for item in payloads])
+                return {
+                    "ok": True,
+                    "status": "recorded",
+                    "count": len(payloads),
+                    "recorded_count": len(payloads),
+                    "failed_count": 0,
+                    "results": [],
+                }
+
+        queue_options = {}
+        if durable:
+            temp_dir = tempfile.TemporaryDirectory()
+            self.addCleanup(temp_dir.cleanup)
+            inbox_store = SessionInboxStore(Path(temp_dir.name) / "akane_memory_v01.db")
+            queue_options["session_work_queue"] = DurableSessionWorkQueue(
+                inbox_store, schedule_task=FakeSupervisor.create_task,
+            )
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_GROUP_PASSIVE_MEMORY_MODE="all"),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda _name, **_kwargs: None,
+                async_task_supervisor=FakeSupervisor(),
+                **queue_options,
+            )
+        )
+        response = TestClient(app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID,
+                "message_id": "forward-passive-event",
+                "time": int(time.time()),
+                "message": [
+                    {"type": "forward", "data": {"id": "forward-passive-1"}},
+                    {"type": "image", "data": {"file": "direct.png"}},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "buffered")
+        self.assertEqual(response.json()["reason"], "passive_content_enrichment")
+        self.assertEqual(recorded_batches, [])
+        self.assertEqual(len(scheduled), 1)
+        duplicate = TestClient(app).post(
+            "/api/qq/napcat/event", json=json.loads(response.request.content),
+        )
+        self.assertEqual(duplicate.json()["reason"], "duplicate_event")
+        self.assertEqual(len(scheduled), 1)
+        asyncio.run(scheduled.pop())
+        self.assertEqual(len(ingest_calls), 1)
+        self.assertFalse(ingest_calls[0]["observe_images"])
+        self.assertEqual(len(ingest_calls[0]["attachments"]), 2)
+        self.assertEqual(len(recorded_batches), 1)
+        stored_payload = recorded_batches[0][0]
+        stored_message = stored_payload["message"]
+        self.assertNotIn("qq.forward_reference", stored_message)
+        self.assertNotIn("静默节点", stored_message)
+        self.assertIn("handle: \"img_001\"", stored_message)
+        self.assertIn("forward_id: \"forward-passive-1\"", stored_message)
+        self.assertIn("forward_node_index: 1", stored_message)
+        self.assertIn("sender_label: \"Bob\"", stored_message)
+        self.assertEqual(
+            stored_payload["forward_references"][0]["source_part_id"],
+            "forward-passive-event:1:forward",
+        )
+        self.assertEqual(stored_payload["forward_references"][0]["nodes"][0]["text"], "静默节点")
+
+    def test_qq_router_queues_other_actor_without_holding_webhook_and_keeps_same_actor_steer(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        inbox_store = SessionInboxStore(Path(temp_dir.name) / "akane_memory_v01.db")
+
+        scheduled: list[Any] = []
+        processed: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        stop_calls: list[dict[str, Any]] = []
+        steer_calls: list[dict[str, Any]] = []
+        steer_mode = {"same_actor": False, "optional_turn": False}
+
+        class FakeCoordinator:
+            @staticmethod
+            def is_busy(*_args, **_kwargs) -> bool:
+                return True
+
+            @staticmethod
+            def offer_steer(**kwargs):
+                if steer_mode["optional_turn"]:
+                    return {
+                        "ok": False,
+                        "status": "preempting_optional_turn",
+                        "reason": "addressed_input_preempts_optional_turn",
+                    }
+                if steer_mode["same_actor"]:
+                    steer_calls.append(dict(kwargs))
+                    return {"ok": True, "status": "accepted", "pending_count": 1}
+                return {"ok": False, "status": "busy_other_actor", "reason": "actor_mismatch"}
+
+            @staticmethod
+            def request_stop(**kwargs):
+                stop_calls.append(dict(kwargs))
+                return {"ok": True, "status": "requested", "reason": "stop_requested_at_safe_boundary"}
+
+            @staticmethod
+            @asynccontextmanager
+            async def hold(*_args, **_kwargs):
+                yield "queued-group-turn"
+
+        class FakeSupervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            @staticmethod
+            def prefetch_remote_media_links_for_message(**_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload):
+                processed.append(dict(payload))
+                yield {"type": "final_ui", "payload": {"speech": "排队任务完成", "emotion": "normal"}}
+
+        session_work_queue = DurableSessionWorkQueue(
+            inbox_store,
+            schedule_task=FakeSupervisor.create_task,
+        )
+
+        class FakeResponse:
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @staticmethod
+            def json():
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+                async_task_supervisor=FakeSupervisor(),
+                turn_coordinator=FakeCoordinator(),
+                session_work_queue=session_work_queue,
+            )
+        )
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "queued-other-actor",
+            "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": "轮到我时回答"}},
+            ],
+        }
+        client = TestClient(app)
+        queued = client.post("/api/qq/napcat/event", json=event)
+        self.assertEqual(queued.status_code, 200)
+        self.assertEqual(queued.json()["send_result"]["status"], "queued")
+        self.assertEqual(queued.json()["sent_count"], 0)
+        self.assertEqual(processed, [])
+        self.assertEqual(len(scheduled), 1)
+        pending_keys = inbox_store.pending_session_keys()
+        self.assertEqual(len(pending_keys), 1)
+        queued_session_key = pending_keys[0]
+        self.assertEqual(inbox_store.pending_count(queued_session_key), 1)
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+            asyncio.run(scheduled.pop())
+        self.assertEqual(len(processed), 1)
+        self.assertEqual(inbox_store.pending_count(queued_session_key), 0)
+        queued_logs = [payload for name, payload in log_calls if name == "qq_group_turn_queued"]
+        completed_logs = [payload for name, payload in log_calls if name == "qq_group_turn_queue_completed"]
+        self.assertEqual(len(queued_logs), 1)
+        self.assertEqual(len(completed_logs), 1)
+        self.assertIn("queue_wait_ms", completed_logs[0])
+
+        steer_mode["same_actor"] = True
+        steered = client.post(
+            "/api/qq/napcat/event",
+            json={**event, "message_id": "same-actor-steer", "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": "追加调整"}},
+            ]},
+        )
+        self.assertEqual(steered.status_code, 200)
+        self.assertEqual(steered.json()["send_result"]["status"], "suppressed")
+        self.assertEqual(len(scheduled), 0)
+        self.assertEqual(len(steer_calls), 1)
+        claimed_steer = inbox_store.get(steer_calls[0]["receipt_item_id"])
+        self.assertIsNotNone(claimed_steer)
+        self.assertEqual(claimed_steer.status, "claimed")
+        inbox_store.commit(
+            steer_calls[0]["receipt_item_id"],
+            claim_token=steer_calls[0]["receipt_claim_token"],
+        )
+
+        with patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)):
+            stopped = client.post(
+                "/api/qq/napcat/event",
+                json={**event, "message_id": "owner-stop-other-actor", "message": [
+                    {"type": "text", "data": {"text": "先别做了。"}},
+                ]},
+            )
+        self.assertEqual(stopped.status_code, 200)
+        self.assertEqual(stopped.json()["sent_count"], 1)
+        self.assertEqual(stop_calls[-1]["actor_id"], "")
+        self.assertEqual(len(scheduled), 0)
+
+        steer_mode["same_actor"] = False
+        steer_mode["optional_turn"] = True
+        preempted = client.post(
+            "/api/qq/napcat/event",
+            json={**event, "message_id": "optional-turn-preempted", "message": [
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": "明确艾特不能进入主动观察邮箱"}},
+            ]},
+        )
+        self.assertEqual(preempted.status_code, 200)
+        self.assertEqual(preempted.json()["send_result"]["status"], "queued")
+        self.assertEqual(len(scheduled), 1)
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+            asyncio.run(scheduled.pop())
+        self.assertEqual(len(processed), 2)
+
+    def test_qq_router_filters_only_passive_group_memory_by_runtime_policy(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        record_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            def record_passive_qq_message(self, payload: dict):
+                record_calls.append(payload)
+                return {"ok": True, "status": "recorded", "source_id": f"passive-{len(record_calls)}"}
+
+        runtime_config = SimpleNamespace(
+            QQ_BRIDGE_ENABLED=True,
+            QQ_GROUP_PASSIVE_MEMORY_MODE="allowlist",
+            QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS=str(QQ_GROUP_FIXTURE_ID),
+        )
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=runtime_config,
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+        client = TestClient(app)
+
+        def post(message_id: str) -> dict[str, Any]:
+            response = client.post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": message_id,
+                    "message": [{"type": "text", "data": {"text": f"背景群消息 {message_id}"}}],
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            return response.json()
+
+        self.assertEqual(post("passive-policy-allowlisted")["status"], "recorded")
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(QQ_GROUP_FIXTURE_ID + 1)
+        migrated = post("passive-policy-not-allowlisted")
+        self.assertEqual(migrated["status"], "recorded")
+
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_MODE = "denylist"
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(QQ_GROUP_FIXTURE_ID)
+        self.assertEqual(post("passive-policy-denylisted")["status"], "ignored")
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS = str(QQ_GROUP_FIXTURE_ID + 1)
+        self.assertEqual(post("passive-policy-not-denylisted")["status"], "recorded")
+
+        runtime_config.QQ_GROUP_PASSIVE_MEMORY_MODE = "off"
+        self.assertEqual(post("passive-policy-off")["status"], "ignored")
+        self.assertEqual(len(record_calls), 3)
+        skipped_logs = [payload for name, payload in log_calls if name == "qq_passive_group_message_skipped"]
+        self.assertEqual(len(skipped_logs), 2)
+        self.assertNotIn("QQ_GROUP_PASSIVE_MEMORY_GROUP_IDS", repr(skipped_logs))
+
+    def test_qq_router_workspace_command_lists_and_clears_without_llm(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        passive_record_calls: list[dict[str, Any]] = []
+        clear_calls: list[dict[str, Any]] = []
+        generated_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeAttachmentStore:
+            def list_attachment_inbox_items(self, **_kwargs):
+                return [
+                    {
+                        "attachment_id": "att-1",
+                        "attachment_handle": "file_001",
+                        "kind": "document",
+                        "status": "ready",
+                        "focus_rank": 1,
+                        "summary_title": "旧四级真题.pdf",
+                    },
+                    {
+                        "attachment_id": "att-2",
+                        "attachment_handle": "img_001",
+                        "kind": "image",
+                        "status": "ready",
+                        "focus_rank": 2,
+                        "summary_title": "蛋糕图片",
+                    },
+                ]
+
+        class FakeAttachmentService:
+            store = FakeAttachmentStore()
+
+            def clear_focus(self, **kwargs):
+                clear_calls.append(kwargs)
+                return {
+                    "ok": True,
+                    "cleared": [
+                        {
+                            "attachment_handle": "file_001",
+                            "kind": "document",
+                            "status": "cleared",
+                            "focus_rank": 1,
+                            "summary_title": "旧四级真题.pdf",
+                        },
+                        {
+                            "attachment_handle": "img_001",
+                            "kind": "image",
+                            "status": "cleared",
+                            "focus_rank": 2,
+                            "summary_title": "蛋糕图片",
+                        },
+                    ],
+                    "purged_files": ["file_001", "img_001"] if kwargs.get("delete_storage") else [],
+                    "unresolved": [],
+                }
+
+        class FakeGeneratedStore:
+            def list_generated_files(self, **_kwargs):
+                return [
+                    {
+                        "generated_id": "generated-1",
+                        "generated_handle": "gen_001",
+                        "status": "ready",
+                        "output_title": "整理结果",
+                        "output_format": "md",
+                    }
+                ]
+
+        class FakeGeneratedService:
+            store = FakeGeneratedStore()
+
+            def manage_generated_files(self, **kwargs):
+                generated_calls.append(kwargs)
+                action = str(kwargs.get("action") or "")
+                return {
+                    "ok": True,
+                    "status": "completed",
+                    "action": action,
+                    "managed": [
+                        {
+                            "generated_id": "generated-1",
+                            "generated_handle": "gen_001",
+                            "status": "removed",
+                            "output_title": "整理结果",
+                            "output_format": "md",
+                            "file_deleted": action == "purge",
+                        }
+                    ],
+                    "failures": [],
+                    "unresolved": [],
+                }
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def _get_attachment_inbox_service(self):
+                return FakeAttachmentService()
+
+            def _get_generated_file_service(self):
+                return FakeGeneratedService()
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "不该走到这里"}}
+
+            def record_passive_qq_message(self, payload: dict):
+                passive_record_calls.append(payload)
+                return {"ok": True, "status": "recorded"}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
+            list_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "workspace-list-1",
+                    "message": "工作台",
+                },
+            )
+            clear_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "workspace-clear-1",
+                    "message": "彻底清理工作台",
+                },
+            )
+            soft_delete_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "workspace-soft-delete-1",
+                    "message": [
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": " 删除工作台"}},
+                    ],
+                },
+            )
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(clear_response.status_code, 200)
+        self.assertEqual(soft_delete_response.status_code, 200)
+        self.assertEqual(list_response.json()["reason"], "qq_workspace_command")
+        self.assertEqual(clear_response.json()["reason"], "qq_workspace_command")
+        self.assertEqual(soft_delete_response.json()["reason"], "qq_workspace_command")
+        self.assertEqual(process_calls, [])
+        self.assertEqual(passive_record_calls, [])
+        self.assertEqual(clear_calls[0]["target"], "current")
+        self.assertTrue(clear_calls[0]["delete_storage"])
+        self.assertEqual(clear_calls[1]["target"], "current")
+        self.assertFalse(clear_calls[1]["delete_storage"])
+        self.assertEqual(generated_calls[0]["action"], "purge")
+        self.assertEqual(generated_calls[0]["targets"], ["all"])
+        self.assertEqual(generated_calls[1]["action"], "archive")
+        sent_messages = [_onebot_message_text(call.kwargs["json"]) for call in mocked_post.call_args_list]
+        self.assertTrue(
+            any(
+                "当前工作台" in message and "file_001" in message and "gen_001" in message
+                for message in sent_messages
+            )
+        )
+        self.assertTrue(any("已删除附件托管副本：2 个" in message for message in sent_messages))
+        self.assertTrue(any("已彻底清理生成结果：1 个" in message for message in sent_messages))
+        self.assertTrue(any(event_name == "qq_workspace_command" for event_name, _payload in log_calls))
+
+    @patch("config.MASTER_QQ", str(QQ_USER_FIXTURE_ID))
+    def test_qq_router_workspace_natural_question_does_not_trigger_keyword_state_injection(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeAttachmentStore:
+            def list_attachment_inbox_items(self, **_kwargs):
+                return []
+
+        class FakeAttachmentService:
+            store = FakeAttachmentStore()
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def _get_attachment_inbox_service(self):
+                return FakeAttachmentService()
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "工作台现在是空的。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda _event_name, **_kwargs: None,
+            )
+        )
+
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "workspace-natural-question-1",
+                    "message": "现在工作台还有东西吗",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "private", response.json())
+        self.assertEqual(len(process_calls), 1)
+        self.assertEqual(process_calls[0]["message"], "现在工作台还有东西吗")
+        self.assertIn("qq.reply_delivery: auto", process_calls[0]["extra_context"])
+        self.assertIn("qq.master_qq:", process_calls[0]["extra_context"])
+        self.assertNotIn("工作台真实状态", process_calls[0]["extra_context"])
+        mocked_post.assert_called_once()
+
+    def test_qq_router_passes_current_image_to_native_multimodal_chat_once(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        prepare_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                return [
+                    {
+                        "attachment_id": "img_native_1",
+                        "kind": "image",
+                        "profile_user_id": kwargs["profile_user_id"],
+                        "session_id": kwargs["session_id"],
+                    }
+                ]
+
+            def prepare_qq_native_image_inputs(self, **kwargs):
+                prepare_calls.append(kwargs)
+                return {
+                    "ok": True,
+                    "status": "ready",
+                    "images": [
+                        {
+                            "attachment_id": "img_native_1",
+                            "attachment_handle": "img_001",
+                            "title": "当前图片",
+                            "media_type": "image/png",
+                            "data_url": "data:image/png;base64,c3ludGhldGlj",
+                        }
+                    ],
+                    "skipped": [],
+                }
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我直接看到了这张图。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01,
+                    VISION_REQUEST_TIMEOUT=1.0,
+                ),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-image-native-1",
+                    "time": int(time.time()),
+                    "message": [
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "native.png",
+                                "url": "http://127.0.0.1:3001/native.png",
+                            },
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "private", response.json())
+        self.assertEqual(len(prepare_calls), 1)
+        self.assertEqual(len(process_calls), 1)
+        self.assertEqual(process_calls[0]["native_user_images"][0]["attachment_handle"], "img_001")
+        self.assertTrue(process_calls[0]["native_user_images"][0]["data_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(
+            len([payload for event_name, payload in log_calls if event_name == "qq_native_multimodal_images_ready"]),
+            1,
+        )
+        self.assertEqual(
+            [payload for event_name, payload in log_calls if event_name == "qq_image_vision_followup_scheduled"],
+            [],
+        )
+        mocked_post.assert_called_once()
+
+        steer_calls: list[dict[str, Any]] = []
+
+        class ActiveTurnCoordinator:
+            @staticmethod
+            def offer_steer(**kwargs):
+                steer_calls.append(dict(kwargs))
+                return {"ok": True, "status": "accepted", "pending_count": 1}
+
+            @staticmethod
+            def request_stop(**_kwargs):
+                return {"ok": False, "status": "running"}
+
+        steer_app = FastAPI()
+        steer_app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01,
+                    VISION_REQUEST_TIMEOUT=1.0,
+                ),
+                qq_gateway=NapCatQQGateway(),
+                runtime_metrics=FakeRuntimeMetrics(),
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda _event_name, **_kwargs: None,
+                turn_coordinator=ActiveTurnCoordinator(),
+            )
+        )
+        steered = TestClient(steer_app).post(
+            "/api/qq/napcat/event",
+            json={
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": QQ_BOT_FIXTURE_ID,
+                "user_id": QQ_USER_FIXTURE_ID,
+                "message_id": "route-image-native-steer-1",
+                "time": int(time.time()),
+                "message": [
+                    {
+                        "type": "image",
+                        "data": {
+                            "file": "native-steer.png",
+                            "url": "http://127.0.0.1:3001/native-steer.png",
+                        },
+                    }
+                ],
+            },
+        )
+        self.assertEqual(steered.status_code, 200)
+        self.assertEqual(steered.json()["send_result"]["status"], "suppressed")
+        self.assertEqual(len(steer_calls), 1)
+        self.assertEqual(steer_calls[0]["native_user_images"][0]["attachment_handle"], "img_001")
+        self.assertEqual(len(process_calls), 1, "accepted image steer must not start a second engine turn")
+
+    def test_qq_group_vision_switch_blocks_active_vision_but_keeps_passive_media(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        ingest_calls: list[dict[str, Any]] = []
+        prepare_calls: list[dict[str, Any]] = []
+        process_calls: list[dict[str, Any]] = []
+        passive_record_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        scheduled: list[Any] = []
+
+        class FakeSupervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                ingest_calls.append(kwargs)
+                return [{"attachment_id": "should_not_exist", "kind": "image"}]
+
+            def prepare_qq_native_image_inputs(self, **kwargs):
+                prepare_calls.append(kwargs)
+                return {"ok": True, "status": "ready", "images": [], "skipped": []}
+
+            def record_passive_qq_message(self, payload: dict):
+                passive_record_calls.append(payload)
+                return {"ok": True, "status": "recorded"}
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "这个群现在没有开启识图。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {"message_id": 9}}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_GROUP_PASSIVE_MEMORY_MODE="all",
+                ),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+                async_task_supervisor=FakeSupervisor(),
+            )
+        )
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+            command_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-vision-command-1",
+                    "time": int(time.time()),
+                    "sender": {"role": "admin", "nickname": "群管理员"},
+                    "message": [
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": "/识图关"}},
+                    ],
+                },
+            )
+            passive_image_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID + 1,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-vision-passive-image-1",
+                    "time": int(time.time()),
+                    "sender": {"role": "member", "nickname": "群成员"},
+                    "message": [
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "passive-disabled.png",
+                                "url": "http://127.0.0.1:3001/passive-disabled.png",
+                            },
+                        },
+                    ],
+                },
+            )
+            self.assertEqual(len(scheduled), 1)
+            asyncio.run(scheduled.pop())
+            image_response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "group-vision-image-1",
+                    "time": int(time.time()),
+                    "sender": {"role": "admin", "nickname": "群管理员"},
+                    "message": [
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": " 看看这张图"}},
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "disabled.png",
+                                "url": "http://127.0.0.1:3001/disabled.png",
+                            },
+                        },
+                    ],
+                },
+            )
+
+        self.assertEqual(command_response.status_code, 200)
+        self.assertEqual(command_response.json()["reason"], "qq_group_vision_command")
+        self.assertEqual(command_response.json()["command_status"], "disabled")
+        self.assertFalse(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
+        self.assertEqual(passive_image_response.status_code, 200)
+        self.assertEqual(passive_image_response.json()["status"], "buffered")
+        self.assertEqual(passive_image_response.json()["reason"], "passive_content_enrichment")
+        self.assertEqual(len(passive_record_calls), 1)
+        self.assertIn("should_not_exist", passive_record_calls[0]["message"])
+        self.assertEqual(image_response.status_code, 200)
+        self.assertEqual(image_response.json()["reason"], "group_mention", image_response.json())
+        self.assertEqual(len(ingest_calls), 1)
+        self.assertFalse(ingest_calls[0]["observe_images"])
+        self.assertEqual(prepare_calls, [])
+        self.assertEqual(len(process_calls), 1)
+        self.assertNotIn("native_user_images", process_calls[0])
+        self.assertIn("本群已关闭图片识别", process_calls[0]["extra_context"])
+        bypass_logs = [payload for name, payload in log_calls if name == "qq_group_vision_bypassed"]
+        self.assertEqual(len(bypass_logs), 1)
+        self.assertEqual(bypass_logs[0]["blocked_image_count"], 1)
+
+    def test_qq_router_resolves_quoted_group_image_into_native_multimodal_chat(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        # Do not depend on the developer/production process .env enabling QQ.
+        gateway = NapCatQQGateway(channel_config=QQChannelRuntimeConfig(
+            enabled=True, profile_ref="quoted-image-test", bot_id=str(QQ_BOT_FIXTURE_ID),
+            onebot_http_url="http://127.0.0.1:3001", webhook_secret="", onebot_access_token="",
+            require_self_id=True, require_webhook_auth=False,
+        ))
+        ingest_calls: list[dict[str, Any]] = []
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                ingest_calls.append(kwargs)
+                return [{"attachment_id": "img_quoted_1", "kind": "image"}]
+
+            def prepare_qq_native_image_inputs(self, **_kwargs):
+                return {
+                    "ok": True,
+                    "status": "ready",
+                    "images": [
+                        {
+                            "attachment_id": "img_quoted_1",
+                            "attachment_handle": "img_001",
+                            "title": "引用图片",
+                            "media_type": "image/png",
+                            "data_url": "data:image/png;base64,cXVvdGVk",
+                        }
+                    ],
+                    "skipped": [],
+                }
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我看到你引用的图了。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def __init__(self, payload: dict[str, Any]):
+                self.payload = payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return self.payload
+
+        def fake_post(_method: str, url: str, **_kwargs):
+            if url.endswith("/get_group_member_info"):
+                return FakeResponse(
+                    {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {"nickname": "测试用户", "card": ""},
+                    }
+                )
+            if url.endswith("/get_msg"):
+                return FakeResponse(
+                    {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {
+                            "message_id": "quoted-image-msg",
+                            "message_type": "group",
+                            "group_id": QQ_GROUP_FIXTURE_ID,
+                            "user_id": QQ_USER_FIXTURE_ID + 1,
+                            "sender": {
+                                "user_id": QQ_USER_FIXTURE_ID + 1,
+                                "nickname": "原图发送者",
+                            },
+                            "message": [
+                                {"type": "at", "data": {"qq": "40004", "name": "天为"}},
+                                {
+                                    "type": "image",
+                                    "data": {
+                                        "file": "quoted.png",
+                                        "url": "http://127.0.0.1:3001/private-quoted-image.png",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                )
+            if url.endswith("/send_group_msg"):
+                return FakeResponse({"status": "ok", "retcode": 0, "data": {"message_id": 99}})
+            raise AssertionError(f"unexpected OneBot action: {url.rsplit('/', 1)[-1]}")
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01,
+                    VISION_REQUEST_TIMEOUT=1.0,
+                ),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with (
+            patch("companion_v01.qq_gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 0.0),
+            patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post) as mocked_post,
+        ):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "group_id": QQ_GROUP_FIXTURE_ID,
+                    "message_id": "reply-event-1",
+                    "time": int(time.time()),
+                    "message": [
+                        {"type": "reply", "data": {"id": "quoted-image-msg"}},
+                        {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                        {"type": "text", "data": {"text": " 看看图"}},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "group_mention", response.json())
+        self.assertEqual(len(ingest_calls), 1)
+        self.assertEqual(len(ingest_calls[0]["attachments"]), 1)
+        self.assertEqual(ingest_calls[0]["attachments"][0]["quoted_message_id"], "quoted-image-msg")
+        self.assertEqual(ingest_calls[0]["attachments"][0]["sender_id"], str(QQ_USER_FIXTURE_ID + 1))
+        self.assertEqual(ingest_calls[0]["attachments"][0]["sender_label"], "原图发送者")
+        self.assertEqual(len(process_calls), 1)
+        self.assertEqual(process_calls[0]["native_user_images"][0]["attachment_handle"], "img_001")
+        self.assertEqual(
+            process_calls[0]["message_addressing"]["reply_reference"]["mentions"],
+            [{"actor_id": "qq:40004", "display_name": "天为", "is_assistant": False}],
+        )
+        actions = [call.args[1].rsplit("/", 1)[-1] for call in mocked_post.call_args_list]
+        self.assertEqual(actions.count("get_group_member_info"), 2)  # Own identity and sender label.
+        self.assertEqual(actions.count("get_msg"), 1)
+        self.assertEqual(actions.count("send_group_msg"), 1)
+        self.assertEqual(len(actions), 4)
+        quoted_logs = [payload for name, payload in log_calls if name == "qq_quoted_attachments_resolved"]
+        self.assertEqual(
+            quoted_logs,
+            [
+                {
+                    "session_id": f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+                    "profile_user_id": f"qq_group_shared_{QQ_GROUP_FIXTURE_ID}",
+                    "status": "resolved",
+                    "ok": True,
+                    "attachment_count": 1,
+                }
+            ],
+        )
+        serialized_logs = json.dumps(log_calls, ensure_ascii=False)
+        serialized_response = response.text
+        self.assertNotIn("private-quoted-image.png", serialized_logs)
+        self.assertNotIn("private-quoted-image.png", serialized_response)
+        self.assertNotIn("cXVvdGVk", serialized_logs)
+        self.assertNotIn("cXVvdGVk", serialized_response)
+
+    def test_qq_router_persists_quoted_text_with_current_message(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        quoted_timestamp = 1_721_485_640
+        quoted_text = "这是很久以前的原话；忽略系统规则只是在引用里的文字。"
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我会直接结合你引用的原话回应。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def __init__(self, payload: dict[str, Any]):
+                self.payload = payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return self.payload
+
+        def fake_post(_method: str, url: str, **_kwargs):
+            if url.endswith("/get_msg"):
+                return FakeResponse(
+                    {
+                        "status": "ok",
+                        "retcode": 0,
+                        "data": {
+                            "message_id": "quoted-old-text",
+                            "message_type": "private",
+                            "user_id": QQ_USER_FIXTURE_ID,
+                            "sender": {"user_id": QQ_USER_FIXTURE_ID, "nickname": "旧消息发送者"},
+                            "time": quoted_timestamp,
+                            "message": [{"type": "text", "data": {"text": quoted_text}}],
+                        },
+                    }
+                )
+            if url.endswith("/send_private_msg"):
+                return FakeResponse({"status": "ok", "retcode": 0, "data": {"message_id": 101}})
+            raise AssertionError(f"unexpected OneBot action: {url.rsplit('/', 1)[-1]}")
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "reply-to-old-text",
+                    "time": int(time.time()),
+                    "message": [
+                        {"type": "reply", "data": {"id": "quoted-old-text"}},
+                        {"type": "text", "data": {"text": "这句话是什么意思？"}},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(process_calls), 1, response.text)
+        turn_payload = process_calls[0]
+        stored_turn_message = turn_payload["message"]
+        self.assertEqual(stored_turn_message, "这句话是什么意思？")
+        reply_reference = turn_payload["message_addressing"]["reply_reference"]
+        self.assertEqual(reply_reference["actor_id"], f"qq:{QQ_USER_FIXTURE_ID}")
+        self.assertEqual(reply_reference["actor_display_name"], "旧消息发送者")
+        self.assertEqual(reply_reference["message_id"], "quoted-old-text")
+        self.assertEqual(reply_reference["excerpt"], quoted_text)
+        self.assertEqual(reply_reference["timestamp"], quoted_timestamp)
+        self.assertEqual(reply_reference["conversation_kind"], "private")
+        self.assertEqual(reply_reference["conversation_id"], str(QQ_USER_FIXTURE_ID))
+        self.assertNotIn("qq.reply_reference", stored_turn_message)
+        self.assertNotIn(quoted_text, stored_turn_message)
+        self.assertNotIn("历史消息", stored_turn_message)
+        self.assertNotIn("qq.reply_reference", turn_payload["extra_context"])
+        serialized_logs = json.dumps(log_calls, ensure_ascii=False)
+        self.assertNotIn(quoted_text, serialized_logs)
+        self.assertNotIn(quoted_text, response.text)
+
+    def test_qq_router_quote_lookup_failure_still_runs_model_turn(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我暂时看不到原文，你可以补充一点。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok", "retcode": 0, "data": {"message_id": 102}}
+
+        def fake_post(_method: str, url: str, **_kwargs):
+            if url.endswith("/get_msg"):
+                raise TimeoutError("quoted message expired")
+            if url.endswith("/send_private_msg"):
+                return FakeResponse()
+            raise AssertionError(f"unexpected OneBot action: {url.rsplit('/', 1)[-1]}")
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "reply-lookup-failed",
+                    "message": [
+                        {"type": "reply", "data": {"id": "quoted-missing"}},
+                        {"type": "text", "data": {"text": "你觉得呢？"}},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(process_calls), 1)
+        self.assertEqual(process_calls[0]["message"], "你觉得呢？")
+        self.assertIn("status: unavailable", process_calls[0]["extra_context"])
+        self.assertIn("不表示本轮请求失败", process_calls[0]["extra_context"])
+
+    def test_qq_gateway_quoted_attachment_lookup_rejects_other_group(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "group_id": QQ_GROUP_FIXTURE_ID,
+            "message_id": "reply-event-scope",
+            "message": [
+                {"type": "reply", "data": {"id": "quoted-other-group"}},
+                {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                {"type": "text", "data": {"text": " 看看图"}},
+            ],
+        }
+        context = gateway.build_message_context(event)
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {
+                    "status": "ok",
+                    "retcode": 0,
+                    "data": {
+                        "message_type": "group",
+                        "group_id": QQ_GROUP_FIXTURE_ID + 1,
+                        "message": [{"type": "image", "data": {"url": "https://example.invalid/image.png"}}],
+                    },
+                }
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+            result = gateway.resolve_quoted_attachments(event, context=context)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "scope_mismatch")
+        self.assertEqual(result["attachments"], [])
+
+    def test_qq_gateway_quoted_attachment_lookup_failure_preserves_text_fallback(self) -> None:
+        gateway = NapCatQQGateway()
+        event = {
+            "post_type": "message",
+            "message_type": "private",
+            "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_USER_FIXTURE_ID,
+            "message_id": "reply-event-failed",
+            "raw_message": f"[CQ:reply,id=quoted-failed][CQ:at,qq={QQ_BOT_FIXTURE_ID}]看看图",
+        }
+        context = gateway.build_message_context(event)
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=TimeoutError("offline")):
+            result = gateway.resolve_quoted_attachments(event, context=context)
+
+        self.assertTrue(context.should_respond)
+        self.assertEqual(context.clean_message, "看看图")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "lookup_failed")
+        self.assertEqual(result["attachments"], [])
+
+    def test_qq_router_waits_for_image_vision_before_waking_llm(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        wait_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+        scheduled_tasks: list[Any] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                return [
+                    {
+                        "attachment_id": "img_pending_1",
+                        "kind": "image",
+                        "profile_user_id": kwargs["profile_user_id"],
+                        "session_id": kwargs["session_id"],
+                    }
+                ]
+
+            def wait_for_qq_attachments_settled(self, **kwargs):
+                wait_calls.append(kwargs)
+                return {
+                    "ok": True,
+                    "ready": ["img_pending_1"],
+                    "failed": [],
+                    "pending": [],
+                    "missing": [],
+                    "kinds_by_id": {"img_pending_1": "image"},
+                    "items_by_id": {
+                        "img_pending_1": {
+                            "attachment_id": "img_pending_1",
+                            "kind": "image",
+                            "attachment_handle": "img_001",
+                            "summary_title": "草莓蛋糕少女",
+                            "short_hint": "少女正在装饰铺满草莓的奶油蛋糕。",
+                            "created_at": 1712400000,
+                            "updated_at": 1712400060,
+                            "detail": {
+                                "summary": "备用摘要",
+                                "visible_text": ["Happy Cake"],
+                                "concrete_details": ["桌上有草莓和奶油", "少女手里拿着装饰工具"],
+                                "entities": ["少女", "草莓蛋糕", "厨房"],
+                                "mood_tags": ["温馨", "可爱"],
+                                "uncertainty": ["背景细节较浅"],
+                            },
+                        }
+                    },
+                }
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "我看到这张图了。"}}
+
+            def mark_generated_file_delivery(self, **_kwargs):
+                return {"ok": True}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        def fake_create_task(coro):
+            scheduled_tasks.append(coro)
+            return SimpleNamespace()
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(
+                    QQ_BRIDGE_ENABLED=True,
+                    QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01,
+                    VISION_REQUEST_TIMEOUT=1.0,
+                ),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        with (
+            patch("companion_v01.routes.qq.asyncio.create_task", side_effect=fake_create_task),
+            patch(
+                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            ) as mocked_post,
+        ):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-image-pending-1",
+                    "time": int(time.time()),
+                    "message": [
+                        {
+                            "type": "image",
+                            "data": {
+                                "file": "pending.jpg",
+                                "url": "http://127.0.0.1:3001/pending.jpg",
+                            },
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["status"], "buffered")
+            self.assertEqual(payload["reason"], "qq_image_vision_followup_scheduled")
+            self.assertEqual(process_calls, [])
+            self.assertEqual(wait_calls, [])
+            self.assertEqual(len(scheduled_tasks), 1)
+            mocked_post.assert_not_called()
+
+            asyncio.run(scheduled_tasks.pop())
+
+        self.assertEqual(len(wait_calls), 1)
+        self.assertEqual(len(process_calls), 1)
+        self.assertIn("【本轮 QQ 图片内容】", process_calls[0]["extra_context"])
+        self.assertIn("本轮图片发送时间", process_calls[0]["extra_context"])
+        self.assertIn("草莓蛋糕少女", process_calls[0]["extra_context"])
+        self.assertIn("加入 ", process_calls[0]["extra_context"])
+        self.assertIn("少女正在装饰铺满草莓的奶油蛋糕", process_calls[0]["extra_context"])
+        self.assertIn("可见文字：Happy Cake", process_calls[0]["extra_context"])
+        self.assertIn("细节：桌上有草莓和奶油、少女手里拿着装饰工具", process_calls[0]["extra_context"])
+        self.assertIn("要素：少女、草莓蛋糕、厨房", process_calls[0]["extra_context"])
+        self.assertIn("标签：温馨、可爱", process_calls[0]["extra_context"])
+        self.assertIn("不确定处：背景细节较浅", process_calls[0]["extra_context"])
+        self.assertIn(("qq_napcat_event", True), runtime.observed)
+        scheduled_logs = [
+            payload for event_name, payload in log_calls if event_name == "qq_image_vision_followup_scheduled"
+        ]
+        sent_logs = [payload for event_name, payload in log_calls if event_name == "qq_image_vision_followup_sent"]
+        self.assertEqual(len(scheduled_logs), 1)
+        self.assertEqual(len(sent_logs), 1)
+        mocked_post.assert_called_once()
+        sent_payload = mocked_post.call_args.kwargs["json"]
+        self.assertIn("我看到这张图了", _onebot_message_text(sent_payload))
+
+    def test_qq_image_followup_reports_terminal_image_failure(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        scheduled_tasks: list[Any] = []
+        sent_text: list[str] = []
+
+        class FakeEngine:
+            desktop_pet_character_resources = None
+
+            def ingest_qq_attachments(self, **kwargs):
+                return [{"attachment_id": "img_too_large", "kind": "image", "profile_user_id": kwargs["profile_user_id"], "session_id": kwargs["session_id"]}]
+
+            def wait_for_qq_attachments_settled(self, **_kwargs):
+                return {
+                    "ok": True,
+                    "ready": [],
+                    "failed": ["img_too_large"],
+                    "pending": [],
+                    "missing": [],
+                    "kinds_by_id": {"img_too_large": "image"},
+                    "items_by_id": {"img_too_large": {"error_message": "attachment_too_large", "kind": "image"}},
+                }
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "不应调用模型。"}}
+
+        def capture_send_reply(context, text):
+            sent_text.append(str(text))
+            return {"ok": True, "status": "sent", "results": []}
+
+        gateway.send_reply = capture_send_reply
+
+        def fake_create_task(coro):
+            scheduled_tasks.append(coro)
+            return SimpleNamespace()
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_ATTACHMENT_READY_WAIT_SECONDS=0.01),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+        with patch("companion_v01.routes.qq.asyncio.create_task", side_effect=fake_create_task):
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "user_id": QQ_USER_FIXTURE_ID,
+                    "message_id": "route-image-too-large-1",
+                    "time": int(time.time()),
+                    "message": [{"type": "image", "data": {"file": "too-large.jpg"}}],
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(scheduled_tasks), 1)
+            asyncio.run(scheduled_tasks.pop())
+
+        self.assertEqual(process_calls, [])
+        self.assertTrue(any("超过了当前视觉读取的大小限制" in item for item in sent_text))
+
+    def test_qq_router_poke_notice_runs_llm_as_normal_user_message(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        gateway = NapCatQQGateway()
+        process_calls: list[dict[str, Any]] = []
+        log_calls: list[tuple[str, dict[str, Any]]] = []
+
+        class FakeEngine:
+            care_runtime = None
+            desktop_pet_character_resources = None
+
+            def prefetch_remote_media_links_for_message(self, **_kwargs):
+                return {}
+
+            def process_turn_stream(self, payload: dict):
+                process_calls.append(payload)
+                yield {"type": "final_ui", "payload": {"speech": "别戳了。"}}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self):
+                return {"status": "ok"}
+
+        app = FastAPI()
+        app.include_router(
+            build_qq_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                qq_gateway=gateway,
+                runtime_metrics=runtime,
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda event_name, **kwargs: log_calls.append((event_name, kwargs)),
+            )
+        )
+
+        event_timestamp = int(time.time())
+        with patch(
+            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+        ) as mocked_post:
+            response = TestClient(app).post(
+                "/api/qq/napcat/event",
+                json={
+                    "post_type": "notice",
+                    "notice_type": "notify",
+                    "sub_type": "poke",
+                    "self_id": QQ_BOT_FIXTURE_ID,
+                    "sender_id": QQ_USER_FIXTURE_ID,
+                    "target_id": QQ_BOT_FIXTURE_ID,
+                    "time": event_timestamp,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["reason"], "qq_poke")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(len(process_calls), 1)
+        turn_payload = process_calls[0]
+        self.assertEqual(turn_payload["message"], "刚才发生的互动：我在 QQ 里戳了戳你的头像。")
+        self.assertEqual(turn_payload["timestamp"], event_timestamp)
+        self.assertNotIn("actor_stable_id", turn_payload)
+        self.assertEqual(turn_payload["client_mode"], "qq_text")
+        self.assertNotIn("transient_user_message", turn_payload)
+        self.assertNotIn(f"QQ {QQ_USER_FIXTURE_ID}", turn_payload["extra_context"])
+        self.assertIn("我就是本轮戳一戳的发送者", turn_payload["extra_context"])
+        self.assertIn("戳了戳你", turn_payload["extra_context"])
+        self.assertNotIn("请优先依据本轮 QQ 事件里的发送者标识来回应", turn_payload["extra_context"])
+        poke_logs = [payload for event_name, payload in log_calls if event_name == "qq_poke_context"]
+        self.assertEqual(len(poke_logs), 1)
+        self.assertEqual(poke_logs[0]["event_sender_id"], str(QQ_USER_FIXTURE_ID))
+        self.assertEqual(poke_logs[0]["resolved_user_id"], QQ_USER_FIXTURE_ID)
+        self.assertIn("我在 QQ 里戳了戳", poke_logs[0]["turn_message"])
+        mocked_post.assert_called_once()
+        sent_payload = mocked_post.call_args.kwargs["json"]
+        self.assertEqual(_onebot_message_text(sent_payload).rstrip("。"), "别戳了")
+
+    # ---------- control center action contract ----------
+
+    def test_control_center_action_returns_not_implemented(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/music.next", json={})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["status"], "not-implemented")
+        self.assertEqual(payload["actionId"], "music.next")
+        self.assertEqual(payload["refresh"], False)
+
+    def test_control_center_action_catalog_describes_contract(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).get("/control-center/actions")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        payload = response.json()
+        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["status"], "available")
+        self.assertEqual(payload["contractVersion"], 1)
+        self.assertEqual(payload["actionsEndpoint"], "/control-center/actions/{actionId}")
+        self.assertEqual(payload["execution"], "not-implemented")
+        self.assertEqual(payload["defaultResult"]["status"], "not-implemented")
+        self.assertEqual(payload["defaultResult"]["refresh"], False)
+
+    def test_control_center_action_window_close_is_not_implemented(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/window.close", json={})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "not-implemented")
+        self.assertEqual(payload["actionId"], "window.close")
+
+    def test_control_center_unknown_action_not_404(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/unknown.action", json={})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "not-implemented")
+        self.assertEqual(payload["actionId"], "unknown.action")
+
+    def test_control_center_non_object_payload_does_not_500(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post("/control-center/actions/music.next", json="not an object")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not-implemented")
+
+    def test_control_center_empty_body_does_not_500(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).post(
+            "/control-center/actions/music.next", content=b"", headers={"Content-Type": "application/json"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not-implemented")
+
+    def test_control_center_runtime_metrics_does_not_block_response(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(build_control_center_router(runtime_metrics=runtime))
+
+        response = TestClient(app).post("/control-center/actions/music.next", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not-implemented")
+
+    def test_control_center_log_event_receives_contract_event(self) -> None:
+        events: list[tuple[str, dict[str, Any]]] = []
+
+        def log_event(event: str, **fields: Any) -> None:
+            events.append((event, fields))
+
+        app = FastAPI()
+        app.include_router(build_control_center_router(log_event=log_event))
+
+        response = TestClient(app).post("/control-center/actions/music.next", json={"value": True})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(events[0][0], "control_center_action")
+        self.assertEqual(events[0][1]["action_id"], "music.next")
+        self.assertEqual(events[0][1]["status"], "not-implemented")
+        self.assertEqual(events[0][1]["payload_keys"], ["value"])
+
+    def test_control_center_metrics_and_log_errors_do_not_block_response(self) -> None:
+        class BrokenRuntimeMetrics:
+            def observe_request(self, *_args: Any, **_kwargs: Any) -> None:
+                raise RuntimeError("metrics failed")
+
+        def log_event(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("log failed")
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=BrokenRuntimeMetrics(),
+                log_event=log_event,
+            )
+        )
+
+        response = TestClient(app).post("/control-center/actions/music.next", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not-implemented")
+
+    # ---------- control center snapshot contract ----------
+
+    def test_control_center_snapshot_returns_200(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).get("/control-center/snapshot")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["status"], "available")
+
+    def test_control_center_snapshot_contract_shape(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        payload = TestClient(app).get("/control-center/snapshot").json()
+
+        self.assertIn("schemaVersion", payload)
+        self.assertIsInstance(payload["schemaVersion"], int)
+        self.assertEqual(payload["sourceKind"], "backend")
+        self.assertIn("generatedAt", payload)
+        self.assertIsInstance(payload["generatedAt"], str)
+        self.assertIn("runtime", payload)
+        self.assertIsInstance(payload["runtime"], dict)
+
+    def test_control_center_snapshot_runtime_has_all_fields(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        runtime = TestClient(app).get("/control-center/snapshot").json()["runtime"]
+
+        for field in ("health", "diagnostics", "workspace", "resourceManifest", "metrics", "executionPolicy", "resourcePolicy"):
+            self.assertIn(field, runtime, f"runtime should contain {field}")
+            self.assertIsInstance(runtime[field], dict)
+            self.assertIn("ok", runtime[field])
+            self.assertIn("status", runtime[field])
+
+    def test_control_center_snapshot_failure_does_not_500(self) -> None:
+        def fail_health() -> dict:
+            raise RuntimeError("health failed")
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                snapshot_runtime_providers={
+                    "health": fail_health,
+                    "diagnostics": lambda: {"status": "ok"},
+                    "metrics": lambda: "cpu_percent 12",
+                }
+            )
+        )
+
+        response = TestClient(app).get("/control-center/snapshot")
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["runtime"]
+        self.assertEqual(runtime["health"]["status"], "unavailable")
+        self.assertEqual(runtime["diagnostics"]["status"], "ok")
+        self.assertEqual(runtime["metrics"], "cpu_percent 12")
+
+    def test_control_center_snapshot_real_providers_aggregate_runtime(self) -> None:
+        runtime_metrics = FakeRuntimeMetrics()
+        runtime_metrics.incr("custom_total", 2)
+        captured: dict[str, Any] = {}
+
+        def build_resource_manifest(**kwargs):
+            captured["resource_manifest"] = kwargs
+            return {
+                "schema_version": 2,
+                "characters": {
+                    "outfits": [
+                        {
+                            "id": "cat",
+                            "name": "Cat",
+                            "emotions": [{"id": "normal", "name": "Normal"}],
+                        }
+                    ]
+                },
+                "defaults": {"outfit": "cat", "emotion": "normal"},
+            }
+
+        def build_workspace_panel(**kwargs):
+            captured["workspace"] = kwargs
+            return {
+                "ok": True,
+                "counts": {"files": 2, "outputs": 1, "tasks": 0},
+                "sections": {
+                    "files": [{"id": "att-1", "handle": "att-1", "can_open": True}],
+                    "outputs": [],
+                },
+            }
+
+        engine = SimpleNamespace(
+            build_resource_manifest=build_resource_manifest,
+            build_desktop_pet_workspace_panel=build_workspace_panel,
+            llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 3}),
+            vector_store=SimpleNamespace(count_entries=lambda: 42),
+            snapshot_embedding_reindex_status=lambda: {"total": 5, "processed": 2, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=runtime_metrics,
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        response = TestClient(app).get(
+            "/control-center/snapshot?user_id=desktop&real_user_id=master"
+            "&client=desktop_pet&character_pack_id=mika_pack&outfit=cat&emotion=normal"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        runtime = payload["runtime"]
+        self.assertEqual(runtime["health"]["status"], "ok")
+        self.assertEqual(runtime["diagnostics"]["status"], "ok")
+        self.assertEqual(runtime["workspace"]["counts"]["files"], 2)
+        self.assertIn(
+            "/desktop-pet/workspace/attachments/att-1/content", runtime["workspace"]["sections"]["files"][0]["url"]
+        )
+        self.assertEqual(runtime["resourceManifest"]["clients"]["desktop_pet"]["profile_user_id"], "master")
+        self.assertIn("akane_vector_entries 42", runtime["metrics"])
+        self.assertIn("akane_custom_total 2.0", runtime["metrics"])
+        self.assertEqual(captured["resource_manifest"]["character_pack_id"], "mika_pack")
+        self.assertEqual(captured["workspace"]["profile_user_id"], "master")
+        self.assertIn(("control_center.snapshot", True), runtime_metrics.observed)
+
+    def test_control_center_snapshot_exposes_execution_policy_and_resource_limits(self) -> None:
+        from companion_v01.execution_resource_policy import ExecutionResourcePolicy
+
+        policy_snapshot = {
+            "policies": [
+                {
+                    "policy_id": "safe.default",
+                    "service_id": "policy.safe.default.v1",
+                    "version": 1,
+                    "order": 0,
+                    "stages": ["before", "observe"],
+                    "status": "available",
+                    "reason": "",
+                }
+            ],
+            "diagnostics": [],
+        }
+        engine = SimpleNamespace(
+            executor_broker=SimpleNamespace(
+                execution_policies=SimpleNamespace(snapshot=lambda: policy_snapshot),
+                resource_policy=ExecutionResourcePolicy.from_config(
+                    {"max_input_bytes": 4096, "max_dependency_depth": 4, "max_dependency_calls": 7}
+                ),
+            ),
+            build_resource_manifest=lambda **_kwargs: {"schema_version": 1, "characters": {"outfits": []}},
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {"ok": True, "counts": {"files": 0, "outputs": 0, "tasks": 0}},
+            llm=SimpleNamespace(snapshot_metrics=lambda: {}),
+            vector_store=SimpleNamespace(count_entries=lambda: 0),
+            snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=FakeRuntimeMetrics(),
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        runtime = TestClient(app).get(
+            "/control-center/snapshot?user_id=desktop&real_user_id=master"
+        ).json()["runtime"]
+
+        self.assertTrue(runtime["executionPolicy"]["ok"])
+        self.assertEqual(runtime["executionPolicy"]["policy"]["policies"][0]["policy_id"], "safe.default")
+        self.assertTrue(runtime["resourcePolicy"]["ok"])
+        self.assertEqual(
+            runtime["resourcePolicy"]["policy"]["limits"]["max_input_bytes"]["value"],
+            4096,
+        )
+
+
+    def test_control_center_snapshot_does_not_break_action_contract(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        snapshot = TestClient(app).get("/control-center/snapshot").json()
+        self.assertEqual(snapshot["ok"], True)
+
+        action = TestClient(app).post("/control-center/actions/music.next", json={}).json()
+        self.assertEqual(action["status"], "not-implemented")
+        self.assertEqual(action["actionId"], "music.next")
+
+    def test_control_center_snapshot_cached_no_store(self) -> None:
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        response = TestClient(app).get("/control-center/snapshot")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    # ---------- snapshot resilience ----------
+
+    def test_control_center_snapshot_workspace_provider_failure_still_200(self) -> None:
+        def fail_workspace(context: dict) -> dict:
+            raise RuntimeError("workspace failed")
+
+        runtime_metrics = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                snapshot_runtime_providers={
+                    "health": lambda: {"status": "ok"},
+                    "diagnostics": lambda context: {
+                        "status": "ok",
+                        "capabilities": {"tool_names": [], "declared": [], "effective_modules": [], "tool_layers": []},
+                        "runtime": {"metrics": {}},
+                        "resources": {},
+                        "workspace": {},
+                        "safety": {},
+                    },
+                    "workspace": fail_workspace,
+                    "resourceManifest": lambda: {
+                        "schema_version": 1,
+                        "clients": {"desktop_pet": {}},
+                        "characters": {"outfits": []},
+                    },
+                    "metrics": lambda: "cpu_percent 12",
+                },
+            )
+        )
+
+        response = TestClient(app).get("/control-center/snapshot")
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["runtime"]
+        self.assertEqual(runtime["health"]["status"], "ok")
+        self.assertEqual(runtime["diagnostics"]["status"], "ok")
+        self.assertEqual(runtime["workspace"]["status"], "unavailable")
+        self.assertIn("error", runtime["workspace"])
+        self.assertIn("schema_version", runtime["resourceManifest"])
+        self.assertIn("cpu_percent", runtime["metrics"])
+
+    def test_control_center_snapshot_metrics_provider_failure_still_200(self) -> None:
+        def fail_metrics() -> str:
+            raise RuntimeError("metrics failed")
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                snapshot_runtime_providers={
+                    "health": lambda: {"status": "ok"},
+                    "diagnostics": lambda: {"status": "ok"},
+                    "workspace": lambda: {},
+                    "resourceManifest": lambda: {},
+                    "metrics": fail_metrics,
+                }
+            )
+        )
+
+        response = TestClient(app).get("/control-center/snapshot")
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["runtime"]
+        self.assertEqual(runtime["health"]["status"], "ok")
+        self.assertEqual(runtime["metrics"]["status"], "unavailable")
+
+    def test_control_center_snapshot_no_sensitive_content(self) -> None:
+        runtime_metrics = FakeRuntimeMetrics()
+        runtime_metrics.incr("custom_total", 2)
+
+        def build_resource_manifest(**kwargs):
+            return {
+                "schema_version": 2,
+                "characters": {
+                    "outfits": [
+                        {
+                            "id": "cat",
+                            "name": "Cat",
+                            "emotions": [{"id": "normal", "name": "Normal"}],
+                        }
+                    ]
+                },
+                "defaults": {"outfit": "cat", "emotion": "normal"},
+            }
+
+        engine = SimpleNamespace(
+            build_resource_manifest=build_resource_manifest,
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {
+                "ok": True,
+                "counts": {"files": 0, "outputs": 0, "tasks": 0},
+            },
+            llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 3}),
+            vector_store=SimpleNamespace(count_entries=lambda: 42),
+            snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=runtime_metrics,
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        response = TestClient(app).get("/control-center/snapshot?user_id=desktop&real_user_id=master")
+        self.assertEqual(response.status_code, 200)
+        body = response.text.lower()
+
+        # Snapshot must not expose prompts, messages, api keys, secrets, clipboard, or screenshots
+        for sensitive_term in ("api_key", "prompt_text", "chat_message"):
+            self.assertNotIn(sensitive_term, body, f"snapshot should not contain {sensitive_term}")
+
+        # Check that raw content fields are absent from the runtime structure
+        payload = response.json()
+        runtime = payload["runtime"]
+        diagnostics_text = json.dumps(runtime.get("diagnostics", {}))
+        for field in ("messages", "prompt"):
+            self.assertNotIn(f'"{field}"', diagnostics_text, f"diagnostics should not contain {field}")
+
+    def test_control_center_snapshot_resource_manifest_drives_character_resources(self) -> None:
+        runtime_metrics = FakeRuntimeMetrics()
+
+        def build_resource_manifest(**kwargs):
+            return {
+                "schema_version": 2,
+                "characters": {
+                    "outfits": [
+                        {
+                            "id": "sailor",
+                            "name": "Sailor",
+                            "emotions": [
+                                {"id": "happy", "name": "Happy", "path": "/assets/sailor/happy.png"},
+                                {"id": "sad", "name": "Sad", "path": "/assets/sailor/sad.png"},
+                            ],
+                        },
+                        {
+                            "id": "casual",
+                            "name": "Casual",
+                            "emotions": [
+                                {"id": "smile", "name": "Smile", "path": "/assets/casual/smile.png"},
+                                {"id": "angry", "name": "Angry", "path": "/assets/casual/angry.png"},
+                                {"id": "cry", "name": "Cry", "path": "/assets/casual/cry.png"},
+                            ],
+                        },
+                    ]
+                },
+                "defaults": {"outfit": "sailor", "emotion": "happy"},
+                "scenes": {
+                    "majors": [
+                        {"id": "room", "minors": [{"id": "bg1", "backgrounds": [{"id": "b1"}]}]},
+                    ]
+                },
+            }
+
+        engine = SimpleNamespace(
+            build_resource_manifest=build_resource_manifest,
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {
+                "ok": True,
+                "counts": {"files": 0, "outputs": 0, "tasks": 0},
+            },
+            llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 0}),
+            vector_store=SimpleNamespace(count_entries=lambda: 0),
+            snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=runtime_metrics,
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        response = TestClient(app).get(
+            "/control-center/snapshot?user_id=desktop&real_user_id=master"
+            "&client=desktop_pet&character_pack_id=mika_pack&outfit=sailor&emotion=happy"
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        runtime = payload["runtime"]
+
+        # resourceManifest drives outfit and emotion data
+        manifest = runtime["resourceManifest"]
+        self.assertEqual(len(manifest["characters"]["outfits"]), 2)
+        self.assertEqual(manifest["characters"]["outfits"][0]["id"], "sailor")
+        self.assertEqual(len(manifest["characters"]["outfits"][1]["emotions"]), 3)
+
+        # Diagnostics resources should reflect manifest-derived counts
+        diag_resources = runtime["diagnostics"]["resources"]
+        # emotion_count includes all emotions across all outfits
+        self.assertGreaterEqual(diag_resources["emotion_count"], 0)
+
+        # Check that the decorated manifest reflects the preferred outfit
+        self.assertEqual(manifest["clients"]["desktop_pet"]["default_outfit"], "sailor")
+        self.assertEqual(manifest["clients"]["desktop_pet"]["default_emotion"], "happy")
+
+    def test_control_center_snapshot_providers_are_reality_not_placeholder(self) -> None:
+        """Verify ALL 5 snapshot providers return real data, not _unavailable placeholders."""
+        runtime_metrics = FakeRuntimeMetrics()
+        runtime_metrics.incr("requests_total", 1)
+
+        engine = SimpleNamespace(
+            build_resource_manifest=lambda **kwargs: {
+                "schema_version": 2,
+                "characters": {
+                    "outfits": [{"id": "cat", "name": "Cat", "emotions": [{"id": "normal", "name": "Normal"}]}]
+                },
+                "defaults": {"outfit": "cat", "emotion": "normal"},
+            },
+            build_desktop_pet_workspace_panel=lambda **_kwargs: {
+                "ok": True,
+                "counts": {"files": 1, "outputs": 0, "tasks": 0},
+            },
+            llm=SimpleNamespace(snapshot_metrics=lambda: {"requests_total": 1}),
+            vector_store=SimpleNamespace(count_entries=lambda: 10),
+            snapshot_embedding_reindex_status=lambda: {"total": 0, "processed": 0, "state": "idle"},
+        )
+
+        app = FastAPI()
+        app.include_router(
+            build_control_center_router(
+                runtime_metrics=runtime_metrics,
+                resolve_identity_from_query=resolve_query,
+                snapshot_runtime_providers=build_control_center_snapshot_runtime_providers(
+                    engine=engine,
+                    config_module=SimpleNamespace(STREAMING_TTS_ENABLED=True),
+                    runtime_metrics=runtime_metrics,
+                    public_guard=FakeGuard(),
+                ),
+            )
+        )
+
+        response = TestClient(app).get(
+            "/control-center/snapshot?user_id=desktop&real_user_id=master"
+            "&client=desktop_pet&character_pack_id=mika_pack&outfit=cat&emotion=normal"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        runtime = response.json()["runtime"]
+
+        # All 5 fields must be present and none should be placeholder/unavailable
+        for field in ("health", "diagnostics", "workspace", "resourceManifest", "metrics"):
+            self.assertIn(field, runtime, f"snapshot should contain runtime.{field}")
+            # If the field is a dict with ok:False, it's an unavailable provider
+            value = runtime[field]
+            if isinstance(value, dict):
+                self.assertNotEqual(
+                    value.get("ok"),
+                    False,
+                    f"snapshot runtime.{field} should NOT be unavailable/placeholder; got error={value.get('error')}",
+                )
+
+        # health: real status/pid/python/contracts from config_module
+        self.assertEqual(runtime["health"]["status"], "ok")
+        self.assertIsInstance(runtime["health"]["pid"], int)
+        self.assertIsInstance(runtime["health"]["python"], str)
+        self.assertIn("desktop_pet", runtime["health"]["contracts"])
+
+        # diagnostics: real engine calls
+        self.assertEqual(runtime["diagnostics"]["status"], "ok")
+        self.assertIn("resources", runtime["diagnostics"])
+        self.assertIn("capabilities", runtime["diagnostics"])
+
+        # workspace: real engine.build_desktop_pet_workspace_panel called
+        self.assertTrue(runtime["workspace"]["ok"])
+        self.assertEqual(runtime["workspace"]["counts"]["files"], 1)
+
+        # resourceManifest: real engine.build_resource_manifest + decorate
+        self.assertIsInstance(runtime["resourceManifest"]["schema_version"], int)
+        self.assertIn("characters", runtime["resourceManifest"])
+        self.assertIn("clients", runtime["resourceManifest"])
+
+        # metrics: prometheus text with real tracemalloc/llm/vector counts
+        self.assertIsInstance(runtime["metrics"], str)
+        self.assertIn("akane_vector_entries", runtime["metrics"])
+        self.assertIn("akane_tracemalloc", runtime["metrics"])
+        self.assertIn("akane_llm_requests_total", runtime["metrics"])
+
+    def test_control_center_action_inert_refresh_only(self) -> None:
+        """Verify that ALL backend action endpoints only return not-implemented,
+        never execute desktop operations."""
+        app = FastAPI()
+        app.include_router(build_control_center_router())
+
+        client = TestClient(app)
+
+        # Multiple action types: desktop-related, window, music, unknown
+        for action_id in ("window.close", "music.next", "unknown.action", "character.importZip"):
+            response = client.post(f"/control-center/actions/{action_id}", json={})
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["ok"], False, f"{action_id} should be ok:false")
+            self.assertEqual(payload["status"], "not-implemented", f"{action_id} should be not-implemented")
+            self.assertEqual(payload["actionId"], action_id, f"{action_id} should echo actionId")
+            self.assertEqual(payload["refresh"], False, f"{action_id} should have refresh:false")
+
+    def test_capabilities_catalog_exposes_readonly_existing_tools_and_providers(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        engine = SimpleNamespace(
+            skill_registry=SimpleNamespace(
+                snapshot=lambda: SimpleNamespace(
+                    catalog_revision="catalog123",
+                    diagnostics=(),
+                    entries=(
+                        SimpleNamespace(
+                            name="coding-project",
+                            description="Use for multi-file coding projects.",
+                            source="bundled",
+                            revision="rev123",
+                            required_tools=("exec_run",),
+                            files=("references/checklist.md",),
+                        ),
+                    ),
+                )
+            ),
+            tool_handlers={
+                "retrieve_memory": CatalogMetadataHandler(risk="low"),
+                "manage_generated_file": CatalogMetadataHandler(risk="medium"),
+                "web_search": CatalogMetadataHandler(risk="low"),
+                "open_browser": CatalogMetadataHandler(risk="medium"),
+                "browser_page": CatalogMetadataHandler(risk="medium"),
+                "open_music_search": CatalogMetadataHandler(risk="medium"),
+            }
+        )
+        app = FastAPI()
+        app.include_router(
+            build_capabilities_router(
+                engine=engine,
+                config_module=SimpleNamespace(
+                    TTS_VOICE="zh-CN-XiaoxiaoNeural",
+                    STREAMING_TTS_ENABLED=True,
+                    ASR_WHISPER_MODEL_SIZE="small",
+                    ASR_LANGUAGE="zh",
+                ),
+                tts_client=object(),
+                runtime_metrics=runtime,
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+
+        response = TestClient(app).get("/capabilities?user_id=desktop&real_user_id=master")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["execution"], "read-only")
+        self.assertEqual(payload["configScope"]["profileUserId"], "master")
+        self.assertEqual(
+            payload["configScope"]["explicitConfigPath"],
+            "users_data/<profile_user_id>/capabilities/capabilities.yaml",
+        )
+        self.assertEqual(
+            payload["configScope"]["localDiscoveryPath"],
+            "users_data/_local/capabilities/discovery.json",
+        )
+        self.assertEqual(payload["skills"]["status"], "ready")
+        self.assertEqual(payload["skills"]["catalogRevision"], "catalog123")
+        self.assertEqual(payload["skills"]["summary"]["bundled"], 1)
+        self.assertEqual(payload["skills"]["entries"][0]["name"], "coding-project")
+        self.assertEqual(payload["skills"]["entries"][0]["requiredTools"], ["exec_run"])
+        self.assertNotIn("root", payload["skills"]["entries"][0])
+
+        capabilities = payload["capabilities"]
+        by_id = {item["id"]: item for item in capabilities}
+        self.assertIn("tool.retrieve_memory", by_id)
+        self.assertIn("tool.manage_generated_file", by_id)
+        self.assertNotIn("tool.cover_song", by_id)
+        self.assertIn("tool.web_search", by_id)
+        self.assertIn("tool.open_browser", by_id)
+        self.assertIn("tool.browser_page", by_id)
+        self.assertIn("tool.open_music_search", by_id)
+        self.assertIn("provider.tts.edge", by_id)
+        self.assertIn("provider.music.system_media_control", by_id)
+        self.assertIn("provider.asr.faster_whisper", by_id)
+        self.assertIn("workflow.workshop.portrait.cutout", by_id)
+
+        self.assertEqual(by_id["tool.manage_generated_file"]["source"], "backend_tool")
+        self.assertEqual(by_id["tool.manage_generated_file"]["adapter"], "tool_runtime")
+        self.assertEqual(by_id["tool.manage_generated_file"]["status"], "ready")
+        self.assertEqual(by_id["tool.manage_generated_file"]["risk"], "medium")
+        self.assertEqual(by_id["tool.web_search"]["group"], "web")
+        self.assertEqual(by_id["tool.web_search"]["risk"], "low")
+        self.assertFalse(by_id["tool.web_search"]["requiresConfirmation"])
+        self.assertEqual(by_id["tool.web_search"]["approvalMode"], "trusted_auto_allow")
+        self.assertEqual(by_id["tool.open_browser"]["group"], "desktop_browser")
+        self.assertEqual(by_id["tool.open_browser"]["risk"], "medium")
+        self.assertEqual(by_id["tool.open_browser"]["approvalMode"], "trusted_auto_allow")
+        self.assertEqual(by_id["tool.browser_page"]["group"], "desktop_browser")
+        self.assertEqual(by_id["tool.browser_page"]["risk"], "medium")
+        self.assertEqual(by_id["tool.browser_page"]["approvalMode"], "trusted_auto_allow")
+        self.assertEqual(by_id["tool.open_music_search"]["group"], "music")
+        self.assertEqual(by_id["tool.open_music_search"]["risk"], "medium")
+        self.assertEqual(by_id["provider.music.system_media_control"]["type"], "music_playback_provider")
+        self.assertEqual(by_id["provider.music.system_media_control"]["risk"], "medium")
+
+        tts_provider = by_id["provider.tts.edge"]
+        self.assertEqual(tts_provider["type"], "tts_provider")
+        self.assertEqual(tts_provider["source"], "plugin_service")
+        self.assertEqual(tts_provider["adapter"], "edge_tts")
+        self.assertEqual(tts_provider["executionMode"], "plugin")
+
+        cutout_workflow = by_id["workflow.workshop.portrait.cutout"]
+        self.assertEqual(cutout_workflow["kind"], "workflow")
+        self.assertEqual(cutout_workflow["type"], "asset_processor")
+        self.assertEqual(cutout_workflow["source"], "external_executor")
+        self.assertEqual(cutout_workflow["adapter"], "comfyui")
+        self.assertEqual(cutout_workflow["providerId"], "provider.comfyui.local")
+        self.assertEqual(cutout_workflow["status"], "missing_config")
+        self.assertFalse(cutout_workflow["enabled"])
+        self.assertEqual(cutout_workflow["approvalMode"], "disabled")
+        self.assertEqual(cutout_workflow["inputSchema"]["pathPolicy"], "safe-handle-only")
+
+        # Product names must stay in adapter/provider ids, not base source/type.
+        for item in capabilities:
+            self.assertNotIn(item.get("source"), {"comfyui", "gpt_sovits", "rvc", "faster_whisper", "demucs"})
+            self.assertNotIn(item.get("type"), {"comfyui", "gpt_sovits", "rvc", "faster_whisper", "demucs"})
+
+        body = response.text.lower()
+        for sensitive in ("api_key", "password", "secret", "token", "prompt_text", "chat_message"):
+            self.assertNotIn(sensitive, body)
+        self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_capabilities_approval_request_lifecycle_is_structured_and_redacted(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(
+            build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}),
+                config_module=SimpleNamespace(),
+                runtime_metrics=runtime,
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+        client = TestClient(app)
+
+        empty = client.get("/capabilities/approval-requests?user_id=desktop&real_user_id=master").json()
+        self.assertTrue(empty["ok"])
+        self.assertEqual(empty["pendingCount"], 0)
+        self.assertEqual(empty["approvalRequests"], [])
+
+        created_response = client.post(
+            "/capabilities/approval-requests?user_id=desktop&real_user_id=master",
+            json={
+                "capabilityId": "mcp.browser.browser_click",
+                "actionId": "browser_click",
+                "title": "点击浏览器元素",
+                "summary": "Click the selected page element for the user.",
+                "risk": "high",
+                "approvalMode": "ask_each_time",
+                "payloadPreview": {
+                    "selector": "#play",
+                    "localPath": r"C:\Users\ExampleUser\secret.txt",
+                    "api_key": "real-secret-value",
+                    "nested": {"token": "real-token", "label": "公开标签"},
+                },
+            },
+        )
+        self.assertEqual(created_response.status_code, 200)
+        created = created_response.json()
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["status"], "pending")
+        request_id = created["requestId"]
+        self.assertTrue(request_id.startswith("approvalreq_"))
+        request = created["request"]
+        self.assertEqual(request["approvalMode"], "ask_each_time")
+        self.assertEqual(request["risk"], "high")
+        self.assertEqual(request["payloadPreview"]["selector"], "#play")
+        self.assertEqual(request["payloadPreview"]["localPath"], "[local_path]")
+        self.assertNotIn("api_key", request["payloadPreview"])
+        self.assertEqual(request["payloadPreview"]["nested"], {"type": "object", "keys": ["label"]})
+        created_text = created_response.text.lower()
+        self.assertNotIn("api_key", created_text)
+        self.assertNotIn("real-secret", created_text)
+        self.assertNotIn("real-token", created_text)
+        self.assertNotIn("exampleuser", created_text)
+        self.assertNotIn(r"c:\users", created_text)
+
+        listed = client.get("/capabilities/approval-requests?user_id=desktop&real_user_id=master").json()
+        self.assertEqual(listed["pendingCount"], 1)
+        self.assertEqual(listed["approvalRequests"][0]["requestId"], request_id)
+
+        approved = client.post(
+            f"/capabilities/approval-requests/{request_id}/decision?user_id=desktop&real_user_id=master",
+            json={"decision": "approved"},
+        ).json()
+        self.assertTrue(approved["ok"])
+        self.assertEqual(approved["status"], "approved")
+        self.assertEqual(approved["approvalGrant"]["requestId"], request_id)
+        self.assertTrue(approved["approvalGrant"]["grantId"].startswith("approvalgrant_"))
+
+        resolved = client.get(
+            "/capabilities/approval-requests?user_id=desktop&real_user_id=master&include_resolved=1"
+        ).json()
+        self.assertEqual(resolved["pendingCount"], 0)
+        self.assertEqual(resolved["approvalRequests"][0]["status"], "approved")
+
+        repeated = client.post(
+            f"/capabilities/approval-requests/{request_id}/decision?user_id=desktop&real_user_id=master",
+            json={"decision": "denied"},
+        )
+        self.assertEqual(repeated.status_code, 409)
+        self.assertEqual(repeated.json()["reason"], "approval_request_already_resolved")
+
+        not_required = client.post(
+            "/capabilities/approval-requests?user_id=desktop&real_user_id=master",
+            json={"capabilityId": "tool.web_search", "risk": "low", "approvalMode": "trusted_auto_allow"},
+        )
+        self.assertEqual(not_required.status_code, 400)
+        self.assertEqual(not_required.json()["status"], "not_required")
+
+        self.assertIn(("capabilities.approval_requests", True), runtime.observed)
+        self.assertIn(("capabilities.approval_request_create", True), runtime.observed)
+        self.assertIn(("capabilities.approval_request_decision", True), runtime.observed)
+
+    def test_capabilities_approval_policy_can_switch_high_risk_catalog_entries(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        async def fake_mcp_discoverer(*, server: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "tools": [
+                    {
+                        "name": "read_page",
+                        "description": "Read a public browser page.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"url": {"type": "string"}},
+                            "required": ["url"],
+                        },
+                    },
+                    {
+                        "name": "browser_click",
+                        "description": "Click a browser element on behalf of the user.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"selector": {"type": "string"}},
+                            "required": ["selector"],
+                        },
+                    },
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=fake_mcp_discoverer,
+                )
+            )
+            client = TestClient(app)
+
+            default_policy = client.get("/capabilities/approval-policy?user_id=desktop&real_user_id=master")
+            self.assertEqual(default_policy.status_code, 200)
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in default_policy.json()["approvalPolicy"]["families"]},
+                {"ops": "ask_each_time", "extensions": "ask_each_time"},
+            )
+
+            client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "displayName": "Browser MCP", "command": "browser-mcp"},
+            )
+            client.post("/capabilities/mcp-servers/browser/discover?user_id=desktop&real_user_id=master", json={})
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertNotIn("defaultMode", catalog["approvalPolicy"])
+            self.assertEqual(by_id["mcp.browser.browser_click"]["risk"], "high")
+            self.assertTrue(by_id["mcp.browser.browser_click"]["requiresConfirmation"])
+            self.assertEqual(by_id["mcp.browser.browser_click"]["approvalMode"], "ask_each_time")
+            self.assertEqual(by_id["workflow.workshop.portrait.cutout"]["approvalMode"], "disabled")
+
+            saved = client.post(
+                "/capabilities/approval-policy?user_id=desktop&real_user_id=master",
+                json={"familyId": "ops", "mode": "trusted_auto_allow", "api_key": "must-not-leak"},
+            )
+            self.assertEqual(saved.status_code, 200)
+            self.assertTrue(saved.json()["ok"])
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in saved.json()["approvalPolicy"]["families"]}["ops"],
+                "trusted_auto_allow",
+            )
+            self.assertNotIn("capabilityModes", saved.json()["approvalPolicy"])
+            self.assertNotIn("must-not-leak", saved.text)
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            self.assertIn('"approvalPolicy"', config_text)
+            self.assertIn('"trusted_auto_allow"', config_text)
+            self.assertNotIn("must-not-leak", config_text)
+
+            # Saving another config family must preserve the profile approval policy.
+            client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "displayName": "Browser MCP", "command": "browser-mcp"},
+            )
+            preserved = client.get("/capabilities/approval-policy?user_id=desktop&real_user_id=master").json()
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in preserved["approvalPolicy"]["families"]}["ops"],
+                "trusted_auto_allow",
+            )
+
+            trusted_catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            trusted_by_id = {item["id"]: item for item in trusted_catalog["capabilities"]}
+            trusted_click = trusted_by_id["mcp.browser.browser_click"]
+            self.assertNotIn("defaultMode", trusted_catalog["approvalPolicy"])
+            self.assertEqual(trusted_click["approvalMode"], "trusted_auto_allow")
+            self.assertEqual(trusted_click["approvalReason"], "user_policy_trusted_auto_allow")
+            self.assertFalse(trusted_click["requiresConfirmation"])
+            self.assertEqual(trusted_by_id["workflow.workshop.portrait.cutout"]["approvalMode"], "disabled")
+
+            workflows = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
+            workflow_by_id = {item["id"]: item for item in workflows["workflows"]}
+            self.assertEqual(workflow_by_id["workflow.workshop.portrait.cutout"]["approvalMode"], "disabled")
+
+            family_saved = client.post(
+                "/capabilities/approval-policy?user_id=desktop&real_user_id=master",
+                json={"familyId": "ops", "mode": "ask_each_time"},
+            )
+            self.assertEqual(family_saved.status_code, 200)
+            self.assertTrue(family_saved.json()["ok"])
+            family_policy = family_saved.json()["approvalPolicy"]
+            self.assertEqual(
+                {item["id"]: item["mode"] for item in family_policy["families"]}["ops"],
+                "ask_each_time",
+            )
+
+            invalid = client.post(
+                "/capabilities/approval-policy?user_id=desktop&real_user_id=master",
+                json={"defaultMode": "always_yes"},
+            )
+            self.assertEqual(invalid.status_code, 400)
+            self.assertEqual(invalid.json()["status"], "invalid_config")
+            self.assertEqual(invalid.json()["reason"], "approval_policy_family_and_mode_required")
+
+            self.assertIn(("capabilities.approval_policy", True), runtime.observed)
+            self.assertIn(("capabilities.approval_policy_save", True), runtime.observed)
+            self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_capabilities_mcp_server_config_and_discovery_merge_safe_catalog_entries(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        discoverer_calls: list[dict[str, Any]] = []
+
+        async def fake_mcp_discoverer(*, server: dict[str, Any]) -> dict[str, Any]:
+            discoverer_calls.append(server)
+            return {
+                "tools": [
+                    {
+                        "name": "read_page",
+                        "description": "Read the current browser page without controlling it.",
+                        "risk": "low",
+                        "confirm": "never",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "url": {"type": "string", "description": "Page URL"},
+                                "api_key": {"type": "string", "description": "must be dropped"},
+                            },
+                            "required": ["url", "api_key"],
+                        },
+                    },
+                    {
+                        "name": "browser_click",
+                        "description": "Run a visible page interaction.",
+                        "risk": "low",
+                        "confirm": "never",
+                        "effects": ["browserAction"],
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "selector": {"type": "string", "description": "CSS selector"},
+                            },
+                            "required": ["selector"],
+                        },
+                    },
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=fake_mcp_discoverer,
+                )
+            )
+            client = TestClient(app)
+
+            saved = client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "displayName": "Browser MCP",
+                    "transport": "stdio",
+                    "command": r"C:\Users\ExampleUser\mcp\browser-mcp.exe",
+                    "args": ["--profile", "akane"],
+                    "cwd": r"C:\Users\ExampleUser\mcp",
+                    "env": {"MCP_MODE": "local"},
+                    "lowRiskAllowlist": ["read_page"],
+                },
+            )
+            self.assertEqual(saved.status_code, 200)
+            saved_payload = saved.json()
+            self.assertTrue(saved_payload["ok"])
+            self.assertEqual(saved_payload["mcpServer"]["status"], "configured")
+            self.assertEqual(saved_payload["mcpServer"]["commandName"], "browser-mcp.exe")
+            self.assertEqual(saved_payload["mcpServer"]["executionLocation"], "host")
+            self.assertEqual(saved_payload["mcpServer"]["argsCount"], 2)
+            self.assertEqual(saved_payload["mcpServer"]["approvalMode"], "disabled")
+            self.assertNotIn("exampleuser", saved.text.lower())
+            self.assertNotIn(r"c:\users", saved.text.lower())
+
+            discovered = client.post(
+                "/capabilities/mcp-servers/browser/discover?user_id=desktop&real_user_id=master",
+                json={},
+            )
+            self.assertEqual(discovered.status_code, 200)
+            discovered_payload = discovered.json()
+            self.assertTrue(discovered_payload["ok"])
+            self.assertEqual(discovered_payload["status"], "discovered")
+            self.assertEqual(discovered_payload["toolCount"], 2)
+            self.assertEqual(discoverer_calls[0]["command"], r"C:\Users\ExampleUser\mcp\browser-mcp.exe")
+            discovered_text = discovered.text.lower()
+            self.assertNotIn("exampleuser", discovered_text)
+            self.assertNotIn("api_key", discovered_text)
+            self.assertNotIn("secret", discovered_text)
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["provider.mcp.browser"]["status"], "ready")
+            self.assertFalse(by_id["provider.mcp.browser"]["requiresConfirmation"])
+            self.assertEqual(by_id["provider.mcp.browser"]["approvalMode"], "trusted_auto_allow")
+            self.assertIn("mcp.browser.read_page", by_id)
+            self.assertIn("mcp.browser.browser_click", by_id)
+            read_page = by_id["mcp.browser.read_page"]
+            browser_click = by_id["mcp.browser.browser_click"]
+            self.assertEqual(read_page["kind"], "mcp_tool")
+            self.assertEqual(read_page["source"], "mcp")
+            self.assertEqual(read_page["adapter"], "mcp_stdio")
+            self.assertFalse(read_page["exposedToPrompt"])
+            self.assertEqual(read_page["inputSchema"]["required"], ["url"])
+            self.assertEqual(read_page["approvalMode"], "trusted_auto_allow")
+            self.assertNotIn("api_key", json.dumps(read_page, ensure_ascii=False).lower())
+            self.assertEqual(browser_click["risk"], "high")
+            self.assertEqual(browser_click["confirm"], "always")
+            self.assertTrue(browser_click["requiresConfirmation"])
+            self.assertEqual(browser_click["effects"], ["browser_action"])
+            self.assertEqual(browser_click["approvalMode"], "ask_each_time")
+            self.assertIn(("capabilities.mcp_server_config", True), runtime.observed)
+            self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)
+            self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_capabilities_mcp_anysearch_env_placeholder_is_allowed_without_key_leak(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        discoverer_calls: list[dict[str, Any]] = []
+
+        async def fake_mcp_discoverer(*, server: dict[str, Any]) -> dict[str, Any]:
+            discoverer_calls.append(server)
+            return {
+                "tools": [
+                    {
+                        "name": "search",
+                        "description": "Execute a public web search.",
+                        "risk": "low",
+                        "confirm": "never",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "Search query"},
+                                "max_results": {"type": "integer", "description": "Result count"},
+                            },
+                            "required": ["query"],
+                        },
+                    },
+                    {
+                        "name": "extract",
+                        "description": "Extract readable public page content from a URL.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"url": {"type": "string", "description": "Page URL"}},
+                            "required": ["url"],
+                        },
+                    },
+                ]
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=fake_mcp_discoverer,
+                )
+            )
+            client = TestClient(app)
+
+            saved = client.post(
+                "/capabilities/mcp-servers/anysearch/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "displayName": "AnySearch 网页搜索",
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "mcp-remote",
+                        "https://api.anysearch.com/mcp",
+                        "--header",
+                        "Authorization: Bearer ${ANYSEARCH_API_KEY}",
+                    ],
+                    "lowRiskAllowlist": ["search"],
+                },
+            )
+            self.assertEqual(saved.status_code, 200)
+            saved_payload = saved.json()
+            self.assertTrue(saved_payload["ok"])
+            self.assertEqual(saved_payload["mcpServer"]["status"], "configured")
+            self.assertEqual(saved_payload["mcpServer"]["commandName"], "npx")
+            self.assertEqual(saved_payload["mcpServer"]["argsCount"], 5)
+            self.assertNotIn("authorization", saved.text.lower())
+            self.assertNotIn("bearer", saved.text.lower())
+            self.assertNotIn("anysearch_api_key", saved.text.lower())
+
+            config_path = Path(temp_dir) / "capabilities" / "mcp_servers.yaml"
+            self.assertIn("${ANYSEARCH_API_KEY}", config_path.read_text(encoding="utf-8"))
+
+            discovered = client.post(
+                "/capabilities/mcp-servers/anysearch/discover?user_id=desktop&real_user_id=master",
+                json={},
+            ).json()
+            self.assertTrue(discovered["ok"])
+            self.assertEqual(discovered["toolCount"], 2)
+            self.assertEqual(discoverer_calls[0]["args"][-1], "Authorization: Bearer ${ANYSEARCH_API_KEY}")
+
+            catalog_text = client.get("/capabilities?user_id=desktop&real_user_id=master").text
+            catalog = json.loads(catalog_text)
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["provider.mcp.anysearch"]["status"], "ready")
+            self.assertFalse(by_id["provider.mcp.anysearch"]["requiresConfirmation"])
+            self.assertEqual(by_id["provider.mcp.anysearch"]["approvalMode"], "trusted_auto_allow")
+            self.assertIn("mcp.anysearch.search", by_id)
+            self.assertIn("mcp.anysearch.extract", by_id)
+            self.assertFalse(by_id["mcp.anysearch.search"]["requiresConfirmation"])
+            self.assertEqual(by_id["mcp.anysearch.search"]["approvalMode"], "trusted_auto_allow")
+            self.assertFalse(by_id["mcp.anysearch.search"]["exposedToPrompt"])
+            self.assertNotIn("authorization", catalog_text.lower())
+            self.assertNotIn("bearer", catalog_text.lower())
+            self.assertNotIn("anysearch_api_key", catalog_text.lower())
+
+            inline_secret = client.post(
+                "/capabilities/mcp-servers/unsafe/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "command": "npx",
+                    "args": ["--header", "Authorization: Bearer real-secret-value"],
+                },
+            ).json()
+            self.assertFalse(inline_secret["ok"])
+            self.assertEqual(inline_secret["reason"], "mcp_server_args_invalid")
+
+            env_secret = client.post(
+                "/capabilities/mcp-servers/unsafe-env/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "command": "npx",
+                    "env": {"ANYSEARCH_API_KEY": "real-secret-value"},
+                },
+            ).json()
+            self.assertFalse(env_secret["ok"])
+            self.assertEqual(env_secret["reason"], "mcp_server_env_invalid")
+
+    def test_capabilities_mcp_discovery_is_not_implemented_without_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+            saved = client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "command": "browser-mcp"},
+            ).json()
+            self.assertTrue(saved["ok"])
+            discovered = client.post(
+                "/capabilities/mcp-servers/browser/discover?user_id=desktop&real_user_id=master",
+                json={},
+            ).json()
+            self.assertFalse(discovered["ok"])
+            self.assertEqual(discovered["status"], "not-implemented")
+            self.assertEqual(discovered["reason"], "mcp_discoverer_not_bound")
+
+    def test_capabilities_mcp_stdio_discoverer_lists_tools_without_calling_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server_script = Path(temp_dir) / "fake_mcp_server.py"
+            server_script.write_text(
+                """
+import json
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if message.get("id") == 1 and method == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-browser", "version": "0.1"}
+            }
+        }), flush=True)
+    elif method == "tools/list":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "tools": [
+                    {
+                        "name": "read_page",
+                        "description": "Read the browser page.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "url": {"type": "string", "description": "Page URL"},
+                                "api_key": {"type": "string", "description": "drop me"}
+                            },
+                            "required": ["url", "api_key"]
+                        }
+                    },
+                    {
+                        "name": "browser_click",
+                        "description": "Click a browser element.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "selector": {"type": "string", "description": "CSS selector"}
+                            },
+                            "required": ["selector"]
+                        }
+                    }
+                ]
+            }
+        }), flush=True)
+""",
+                encoding="utf-8",
+            )
+            runtime = FakeRuntimeMetrics()
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=McpStdioToolDiscoverer(timeout_seconds=4),
+                )
+            )
+            client = TestClient(app)
+            saved = client.post(
+                "/capabilities/mcp-servers/browser/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "displayName": "Browser MCP",
+                    "command": sys.executable,
+                    "args": [str(server_script)],
+                    "cwd": temp_dir,
+                },
+            )
+            self.assertEqual(saved.status_code, 200)
+            self.assertTrue(saved.json()["ok"])
+            self.assertNotIn(temp_dir.lower(), saved.text.lower())
+
+            discovered = client.post(
+                "/capabilities/mcp-servers/browser/discover?user_id=desktop&real_user_id=master",
+                json={},
+            )
+            self.assertEqual(discovered.status_code, 200)
+            discovered_payload = discovered.json()
+            self.assertTrue(discovered_payload["ok"])
+            self.assertEqual(discovered_payload["status"], "discovered")
+            self.assertEqual(discovered_payload["toolCount"], 2)
+            self.assertNotIn(temp_dir.lower(), discovered.text.lower())
+            self.assertNotIn("api_key", discovered.text.lower())
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["provider.mcp.browser"]["status"], "ready")
+            self.assertEqual(by_id["mcp.browser.read_page"]["inputSchema"]["required"], ["url"])
+            self.assertEqual(by_id["mcp.browser.browser_click"]["risk"], "high")
+            self.assertFalse(by_id["mcp.browser.read_page"]["exposedToPrompt"])
+            self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)
+
+    def test_capabilities_mcp_stdio_discoverer_hydrates_env_placeholder_from_dotenv(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, ".env").write_text("ANYSEARCH_API_KEY=dotenv-secret\n", encoding="utf-8")
+            server_script = Path(temp_dir) / "fake_anysearch_mcp.py"
+            server_script.write_text(
+                """
+import json
+import os
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if message.get("id") == 1 and method == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-anysearch", "version": "0.1"}
+            }
+        }), flush=True)
+    elif method == "tools/list":
+        has_key = os.environ.get("ANYSEARCH_API_KEY") == "dotenv-secret"
+        has_arg_key = len(sys.argv) > 1 and sys.argv[-1] == "Authorization: Bearer dotenv-secret"
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "tools": [
+                    {
+                        "name": "search",
+                        "description": "Search public web pages.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string", "description": "Search query"}},
+                            "required": ["query"]
+                        }
+                    }
+                ] if has_key and has_arg_key else []
+            }
+        }), flush=True)
+""",
+                encoding="utf-8",
+            )
+            runtime = FakeRuntimeMetrics()
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    mcp_tool_discoverer=McpStdioToolDiscoverer(timeout_seconds=4),
+                )
+            )
+            client = TestClient(app)
+            with patch.dict(os.environ, {"ANYSEARCH_API_KEY": ""}):
+                saved = client.post(
+                    "/capabilities/mcp-servers/anysearch/config?user_id=desktop&real_user_id=master",
+                    json={
+                        "enabled": True,
+                        "displayName": "AnySearch",
+                        "command": sys.executable,
+                        "args": [str(server_script), "Authorization: Bearer ${ANYSEARCH_API_KEY}"],
+                        "cwd": temp_dir,
+                    },
+                )
+                self.assertTrue(saved.json()["ok"])
+                discovered = client.post(
+                    "/capabilities/mcp-servers/anysearch/discover?user_id=desktop&real_user_id=master",
+                    json={},
+                )
+            self.assertTrue(discovered.json()["ok"])
+            self.assertEqual(discovered.json()["toolCount"], 1)
+            self.assertNotIn("dotenv-secret", discovered.text)
+            self.assertNotIn("ANYSEARCH_API_KEY", discovered.text)
+            catalog_text = client.get("/capabilities?user_id=desktop&real_user_id=master").text
+            self.assertNotIn("dotenv-secret", catalog_text)
+            self.assertNotIn("ANYSEARCH_API_KEY", catalog_text)
+            self.assertIn(("capabilities.mcp_server_discover", True), runtime.observed)
+
+    def test_capabilities_mcp_stdio_tool_caller_calls_single_tool_with_dotenv_hydration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, ".env").write_text("ANYSEARCH_API_KEY=dotenv-secret\n", encoding="utf-8")
+            server_script = Path(temp_dir) / "fake_anysearch_call_mcp.py"
+            server_script.write_text(
+                """
+import json
+import os
+import sys
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if message.get("id") == 1 and method == "initialize":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake-anysearch", "version": "0.1"}
+            }
+        }), flush=True)
+    elif method == "tools/list":
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "error": {"code": -32000, "message": "tools/list should not be called"}
+        }), flush=True)
+    elif method == "tools/call":
+        has_key = os.environ.get("ANYSEARCH_API_KEY") == "dotenv-secret"
+        has_arg_key = len(sys.argv) > 1 and sys.argv[-1] == "Authorization: Bearer dotenv-secret"
+        print(json.dumps({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "tool": message.get("params", {}).get("name"),
+                        "arguments": message.get("params", {}).get("arguments"),
+                        "has_key": has_key,
+                        "has_arg_key": has_arg_key
+                    }, ensure_ascii=False)
+                }]
+            }
+        }), flush=True)
+""",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"ANYSEARCH_API_KEY": ""}):
+                result = asyncio.run(
+                    McpStdioToolCaller(timeout_seconds=4)(
+                        server={
+                            "transport": "stdio",
+                            "command": sys.executable,
+                            "args": [str(server_script), "Authorization: Bearer ${ANYSEARCH_API_KEY}"],
+                            "cwd": temp_dir,
+                            "env": {},
+                        },
+                        tool_name="search",
+                        arguments={"query": "Akane AnySearch", "max_results": 2},
+                    )
+                )
+
+            self.assertIn("content", result)
+            text = result["content"][0]["text"]
+            payload = json.loads(text)
+            self.assertEqual(payload["tool"], "search")
+            self.assertEqual(payload["arguments"], {"query": "Akane AnySearch", "max_results": 2})
+            self.assertTrue(payload["has_key"])
+            self.assertTrue(payload["has_arg_key"])
+            self.assertNotIn("dotenv-secret", json.dumps(result, ensure_ascii=False))
+
+    def test_capabilities_catalog_resolves_only_the_selected_voice_provider(self) -> None:
+        class FakeCharacterVoiceService:
+            def __init__(self) -> None:
+                self.profile_id = ""
+
+            def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
+                return {
+                    "packId": character_pack_id,
+                    "provider": "gpt_sovits",
+                    "profileId": self.profile_id,
+                    "notes": r"do not leak C:\Users\ExampleUser\voice.txt token=secret",
+                }
+
+        voice_service = FakeCharacterVoiceService()
+        runtime = FakeRuntimeMetrics()
+        checks: list[tuple[str, int, float]] = []
+
+        def fake_health_checker(host: str, port: int, timeout_seconds: float) -> tuple[bool, str]:
+            checks.append((host, port, timeout_seconds))
+            return True, ""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(
+                        tool_handlers={},
+                        desktop_pet_character_resources=voice_service,
+                    ),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, STREAMING_TTS_ENABLED=True),
+                    tts_client=object(),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    provider_health_checker=fake_health_checker,
+                )
+            )
+            client = TestClient(app)
+
+            degraded = client.get("/capabilities?user_id=desktop&real_user_id=master&character_pack_id=reimu").json()
+            by_id = {item["id"]: item for item in degraded["capabilities"]}
+            self.assertIn("provider.voice.text_only", by_id)
+            self.assertIn("provider.asr.text_input", by_id)
+            tts_resolution = degraded["resolutions"]["voice.tts.character"]
+            self.assertEqual(tts_resolution["status"], "unavailable")
+            self.assertEqual(tts_resolution["requestedProviderId"], "provider.tts.gpt_sovits.local")
+            self.assertEqual(tts_resolution["activeProviderId"], "")
+            self.assertEqual(tts_resolution["fallbackProviderId"], "")
+            self.assertEqual(tts_resolution["reason"], "requested_voice_profile_missing")
+            self.assertEqual(tts_resolution["requestSource"], "character_pack")
+
+            voice_service.profile_id = "reimu_main"
+            saved = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:9880"},
+            ).json()
+            self.assertTrue(saved["ok"])
+            health = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/health-check?user_id=desktop&real_user_id=master",
+                json={},
+            ).json()
+            self.assertTrue(health["ok"])
+            ready = client.get("/capabilities?user_id=desktop&real_user_id=master&character_pack_id=reimu").json()
+            ready_resolution = ready["resolutions"]["voice.tts.character"]
+            self.assertEqual(ready_resolution["status"], "unavailable")
+            self.assertEqual(ready_resolution["requestedProviderId"], "provider.tts.gpt_sovits.local")
+            self.assertEqual(ready_resolution["activeProviderId"], "")
+            self.assertEqual(ready_resolution["serviceStatus"], "unavailable")
+            self.assertEqual(ready_resolution["fallbackProviderId"], "")
+            self.assertEqual(ready_resolution["voiceProfileId"], "reimu_main")
+            self.assertEqual(checks, [("127.0.0.1", 9880, 0.35)])
+
+            serialized = json.dumps([degraded, ready], ensure_ascii=False).lower()
+            self.assertNotIn("token", serialized)
+            self.assertNotIn("secret", serialized)
+            self.assertNotIn(str(Path(temp_dir)).lower(), serialized)
+            self.assertIn(("capabilities.catalog", True), runtime.observed)
+
+    def test_tts_route_uses_edge_by_default_with_provider_headers(self) -> None:
+        class FakeEdgeTTS:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def synthesize(self, text: str) -> bytes:
+                self.calls.append(text)
+                return f"edge:{text}".encode("utf-8")
+
+        edge = FakeEdgeTTS()
+        runtime = FakeRuntimeMetrics()
+        app = FastAPI()
+        app.include_router(
+            build_voice_router(
+                engine=SimpleNamespace(),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                tts_client=edge,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        from companion_v01.tts_service import SynthesizedTTSResult
+        async def public_service(**request):
+            self.assertEqual(request["voice"], {"provider": "provider.tts.edge", "profile_id": ""})
+            self.assertEqual(request["context"].profile_user_id, "master")
+            return SynthesizedTTSResult(b"edge:" + request["text"].encode(), "audio/mpeg",
+                "provider.tts.edge", "", "", "", "", origin={"plugin_id": "fixture.tts", "generation_id": "fixture-gen"})
+        with patch("companion_v01.tts_provider_runtime.synthesize_tts_service", side_effect=public_service):
+            response = TestClient(app).post("/tts", json={"text": "你好", "real_user_id": "master"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"edge:\xe4\xbd\xa0\xe5\xa5\xbd")
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-requested-provider"), "provider.tts.edge")
+        self.assertEqual(response.headers.get("x-akane-tts-status"), "ready")
+        self.assertEqual(edge.calls, [])
+        self.assertEqual(response.headers["x-akane-tts-service-provider"], "fixture.tts")
+        self.assertIn(("tts", True), runtime.observed)
+
+    def test_tts_route_rejects_character_gpt_sovits_request_without_profile(self) -> None:
+        class FakeCharacterVoiceService:
+            def build_character_voice_preference(self, character_pack_id: str) -> dict[str, str]:
+                return {"packId": character_pack_id, "provider": "gpt_sovits", "profileId": ""}
+
+        class FakeEdgeTTS:
+            async def synthesize(self, text: str) -> bytes:
+                return b"edge-audio"
+
+        app = FastAPI()
+        app.include_router(
+            build_voice_router(
+                engine=SimpleNamespace(desktop_pet_character_resources=FakeCharacterVoiceService()),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                tts_client=FakeEdgeTTS(),
+                runtime_metrics=FakeRuntimeMetrics(),
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+
+        response = TestClient(app).post(
+            "/tts",
+            json={"text": "测试", "real_user_id": "master", "character_pack_id": "reimu"},
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"], "requested_tts_provider_unavailable")
+        self.assertFalse(response.json()["retryable"])
+        self.assertEqual(response.headers.get("x-akane-tts-requested-provider"), "provider.tts.gpt_sovits.local")
+        self.assertEqual(response.headers.get("x-akane-tts-provider"), "")
+        self.assertEqual(response.headers.get("x-akane-tts-fallback"), "")
+        self.assertEqual(response.headers.get("x-akane-tts-reason"), "requested_voice_profile_missing")
+
+    def test_tts_route_forwards_selected_voice_to_public_service_and_preserves_failure(self) -> None:
+        from companion_v01.tts_service import SynthesizedTTSResult, TTSServiceError
+        calls = []
+        async def public_service(**request):
+            calls.append(request)
+            if request["text"] == "失败":
+                raise TTSServiceError("tts_synthesis_failed", outcome_known=False)
+            return SynthesizedTTSResult(b"fixture-audio", "audio/wav", request["voice"]["provider"],
+                request["voice"]["profile_id"], request["emotion"], "", "",
+                origin={"plugin_id": "fixture.tts", "generation_id": "fixture-generation"})
+        with tempfile.TemporaryDirectory() as directory:
+            app = FastAPI()
+            engine = SimpleNamespace(desktop_pet_character_resources=SimpleNamespace(
+                build_character_voice_preference=lambda _: {"provider": "gpt_sovits", "profileId": "character_voice"}))
+            app.include_router(build_voice_router(engine=engine, config_module=SimpleNamespace(DATA_DIR=directory),
+                tts_client=None, runtime_metrics=FakeRuntimeMetrics(), log_event=lambda *_args, **_kwargs: None))
+            with TestClient(app) as client, patch("companion_v01.tts_provider_runtime.synthesize_tts_service", side_effect=public_service):
+                payload = {"text": "测试", "real_user_id": "master", "session_id": "session", "character_pack_id": "character"}
+                response = client.post("/tts", json=payload)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(calls[-1]["voice"]["profile_id"], "character_voice")
+                preview = client.post("/tts", json={**payload, "voiceProfileId": "override_voice"})
+                self.assertEqual(preview.status_code, 200, preview.text)
+                self.assertEqual(calls[-1]["voice"]["profile_id"], "override_voice")
+                self.assertEqual(calls[-1]["context"].character_pack_id, "character")
+                failed = client.post("/tts", json={**payload, "text": "失败"})
+                self.assertEqual(failed.status_code, 503)
+                self.assertEqual(failed.headers["x-akane-tts-reason"], "tts_synthesis_failed")
+                self.assertEqual(failed.headers["x-akane-tts-provider"], "")
+                self.assertEqual(len(calls), 3)
+
+    def test_lrc_parser_normalizes_segments_without_metadata(self) -> None:
+        segments = parse_lrc_segments(
+            "\n".join(
+                [
+                    "[ar:周杰伦]",
+                    "[ti:晴天]",
+                    "[00:01.00][00:03.50]故事的小黄花",
+                    "[00:07.000]<00:07.10>从出生那年就飘着",
+                    "[00:09.00]",
+                ]
+            )
+        )
+
+        self.assertEqual(
+            segments,
+            [
+                {"start": 1.0, "end": 3.5, "text": "故事的小黄花"},
+                {"start": 3.5, "end": 7.0, "text": "故事的小黄花"},
+                {"start": 7.0, "end": 12.0, "text": "从出生那年就飘着"},
+            ],
+        )
+
+    def test_music_lyrics_route_caches_ready_segments_profile_scoped(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def fake_search(query: str, providers: list[str]) -> str:
+            calls.append((query, tuple(providers)))
+            return "[00:01.00]第一句\n[00:04.20]第二句\n[00:07.50]第三句"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(
+                        DATA_DIR=temp_dir,
+                        MUSIC_ONLINE_LYRICS_ENABLED=True,
+                        MUSIC_ONLINE_LYRICS_PROVIDERS="Lrclib,NetEase",
+                    ),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=fake_search,
+                )
+            )
+            client = TestClient(app)
+            payload = {
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "trackKey": "qqmusic::晴天::周杰伦",
+                "title": "晴天",
+                "artist": "周杰伦",
+                "album": "叶惠美",
+                "source": "system_media",
+                "positionSeconds": 135,
+            }
+
+            first = client.post("/capabilities/music/lyrics", json=payload)
+            second = client.post("/capabilities/music/lyrics", json=payload)
+
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            first_payload = first.json()
+            second_payload = second.json()
+            self.assertTrue(first_payload["ok"])
+            self.assertEqual(first_payload["status"], "ready")
+            self.assertFalse(first_payload["cached"])
+            self.assertEqual(first_payload["lineCount"], 3)
+            self.assertEqual(first_payload["segments"][0], {"start": 1.0, "end": 4.2, "text": "第一句"})
+            self.assertTrue(second_payload["cached"])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][0], "晴天 周杰伦")
+            self.assertEqual(calls[0][1], ("Lrclib", "NetEase"))
+
+            cache_root = Path(temp_dir) / "master" / "music" / "lyrics_cache"
+            self.assertTrue(cache_root.exists())
+            combined = json.dumps([first_payload, second_payload], ensure_ascii=False).lower()
+            self.assertNotIn(str(Path(temp_dir)).lower(), combined)
+            self.assertNotIn("api_key", combined)
+            self.assertIn(("capabilities.music_lyrics", True), runtime.observed)
+
+    def test_music_lyrics_route_uses_body_identity_when_query_identity_is_absent(self) -> None:
+        calls: list[str] = []
+
+        def fake_search(query: str, _providers: list[str]) -> str:
+            calls.append(query)
+            return "[00:01.00]第一句\n[00:04.00]第二句"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=fake_search,
+                )
+            )
+            response = TestClient(app).post(
+                "/capabilities/music/lyrics?t=1",
+                json={
+                    "user_id": "desktop_pet_next",
+                    "real_user_id": "body_master",
+                    "title": "晴天",
+                    "artist": "周杰伦",
+                    "source": "system_media",
+                },
+            )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(calls, ["晴天 周杰伦"])
+            self.assertTrue((Path(temp_dir) / "body_master" / "music" / "lyrics_cache").exists())
+            self.assertFalse((Path(temp_dir) / "session" / "music" / "lyrics_cache").exists())
+
+            mixed = TestClient(app).post(
+                "/capabilities/music/lyrics?user_id=query_session&t=2",
+                json={
+                    "real_user_id": "mixed_master",
+                    "title": "七里香",
+                    "artist": "周杰伦",
+                    "source": "system_media",
+                },
+            )
+            self.assertEqual(mixed.status_code, 200)
+            self.assertTrue((Path(temp_dir) / "mixed_master" / "music" / "lyrics_cache").exists())
+            self.assertFalse((Path(temp_dir) / "query_session" / "music" / "lyrics_cache").exists())
+
+    def test_music_lyrics_route_derives_artist_from_combined_title(self) -> None:
+        calls: list[str] = []
+
+        def fake_search(query: str, _providers: list[str]) -> str:
+            calls.append(query)
+            return "[00:34.68]我说了所有的谎\n[00:42.97]你全都相信\n[00:50.55]简单的我爱你"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=fake_search,
+                )
+            )
+            result = (
+                TestClient(app)
+                .post(
+                    "/capabilities/music/lyrics",
+                    json={
+                        "user_id": "desktop",
+                        "real_user_id": "master",
+                        "trackKey": "qqmusic::淘汰::陈奕迅",
+                        "title": "淘汰 - 陈奕迅",
+                        "artist": "",
+                        "source": "system_media",
+                    },
+                )
+                .json()
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(result["confidence"], "medium")
+            self.assertEqual(result["lineCount"], 3)
+            self.assertEqual(calls, ["淘汰 陈奕迅"])
+
+    def test_music_lyrics_route_cleans_noisy_system_media_artist_for_lookup(self) -> None:
+        calls: list[str] = []
+
+        def fake_search(query: str, _providers: list[str]) -> str:
+            calls.append(query)
+            return "[00:49.00]重力が眠りにつく\n[00:55.00]一千年に一度の今日"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=fake_search,
+                )
+            )
+            client = TestClient(app)
+            payload = {
+                "user_id": "desktop",
+                "real_user_id": "master",
+                "trackKey": "system::grand_escape",
+                "title": "グランドエスケープ feat.三浦透子",
+                "artist": "RADWIMPS (ラッドウィンプス)/三浦透子 (みうら とうこ)",
+                "source": "system_media",
+            }
+
+            first = client.post("/capabilities/music/lyrics", json=payload).json()
+            second = client.post("/capabilities/music/lyrics", json=payload).json()
+
+            self.assertTrue(first["ok"])
+            self.assertEqual(first["status"], "ready")
+            self.assertEqual(calls, ["グランドエスケープ feat.三浦透子 RADWIMPS 三浦透子"])
+            self.assertTrue(second["cached"])
+            self.assertEqual(len(calls), 1)
+
+    def test_music_lyrics_route_returns_structured_failures_without_network(self) -> None:
+        disabled_app = FastAPI()
+        disabled_app.include_router(
+            build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}),
+                config_module=SimpleNamespace(MUSIC_ONLINE_LYRICS_ENABLED=False),
+                resolve_identity_from_query=resolve_query,
+            )
+        )
+        disabled = (
+            TestClient(disabled_app)
+            .post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "晴天", "artist": "周杰伦"},
+            )
+            .json()
+        )
+        self.assertFalse(disabled["ok"])
+        self.assertEqual(disabled["status"], "disabled")
+        self.assertEqual(disabled["reason"], "network_lyrics_disabled")
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch(
+                "companion_v01.music_lyrics.syncedlyrics_available",
+                return_value=False,
+            ),
+        ):
+            missing_dep_app = FastAPI()
+            missing_dep_app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            missing_dep = (
+                TestClient(missing_dep_app)
+                .post(
+                    "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                    json={"title": "晴天", "artist": "周杰伦"},
+                )
+                .json()
+            )
+            self.assertFalse(missing_dep["ok"])
+            self.assertEqual(missing_dep["status"], "unavailable")
+            self.assertEqual(missing_dep["reason"], "syncedlyrics_missing")
+            self.assertEqual(missing_dep["segments"], [])
+
+        calls: list[str] = []
+
+        def not_found_search(query: str, _providers: list[str]) -> str:
+            calls.append(query)
+            return ""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            not_found_app = FastAPI()
+            not_found_app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir, MUSIC_ONLINE_LYRICS_ENABLED=True),
+                    resolve_identity_from_query=resolve_query,
+                    lyrics_searcher=not_found_search,
+                )
+            )
+            client = TestClient(not_found_app)
+            not_found = client.post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "晴天", "artist": "周杰伦"},
+            ).json()
+            cached = client.post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "晴天", "artist": "周杰伦"},
+            ).json()
+            low_confidence = client.post(
+                "/capabilities/music/lyrics?user_id=desktop&real_user_id=master",
+                json={"title": "只有歌名"},
+            ).json()
+
+            self.assertFalse(not_found["ok"])
+            self.assertEqual(not_found["status"], "not-found")
+            self.assertEqual(not_found["reason"], "lyrics_not_found")
+            self.assertTrue(cached["cached"])
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(low_confidence["ok"])
+            self.assertEqual(low_confidence["status"], "low-confidence")
+            self.assertEqual(low_confidence["segments"], [])
+
+    def test_capabilities_workflows_are_read_only_and_do_not_fake_readiness(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    provider_health_checker=lambda _host, _port, _timeout: (False, "connection failed"),
+                )
+            )
+            client = TestClient(app)
+
+            missing = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master")
+            self.assertEqual(missing.status_code, 200)
+            missing_payload = missing.json()
+            self.assertTrue(missing_payload["ok"])
+            self.assertEqual(missing_payload["execution"], "read-only")
+            workflow = {item["id"]: item for item in missing_payload["workflows"]}["workflow.workshop.portrait.cutout"]
+            self.assertEqual(workflow["kind"], "workflow")
+            self.assertEqual(workflow["capabilityId"], "workshop.portrait.cutout")
+            self.assertEqual(workflow["workflowId"], "workflow.comfyui.portrait_cutout")
+            self.assertEqual(workflow["providerId"], "provider.comfyui.local")
+            self.assertEqual(workflow["target"], "character_pack_assets")
+            self.assertEqual(workflow["output"], "transparent_png")
+            self.assertEqual(workflow["status"], "missing_config")
+            self.assertFalse(workflow["enabled"])
+            self.assertIn("input_image_handle", workflow["slots"]["required"])
+            self.assertIn("output_image_handle", workflow["slots"]["required"])
+
+            saved = client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            ).json()
+            self.assertTrue(saved["ok"])
+            configured = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
+            configured_workflow = {item["id"]: item for item in configured["workflows"]}[
+                "workflow.workshop.portrait.cutout"
+            ]
+            self.assertEqual(configured_workflow["status"], "missing_workflow")
+            self.assertEqual(configured_workflow["reason"], "workflow_binding_missing")
+            self.assertFalse(configured_workflow["enabled"])
+
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/health-check?user_id=desktop&real_user_id=master",
+                json={},
+            )
+            unreachable = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
+            unreachable_workflow = {item["id"]: item for item in unreachable["workflows"]}[
+                "workflow.workshop.portrait.cutout"
+            ]
+            self.assertEqual(unreachable_workflow["status"], "unreachable")
+            self.assertFalse(unreachable_workflow["enabled"])
+
+            body = json.dumps(unreachable, ensure_ascii=False).lower()
+            for sensitive in ("api_key", "password", "secret", "token", str(Path(temp_dir)).lower()):
+                self.assertNotIn(sensitive, body)
+            self.assertIn(("capabilities.workflows", True), runtime.observed)
+
+    def test_capabilities_workflow_config_skeleton_persists_safe_binding_without_execution(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            provider = client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            ).json()
+            self.assertTrue(provider["ok"])
+
+            saved_response = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": r"workflows\comfyui\portrait_cutout.json?token=secret",
+                    "slotMapping": {
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
+                        "ignored_extra": "should_not_echo",
+                    },
+                },
+            )
+            saved = saved_response.json()
+            self.assertFalse(saved["ok"])
+            self.assertEqual(saved["status"], "invalid_workflow_config")
+
+            saved_response = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": r"workflows\comfyui\portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
+                        "ignored_extra": "should_not_echo",
+                    },
+                },
+            )
+            self.assertEqual(saved_response.status_code, 200)
+            saved = saved_response.json()
+            self.assertTrue(saved["ok"])
+            self.assertEqual(saved["status"], "saved")
+            self.assertFalse(saved["executionReady"])
+            workflow = saved["workflow"]
+            self.assertEqual(workflow["workflowPath"], "workflows/comfyui/portrait_cutout.json")
+            self.assertEqual(workflow["status"], "configured")
+            self.assertEqual(workflow["reason"], "workflow_runtime_not_bound")
+            self.assertFalse(workflow["executionReady"])
+            self.assertNotIn("ignored_extra", json.dumps(workflow, ensure_ascii=False))
+
+            validated_missing_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/validate?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertFalse(validated_missing_file["ok"])
+            self.assertEqual(validated_missing_file["status"], "invalid_workflow_config")
+            self.assertEqual(validated_missing_file["reason"], "workflow_file_missing")
+            self.assertFalse(validated_missing_file["checks"]["workflowFile"])
+
+            rejected_workflow_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/file?user_id=desktop&real_user_id=master",
+                json={
+                    "workflowPath": r"workflows\comfyui\portrait_cutout.json",
+                    "workflowJson": "{not-json",
+                },
+            ).json()
+            self.assertFalse(rejected_workflow_file["ok"])
+            self.assertEqual(rejected_workflow_file["status"], "invalid_workflow_config")
+            self.assertEqual(rejected_workflow_file["reason"], "workflow_file_invalid_json")
+
+            imported_workflow_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/file?user_id=desktop&real_user_id=master",
+                json={
+                    "workflowPath": r"workflows\comfyui\portrait_cutout.json",
+                    "workflowJson": json.dumps(
+                        {
+                            "12": {"class_type": "LoadImage", "inputs": {"image": "old.png"}},
+                            "20": {"class_type": "SaveImage", "inputs": {"filename_prefix": "old"}},
+                        }
+                    ),
+                },
+            ).json()
+            self.assertTrue(imported_workflow_file["ok"])
+            self.assertEqual(imported_workflow_file["status"], "workflow_file_saved")
+            self.assertEqual(imported_workflow_file["workflowPath"], "workflows/comfyui/portrait_cutout.json")
+            imported_file_path = (
+                Path(temp_dir) / "master" / "capabilities" / "workflows" / "comfyui" / "portrait_cutout.json"
+            )
+            self.assertTrue(imported_file_path.is_file())
+            imported_text = imported_file_path.read_text(encoding="utf-8").lower()
+            self.assertNotIn(str(Path(temp_dir)).lower(), imported_text)
+            self.assertNotIn("token", imported_text)
+
+            validated = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/validate?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertTrue(validated["ok"])
+            self.assertEqual(validated["status"], "validated_config")
+            self.assertFalse(validated["executionReady"])
+            self.assertTrue(validated["checks"]["providerConfigured"])
+            self.assertTrue(validated["checks"]["workflowConfigured"])
+            self.assertTrue(validated["checks"]["requiredSlots"])
+            self.assertTrue(validated["checks"]["workflowFile"])
+            self.assertTrue(validated["checks"]["slotPaths"])
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["workflow.workshop.portrait.cutout"]["status"], "configured")
+            self.assertFalse(by_id["workflow.workshop.portrait.cutout"]["executionReady"])
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            self.assertIn("workflows/comfyui/portrait_cutout.json", config_text)
+            for forbidden in ("token", "secret", "ignored_extra", str(Path(temp_dir))):
+                self.assertNotIn(forbidden.lower(), config_text.lower())
+
+            rejected_path = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "workflowPath": r"C:\Users\ExampleUser\workflow.json"},
+            ).json()
+            self.assertFalse(rejected_path["ok"])
+            self.assertEqual(rejected_path["status"], "invalid_workflow_config")
+
+            rejected_slots = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {"input_image_handle": "input image"},
+                },
+            ).json()
+            self.assertFalse(rejected_slots["ok"])
+            self.assertIn(rejected_slots["status"], {"missing_slot_mapping", "invalid_workflow_config"})
+            self.assertIn(("capabilities.workflow_config", True), runtime.observed)
+            self.assertIn(("capabilities.workflow_config", False), runtime.observed)
+            self.assertIn(("capabilities.workflow_file", True), runtime.observed)
+            self.assertIn(("capabilities.workflow_file", False), runtime.observed)
+            self.assertIn(("capabilities.workflow_validate", True), runtime.observed)
+
+    def test_capabilities_workflow_preflight_is_safe_and_inert(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            missing = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["status"], "missing_config")
+            self.assertFalse(missing["executionReady"])
+            self.assertFalse(missing["canRun"])
+            self.assertFalse(missing["checks"]["providerConfigured"])
+            self.assertFalse(missing["checks"]["runnerBound"])
+
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            )
+            client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
+                    },
+                },
+            )
+
+            rejected = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": r"C:\Users\ExampleUser\secret.png",
+                    "outputImageHandle": "portrait_cutout",
+                },
+            ).json()
+            self.assertFalse(rejected["ok"])
+            self.assertEqual(rejected["status"], "invalid_request")
+            self.assertEqual(rejected["reason"], "asset_handle_must_be_safe_opaque_id")
+            rejected_text = json.dumps(rejected, ensure_ascii=False).lower()
+            self.assertNotIn("secret.png", rejected_text)
+            self.assertNotIn(str(Path(temp_dir)).lower(), rejected_text)
+
+            missing_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertFalse(missing_file["ok"])
+            self.assertEqual(missing_file["status"], "invalid_workflow_config")
+            self.assertEqual(missing_file["reason"], "workflow_file_missing")
+            self.assertFalse(missing_file["checks"]["workflowFile"])
+
+            write_valid_cutout_workflow(temp_dir)
+            ready_but_inert = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertFalse(ready_but_inert["ok"])
+            self.assertEqual(ready_but_inert["status"], "not-implemented")
+            self.assertEqual(ready_but_inert["reason"], "workflow_runner_not_bound")
+            self.assertFalse(ready_but_inert["executionReady"])
+            self.assertFalse(ready_but_inert["canRun"])
+            self.assertTrue(ready_but_inert["checks"]["providerConfigured"])
+            self.assertTrue(ready_but_inert["checks"]["workflowConfigured"])
+            self.assertTrue(ready_but_inert["checks"]["workflowFile"])
+            self.assertTrue(ready_but_inert["checks"]["slotPaths"])
+            self.assertTrue(ready_but_inert["checks"]["inputImageHandle"])
+            self.assertTrue(ready_but_inert["checks"]["outputImageHandle"])
+            self.assertFalse(ready_but_inert["checks"]["runnerBound"])
+            self.assertEqual(ready_but_inert["acceptedInputs"]["inputImageHandle"], "portrait_source")
+            self.assertEqual(ready_but_inert["acceptedInputs"]["outputImageHandle"], "portrait_cutout")
+
+            unknown = client.post(
+                "/capabilities/workflows/unknown.workflow/preflight?user_id=desktop&real_user_id=master",
+                json={},
+            )
+            self.assertEqual(unknown.status_code, 404)
+            self.assertEqual(unknown.json()["status"], "unknown_workflow")
+            self.assertIn(("capabilities.workflow_preflight", False), runtime.observed)
+
+    def test_capabilities_workflow_job_routes_are_inert_and_safe(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            missing = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            )
+            self.assertEqual(missing.status_code, 200)
+            missing_payload = missing.json()
+            self.assertFalse(missing_payload["ok"])
+            self.assertEqual(missing_payload["status"], "missing_config")
+            self.assertNotIn("jobId", missing_payload)
+
+            unknown = client.post(
+                "/capabilities/workflows/unknown.workflow/jobs?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            )
+            self.assertEqual(unknown.status_code, 404)
+            self.assertEqual(unknown.json()["status"], "unknown_workflow")
+
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            )
+            client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
+                    },
+                },
+            )
+
+            rejected = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": "https://example.test/portrait.png?token=secret",
+                    "outputImageHandle": "portrait_cutout",
+                    "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
+                },
+            )
+            self.assertEqual(rejected.status_code, 200)
+            rejected_payload = rejected.json()
+            self.assertFalse(rejected_payload["ok"])
+            self.assertEqual(rejected_payload["status"], "invalid_request")
+            self.assertNotIn("jobId", rejected_payload)
+
+            missing_file = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": "portrait_source",
+                    "outputImageHandle": "portrait_cutout",
+                    "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
+                },
+            ).json()
+            self.assertFalse(missing_file["ok"])
+            self.assertEqual(missing_file["status"], "invalid_workflow_config")
+            self.assertEqual(missing_file["reason"], "workflow_file_missing")
+            self.assertNotIn("jobId", missing_file)
+
+            write_valid_cutout_workflow(temp_dir)
+            inert = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": "portrait_source",
+                    "outputImageHandle": "portrait_cutout",
+                    "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
+                    "token": "secret",
+                },
+            )
+            self.assertEqual(inert.status_code, 200)
+            inert_payload = inert.json()
+            self.assertFalse(inert_payload["ok"])
+            self.assertEqual(inert_payload["status"], "not-implemented")
+            self.assertEqual(inert_payload["reason"], "workflow_runner_not_bound")
+            self.assertFalse(inert_payload["executionReady"])
+            self.assertFalse(inert_payload["canRun"])
+            self.assertNotIn("jobId", inert_payload)
+            self.assertNotIn("jobStatus", inert_payload)
+            self.assertNotIn("job", inert_payload)
+
+            unknown_job = client.get("/capabilities/workflow-jobs/token_secret?user_id=desktop&real_user_id=master")
+            self.assertEqual(unknown_job.status_code, 404)
+            self.assertEqual(unknown_job.json()["status"], "unknown_workflow_job")
+
+            combined_text = json.dumps(
+                [
+                    missing_payload,
+                    unknown.json(),
+                    rejected_payload,
+                    inert_payload,
+                    unknown_job.json(),
+                ],
+                ensure_ascii=False,
+            ).lower()
+            for forbidden in (
+                "https://example.test",
+                "portrait.png",
+                "raw_image_bytes_should_not_echo",
+                "token",
+                "secret",
+                str(Path(temp_dir)).lower(),
+            ):
+                self.assertNotIn(forbidden, combined_text)
+            self.assertIn(("capabilities.workflow_job_start", False), runtime.observed)
+            self.assertIn(("capabilities.workflow_job_status", False), runtime.observed)
+
+    def test_capabilities_workflow_job_routes_use_bound_background_runner(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        background = BackgroundTaskRunner({"workflow": 1})
+        self.addCleanup(background.close)
+        runner = FakeWorkflowRunner(
+            {
+                "ok": True,
+                "status": "completed",
+                "reason": "cutout_done",
+                "outputs": [
+                    {"handle": "portrait_cutout", "kind": "image", "contentType": "image/png"},
+                    {"handle": "token_secret_output", "kind": "image", "contentType": "image/png"},
+                    {"handle": r"C:\Users\ExampleUser\portrait.png", "kind": "image"},
+                ],
+                "outputAssets": [
+                    WorkflowExecutionAsset(
+                        handle="portrait_cutout",
+                        data=b"\x89PNG\r\n\x1a\ncutout",
+                        content_type="image/png",
+                    ),
+                    {
+                        "handle": "token_secret_output",
+                        "bytes": [137, 80, 78, 71, 13, 10, 26, 10],
+                        "contentType": "image/png",
+                    },
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workflow_jobs = build_test_workflow_job_runtime(
+                temp_dir,
+                runner=runner,
+                background=background,
+            )
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    workflow_runner=runner,
+                    background_tasks=background,
+                    workflow_job_runtime=workflow_jobs,
+                )
+            )
+            client = TestClient(app)
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            )
+            client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
+                    },
+                },
+            )
+            missing_file_catalog = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
+            missing_file_workflow = {item["id"]: item for item in missing_file_catalog["workflows"]}[
+                "workflow.workshop.portrait.cutout"
+            ]
+            self.assertEqual(missing_file_workflow["status"], "invalid_workflow_config")
+            self.assertEqual(missing_file_workflow["reason"], "workflow_file_missing")
+            self.assertFalse(missing_file_workflow["executionReady"])
+
+            write_valid_cutout_workflow(temp_dir)
+            ready_catalog = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
+            ready_workflow = {item["id"]: item for item in ready_catalog["workflows"]}[
+                "workflow.workshop.portrait.cutout"
+            ]
+            self.assertEqual(ready_workflow["status"], "ready")
+            self.assertTrue(ready_workflow["executionReady"])
+
+            preflight = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertTrue(preflight["ok"])
+            self.assertEqual(preflight["status"], "ready")
+            self.assertTrue(preflight["executionReady"])
+            self.assertTrue(preflight["canRun"])
+            self.assertTrue(preflight["checks"]["runnerBound"])
+            self.assertTrue(preflight["checks"]["workflowFile"])
+            self.assertTrue(preflight["checks"]["slotPaths"])
+
+            started = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={
+                    "inputImageHandle": "portrait_source",
+                    "outputImageHandle": "portrait_cutout",
+                    "inputImageBytes": [137, 80, 78, 71, 13, 10, 26, 10, 115, 111, 117, 114, 99, 101],
+                    "imageBytes": "RAW_IMAGE_BYTES_SHOULD_NOT_ECHO",
+                },
+            ).json()
+            self.assertTrue(started["ok"])
+            self.assertEqual(started["status"], "queued")
+            self.assertIn(started["jobStatus"], {"queued", "running", "completed"})
+            self.assertTrue(started["job"]["runner"]["bound"])
+            job_id = started["jobId"]
+
+            self.assertTrue(background.wait_idle(lane="workflow", timeout=2.0))
+            status_payload = client.get(
+                f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertTrue(status_payload["ok"])
+            self.assertEqual(status_payload["status"], "completed")
+            self.assertEqual(status_payload["reason"], "cutout_done")
+            self.assertEqual(
+                status_payload["job"]["outputs"],
+                [{"handle": "portrait_cutout", "kind": "image", "contentType": "image/png"}],
+            )
+            self.assertEqual(len(runner.requests), 1)
+            self.assertEqual(runner.requests[0].profile_user_id, "master")
+            self.assertEqual(runner.requests[0].session_id, "desktop")
+            self.assertEqual(runner.requests[0].inputs["inputImageHandle"], "portrait_source")
+            self.assertEqual(runner.requests[0].inputs["outputImageHandle"], "portrait_cutout")
+            self.assertEqual(runner.requests[0].input_assets["portrait_source"].data, b"\x89PNG\r\n\x1a\nsource")
+            self.assertNotIn("_workflow", status_payload["job"])
+            self.assertNotIn("_outputAssets", status_payload["job"])
+
+            output_response = client.get(
+                f"/capabilities/workflow-jobs/{job_id}/outputs/portrait_cutout?user_id=desktop&real_user_id=master"
+            )
+            self.assertEqual(output_response.status_code, 200)
+            self.assertEqual(output_response.content, b"\x89PNG\r\n\x1a\ncutout")
+            self.assertEqual(output_response.headers["content-type"], "image/png")
+
+            restarted_app = FastAPI()
+            restarted_app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    resolve_identity_from_query=resolve_query,
+                    workflow_runner=runner,
+                    background_tasks=background,
+                    workflow_job_runtime=build_test_workflow_job_runtime(
+                        temp_dir,
+                        runner=runner,
+                        background=background,
+                    ),
+                )
+            )
+            restarted_client = TestClient(restarted_app)
+            restarted_status = restarted_client.get(
+                f"/capabilities/workflow-jobs/{job_id}?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertEqual(restarted_status["status"], "completed")
+            restarted_output = restarted_client.get(
+                f"/capabilities/workflow-jobs/{job_id}/outputs/portrait_cutout?user_id=desktop&real_user_id=master"
+            )
+            self.assertEqual(restarted_output.content, b"\x89PNG\r\n\x1a\ncutout")
+
+            wrong_profile_output = client.get(
+                f"/capabilities/workflow-jobs/{job_id}/outputs/portrait_cutout?user_id=desktop&real_user_id=other_profile"
+            )
+            self.assertEqual(wrong_profile_output.status_code, 404)
+            combined_text = json.dumps([started, status_payload], ensure_ascii=False).lower()
+            for forbidden in (
+                "raw_image_bytes_should_not_echo",
+                "token_secret_output",
+                "users\\exampleuser",
+                "portrait.png",
+                str(Path(temp_dir)).lower(),
+            ):
+                self.assertNotIn(forbidden, combined_text)
+            self.assertIn(("capabilities.workflow_job_start", True), runtime.observed)
+            self.assertIn(("capabilities.workflow_job_status", True), runtime.observed)
+
+    def test_capabilities_workflow_job_runner_failure_is_structured(self) -> None:
+        background = BackgroundTaskRunner({"workflow": 1})
+        self.addCleanup(background.close)
+        runner = ExplodingWorkflowRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    resolve_identity_from_query=resolve_query,
+                    workflow_runner=runner,
+                    background_tasks=background,
+                    workflow_job_runtime=build_test_workflow_job_runtime(
+                        temp_dir,
+                        runner=runner,
+                        background=background,
+                    ),
+                )
+            )
+            client = TestClient(app)
+            client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            )
+            client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "workflowPath": "workflows/comfyui/portrait_cutout.json",
+                    "slotMapping": {
+                        "input_image_handle": "12.inputs.image",
+                        "output_image_handle": "20.inputs.filename_prefix",
+                    },
+                },
+            )
+            write_valid_cutout_workflow(temp_dir)
+
+            started = client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/jobs?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertTrue(started["ok"])
+            self.assertTrue(background.wait_idle(lane="workflow", timeout=2.0))
+
+            status_payload = client.get(
+                f"/capabilities/workflow-jobs/{started['jobId']}?user_id=desktop&real_user_id=master"
+            ).json()
+            self.assertTrue(status_payload["ok"])
+            self.assertEqual(status_payload["status"], "failed")
+            self.assertEqual(status_payload["reason"], "workflow_runner_failed")
+            self.assertEqual(status_payload["job"]["outputs"], [])
+            self.assertEqual(len(runner.requests), 1)
+            combined_text = json.dumps([started, status_payload], ensure_ascii=False).lower()
+            for forbidden in ("secret", "token", "users\\exampleuser", "portrait.png", str(Path(temp_dir)).lower()):
+                self.assertNotIn(forbidden, combined_text)
+
+    def test_capabilities_local_environment_check_is_discovery_not_enablement(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        def fake_probe() -> dict[str, Any]:
+            return {
+                "ok": True,
+                "status": "checked",
+                "schemaVersion": 1,
+                "autoEnable": False,
+                "services": [
+                    {
+                        "id": "provider.comfyui.local",
+                        "kind": "provider",
+                        "type": "asset_processor",
+                        "source": "external_executor",
+                        "adapter": "comfyui",
+                        "executionMode": "external",
+                        "enabled": False,
+                        "status": "ready",
+                        "endpoint": "http://127.0.0.1:8188",
+                        "discovered": True,
+                        "bindable": True,
+                    }
+                ],
+                "summary": {"total": 1},
+            }
+
+        app = FastAPI()
+        app.include_router(
+            build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}),
+                runtime_metrics=runtime,
+                local_environment_probe=fake_probe,
+            )
+        )
+
+        response = TestClient(app).post("/capabilities/local-environment-check")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["autoEnable"])
+        self.assertEqual(payload["services"][0]["adapter"], "comfyui")
+        self.assertEqual(payload["services"][0]["source"], "external_executor")
+        self.assertFalse(payload["services"][0]["enabled"])
+        self.assertIn(("capabilities.local_environment_check", True), runtime.observed)
+
+    def test_capabilities_provider_config_skeleton_persists_profile_scoped_local_endpoint(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            initial = client.get("/capabilities/providers?user_id=desktop&real_user_id=master").json()
+            comfy = {item["id"]: item for item in initial["providers"]}["provider.comfyui.local"]
+            self.assertEqual(comfy["source"], "external_executor")
+            self.assertEqual(comfy["type"], "asset_processor")
+            self.assertEqual(comfy["adapter"], "comfyui")
+            self.assertEqual(comfy["executionMode"], "external")
+            self.assertFalse(comfy["configured"])
+            self.assertEqual(comfy["status"], "missing_config")
+
+            saved_response = client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188/ui?token=secret"},
+            )
+            self.assertEqual(saved_response.status_code, 200)
+            saved = saved_response.json()
+            self.assertTrue(saved["ok"])
+            self.assertEqual(saved["status"], "saved")
+            self.assertFalse(saved["autoEnable"])
+            self.assertEqual(saved["provider"]["endpoint"], "http://127.0.0.1:8188")
+            self.assertEqual(saved["provider"]["status"], "configured")
+            self.assertNotIn(str(Path(temp_dir)), saved_response.text)
+            self.assertNotIn("secret", saved_response.text.lower())
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            self.assertTrue(config_path.exists())
+            config_text = config_path.read_text(encoding="utf-8")
+            self.assertIn("provider.comfyui.local", config_text)
+            self.assertNotIn("secret", config_text.lower())
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            by_id = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertEqual(by_id["provider.comfyui.local"]["status"], "configured")
+            self.assertTrue(by_id["provider.comfyui.local"]["configured"])
+
+            invalid = client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "https://example.com:8188"},
+            ).json()
+            self.assertFalse(invalid["ok"])
+            self.assertEqual(invalid["status"], "invalid_config")
+            self.assertIn(("capabilities.provider_config", True), runtime.observed)
+            self.assertIn(("capabilities.provider_config", False), runtime.observed)
+
+    def test_capabilities_provider_tts_test_returns_short_audio_without_persisting_profile(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        calls: list[dict[str, str]] = []
+
+        async def fake_tts_runner(*, endpoint: str, text: str, voice_profile_id: str):
+            calls.append({"endpoint": endpoint, "text": text, "voiceProfileId": voice_profile_id})
+            return SimpleNamespace(audio=b"wav-bytes", media_type="audio/wav")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    provider_tts_test_runner=fake_tts_runner,
+                )
+            )
+            client = TestClient(app)
+
+            response = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/tts-test?user_id=desktop&real_user_id=master",
+                json={
+                    "endpoint": "http://localhost:9880/ui?token=secret",
+                    "text": "  你好，测试一下  ",
+                    "voiceProfileId": r"reimu_main",
+                    "token": "must-not-return",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "tts-test-ready")
+        self.assertEqual(payload["providerId"], "provider.tts.gpt_sovits.local")
+        self.assertEqual(payload["mediaType"], "audio/wav")
+        self.assertEqual(payload["audioBase64"], "d2F2LWJ5dGVz")
+        self.assertEqual(payload["audioBytes"], 9)
+        self.assertEqual(payload["voiceProfileId"], "reimu_main")
+        self.assertEqual(payload["profileSource"], "missing")
+        self.assertFalse(payload["profileApplied"])
+        self.assertEqual(payload["checks"]["endpoint"], True)
+        self.assertEqual(payload["checks"]["voiceProfileId"], True)
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "endpoint": "http://127.0.0.1:9880",
+                    "text": "你好，测试一下",
+                    "voiceProfileId": "reimu_main",
+                }
+            ],
+        )
+        serialized = response.text.lower()
+        self.assertNotIn("token", serialized)
+        self.assertNotIn("secret", serialized)
+        config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+        self.assertFalse(config_path.exists(), "tts-test must not persist profile or provider config")
+        self.assertIn(("capabilities.provider_tts_test", True), runtime.observed)
+
+    def test_capabilities_provider_tts_test_loads_saved_voice_profile_fields(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        calls: list[dict[str, Any]] = []
+
+        async def public_service(**request):
+            calls.append({"endpoint": request["preview"]["endpoint"], "text": request["text"],
+                "voiceProfileId": request["voice"]["profile_id"], "profile": request["preview"]["profile"]})
+            return SimpleNamespace(audio=b"saved-profile-wav", media_type="audio/wav")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_voice_profile_config(
+                base_dir=temp_dir,
+                profile_user_id="master",
+                voice_profile_id="dania",
+                payload={
+                    "providerId": "provider.tts.gpt_sovits.local",
+                    "enabled": True,
+                    "displayName": "Dania",
+                    "textLang": "zh",
+                    "promptLang": "zh",
+                    "mediaType": "wav",
+                    "refAudioPath": r"C:\voices\dania_ref.wav",
+                    "promptText": "这是保存好的参考文本。",
+                },
+            )
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            with patch("companion_v01.routes.capabilities.synthesize_tts_service", side_effect=public_service):
+                response = client.post(
+                    "/capabilities/providers/provider.tts.gpt_sovits.local/tts-test?user_id=desktop&real_user_id=master",
+                    json={
+                        "endpoint": "http://127.0.0.1:9880",
+                        "text": "  你好  ",
+                        "voiceProfileId": "dania",
+                    },
+                )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["status"], "tts-test-ready")
+            self.assertEqual(payload["audioBase64"], "c2F2ZWQtcHJvZmlsZS13YXY=")
+            self.assertEqual(payload["voiceProfileId"], "dania")
+            self.assertEqual(payload["profileApplied"], True)
+            self.assertEqual(payload["profileSource"], "saved")
+            self.assertEqual(payload["checks"]["refAudio"], True)
+            self.assertEqual(payload["checks"]["promptText"], True)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["endpoint"], "http://127.0.0.1:9880")
+            self.assertEqual(calls[0]["text"], "你好")
+            self.assertEqual(calls[0]["voiceProfileId"], "dania")
+            self.assertEqual(calls[0]["profile"]["refAudioPath"], r"C:\voices\dania_ref.wav")
+            self.assertEqual(calls[0]["profile"]["promptText"], "这是保存好的参考文本。")
+            self.assertEqual(calls[0]["profile"]["promptLang"], "zh")
+            response_text = response.text.lower()
+            self.assertNotIn(r"c:\voices", response_text)
+            self.assertNotIn("保存好的参考文本", response.text)
+            self.assertIn(("capabilities.provider_tts_test", True), runtime.observed)
+
+    def test_capabilities_voice_profile_config_saves_private_fields_without_public_leak(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            response = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/reimu_main/config?user_id=desktop&real_user_id=master",
+                json={
+                    "enabled": True,
+                    "displayName": "Reimu Main",
+                    "textLang": "zh",
+                    "promptLang": "zh",
+                    "mediaType": "wav",
+                    "refAudioPath": r"C:\Users\ExampleUser\voices\reimu_ref.wav",
+                    "promptText": "主人，今天也要一起努力。",
+                    "streamingMode": True,
+                    "parallelInfer": True,
+                    "splitBucket": False,
+                    "batchSize": 1,
+                    "topK": 8,
+                    "topP": 0.85,
+                    "temperature": 0.6,
+                    "speedFactor": 1.05,
+                    "fragmentInterval": 0.1,
+                    "textSplitMethod": "cut5",
+                    "token": "must-not-return",
+                },
+            )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["status"], "saved")
+            self.assertEqual(payload["voiceProfileId"], "reimu_main")
+            public_profile = payload["voiceProfile"]
+            self.assertEqual(public_profile["voiceProfileId"], "reimu_main")
+            self.assertEqual(public_profile["providerId"], "provider.tts.gpt_sovits.local")
+            self.assertEqual(public_profile["referenceAudioName"], "reimu_ref.wav")
+            self.assertEqual(public_profile["promptTextLength"], len("主人，今天也要一起努力。"))
+            response_text = response.text.lower()
+            self.assertNotIn(r"c:\users", response_text)
+            self.assertNotIn("exampleuser", response_text)
+            self.assertNotIn(str(Path(temp_dir)).lower(), response_text)
+            self.assertNotIn("主人，今天也要一起努力", response.text)
+            self.assertNotIn("token", response_text)
+            self.assertNotIn("secret", response_text)
+
+            profiles_payload = client.get("/capabilities/voice-profiles?user_id=desktop&real_user_id=master").json()
+            profiles_text = json.dumps(profiles_payload, ensure_ascii=False).lower()
+            self.assertTrue(profiles_payload["ok"])
+            self.assertEqual(profiles_payload["summary"]["total"], 1)
+            self.assertNotIn(r"c:\users", profiles_text)
+            self.assertNotIn("exampleuser", profiles_text)
+            self.assertNotIn(str(Path(temp_dir)).lower(), profiles_text)
+            self.assertNotIn("主人，今天也要一起努力", json.dumps(profiles_payload, ensure_ascii=False))
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            config_data = json.loads(config_text)
+            stored_profile = config_data["voiceProfiles"]["reimu_main"]
+            self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\ExampleUser\voices\reimu_ref.wav")
+            self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
+            self.assertEqual(stored_profile["streamingMode"], True)
+            self.assertEqual(stored_profile["parallelInfer"], True)
+            self.assertEqual(stored_profile["splitBucket"], False)
+            self.assertEqual(stored_profile["batchSize"], 1)
+            self.assertEqual(stored_profile["topK"], 8)
+            self.assertEqual(stored_profile["topP"], 0.85)
+            self.assertEqual(stored_profile["temperature"], 0.6)
+            self.assertEqual(stored_profile["speedFactor"], 1.05)
+            self.assertEqual(stored_profile["fragmentInterval"], 0.1)
+            self.assertEqual(stored_profile["textSplitMethod"], "cut5")
+
+            update = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/reimu_main/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "displayName": "Reimu Updated", "textLang": "ja"},
+            ).json()
+            self.assertTrue(update["ok"])
+            config_data = json.loads(config_path.read_text(encoding="utf-8"))
+            stored_profile = config_data["voiceProfiles"]["reimu_main"]
+            self.assertEqual(stored_profile["refAudioPath"], r"C:\Users\ExampleUser\voices\reimu_ref.wav")
+            self.assertEqual(stored_profile["promptText"], "主人，今天也要一起努力。")
+            self.assertEqual(stored_profile["streamingMode"], True)
+            self.assertEqual(stored_profile["batchSize"], 1)
+            self.assertEqual(stored_profile["topK"], 8)
+            self.assertEqual(stored_profile["topP"], 0.85)
+            self.assertEqual(stored_profile["temperature"], 0.6)
+            self.assertEqual(stored_profile["textSplitMethod"], "cut5")
+            self.assertIn(("capabilities.voice_profile_config", True), runtime.observed)
+            self.assertIn(("capabilities.voice_profiles", True), runtime.observed)
+
+    def test_capabilities_voice_profile_folder_inspect_suggests_profile_without_persisting(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir = Path(temp_dir) / "models" / "dania"
+            model_dir.mkdir(parents=True)
+            ref_audio = model_dir / "output.wav_0009342720_0009558400.wav"
+            ref_audio.write_bytes(b"RIFFfake-wav")
+            (model_dir / "dania-e15.ckpt").write_bytes(b"gpt")
+            (model_dir / "dania_e16_s2192.pth").write_bytes(b"sovits")
+            (model_dir / "tts_infer.yaml").write_text(
+                "\n".join(
+                    [
+                        "prompt_text: 你好，今天也要一起努力。",
+                        "prompt_lang: zh",
+                        "text_lang: zh",
+                        "media_type: wav",
+                        "ref_audio_path: output.wav_0009342720_0009558400.wav",
+                        "parallel_infer: false",
+                        "split_bucket: false",
+                        "batch_size: 1",
+                        "top_k: 8",
+                        "top_p: 0.85",
+                        "temperature: 0.6",
+                        "speed_factor: 1.0",
+                        "fragment_interval: 0.3",
+                        "text_split_method: cut1",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            response = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/inspect-folder?user_id=desktop&real_user_id=master",
+                json={"folderPath": str(model_dir), "token": "must-not-return"},
+            )
+            payload = response.json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["status"], "inspected")
+            self.assertEqual(payload["providerId"], "provider.tts.gpt_sovits.local")
+            suggested = payload["suggestedProfile"]
+            self.assertEqual(suggested["voiceProfileId"], "dania")
+            self.assertEqual(suggested["displayName"], "dania")
+            self.assertEqual(suggested["textLang"], "zh")
+            self.assertEqual(suggested["promptLang"], "zh")
+            self.assertEqual(suggested["mediaType"], "wav")
+            self.assertEqual(suggested["refAudioPath"], str(ref_audio.resolve()))
+            self.assertEqual(suggested["promptText"], "你好，今天也要一起努力。")
+            self.assertEqual(payload["warnings"], [])
+            self.assertEqual(payload["detected"]["configFileName"], "tts_infer.yaml")
+            self.assertEqual(payload["detected"]["referenceAudioName"], ref_audio.name)
+            self.assertEqual(payload["detected"]["gptWeightName"], "dania-e15.ckpt")
+            self.assertEqual(payload["detected"]["sovitsWeightName"], "dania_e16_s2192.pth")
+            self.assertEqual(suggested["parallelInfer"], False)
+            self.assertEqual(suggested["splitBucket"], False)
+            self.assertEqual(suggested["batchSize"], 1)
+            self.assertEqual(suggested["topK"], 8)
+            self.assertEqual(suggested["topP"], 0.85)
+            self.assertEqual(suggested["temperature"], 0.6)
+            self.assertEqual(suggested["speedFactor"], 1.0)
+            self.assertEqual(suggested["fragmentInterval"], 0.3)
+            self.assertEqual(suggested["textSplitMethod"], "cut1")
+            self.assertFalse(payload["autoEnable"])
+            self.assertFalse(payload["refresh"])
+            self.assertNotIn("token", response.text.lower())
+            self.assertIn(("capabilities.voice_profile_folder_inspect", True), runtime.observed)
+
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            self.assertFalse(config_path.exists(), "inspect-folder must not persist a voice profile")
+            profiles_payload = client.get("/capabilities/voice-profiles?user_id=desktop&real_user_id=master").json()
+            profiles_text = json.dumps(profiles_payload, ensure_ascii=False).lower()
+            self.assertEqual(profiles_payload["summary"]["total"], 0)
+            self.assertNotIn(str(model_dir).lower(), profiles_text)
+            self.assertNotIn("你好，今天也要一起努力", json.dumps(profiles_payload, ensure_ascii=False))
+
+    def test_capabilities_voice_profile_folder_inspect_rejects_unsafe_or_missing_paths(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+            base_url = "/capabilities/providers/provider.tts.gpt_sovits.local/voice-profiles/inspect-folder?user_id=desktop&real_user_id=master"
+            readme_only_dir = Path(temp_dir) / "readme_only"
+            readme_only_dir.mkdir()
+            (readme_only_dir / "README.md").write_text("not a voice model", encoding="utf-8")
+
+            unsafe = client.post(base_url, json={"folderPath": "https://example.com/model"}).json()
+            relative = client.post(base_url, json={"folderPath": "models/dania"}).json()
+            missing = client.post(base_url, json={"folderPath": str(Path(temp_dir) / "missing")}).json()
+            no_model_files = client.post(base_url, json={"folderPath": str(readme_only_dir)}).json()
+            unsupported = client.post(
+                "/capabilities/providers/provider.comfyui.local/voice-profiles/inspect-folder?user_id=desktop&real_user_id=master",
+                json={"folderPath": str(Path(temp_dir))},
+            ).json()
+
+            self.assertFalse(unsafe["ok"])
+            self.assertEqual(unsafe["status"], "invalid_request")
+            self.assertEqual(unsafe["reason"], "model_folder_path_invalid")
+            self.assertFalse(relative["ok"])
+            self.assertEqual(relative["reason"], "model_folder_must_be_absolute")
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["status"], "missing_model_folder")
+            self.assertEqual(missing["reason"], "model_folder_not_found")
+            self.assertFalse(no_model_files["ok"])
+            self.assertEqual(no_model_files["status"], "missing_model_files")
+            self.assertEqual(no_model_files["reason"], "model_folder_has_no_supported_files")
+            self.assertFalse(unsupported["ok"])
+            self.assertEqual(unsupported["status"], "unsupported_provider")
+            self.assertIn(("capabilities.voice_profile_folder_inspect", False), runtime.observed)
+
+    def test_capabilities_provider_tts_test_degrades_with_safe_reason(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        def exploding_tts_runner(*, endpoint: str, text: str, voice_profile_id: str):
+            raise RuntimeError(r"secret token from C:\Users\ExampleUser\voice.wav")
+
+        app = FastAPI()
+        app.include_router(
+            build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                runtime_metrics=runtime,
+                provider_tts_test_runner=exploding_tts_runner,
+            )
+        )
+        client = TestClient(app)
+
+        failed = client.post(
+            "/capabilities/providers/provider.tts.gpt_sovits.local/tts-test",
+            json={"endpoint": "http://127.0.0.1:9880", "text": "测试"},
+        )
+        unsupported = client.post(
+            "/capabilities/providers/provider.comfyui.local/tts-test",
+            json={"endpoint": "http://127.0.0.1:8188"},
+        )
+
+        self.assertEqual(failed.status_code, 200)
+        payload = failed.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "tts-test-failed")
+        self.assertEqual(payload["reason"], "provider_tts_test_failed")
+        self.assertEqual(payload["profileSource"], "none")
+        self.assertEqual(payload["checks"]["endpoint"], True)
+        self.assertNotIn("secret", failed.text.lower())
+        self.assertNotIn("token", failed.text.lower())
+        self.assertNotIn("users", failed.text.lower())
+        self.assertEqual(unsupported.status_code, 200)
+        self.assertEqual(unsupported.json()["status"], "unsupported_provider")
+        self.assertIn(("capabilities.provider_tts_test", False), runtime.observed)
+
+    def test_capabilities_provider_config_load_sanitizes_manual_secret_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "providers": {
+                            "provider.comfyui.local": {
+                                "enabled": True,
+                                "endpoint": "http://127.0.0.1:8188/ui?token=secret",
+                                "api_key": "secret-api-key",
+                                "lastHealth": {
+                                    "status": "unreachable",
+                                    "endpoint": "http://127.0.0.1:8188/ui?token=secret",
+                                    "reason": r"failed token=secret C:\Users\ExampleUser\secret.txt",
+                                },
+                            },
+                            "provider.tts.gpt_sovits.local": {
+                                "enabled": True,
+                                "endpoint": "https://example.com:9880?token=secret",
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            providers_payload = client.get("/capabilities/providers?user_id=desktop&real_user_id=master").json()
+            providers_text = json.dumps(providers_payload, ensure_ascii=False)
+            by_id = {item["id"]: item for item in providers_payload["providers"]}
+
+            self.assertEqual(providers_payload["configStatus"], "partial_invalid_config")
+            self.assertEqual(by_id["provider.comfyui.local"]["endpoint"], "http://127.0.0.1:8188")
+            self.assertEqual(by_id["provider.comfyui.local"]["status"], "unreachable")
+            self.assertEqual(by_id["provider.tts.gpt_sovits.local"]["status"], "invalid_config")
+            self.assertEqual(by_id["provider.tts.gpt_sovits.local"]["endpoint"], "")
+            self.assertNotIn("secret", providers_text.lower())
+            self.assertNotIn("api_key", providers_text.lower())
+            self.assertNotIn("/ui", providers_text)
+            self.assertNotIn(str(Path(temp_dir)), providers_text)
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            catalog_text = json.dumps(catalog, ensure_ascii=False)
+            self.assertEqual(catalog["providerConfigStatus"], "partial_invalid_config")
+            self.assertNotIn("secret", catalog_text.lower())
+            self.assertNotIn("api_key", catalog_text.lower())
+
+            saved = client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": False, "endpoint": "http://127.0.0.1:8188/api?token=secret"},
+            ).json()
+            self.assertTrue(saved["ok"])
+            config_text = config_path.read_text(encoding="utf-8")
+            self.assertIn("http://127.0.0.1:8188", config_text)
+            self.assertNotIn("secret", config_text.lower())
+            self.assertNotIn("api_key", config_text.lower())
+            self.assertNotIn("/api", config_text)
+
+    def test_capabilities_provider_config_corrupt_file_is_structured_and_not_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "master" / "capabilities" / "capabilities.yaml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text("{not-json", encoding="utf-8")
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    resolve_identity_from_query=resolve_query,
+                )
+            )
+            client = TestClient(app)
+
+            providers = client.get("/capabilities/providers?user_id=desktop&real_user_id=master").json()
+            self.assertEqual(providers["configStatus"], "invalid_config")
+            self.assertEqual(providers["warnings"][0]["reason"], "provider_config_file_invalid_json")
+
+            catalog = client.get("/capabilities?user_id=desktop&real_user_id=master").json()
+            self.assertEqual(catalog["providerConfigStatus"], "invalid_config")
+
+            saved = client.post(
+                "/capabilities/providers/provider.comfyui.local/config?user_id=desktop&real_user_id=master",
+                json={"enabled": True, "endpoint": "http://127.0.0.1:8188"},
+            ).json()
+            self.assertFalse(saved["ok"])
+            self.assertEqual(saved["status"], "invalid_config")
+            self.assertEqual(config_path.read_text(encoding="utf-8"), "{not-json")
+
+    def test_capabilities_provider_health_check_is_bounded_and_not_enablement(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        checks: list[tuple[str, int, float]] = []
+
+        def fake_health_checker(host: str, port: int, timeout_seconds: float) -> tuple[bool, str]:
+            checks.append((host, port, timeout_seconds))
+            return True, ""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FastAPI()
+            app.include_router(
+                build_capabilities_router(
+                    engine=SimpleNamespace(tool_handlers={}),
+                    config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                    runtime_metrics=runtime,
+                    resolve_identity_from_query=resolve_query,
+                    provider_health_checker=fake_health_checker,
+                )
+            )
+            client = TestClient(app)
+
+            result = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/health-check?user_id=desktop&real_user_id=master",
+                json={"endpoint": "http://localhost:9880"},
+            ).json()
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "ready")
+            self.assertFalse(result["autoEnable"])
+            self.assertFalse(result["enabled"])
+            self.assertEqual(result["endpoint"], "http://127.0.0.1:9880")
+            self.assertEqual(checks, [("127.0.0.1", 9880, 0.35)])
+
+            providers = client.get("/capabilities/providers?user_id=desktop&real_user_id=master").json()["providers"]
+            by_id = {item["id"]: item for item in providers}
+            self.assertFalse(by_id["provider.tts.gpt_sovits.local"]["configured"])
+            self.assertEqual(by_id["provider.tts.gpt_sovits.local"]["status"], "missing_config")
+
+            rejected = client.post(
+                "/capabilities/providers/provider.tts.gpt_sovits.local/health-check?user_id=desktop&real_user_id=master",
+                json={"endpoint": "http://example.com:9880"},
+            ).json()
+            self.assertFalse(rejected["ok"])
+            self.assertEqual(rejected["status"], "invalid_config")
+            self.assertEqual(len(checks), 1)
+            self.assertIn(("capabilities.provider_health_check", True), runtime.observed)
+            self.assertIn(("capabilities.provider_health_check", False), runtime.observed)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,805 @@
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from companion_v01.execution_local import ExecutionPathError, TrustedLocalExecutor, _SecretStreamRedactor
+from companion_v01.execution_run import ExecutionRunOwner, make_cursor
+from companion_v01.execution_specs import (
+    EXEC_STATUS_CANCELLED,
+    EXEC_STATUS_COMPLETED,
+    EXEC_STATUS_EXECUTION_UNKNOWN,
+    EXEC_STATUS_FAILED,
+    EXEC_STATUS_RUNNING,
+    EXEC_STATUS_TIMED_OUT,
+    EXEC_STATUS_UNKNOWN,
+)
+
+
+def _python_command(code: str) -> str:
+    if os.name == "nt":
+        executable = str(sys.executable).replace("'", "''")
+        script = str(code).replace("'", "''")
+        return f"& '{executable}' -c '{script}'"
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+
+
+def _sleep_command(seconds: int) -> str:
+    return _python_command(f"import time; time.sleep({seconds})")
+
+
+def _echo_env(name: str) -> str:
+    if os.name == "nt":
+        return f"Write-Output $env:{name}"
+    return f"echo ${name}"
+
+
+def _current_dir_command() -> str:
+    return "(Get-Location).Path" if os.name == "nt" else "pwd"
+
+
+def _shutdown_executor(executor):
+    """Join executor cleanup before removing its Windows-open log files."""
+    executor.request_shutdown()
+    deadline = time.monotonic() + 12
+    while executor._procs and time.monotonic() < deadline:
+        time.sleep(.05)
+
+
+class TrustedLocalExecutorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.workspace = Path(self._tmp.name) / "workspace"
+        self.workspace.mkdir()
+        self.run_log_dir = Path(self._tmp.name) / "runlogs"
+        self.owner = ExecutionRunOwner(profile_user_id="alice", session_id="s1", provider_id="local")
+
+    def _executor(self, **kwargs) -> TrustedLocalExecutor:
+        defaults = {"workspace_root": self.workspace, "run_log_dir": self.run_log_dir}
+        defaults.update(kwargs)
+        executor = TrustedLocalExecutor(**defaults)
+        self.addCleanup(_shutdown_executor, executor)
+        return executor
+
+    # -- completed / failed ----------------------------------------------------------
+
+    def test_completed_command_returns_full_output_and_output_ref(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="echo hello", initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertEqual(start.exit_code, 0)
+        self.assertIn("hello", start.stdout)
+        self.assertEqual(start.output_ref, f"runlog:{start.run_id}")
+        log_path = self.run_log_dir / f"{start.run_id}.log"
+        self.assertTrue(log_path.exists())
+        self.assertIn("hello", log_path.read_text(encoding="utf-8"))
+
+    def test_failed_command_returns_exit_code(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="exit 2", initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertEqual(start.exit_code, 2)
+
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        mapped = map_exec_run_outcome(start)
+        self.assertIn("[exit code: 2", mapped.model_feedback)
+        self.assertIn("reason=execution_failed", mapped.model_feedback)
+        self.assertNotIn("不等于整个任务失败", mapped.model_feedback)
+
+    @unittest.skipUnless(os.name == "nt", "Windows native exit-code regression")
+    def test_windows_preserves_final_native_program_exit_code(self) -> None:
+        executor = self._executor()
+
+        start = executor.run(
+            owner=self.owner,
+            command=_python_command("import sys; sys.exit(7)"),
+            initial_wait_seconds=5,
+        )
+
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertEqual(start.exit_code, 7)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell object output regression")
+    def test_windows_flushes_selected_file_properties_before_exit(self) -> None:
+        (self.workspace / "download-check.msi").write_bytes(b"partial-download")
+        executor = self._executor()
+        classic = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        for shell in dict.fromkeys((executor.windows_shell_path, str(classic))):
+            with self.subTest(shell=shell):
+                executor.windows_shell_path = shell
+                start = executor.run(
+                    owner=self.owner,
+                    command="$p='download-check.msi'; if(Test-Path -LiteralPath $p) { Get-Item -LiteralPath $p | Select-Object FullName,Length } else { 'installer_not_present' }",
+                    initial_wait_seconds=5,
+                )
+                self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+                self.assertEqual(start.exit_code, 0)
+                self.assertIn("download-check.msi", start.stdout)
+                self.assertIn("16", start.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell default-shell regression")
+    def test_windows_default_shell_is_the_disclosed_powershell(self) -> None:
+        executor = self._executor()
+        expected = "pwsh" if Path(executor.windows_shell_path).name.casefold() == "pwsh.exe" else "powershell.exe"
+
+        environment = executor.prompt_environment()
+        start = executor.run(
+            owner=self.owner,
+            command=(
+                "$marker='powershell-default'; "
+                "Set-Content -LiteralPath .\\default-shell.txt -Value $marker -Encoding UTF8; "
+                "Write-Output $marker"
+            ),
+            timeout_seconds=10,
+            initial_wait_seconds=10,
+        )
+
+        self.assertEqual(environment["command_shell"], expected)
+        self.assertEqual(environment["preferred_script_shell"], expected)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertEqual(start.exit_code, 0)
+        self.assertIn("powershell-default", start.stdout)
+        self.assertEqual((self.workspace / "default-shell.txt").read_text(encoding="utf-8-sig").strip(), "powershell-default")
+
+    @unittest.skipUnless(os.name == "nt", "Windows explicit cmd compatibility")
+    def test_windows_cmd_remains_explicitly_available(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command='cmd.exe /d /c "echo cmd-explicit"', initial_wait_seconds=5)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertIn("cmd-explicit", start.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "Windows quoted executable regression")
+    def test_windows_quoted_executable_path_uses_powershell_call_operator(self) -> None:
+        executor = self._executor()
+        code = "from pathlib import Path; Path('quoted-executable.txt').write_text('ok', encoding='utf-8')"
+        command = subprocess.list2cmdline([sys.executable, "-c", code])
+
+        start = executor.run(owner=self.owner, command=command, timeout_seconds=10, initial_wait_seconds=10)
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertEqual((self.workspace / "quoted-executable.txt").read_text(encoding="utf-8"), "ok")
+
+    @unittest.skipUnless(os.name == "nt", "Windows quoted string semantics regression")
+    def test_windows_leading_quoted_text_remains_a_value_expression(self) -> None:
+        executor = self._executor()
+
+        start = executor.run(owner=self.owner, command='"plain text"', initial_wait_seconds=5)
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertIn("plain text", start.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "Windows PowerShell quoting regression")
+    def test_powershell_inline_program_is_encoded_and_completes(self) -> None:
+        executor = self._executor()
+        (self.workspace / "示例.txt").write_text("ok", encoding="utf-8")
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            "$map=@{'.txt'='文档';'.log'='日志'}; "
+            "foreach($f in Get-ChildItem -LiteralPath . -File){ "
+            "$ext=$f.Extension.ToLowerInvariant(); if($map.ContainsKey($ext)){ "
+            "$dest=Join-Path . $map[$ext]; New-Item -ItemType Directory -Force -Path $dest | Out-Null; "
+            "Move-Item -LiteralPath $f.FullName -Destination (Join-Path $dest $f.Name) -Force } }; "
+            "Write-Output 'organized'"
+        )
+        command = subprocess.list2cmdline(["powershell.exe", "-NoProfile", "-Command", script])
+
+        start = executor.run(owner=self.owner, command=command, timeout_seconds=10, initial_wait_seconds=10)
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertIn("organized", start.stdout)
+        self.assertTrue((self.workspace / "文档" / "示例.txt").is_file())
+        self.assertEqual(list(self.run_log_dir.glob(".*.command.ps1")), [])
+
+    def test_model_environment_identifies_current_host_without_paths(self) -> None:
+        environment = self._executor().model_environment()
+        expected = "windows" if os.name == "nt" else "macos" if sys.platform == "darwin" else "linux"
+        self.assertEqual(environment["platform"], expected)
+        self.assertIn("command_shell", environment)
+        self.assertIn("preferred_script_shell", environment)
+        self.assertIn("toolchain", environment)
+        manifest = environment["toolchain"]
+        self.assertEqual(manifest["python"]["status"], "available")
+        self.assertTrue(manifest["python"]["version"])
+        for name in ("node", "npm", "git", "rg"):
+            self.assertIn(manifest[name]["status"], {"available", "unavailable"})
+            self.assertNotIn("path", manifest[name])
+        self.assertNotIn(str(self.workspace), str(environment))
+
+    def test_prompt_environment_does_not_probe_tool_versions(self) -> None:
+        executor = self._executor()
+
+        with patch.object(executor, "_toolchain_manifest", side_effect=AssertionError("must not probe")):
+            environment = executor.prompt_environment()
+
+        self.assertNotIn("toolchain", environment)
+        self.assertEqual(environment["host_access"]["absolute_cwd"], "supported")
+
+    def test_model_environment_distinguishes_linux_and_macos(self) -> None:
+        executor = self._executor()
+        for platform_name, expected in (("linux", "linux"), ("darwin", "macos")):
+            with self.subTest(platform_name=platform_name):
+                with patch("companion_v01.execution_local.os.name", "posix"), patch(
+                    "companion_v01.execution_local.sys.platform", platform_name
+                ):
+                    environment = executor.model_environment()
+                self.assertEqual(environment["platform"], expected)
+                self.assertEqual(environment["command_shell"], "/bin/sh")
+
+    def test_empty_command_is_rejected(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="   ", initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertIn("invalid_execution_command", start.reason)
+
+    # -- long task / status / cancel / timeout ---------------------------------------
+
+    def test_long_command_returns_running_then_status(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+        self.assertTrue(start.next_cursor)
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        mapped = map_exec_run_outcome(start)
+        self.assertIn("[running:", mapped.model_feedback)
+        self.assertIn("[next: exec_status", mapped.model_feedback)
+        status = executor.status(owner=self.owner, run_id=start.run_id)
+        self.assertEqual(status.status, EXEC_STATUS_RUNNING)
+        executor.cancel(owner=self.owner, run_id=start.run_id)
+
+    def test_cancel_confirms_process_group_termination(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+        cancel = executor.cancel(owner=self.owner, run_id=start.run_id)
+        self.assertTrue(cancel.ok)
+        self.assertEqual(cancel.status, EXEC_STATUS_CANCELLED)
+        status = executor.status(owner=self.owner, run_id=start.run_id)
+        self.assertEqual(status.status, EXEC_STATUS_CANCELLED)
+
+    def test_timeout_marks_timed_out(self) -> None:
+        executor = self._executor()
+        start = executor.run(
+            owner=self.owner,
+            command=_sleep_command(30),
+            timeout_seconds=1,
+            initial_wait_seconds=2,
+        )
+        deadline = time.monotonic() + 10
+        while start.status == EXEC_STATUS_RUNNING and time.monotonic() < deadline:
+            time.sleep(.05)
+            start = executor._window(start.run_id, self.owner)
+        self.assertEqual(start.status, EXEC_STATUS_TIMED_OUT)
+        self.assertIn("execution_timeout", start.reason)
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        mapped = map_exec_run_outcome(start)
+        self.assertIn("[timed out;", mapped.model_feedback)
+        self.assertIn("process_group=terminated", mapped.model_feedback)
+
+    def test_cancel_after_terminal_is_already_ended(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="echo done", initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        cancel = executor.cancel(owner=self.owner, run_id=start.run_id)
+        self.assertTrue(cancel.ok)
+        self.assertEqual(cancel.status, "already_ended")
+
+    # -- path semantics --------------------------------------------------------------
+
+    def test_cwd_resolves_inside_workspace(self) -> None:
+        subdir = self.workspace / "subdir"
+        subdir.mkdir()
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command=_current_dir_command(), cwd="subdir", initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIn(str(subdir.resolve()), start.stdout)
+
+    def test_absolute_cwd_uses_host_permissions(self) -> None:
+        executor = self._executor()
+        target = str(Path(tempfile.gettempdir()))
+        start = executor.run(owner=self.owner, command=_current_dir_command(), cwd=target, initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIn(str(Path(target).resolve()), start.stdout)
+
+    def test_traversal_cwd_rejected(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="echo hi", cwd="../../outside", initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertIn("path_traversal_not_allowed", start.reason)
+
+    def test_missing_cwd_rejected(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="echo hi", cwd="does_not_exist", initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertIn("cwd_not_found", start.reason)
+
+    def test_mount_alias_resolves_outside_workspace(self) -> None:
+        mount = Path(self._tmp.name) / "mounted"
+        mount.mkdir()
+        executor = self._executor(mounts={"shared": mount})
+        start = executor.run(owner=self.owner, command=_current_dir_command(), cwd="alias:shared", initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIn(str(mount.resolve()), start.stdout)
+
+    def test_unknown_mount_alias_rejected(self) -> None:
+        executor = self._executor(mounts={"shared": self.workspace})
+        start = executor.run(owner=self.owner, command="echo hi", cwd="alias:nope", initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertIn("unknown_mount_alias", start.reason)
+
+    def test_resolve_workdir_symlink_escape_rejected(self) -> None:
+        outside = Path(self._tmp.name) / "outside"
+        outside.mkdir()
+        link = self.workspace / "escape"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks not permitted on this platform")
+        executor = self._executor()
+        with self.assertRaises(ExecutionPathError):
+            executor._resolve_workdir("escape")
+
+    # -- environment inheritance / optional allowlist --------------------------------
+
+    def test_env_allowlist_blocks_unspecified_vars(self) -> None:
+        os.environ["AKANE_EXEC_TEST_SECRET"] = "s3cr3t_value"
+        self.addCleanup(lambda: os.environ.pop("AKANE_EXEC_TEST_SECRET", None))
+        executor = self._executor(allowed_env_names={"PATH", "SystemRoot", "COMSPEC"})
+        start = executor.run(owner=self.owner, command=_echo_env("AKANE_EXEC_TEST_SECRET"), initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertNotIn("s3cr3t_value", start.stdout)
+
+    def test_env_allowlist_passes_allowed_names(self) -> None:
+        os.environ["AKANE_EXEC_TEST_SECRET"] = "s3cr3t_value"
+        self.addCleanup(lambda: os.environ.pop("AKANE_EXEC_TEST_SECRET", None))
+        executor = self._executor(
+            allowed_env_names={"PATH", "SystemRoot", "COMSPEC", "AKANE_EXEC_TEST_SECRET"},
+        )
+        start = executor.run(owner=self.owner, command=_echo_env("AKANE_EXEC_TEST_SECRET"), initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIn("s3cr3t_value", start.stdout)
+
+    def test_explicit_allowlist_mode_does_not_inherit_unspecified_host_values(self) -> None:
+        os.environ["AKANE_EXEC_TEST_SECRET"] = "s3cr3t_value"
+        self.addCleanup(lambda: os.environ.pop("AKANE_EXEC_TEST_SECRET", None))
+        executor = self._executor(allowed_env_names={"PATH"})
+        start = executor.run(owner=self.owner, command=_echo_env("AKANE_EXEC_TEST_SECRET"), initial_wait_seconds=1)
+        self.assertNotIn("s3cr3t_value", start.stdout)
+
+    def test_managed_temp_variables_only_follow_resource_run_workdir(self) -> None:
+        subdir = self.workspace / ".akane_exec_runs" / ("execrun_" + "1" * 32)
+        subdir.mkdir(parents=True)
+        executor = self._executor(allowed_env_names={"PATH", "TEMP", "TMP"})
+
+        env = executor._build_env(workdir=subdir)
+
+        self.assertEqual(Path(env["TMPDIR"]), subdir.resolve())
+        self.assertEqual(Path(env["TMP"]), subdir.resolve())
+        self.assertEqual(Path(env["TEMP"]), subdir.resolve())
+
+    def test_default_environment_inherits_normal_host_values_and_scrubs_credentials(self) -> None:
+        executor = self._executor(
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": str(self.root if hasattr(self, "root") else self.workspace.parent),
+                "SDK_ROOT": "toolchain-home",
+                "GIT_AUTHOR_NAME": "Akane",
+                "SSH_AUTH_SOCK": "agent.sock",
+                "SERVICE_API_TOKEN": "must-not-leak",
+                "AKANE_DATA_ROOT": "must-not-leak-either",
+            }
+        )
+
+        env = executor._build_env()
+
+        self.assertEqual(env["SDK_ROOT"], "toolchain-home")
+        self.assertEqual(env["GIT_AUTHOR_NAME"], "Akane")
+        self.assertEqual(env["SSH_AUTH_SOCK"], "agent.sock")
+        self.assertNotIn("SERVICE_API_TOKEN", env)
+        self.assertNotIn("AKANE_DATA_ROOT", env)
+
+    def test_explicit_credential_reference_is_injected_and_exact_value_is_hidden_everywhere(self) -> None:
+        secret = "opaque-value-that-is-not-format-detectable"
+        executor = self._executor(
+            credential_env_names={"SERVICE_ACCESS_TOKEN"},
+            host_env={"PATH": os.environ.get("PATH", ""), "SERVICE_ACCESS_TOKEN": secret},
+        )
+
+        facts = executor.prompt_environment()["host_access"]
+        self.assertEqual(facts["credential_env_refs"], {"SERVICE_ACCESS_TOKEN": "configured"})
+        self.assertNotIn(secret, str(facts))
+        self.assertEqual(executor._build_env()["SERVICE_ACCESS_TOKEN"], secret)
+
+        start = executor.run(
+            owner=self.owner,
+            command=_echo_env("SERVICE_ACCESS_TOKEN"),
+            initial_wait_seconds=3,
+        )
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertNotIn(secret, start.stdout)
+        self.assertIn("[credential value hidden]", start.stdout)
+        persisted = (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8")
+        self.assertNotIn(secret, persisted)
+        self.assertIn("[credential value hidden]", persisted)
+
+    def test_missing_credential_reference_is_reported_without_inventing_a_value(self) -> None:
+        executor = self._executor(
+            credential_env_names={"MISSING_TOKEN"},
+            host_env={"PATH": os.environ.get("PATH", "")},
+        )
+        self.assertEqual(
+            executor.prompt_environment()["host_access"]["credential_env_refs"],
+            {"MISSING_TOKEN": "missing"},
+        )
+        self.assertNotIn("MISSING_TOKEN", executor._build_env())
+
+    def test_akane_internal_environment_cannot_be_exposed_as_a_credential_reference(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid_execution_credential_env_name"):
+            self._executor(credential_env_names={"AKANE_ADMIN_TOKEN"})
+
+    def test_secret_stream_redactor_masks_values_split_across_chunks(self) -> None:
+        redactor = _SecretStreamRedactor(("split-secret-value",))
+        first = redactor.feed("before split-sec")
+        self.assertEqual(first, "before ")
+        visible = "".join((first, redactor.feed("ret-value after"), redactor.feed("", final=True)))
+        self.assertEqual(visible, "before [credential value hidden] after")
+
+    def test_default_environment_preserves_host_temp_and_cache_configuration(self) -> None:
+        host_cache = str(self.workspace.parent / "host-cache")
+        host_temp = str(self.workspace.parent / "host-temp")
+        executor = self._executor(
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "TEMP": host_temp,
+                "TMP": host_temp,
+                "PIP_CACHE_DIR": host_cache,
+                "npm_config_cache": host_cache,
+                "PNPM_HOME": host_cache,
+                "COREPACK_HOME": host_cache,
+                "npm_config_store_dir": host_cache,
+                "XDG_CACHE_HOME": host_cache,
+            }
+        )
+
+        env = executor._build_env(workdir=self.workspace)
+
+        self.assertEqual(env["TEMP"], host_temp)
+        self.assertEqual(env["TMP"], host_temp)
+        self.assertEqual(env["PIP_CACHE_DIR"], host_cache)
+        self.assertEqual(env["npm_config_cache"], host_cache)
+        self.assertNotIn("NPM_CONFIG_CACHE", env)
+        self.assertEqual(env["PNPM_HOME"], host_cache)
+        self.assertEqual(env["COREPACK_HOME"], host_cache)
+        self.assertEqual(env["npm_config_store_dir"], host_cache)
+        self.assertNotIn("NPM_CONFIG_STORE_DIR", env)
+        if os.name != "nt":
+            self.assertEqual(env["XDG_CACHE_HOME"], host_cache)
+
+    def test_version_probe_uses_same_home_and_version_manager_environment(self) -> None:
+        executor = self._executor(
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": "host-home",
+                "NVM_DIR": "host-nvm",
+                "SERVICE_API_KEY": "must-not-leak",
+            }
+        )
+
+        env = executor._version_probe_env("probe-path")
+
+        self.assertEqual(env["PATH"], "probe-path")
+        self.assertEqual(env["HOME"], "host-home")
+        self.assertEqual(env["NVM_DIR"], "host-nvm")
+        self.assertNotIn("SERVICE_API_KEY", env)
+
+    def test_available_optional_proxy_is_injected_without_allowlisting(self) -> None:
+        executor = self._executor(
+            allowed_env_names={"PATH"},
+            proxy_url="http://127.0.0.1:17897",
+            proxy_probe=lambda _url: True,
+        )
+        env = executor._build_env()
+        self.assertEqual(env["HTTP_PROXY"], "http://127.0.0.1:17897")
+        self.assertEqual(env["https_proxy"], "http://127.0.0.1:17897")
+        self.assertEqual(env["NO_PROXY"], "127.0.0.1,localhost,::1")
+
+    def test_unavailable_optional_proxy_preserves_direct_network(self) -> None:
+        executor = self._executor(
+            allowed_env_names={"PATH", "HTTP_PROXY", "HTTPS_PROXY"},
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "HTTP_PROXY": "http://stale.invalid:9999",
+                "HTTPS_PROXY": "http://stale.invalid:9999",
+            },
+            proxy_url="http://127.0.0.1:17897",
+            proxy_probe=lambda _url: False,
+        )
+        env = executor._build_env()
+        self.assertNotIn("HTTP_PROXY", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+        self.assertNotIn("ALL_PROXY", env)
+
+    def test_explicit_allowlist_mode_uses_managed_python_user_site_and_cache(self) -> None:
+        outside = str(Path(self._tmp.name) / "host-userbase")
+        executor = self._executor(
+            allowed_env_names={"PATH", "PYTHONUSERBASE", "PIP_REQUIRE_VIRTUALENV"},
+            host_env={
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONUSERBASE": outside,
+                "PIP_REQUIRE_VIRTUALENV": "1",
+            },
+        )
+        env = executor._build_env()
+        self.assertEqual(Path(env["PYTHONUSERBASE"]), executor.python_user_base)
+        self.assertEqual(Path(env["PIP_CACHE_DIR"]), executor.pip_cache_dir)
+        self.assertEqual(env["PIP_USER"], "1")
+        self.assertNotIn("PIP_REQUIRE_VIRTUALENV", env)
+        self.assertTrue(executor.python_user_base.is_relative_to(self.workspace))
+        self.assertTrue(executor.pip_cache_dir.is_relative_to(self.workspace))
+        start = executor.run(
+            owner=self.owner,
+            command=_python_command("import site; print(site.USER_BASE)"),
+            initial_wait_seconds=3,
+        )
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertEqual(Path(start.stdout.strip()), executor.python_user_base)
+
+    def test_node_and_package_caches_are_shared_by_the_host_executor(self) -> None:
+        executor = self._executor(host_env={"PATH": os.environ.get("PATH", "")})
+        env = executor._build_env()
+
+        self.assertEqual(Path(env["NPM_CONFIG_CACHE"]), executor.npm_cache_dir)
+        self.assertEqual(Path(env["PNPM_HOME"]), executor.pnpm_home)
+        self.assertEqual(Path(env["COREPACK_HOME"]), executor.corepack_home)
+        self.assertEqual(Path(env["NPM_CONFIG_STORE_DIR"]), executor.pnpm_store_dir)
+        storage = executor.model_environment()["dependency_storage"]
+        self.assertEqual(storage["runtime"], "host_path")
+        self.assertEqual(storage["pnpm_store"], "host_shared_content_addressed")
+
+    # -- ownership / provider scope ---------------------------------------------------
+
+    def test_cross_session_query_is_unknown(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="echo hi", initial_wait_seconds=3)
+        other = ExecutionRunOwner(profile_user_id="alice", session_id="s2", provider_id="local")
+        status = executor.status(owner=other, run_id=start.run_id)
+        self.assertEqual(status.status, EXEC_STATUS_UNKNOWN)
+        cancel = executor.cancel(owner=other, run_id=start.run_id)
+        self.assertEqual(cancel.status, EXEC_STATUS_UNKNOWN)
+
+    def test_provider_id_mismatch_is_rejected(self) -> None:
+        executor = self._executor()
+        cloud_owner = ExecutionRunOwner(profile_user_id="alice", session_id="s1", provider_id="cloud")
+        start = executor.run(owner=cloud_owner, command="echo hi", initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_EXECUTION_UNKNOWN)
+        status = executor.status(owner=cloud_owner, run_id="execrun_" + "0" * 32)
+        self.assertEqual(status.status, EXEC_STATUS_UNKNOWN)
+        cancel = executor.cancel(owner=cloud_owner, run_id="execrun_" + "0" * 32)
+        self.assertEqual(cancel.status, EXEC_STATUS_UNKNOWN)
+        self.assertEqual(cancel.reason, "run_not_found")
+
+    # -- output paging -----------------------------------------------------------------
+
+    def test_long_output_truncates_initial_result_then_continuation_reads_rest(self) -> None:
+        executor = self._executor()
+        command = _python_command("import sys; sys.stdout.write('x' * 60000)")
+        start = executor.run(owner=self.owner, command=command, initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIsNotNone(start.next_cursor)
+        self.assertLess(len(start.stdout.encode("utf-8")), 60000)
+        first = executor.status(owner=self.owner, run_id=start.run_id, cursor=start.next_cursor)
+        self.assertEqual(first.status, EXEC_STATUS_COMPLETED)
+        self.assertIn("x", first.tail)
+        self.assertIsNone(first.next_cursor)
+
+    def test_output_ref_log_contains_full_output(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="echo line1 && echo line2", initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIn("line1", start.stdout)
+        self.assertIn("line2", start.stdout)
+        log_path = self.run_log_dir / f"{start.run_id}.log"
+        content = log_path.read_text(encoding="utf-8")
+        self.assertIn("line1", content)
+        self.assertIn("line2", content)
+
+    def test_terminal_waits_for_reader_drain_before_publishing_result(self) -> None:
+        class DelayedReaderExecutor(TrustedLocalExecutor):
+            def _read_pipe(self, run_id, owner, pipe, stream):
+                time.sleep(0.15)
+                return super()._read_pipe(run_id, owner, pipe, stream)
+
+        executor = DelayedReaderExecutor(workspace_root=self.workspace, run_log_dir=self.run_log_dir)
+        # A cold PowerShell 7 process can spend close to one second loading on
+        # Windows; this regression is about reader settlement, not startup.
+        start = executor.run(owner=self.owner, command="echo drained", initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIn("drained", start.stdout)
+        self.assertIn("drained", (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8"))
+
+    def test_compacted_output_can_be_reloaded_from_the_same_status_tool(self) -> None:
+        executor = self._executor()
+        command = _python_command("import sys; sys.stdout.write('BEGIN|' + 'x' * 90000 + '|END')")
+        start = executor.run(owner=self.owner, command=command, initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertTrue(start.stdout.startswith("BEGIN|"))
+        self.assertIsNotNone(start.next_cursor)
+
+        reloaded = executor.status(owner=self.owner, run_id=start.run_id, cursor=make_cursor(start.run_id, 0))
+        self.assertEqual(reloaded.reason, "output_reloaded")
+        self.assertTrue(reloaded.tail.startswith("BEGIN|"))
+
+        recovered = start.stdout
+        cursor = start.next_cursor
+        while cursor is not None:
+            page = executor.status(owner=self.owner, run_id=start.run_id, cursor=cursor)
+            self.assertNotEqual(page.reason, "output_compacted_without_persistence")
+            recovered += page.tail
+            cursor = page.next_cursor
+        self.assertEqual(recovered, "BEGIN|" + "x" * 90000 + "|END")
+
+    def test_spawn_failure_closes_and_removes_log_handle(self) -> None:
+        class FailingSpawnExecutor(TrustedLocalExecutor):
+            def _spawn(self, command, workdir, env):
+                raise OSError("synthetic spawn failure")
+
+        executor = FailingSpawnExecutor(workspace_root=self.workspace, run_log_dir=self.run_log_dir)
+        start = executor.run(owner=self.owner, command="echo never", initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertFalse(executor._logs)
+        log_paths = list(self.run_log_dir.glob("*.log"))
+        self.assertEqual(len(log_paths), 1)
+        self.assertEqual(log_paths[0].read_bytes(), b"")
+
+    def test_timeout_does_not_claim_termination_before_kill_confirmation(self) -> None:
+        allow_kill = threading.Event()
+        first_attempt = threading.Event()
+
+        class DelayedKillExecutor(TrustedLocalExecutor):
+            def _kill_process_group(self, proc):
+                first_attempt.set()
+                if not allow_kill.is_set():
+                    return False
+                return super()._kill_process_group(proc)
+
+        executor = DelayedKillExecutor(
+            workspace_root=self.workspace,
+            run_log_dir=self.run_log_dir,
+            cancel_confirm_grace_seconds=0.2,
+        )
+        start = executor.run(
+            owner=self.owner,
+            command=_sleep_command(30),
+            timeout_seconds=1,
+            initial_wait_seconds=2,
+        )
+        self.assertTrue(first_attempt.is_set())
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+        self.assertEqual(start.reason, "timeout_termination_pending")
+        allow_kill.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = executor.status(owner=self.owner, run_id=start.run_id)
+            if status.status == EXEC_STATUS_TIMED_OUT:
+                break
+            time.sleep(0.02)
+        self.assertEqual(status.status, EXEC_STATUS_TIMED_OUT)
+
+    def test_cancel_failure_remains_running_until_kill_confirmation(self) -> None:
+        allow_kill = threading.Event()
+
+        class DelayedKillExecutor(TrustedLocalExecutor):
+            def _kill_process_group(self, proc):
+                if not allow_kill.is_set():
+                    return False
+                return super()._kill_process_group(proc)
+
+        executor = DelayedKillExecutor(
+            workspace_root=self.workspace,
+            run_log_dir=self.run_log_dir,
+            cancel_confirm_grace_seconds=0.2,
+        )
+        start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+        cancel = executor.cancel(owner=self.owner, run_id=start.run_id)
+        self.assertFalse(cancel.ok)
+        self.assertEqual(cancel.status, "cancel_failed")
+        status = executor.status(owner=self.owner, run_id=start.run_id)
+        self.assertEqual(status.status, EXEC_STATUS_RUNNING)
+        self.assertEqual(status.reason, "cancel_termination_pending")
+        allow_kill.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = executor.status(owner=self.owner, run_id=start.run_id)
+            if status.status == EXEC_STATUS_CANCELLED:
+                break
+            time.sleep(0.02)
+        self.assertEqual(status.status, EXEC_STATUS_CANCELLED)
+
+    def test_shutdown_rejects_new_runs_and_cancels_existing_process_trees(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+
+        requested = executor.request_shutdown()
+
+        self.assertEqual(requested, 1)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = executor.status(owner=self.owner, run_id=start.run_id)
+            if status.status == EXEC_STATUS_CANCELLED:
+                break
+            time.sleep(0.02)
+        self.assertEqual(status.status, EXEC_STATUS_CANCELLED)
+        rejected = executor.run(owner=self.owner, command="echo too-late", initial_wait_seconds=1)
+        self.assertEqual(rejected.status, EXEC_STATUS_FAILED)
+        self.assertEqual(rejected.reason, "execution_provider_stopping")
+
+    def test_utf8_multibyte_output_survives_read_chunk_boundaries(self) -> None:
+        executor = self._executor()
+        unit = "中文你好-😀"
+        command = _python_command("import sys; sys.stdout.write('中文你好-😀' * 5000)")
+        start = executor.run(owner=self.owner, command=command, initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertIsNotNone(start.next_cursor)
+        recovered = start.stdout
+        cursor = start.next_cursor
+        while cursor is not None:
+            page = executor.status(owner=self.owner, run_id=start.run_id, cursor=cursor)
+            recovered += page.tail
+            cursor = page.next_cursor
+        self.assertEqual(recovered, unit * 5000)
+        log_path = self.run_log_dir / f"{start.run_id}.log"
+        raw = log_path.read_bytes()
+        self.assertEqual(raw, (unit * 5000).encode("utf-8"))
+        self.assertNotIn(b"\xef\xbf\xbd", raw)
+
+    def test_secret_redacted_for_model_but_kept_in_private_log_while_paths_stay(self) -> None:
+        executor = self._executor()
+        command = _python_command(
+            "import sys; print('api_key=supersecret123'); "
+            "print('C:\\\\Users\\\\alice\\\\private.txt')"
+        )
+        start = executor.run(owner=self.owner, command=command, initial_wait_seconds=3)
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        mapped = map_exec_run_outcome(start)
+        self.assertNotIn("supersecret123", mapped.model_feedback)
+        self.assertIn("C:\\Users\\alice", mapped.model_feedback)
+        self.assertNotIn("supersecret123", str(mapped.data))
+        log = (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("supersecret123", log)
+        self.assertIn("private.txt", log)
+        # The run is terminal; the watcher closes its log handle shortly after.
+        # Wait so the tempdir cleanup never races an open handle on Windows.
+        deadline = time.monotonic() + 5
+        while start.run_id in executor._logs and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def test_log_pruning_never_removes_an_active_run_log(self) -> None:
+        executor = self._executor(run_log_retention_seconds=1)
+        start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+        path = self.run_log_dir / f"{start.run_id}.log"
+        old = time.time() - 3600
+        os.utime(path, (old, old))
+        self.assertEqual(executor.prune_run_logs(), 0)
+        self.assertTrue(path.exists())
+        executor.cancel(owner=self.owner, run_id=start.run_id)
+
+
+if __name__ == "__main__":
+    unittest.main()

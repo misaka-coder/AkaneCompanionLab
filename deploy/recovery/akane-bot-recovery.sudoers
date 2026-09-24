@@ -1,0 +1,5 @@
+Defaults:akane-recovery !requiretty
+akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root status
+akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root personal
+akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root finance
+akane-recovery ALL=(root) NOPASSWD: /usr/local/sbin/akane-bot-recovery-root both

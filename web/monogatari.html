@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Akane</title>
+    <link rel="stylesheet" href="/monogatari.css?v=20260602_v2" />
+  </head>
+  <body>
+    <div id="app" class="scene" data-time="night" data-history-open="false">
+      <audio id="bgm-player" preload="none" loop></audio>
+      <audio id="voice-player" preload="none"></audio>
+
+      <!-- 全屏场景背景 -->
+      <div class="background-layer">
+        <div class="bg-frame bg-frame-a is-visible"></div>
+        <div class="bg-frame bg-frame-b"></div>
+        <div class="bg-overlay"></div>
+      </div>
+
+      <!-- 氛围光 -->
+      <div class="ornament-layer" aria-hidden="true">
+        <div class="ornament ornament-a"></div>
+        <div class="ornament ornament-b"></div>
+      </div>
+
+      <!-- 角色立在场景中 -->
+      <div class="sprite-layer">
+        <div class="sprite-frame">
+          <canvas id="akane-live2d-canvas" class="akane-live2d-canvas" aria-label="Live2D 角色形象"></canvas>
+          <img id="akane-sprite" class="akane-sprite" alt="角色立绘" />
+        </div>
+      </div>
+
+      <!-- UI 浮层 -->
+      <div class="ui-layer">
+
+        <!-- 顶部栏 — 半透明，hover 才显现 -->
+        <header class="top-bar">
+          <div class="title-block">
+            <span class="title-eyebrow">Akane</span>
+            <span class="title-kicker">陪伴</span>
+            <h1>Akane</h1>
+            <p class="title-subtitle" id="scene-subtitle">今晚的舞台已经准备好了</p>
+          </div>
+          <div class="top-actions">
+            <button id="history-toggle" class="ghost-button" type="button">回看</button>
+            <button
+              id="settings-toggle"
+              class="ghost-button"
+              type="button"
+              aria-expanded="false"
+              aria-controls="settings-panel"
+            >
+              设置
+            </button>
+            <div class="time-chip" id="time-chip">--:--</div>
+          </div>
+        </header>
+
+        <!-- 回看面板 -->
+        <aside class="history-panel" id="history-panel" aria-live="polite">
+          <div class="panel-heading">
+            <span>回看</span>
+            <button id="history-close" class="ghost-button panel-close" type="button">收起</button>
+          </div>
+          <div class="history-list" id="history-list">
+            <p class="panel-empty">这里会慢慢留下你们的对白回看。</p>
+          </div>
+        </aside>
+
+        <div class="stage-shell">
+          <div class="dialogue-stage">
+            <div class="dialogue-shell">
+
+              <div class="info-ribbon">
+                <span id="mode-pill" class="info-pill">gal</span>
+                <span id="scene-pill" class="info-pill">场景未定</span>
+                <span id="bgm-pill" class="info-pill">BGM 未启动</span>
+                <span id="emotion-pill" class="info-pill">表情</span>
+                <span id="status-pill" class="info-pill">idle</span>
+              </div>
+
+              <div class="section-heading">本轮对白</div>
+              <div class="dialogue-turns" id="dialogue-turns">
+                <p class="panel-empty">Akane 正安静地等你开口。</p>
+              </div>
+
+              <!-- 台词字幕区 -->
+              <div class="focus-card">
+                <div class="speaker-row">
+                  <span class="name-tag" id="speaker-tag">Akane</span>
+                  <span class="focus-hint">当前舞台</span>
+                </div>
+                <div class="dialogue-text" id="dialogue-text">今晚想和 Akane 聊点什么？</div>
+                <pre class="dialogue-code" id="dialogue-code" hidden></pre>
+              </div>
+
+              <div class="choices-heading" id="choices-heading" hidden>你的回应</div>
+              <div class="choices-row" id="choices-row" hidden></div>
+            </div>
+
+            <!-- 输入区嵌入对话区 -->
+            <form id="chat-form" class="input-row" autocomplete="off">
+              <textarea
+                id="message-input"
+                rows="1"
+                placeholder="说点什么……"
+              ></textarea>
+              <button id="send-button" type="submit">发送</button>
+            </form>
+
+            <div class="quick-row">
+              <button class="quick-action" type="button" data-message="今天过得怎么样？">今天怎么样</button>
+              <button class="quick-action" type="button" data-message="最近有什么有趣的事吗？">聊聊近况</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 礼物拖放浮层 -->
+        <div class="gift-drop-overlay" id="gift-drop-overlay" aria-hidden="true">
+          <div class="gift-drop-overlay__card">
+            <span class="gift-drop-overlay__title">把音乐送给 Akane</span>
+            <p>mp3 / ogg / wav / m4a / flac，她可以收下，也可以吃掉。</p>
+          </div>
+        </div>
+
+        <!-- 手边礼物 -->
+        <div class="gift-hand-zone">
+          <button
+            id="gift-hand-toggle"
+            class="gift-hand-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="gift-hand-panel"
+            hidden
+          >
+            手边
+          </button>
+          <section id="gift-hand-panel" class="gift-hand-panel" aria-hidden="true">
+            <div class="gift-hand-panel__header">
+              <div>
+                <span class="gift-hand-panel__eyebrow">手边</span>
+                <h2>礼物</h2>
+                <p id="gift-hand-summary">最近递到她手边的礼物会先停在这里。</p>
+              </div>
+              <button id="gift-hand-close" class="gift-hand-close" type="button">收起</button>
+            </div>
+            <div class="gift-hand-list" id="gift-hand-list">
+              <p class="panel-empty">目前没有待处理的礼物。</p>
+            </div>
+            <div class="gift-hand-panel__footer">
+              <p id="gift-hand-overflow" class="gift-hand-overflow" hidden></p>
+              <button id="gift-hand-open-library" class="gift-hand-link" type="button">
+                去礼物库查看完整清单
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <!-- 设置面板 -->
+        <div class="settings-backdrop" id="settings-backdrop" aria-hidden="true"></div>
+        <aside class="settings-panel" id="settings-panel" aria-hidden="true">
+          <div class="settings-panel__header">
+            <div class="settings-panel__heading">
+              <span class="settings-panel__eyebrow">设置</span>
+              <h2>偏好</h2>
+              <p>把常用开关收进这里，舞台就能保持安静。</p>
+            </div>
+            <button id="settings-close" class="settings-close" type="button">收起</button>
+          </div>
+
+          <section class="settings-section">
+            <div class="settings-section__title">对话</div>
+            <div class="session-toolbar">
+              <button id="new-session" class="session-toolbar__button" type="button">新建对话</button>
+              <button id="rename-session" class="session-toolbar__button session-toolbar__button--secondary" type="button">
+                重命名
+              </button>
+            </div>
+            <div class="session-list" id="session-list">
+              <p class="panel-empty">还没有可切换的对话。</p>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section__title">体验偏好</div>
+            <div class="settings-grid">
+              <button id="voice-toggle" class="settings-toggle-card" type="button" aria-pressed="true">
+                <span class="settings-toggle-card__title">语音</span>
+                <span class="settings-toggle-card__value" id="voice-toggle-label">开</span>
+                <span class="settings-toggle-card__hint">让 Akane 用语音回应你。</span>
+              </button>
+
+              <button id="instant-toggle" class="settings-toggle-card" type="button" aria-pressed="false">
+                <span class="settings-toggle-card__title">瞬显</span>
+                <span class="settings-toggle-card__value" id="instant-toggle-label">关</span>
+                <span class="settings-toggle-card__hint">关闭时保留打字机节奏。</span>
+              </button>
+
+              <button id="avatar-toggle" class="settings-toggle-card" type="button" aria-pressed="false">
+                <span class="settings-toggle-card__title">形象</span>
+                <span class="settings-toggle-card__value" id="avatar-toggle-label">静态</span>
+                <span class="settings-toggle-card__hint">切换静态立绘或 Live2D。</span>
+              </button>
+            </div>
+            <label class="avatar-size-control" for="avatar-size-range">
+              <span class="avatar-size-control__row">
+                <span>角色大小</span>
+                <span id="avatar-size-label">120%</span>
+              </span>
+              <input id="avatar-size-range" type="range" min="80" max="180" step="5" value="120" />
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section__title">身份</div>
+            <div class="session-toolbar">
+              <button id="copy-identity" class="session-toolbar__button" type="button">复制身份</button>
+              <button id="import-identity" class="session-toolbar__button session-toolbar__button--secondary" type="button">
+                导入身份
+              </button>
+            </div>
+            <p class="settings-note">换浏览器或找回旧记录时再使用。</p>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section__title">礼物库</div>
+            <p class="settings-note">把音频文件直接拖到舞台上送给她。吃掉之后，她就能把它当成自己的 BGM 资源。</p>
+            <div class="gift-library" id="gift-library">
+              <p class="panel-empty">还没有送给 Akane 的音乐。</p>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section__title">她的收藏</div>
+            <p class="settings-note">这里先收好真正已经属于她的东西。</p>
+            <div class="artifact-container-grid" id="artifact-containers">
+              <p class="panel-empty">她的曲库和相册还在慢慢长出来。</p>
+            </div>
+            <div class="artifact-container-detail" id="artifact-container-detail">
+              <p class="panel-empty">点开一个容器后，会在这里看到她已经收好的东西。</p>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section__title">说明</div>
+            <p class="settings-note" id="settings-status-copy">
+              你的偏好会保存在这个浏览器里。
+            </p>
+          </section>
+        </aside>
+
+        <details class="debug-panel" id="debug-output-panel">
+          <summary>调试</summary>
+          <pre id="debug-output"></pre>
+        </details>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js?v=20260602_monogatari_v2"></script>
+  </body>
+</html>

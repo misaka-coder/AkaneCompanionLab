@@ -1,0 +1,1410 @@
+{
+  "$defs": {
+    "ActionRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "request_id": {
+          "maxLength": 100,
+          "minLength": 8,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "expected_revision": {
+          "minimum": 0,
+          "title": "Expected Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "equip",
+            "background",
+            "music",
+            "position",
+            "buy",
+            "feed",
+            "touch",
+            "claim_allowance"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "target": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Target",
+          "type": "string"
+        },
+        "count": {
+          "default": 1,
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "identity",
+        "request_id",
+        "expected_revision",
+        "kind",
+        "target",
+        "count"
+      ],
+      "title": "ActionRequest",
+      "type": "object"
+    },
+    "ActionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "duplicate": {
+          "default": false,
+          "title": "Duplicate",
+          "type": "boolean"
+        },
+        "event": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Fact"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "snapshot": {
+          "$ref": "#/$defs/Snapshot"
+        }
+      },
+      "required": [
+        "ok",
+        "reason",
+        "duplicate",
+        "event",
+        "snapshot"
+      ],
+      "title": "ActionResult",
+      "type": "object"
+    },
+    "AddShopItemRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "name": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "price": {
+          "maximum": 999999,
+          "minimum": 0,
+          "title": "Price",
+          "type": "integer"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Description",
+          "type": "string"
+        },
+        "effects": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Effects",
+          "type": "object"
+        },
+        "icon": {
+          "default": "cookie",
+          "maxLength": 30,
+          "title": "Icon",
+          "type": "string"
+        },
+        "item_id": {
+          "default": "",
+          "maxLength": 80,
+          "title": "Item Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "name",
+        "price",
+        "description",
+        "effects",
+        "icon",
+        "item_id"
+      ],
+      "title": "AddShopItemRequest",
+      "type": "object"
+    },
+    "Asset": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "url"
+      ],
+      "title": "Asset",
+      "type": "object"
+    },
+    "Beat": {
+      "additionalProperties": false,
+      "properties": {
+        "speech": {
+          "maxLength": 3000,
+          "minLength": 1,
+          "title": "Speech",
+          "type": "string"
+        },
+        "emotion_id": {
+          "default": "normal",
+          "maxLength": 100,
+          "title": "Emotion Id",
+          "type": "string"
+        },
+        "motion_id": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "nod",
+            "shake",
+            "bounce"
+          ],
+          "title": "Motion Id",
+          "type": "string"
+        },
+        "advance": {
+          "default": "click",
+          "enum": [
+            "click",
+            "auto",
+            "audio_end"
+          ],
+          "title": "Advance",
+          "type": "string"
+        },
+        "beat_id": {
+          "title": "Beat Id",
+          "type": "string"
+        },
+        "sequence": {
+          "title": "Sequence",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "speech",
+        "emotion_id",
+        "motion_id",
+        "advance",
+        "beat_id",
+        "sequence"
+      ],
+      "title": "Beat",
+      "type": "object"
+    },
+    "CancelRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "request_id": {
+          "maxLength": 100,
+          "minLength": 8,
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "request_id"
+      ],
+      "title": "CancelRequest",
+      "type": "object"
+    },
+    "CareState": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "coins": {
+          "default": 0,
+          "title": "Coins",
+          "type": "integer"
+        },
+        "hunger": {
+          "default": 0,
+          "title": "Hunger",
+          "type": "integer"
+        },
+        "energy": {
+          "default": 0,
+          "title": "Energy",
+          "type": "integer"
+        },
+        "affection": {
+          "default": 0,
+          "title": "Affection",
+          "type": "integer"
+        },
+        "inventory": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Inventory",
+          "type": "object"
+        }
+      },
+      "required": [
+        "enabled",
+        "reason",
+        "coins",
+        "hunger",
+        "energy",
+        "affection",
+        "inventory"
+      ],
+      "title": "CareState",
+      "type": "object"
+    },
+    "Catalog": {
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "title": "Revision",
+          "type": "string"
+        },
+        "backgrounds": {
+          "items": {
+            "$ref": "#/$defs/Asset"
+          },
+          "title": "Backgrounds",
+          "type": "array"
+        },
+        "outfits": {
+          "items": {
+            "$ref": "#/$defs/Outfit"
+          },
+          "title": "Outfits",
+          "type": "array"
+        },
+        "music": {
+          "items": {
+            "$ref": "#/$defs/Asset"
+          },
+          "title": "Music",
+          "type": "array"
+        }
+      },
+      "required": [
+        "revision",
+        "backgrounds",
+        "outfits",
+        "music"
+      ],
+      "title": "Catalog",
+      "type": "object"
+    },
+    "Fact": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "quantity": {
+          "default": 1,
+          "title": "Quantity",
+          "type": "integer"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "item_name": {
+          "default": "",
+          "title": "Item Name",
+          "type": "string"
+        },
+        "effects": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Effects",
+          "type": "object"
+        }
+      },
+      "required": [
+        "event_id",
+        "kind",
+        "target",
+        "quantity",
+        "ok",
+        "reason",
+        "item_name",
+        "effects"
+      ],
+      "title": "Fact",
+      "type": "object"
+    },
+    "Identity": {
+      "additionalProperties": false,
+      "properties": {
+        "profile_user_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Profile User Id",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "character_pack_id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+$",
+          "title": "Character Pack Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_user_id",
+        "session_id",
+        "character_pack_id"
+      ],
+      "title": "Identity",
+      "type": "object"
+    },
+    "ImportRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "name": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "background",
+            "outfit",
+            "music"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "data": {
+          "maxLength": 28000000,
+          "minLength": 1,
+          "title": "Data",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "name",
+        "kind",
+        "data"
+      ],
+      "title": "ImportRequest",
+      "type": "object"
+    },
+    "ModelBeat": {
+      "additionalProperties": false,
+      "properties": {
+        "speech": {
+          "maxLength": 3000,
+          "minLength": 1,
+          "title": "Speech",
+          "type": "string"
+        },
+        "emotion_id": {
+          "default": "normal",
+          "maxLength": 100,
+          "title": "Emotion Id",
+          "type": "string"
+        },
+        "motion_id": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "nod",
+            "shake",
+            "bounce"
+          ],
+          "title": "Motion Id",
+          "type": "string"
+        },
+        "advance": {
+          "default": "click",
+          "enum": [
+            "click",
+            "auto",
+            "audio_end"
+          ],
+          "title": "Advance",
+          "type": "string"
+        }
+      },
+      "required": [
+        "speech",
+        "emotion_id",
+        "motion_id",
+        "advance"
+      ],
+      "title": "ModelBeat",
+      "type": "object"
+    },
+    "Outfit": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "emotions": {
+          "items": {
+            "$ref": "#/$defs/Asset"
+          },
+          "title": "Emotions",
+          "type": "array"
+        },
+        "scale": {
+          "default": 1,
+          "title": "Scale",
+          "type": "number"
+        },
+        "anchor_x": {
+          "default": 0.5,
+          "title": "Anchor X",
+          "type": "number"
+        },
+        "anchor_y": {
+          "default": 1,
+          "title": "Anchor Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "emotions",
+        "scale",
+        "anchor_x",
+        "anchor_y"
+      ],
+      "title": "Outfit",
+      "type": "object"
+    },
+    "Presentation": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "scene_presentation_v1",
+          "default": "scene_presentation_v1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "turn_id": {
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "generation": {
+          "title": "Generation",
+          "type": "integer"
+        },
+        "resource_revision": {
+          "title": "Resource Revision",
+          "type": "string"
+        },
+        "beats": {
+          "items": {
+            "$ref": "#/$defs/Beat"
+          },
+          "title": "Beats",
+          "type": "array"
+        },
+        "diagnostics": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        }
+      },
+      "required": [
+        "protocol",
+        "turn_id",
+        "generation",
+        "resource_revision",
+        "beats",
+        "diagnostics"
+      ],
+      "title": "Presentation",
+      "type": "object"
+    },
+    "Receipt": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "turn_id": {
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "beat_id": {
+          "title": "Beat Id",
+          "type": "string"
+        },
+        "generation": {
+          "title": "Generation",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "display_started",
+            "text_revealed",
+            "audio_started",
+            "audio_completed",
+            "audio_interrupted",
+            "interrupted"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "turn_id",
+        "beat_id",
+        "generation",
+        "kind"
+      ],
+      "title": "Receipt",
+      "type": "object"
+    },
+    "RoomState": {
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "default": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "outfit_id": {
+          "default": "",
+          "title": "Outfit Id",
+          "type": "string"
+        },
+        "background_id": {
+          "default": "",
+          "title": "Background Id",
+          "type": "string"
+        },
+        "music_id": {
+          "default": "",
+          "title": "Music Id",
+          "type": "string"
+        },
+        "position": {
+          "default": "center",
+          "enum": [
+            "center",
+            "right"
+          ],
+          "title": "Position",
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision",
+        "outfit_id",
+        "background_id",
+        "music_id",
+        "position"
+      ],
+      "title": "RoomState",
+      "type": "object"
+    },
+    "ShopItem": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "price": {
+          "title": "Price",
+          "type": "integer"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "effects": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Effects",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "price",
+        "description",
+        "effects"
+      ],
+      "title": "ShopItem",
+      "type": "object"
+    },
+    "Snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "scene_v1",
+          "default": "scene_v1",
+          "title": "Protocol",
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "character_name": {
+          "title": "Character Name",
+          "type": "string"
+        },
+        "room": {
+          "$ref": "#/$defs/RoomState"
+        },
+        "care": {
+          "$ref": "#/$defs/CareState"
+        },
+        "shop": {
+          "items": {
+            "$ref": "#/$defs/ShopItem"
+          },
+          "title": "Shop",
+          "type": "array"
+        },
+        "catalog": {
+          "$ref": "#/$defs/Catalog"
+        }
+      },
+      "required": [
+        "protocol",
+        "identity",
+        "character_name",
+        "room",
+        "care",
+        "shop",
+        "catalog"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    },
+    "StoryCatalogResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "stories": {
+          "items": {
+            "$ref": "#/$defs/StoryItemSummary"
+          },
+          "title": "Stories",
+          "type": "array"
+        }
+      },
+      "required": [
+        "stories"
+      ],
+      "title": "StoryCatalogResponse",
+      "type": "object"
+    },
+    "StoryChoiceOption": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "next_node_id": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Next Node Id",
+          "type": "string"
+        },
+        "condition": {
+          "default": "",
+          "maxLength": 100,
+          "title": "Condition",
+          "type": "string"
+        },
+        "action_kind": {
+          "default": "",
+          "maxLength": 60,
+          "title": "Action Kind",
+          "type": "string"
+        },
+        "action_target": {
+          "default": "",
+          "maxLength": 120,
+          "title": "Action Target",
+          "type": "string"
+        },
+        "action_count": {
+          "default": 1,
+          "maximum": 999,
+          "minimum": 1,
+          "title": "Action Count",
+          "type": "integer"
+        },
+        "cost_coins": {
+          "default": 0,
+          "maximum": 999999,
+          "minimum": 0,
+          "title": "Cost Coins",
+          "type": "integer"
+        },
+        "cost_label": {
+          "default": "",
+          "maxLength": 60,
+          "title": "Cost Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "next_node_id",
+        "condition",
+        "action_kind",
+        "action_target",
+        "action_count",
+        "cost_coins",
+        "cost_label"
+      ],
+      "title": "StoryChoiceOption",
+      "type": "object"
+    },
+    "StoryCompleteEndingRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "run_id": {
+          "maxLength": 100,
+          "minLength": 8,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "ending_id": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Ending Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "run_id",
+        "ending_id"
+      ],
+      "title": "StoryCompleteEndingRequest",
+      "type": "object"
+    },
+    "StoryImportRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "file_name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "File Name",
+          "type": "string"
+        },
+        "content": {
+          "maxLength": 10000000,
+          "minLength": 5,
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "file_name",
+        "content"
+      ],
+      "title": "StoryImportRequest",
+      "type": "object"
+    },
+    "StoryItemSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "story_id": {
+          "title": "Story Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "cover_image": {
+          "title": "Cover Image",
+          "type": "string"
+        },
+        "has_active_run": {
+          "default": false,
+          "title": "Has Active Run",
+          "type": "boolean"
+        },
+        "current_node_id": {
+          "default": "",
+          "title": "Current Node Id",
+          "type": "string"
+        },
+        "status": {
+          "default": "not_started",
+          "title": "Status",
+          "type": "string"
+        },
+        "completed_endings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Endings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "story_id",
+        "title",
+        "description",
+        "cover_image",
+        "has_active_run",
+        "current_node_id",
+        "status",
+        "completed_endings"
+      ],
+      "title": "StoryItemSummary",
+      "type": "object"
+    },
+    "StoryNode": {
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "script",
+            "choice",
+            "agent",
+            "conversation",
+            "ending"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "maxLength": 100,
+          "title": "Title",
+          "type": "string"
+        },
+        "speech": {
+          "default": "",
+          "maxLength": 3000,
+          "title": "Speech",
+          "type": "string"
+        },
+        "speaker": {
+          "default": "",
+          "maxLength": 80,
+          "title": "Speaker",
+          "type": "string"
+        },
+        "emotion_id": {
+          "default": "normal",
+          "maxLength": 100,
+          "title": "Emotion Id",
+          "type": "string"
+        },
+        "motion_id": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "nod",
+            "shake",
+            "bounce"
+          ],
+          "title": "Motion Id",
+          "type": "string"
+        },
+        "background_id": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Background Id",
+          "type": "string"
+        },
+        "music_id": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Music Id",
+          "type": "string"
+        },
+        "outfit_id": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Outfit Id",
+          "type": "string"
+        },
+        "next_node_id": {
+          "default": "",
+          "maxLength": 60,
+          "title": "Next Node Id",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/StoryChoiceOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "prompt_objective": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Prompt Objective",
+          "type": "string"
+        },
+        "ending_title": {
+          "default": "",
+          "maxLength": 100,
+          "title": "Ending Title",
+          "type": "string"
+        },
+        "ending_summary": {
+          "default": "",
+          "maxLength": 1000,
+          "title": "Ending Summary",
+          "type": "string"
+        },
+        "beats": {
+          "items": {
+            "$ref": "#/$defs/ModelBeat"
+          },
+          "title": "Beats",
+          "type": "array"
+        },
+        "max_turns": {
+          "default": 8,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Max Turns",
+          "type": "integer"
+        },
+        "suggested_turns": {
+          "default": 3,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Suggested Turns",
+          "type": "integer"
+        },
+        "quick_reactions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Quick Reactions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "node_id",
+        "kind",
+        "title",
+        "speech",
+        "speaker",
+        "emotion_id",
+        "motion_id",
+        "background_id",
+        "music_id",
+        "outfit_id",
+        "next_node_id",
+        "options",
+        "prompt_objective",
+        "ending_title",
+        "ending_summary",
+        "beats",
+        "max_turns",
+        "suggested_turns",
+        "quick_reactions"
+      ],
+      "title": "StoryNode",
+      "type": "object"
+    },
+    "StoryRunState": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "maxLength": 100,
+          "minLength": 8,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "story_id": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Story Id",
+          "type": "string"
+        },
+        "current_node_id": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Current Node Id",
+          "type": "string"
+        },
+        "status": {
+          "default": "in_progress",
+          "enum": [
+            "in_progress",
+            "completed",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "current_node": {
+          "$ref": "#/$defs/StoryNode"
+        },
+        "variables": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Variables",
+          "type": "object"
+        },
+        "history": {
+          "items": {
+            "type": "string"
+          },
+          "title": "History",
+          "type": "array"
+        },
+        "completed_endings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Completed Endings",
+          "type": "array"
+        },
+        "presentation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Presentation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "conversation_turns": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "title": "Conversation Turns",
+          "type": "array"
+        },
+        "turn_count": {
+          "default": 0,
+          "title": "Turn Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "story_id",
+        "current_node_id",
+        "status",
+        "current_node",
+        "variables",
+        "history",
+        "completed_endings",
+        "presentation",
+        "conversation_turns",
+        "turn_count"
+      ],
+      "title": "StoryRunState",
+      "type": "object"
+    },
+    "StoryStartRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "story_id": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Story Id",
+          "type": "string"
+        },
+        "force_restart": {
+          "default": false,
+          "title": "Force Restart",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "identity",
+        "story_id",
+        "force_restart"
+      ],
+      "title": "StoryStartRequest",
+      "type": "object"
+    },
+    "StoryStepRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "run_id": {
+          "maxLength": 100,
+          "minLength": 8,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "expected_node_id": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Expected Node Id",
+          "type": "string"
+        },
+        "choice_id": {
+          "default": "",
+          "maxLength": 60,
+          "title": "Choice Id",
+          "type": "string"
+        },
+        "user_message": {
+          "default": "",
+          "maxLength": 3000,
+          "title": "User Message",
+          "type": "string"
+        },
+        "advance_only": {
+          "default": false,
+          "title": "Advance Only",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "identity",
+        "run_id",
+        "expected_node_id",
+        "choice_id",
+        "user_message",
+        "advance_only"
+      ],
+      "title": "StoryStepRequest",
+      "type": "object"
+    },
+    "TurnRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "request_id": {
+          "maxLength": 100,
+          "minLength": 8,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "generation": {
+          "minimum": 1,
+          "title": "Generation",
+          "type": "integer"
+        },
+        "message": {
+          "default": "",
+          "maxLength": 6000,
+          "title": "Message",
+          "type": "string"
+        },
+        "event_id": {
+          "default": "",
+          "maxLength": 100,
+          "title": "Event Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "request_id",
+        "generation",
+        "message",
+        "event_id"
+      ],
+      "title": "TurnRequest",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Export root, not an endpoint wrapper.",
+  "properties": {
+    "snapshot": {
+      "$ref": "#/$defs/Snapshot"
+    },
+    "action_request": {
+      "$ref": "#/$defs/ActionRequest"
+    },
+    "action_result": {
+      "$ref": "#/$defs/ActionResult"
+    },
+    "presentation": {
+      "$ref": "#/$defs/Presentation"
+    },
+    "receipt": {
+      "$ref": "#/$defs/Receipt"
+    },
+    "turn_request": {
+      "$ref": "#/$defs/TurnRequest"
+    },
+    "cancel_request": {
+      "$ref": "#/$defs/CancelRequest"
+    },
+    "import_request": {
+      "$ref": "#/$defs/ImportRequest"
+    },
+    "add_shop_item_request": {
+      "$ref": "#/$defs/AddShopItemRequest"
+    },
+    "story_catalog_response": {
+      "$ref": "#/$defs/StoryCatalogResponse"
+    },
+    "story_run_state": {
+      "$ref": "#/$defs/StoryRunState"
+    },
+    "story_start_request": {
+      "$ref": "#/$defs/StoryStartRequest"
+    },
+    "story_step_request": {
+      "$ref": "#/$defs/StoryStepRequest"
+    },
+    "story_complete_ending_request": {
+      "$ref": "#/$defs/StoryCompleteEndingRequest"
+    },
+    "story_import_request": {
+      "$ref": "#/$defs/StoryImportRequest"
+    }
+  },
+  "required": [
+    "snapshot",
+    "action_request",
+    "action_result",
+    "presentation",
+    "receipt",
+    "turn_request",
+    "cancel_request",
+    "import_request",
+    "add_shop_item_request",
+    "story_catalog_response",
+    "story_run_state",
+    "story_start_request",
+    "story_step_request",
+    "story_complete_ending_request",
+    "story_import_request"
+  ],
+  "title": "SceneWire",
+  "type": "object"
+}

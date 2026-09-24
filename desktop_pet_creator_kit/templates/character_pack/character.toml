@@ -1,0 +1,26 @@
+schema_version = "akane.character.v0.1"
+
+[identity]
+id = "my_character"
+name = "Mika"
+app_name = "Mika Pet"
+user_title = "主人"
+
+[appearance]
+default_outfit = "default"
+default_emotion = "normal"
+music_emotion = "listening"
+required_emotions = ["normal"]
+recommended_emotions = ["thinking", "happy", "confused", "listening"]
+
+[dialogue]
+input_placeholder = "和 Mika 说点什么……"
+session_display_title = "Mika 桌宠对话"
+tts_test_text = "Mika：语音播放测试。"
+proactive_wake_prompt = "主人暂时没有说话。你像坐在旁边陪他一样，轻轻搭一句自然的话。桌面线索只当背景，不要刻意围绕窗口标题发挥。"
+
+[assets]
+runtime_source = "replace me"
+asset_root = "assets"
+bundled_outfit = "default"
+portrait_glob = "assets/characters/<outfit>/<emotion>.png"

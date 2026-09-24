@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-sdk-event-state"
+version = "0.1.0"
+description = "SDK-first state events, observations and explicit turns"
+requires-python = ">=3.11"
+dependencies = ["akane-plugin>=0.14,<0.15"]
+
+[project.entry-points."akane.plugins.v1"]
+"example.sdk-event-state" = "akane_sdk_event_state:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

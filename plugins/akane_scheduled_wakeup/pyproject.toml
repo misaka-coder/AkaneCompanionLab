@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-scheduled-wakeup"
+version = "0.2.0"
+description = "Akane plugin: 定时唤醒 — wake the conversation once at a chosen time"
+requires-python = ">=3.11"
+dependencies = ["akane-plugin>=0.14.2,<0.15"]
+
+[project.entry-points."akane.plugins.v1"]
+"akane.scheduled-wakeup" = "akane_scheduled_wakeup:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>桌宠控制中心 V2 · 交互原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="scene" aria-hidden="true">
+      <img id="scene-background" src="/desktop_pet_next/src/assets/control-center-lab/backgrounds/sky-city-balcony.png" alt="" />
+      <div class="scene-shade"></div>
+    </div>
+
+    <main class="shell" data-page="overview">
+      <aside class="rail" aria-label="控制中心导航">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">A</span>
+          <span class="brand-copy"><strong>桌宠控制中心</strong><small>交互原型</small></span>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item is-active" type="button" data-page-target="overview" aria-current="page" aria-label="总览">
+            <span aria-hidden="true">⌂</span><span>总览</span>
+          </button>
+          <button class="nav-item" type="button" data-page-target="appearance" aria-label="角色与外观">
+            <span aria-hidden="true">✦</span><span>角色与外观</span>
+          </button>
+          <button class="nav-item" type="button" data-page-target="chat" aria-label="聊天记录">
+            <span aria-hidden="true">◌</span><span>聊天记录</span>
+          </button>
+        </nav>
+
+        <div class="rail-spacer"></div>
+
+        <div class="prototype-note">
+          <span class="note-dot"></span>
+          <p><strong>原型模式</strong><br />不连接后端，不写入角色包</p>
+        </div>
+
+        <div class="mini-character">
+          <span class="avatar-clip avatar-clip-rail"><img id="rail-avatar" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="当前角色头像" /></span>
+          <span><strong id="rail-character-name">当前角色</strong><small>本地预览</small></span>
+        </div>
+      </aside>
+
+      <section class="surface">
+        <header class="topbar">
+          <div>
+            <p class="kicker">DESKTOP COMPANION</p>
+            <h1 id="page-title">今天想让她做什么？</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="connection-chip"><i></i><span>已连接</span></span>
+            <button class="round-button" type="button" data-sim-action="刷新状态" aria-label="刷新状态" title="刷新状态">↻</button>
+          </div>
+        </header>
+
+        <div class="content-scroll">
+          <section class="page is-active" id="page-overview" aria-labelledby="page-title">
+            <div class="hero glass-panel">
+              <div class="hero-copy">
+                <div class="identity-row">
+                  <span class="avatar-clip avatar"><img id="hero-avatar" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="当前角色头像" /></span>
+                  <div>
+                    <p class="kicker">ACTIVE CHARACTER</p>
+                    <h2 id="hero-character-name">当前角色</h2>
+                    <p class="muted">角色包提供头像、立绘、背景与主题；控制中心只负责展示。</p>
+                  </div>
+                </div>
+
+                <div class="activity-card">
+                  <span class="activity-icon" aria-hidden="true">✦</span>
+                  <span><small>当前活动</small><strong id="activity-label">空闲，随时可以开始</strong></span>
+                  <span class="live-pulse" aria-label="状态实时"></span>
+                </div>
+
+                <div class="quick-actions" aria-label="快捷操作">
+                  <button class="primary-action" type="button" data-sim-action="新对话"><span aria-hidden="true">＋</span> 新对话</button>
+                  <button class="soft-action" type="button" data-sim-action="打开角色工坊"><span aria-hidden="true">◇</span> 角色工坊</button>
+                  <button class="soft-action" type="button" data-sim-action="打开角色包文件夹"><span aria-hidden="true">▱</span> 角色文件夹</button>
+                </div>
+              </div>
+
+              <div class="portrait-stage">
+                <div class="portrait-halo"></div>
+                <img id="hero-portrait" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="当前角色立绘预览" />
+                <span class="portrait-caption">静态立绘槽 · 可替换为 Live2D 渲染器</span>
+              </div>
+            </div>
+
+            <div class="overview-grid">
+              <section class="music-card glass-panel" aria-labelledby="music-title">
+                <div class="card-heading">
+                  <div><p class="kicker">NOW PLAYING</p><h3 id="music-title">陪伴播放</h3></div>
+                  <span class="tiny-status" id="music-status">已暂停</span>
+                </div>
+                <div class="music-content">
+                  <img src="/desktop_pet_next/src/assets/control-center-lab/covers/akane-night-window.png" alt="歌曲封面示例" />
+                  <div class="track-copy"><strong>示例歌曲</strong><span>角色包不绑定音乐库</span></div>
+                  <button class="media-button" id="play-toggle" type="button" aria-label="播放" aria-pressed="false">
+                    <span class="play-icon" aria-hidden="true"></span>
+                    <span class="button-spinner" aria-hidden="true"></span>
+                  </button>
+                </div>
+              </section>
+
+              <section class="status-card glass-panel" aria-labelledby="status-title">
+                <div class="card-heading"><div><p class="kicker">RECENT</p><h3 id="status-title">最近活动</h3></div></div>
+                <ol class="activity-list">
+                  <li><span class="event-dot is-success"></span><span><strong>角色资源已就绪</strong><small>头像、立绘和背景均可用</small></span></li>
+                  <li><span class="event-dot"></span><span><strong>等待新的任务</strong><small>这里仅显示有意义的状态变化</small></span></li>
+                </ol>
+              </section>
+            </div>
+          </section>
+
+          <section class="page" id="page-chat" aria-labelledby="chat-title">
+            <div class="section-heading chat-heading">
+              <div><p class="kicker">CONVERSATION SPACE</p><h2 id="chat-title">和她好好聊一会儿</h2><p class="muted">保留完整聊天记录；角色镜头只表达当前情绪与执行状态，不复制桌宠本体。</p></div>
+              <div class="section-actions">
+                <button class="soft-action" type="button" id="toggle-presence">收起角色镜头</button>
+                <button class="soft-action" type="button" data-sim-action="新建聊天">新对话</button>
+              </div>
+            </div>
+
+            <div class="chat-layout" id="chat-layout">
+              <aside class="presence-card glass-panel" aria-label="角色实时状态">
+                <div class="presence-toolbar">
+                  <span><i class="ready-dot"></i> 表情同步</span>
+                  <span class="tiny-status" id="presence-phase">正在聆听</span>
+                </div>
+                <div class="presence-stage">
+                  <img class="presence-background" src="/desktop_pet_next/src/assets/control-center-lab/backgrounds/sky-city-balcony.png" alt="" />
+                  <div class="presence-shade"></div>
+                  <img id="chat-presence-portrait" class="presence-portrait" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="角色状态近景" />
+                  <div class="expression-chip"><span id="expression-symbol">◌</span><strong id="expression-label">专注聆听</strong></div>
+                </div>
+                <div class="presence-copy">
+                  <p class="kicker">LIVE PRESENCE</p>
+                  <h3>角色状态镜头</h3>
+                  <p>桌宠负责在桌面陪伴；这里使用半身近景、表情和状态光效，让聊天记录始终是主角。</p>
+                  <div class="state-preview" aria-label="预览角色状态">
+                    <button type="button" data-presence-state="listening">聆听</button>
+                    <button type="button" data-presence-state="thinking">思考</button>
+                    <button type="button" data-presence-state="tool">工具中</button>
+                    <button type="button" data-presence-state="happy">开心</button>
+                  </div>
+                </div>
+              </aside>
+
+              <section class="conversation-card glass-panel" aria-label="聊天记录">
+                <header class="conversation-head">
+                  <div>
+                    <span class="conversation-avatar"><img id="chat-role-avatar" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="角色头像" /></span>
+                    <span><strong>当前角色</strong><small>记忆已连接 · 状态实时同步</small></span>
+                  </div>
+                  <button class="round-button" type="button" data-sim-action="搜索聊天记录" aria-label="搜索聊天记录">⌕</button>
+                </header>
+
+                <div class="message-scroll" id="chat-messages" aria-live="polite">
+                  <div class="day-divider"><span>今天 14:26</span></div>
+                  <article class="message-row is-assistant">
+                    <span class="message-avatar"><img src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="角色头像" data-role-avatar /></span>
+                    <div><span class="sender-name">当前角色</span><div class="message-bubble">我在呢。刚才桌宠气泡里消失的内容，在这里都会按时间保留下来。</div><time>14:26</time></div>
+                  </article>
+                  <article class="message-row is-user">
+                    <span class="message-avatar"><span class="user-avatar-fallback" data-user-avatar-fallback>你</span><img alt="用户头像" data-user-avatar hidden /></span>
+                    <div><span class="sender-name">你</span><div class="message-bubble">那你思考或者调用工具的时候，我也能看见状态吗？</div><time>14:27</time></div>
+                  </article>
+                  <article class="message-row is-assistant">
+                    <span class="message-avatar"><img src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="角色头像" data-role-avatar /></span>
+                    <div><span class="sender-name">当前角色</span><div class="message-bubble">可以。左边只显示“思考中、正在使用工具、等待确认”这类有意义的状态，不会把每一轮内部过程刷成消息。</div><time>14:27</time></div>
+                  </article>
+                  <div class="typing-row" id="typing-row" hidden><span></span><span></span><span></span><small>正在组织回复</small></div>
+                </div>
+
+                <form class="composer" id="chat-form">
+                  <button class="composer-icon" type="button" data-sim-action="添加附件" aria-label="添加附件">＋</button>
+                  <textarea id="chat-input" rows="1" placeholder="和当前角色说点什么……" aria-label="聊天内容"></textarea>
+                  <button class="send-button" type="submit" aria-label="发送消息"><span>发送</span><i aria-hidden="true">↑</i></button>
+                </form>
+              </section>
+            </div>
+          </section>
+
+          <section class="page" id="page-appearance" aria-labelledby="appearance-title">
+            <div class="section-heading">
+              <div><p class="kicker">CHARACTER SHELL</p><h2 id="appearance-title">角色与外观</h2><p class="muted">快速预览常用资源；完整人设、表情和校准仍由角色工坊管理。</p></div>
+              <div class="section-actions">
+                <button class="soft-action" type="button" data-sim-action="打开角色工坊">打开角色工坊</button>
+                <button class="soft-action" type="button" data-sim-action="打开角色包文件夹">打开文件夹</button>
+              </div>
+            </div>
+
+            <div class="appearance-grid">
+              <section class="preview-card glass-panel">
+                <div class="preview-canvas">
+                  <img id="preview-background" class="preview-background" src="/desktop_pet_next/src/assets/control-center-lab/backgrounds/sky-city-balcony.png" alt="背景预览" />
+                  <div class="preview-shade"></div>
+                  <img id="preview-portrait" class="preview-portrait" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="立绘预览" />
+                  <div class="preview-bubble"><strong>预览效果</strong><span>背景、立绘、字体和玻璃层会在这里即时更新。</span></div>
+                </div>
+                <div class="preview-footer">
+                  <span><i class="ready-dot"></i> 资源预览可用</span>
+                  <button class="text-action" type="button" id="toggle-portrait">隐藏立绘</button>
+                </div>
+              </section>
+
+              <aside class="settings-stack">
+                <section class="settings-card glass-panel">
+                  <div class="card-heading"><div><p class="kicker">ASSET SLOTS</p><h3>角色资源</h3></div><span class="count-pill">4 个槽位</span></div>
+                  <div class="asset-list">
+                    <div class="asset-row">
+                      <img id="asset-avatar-preview" src="/desktop_pet_next/src/assets/characters/%E7%8C%AB%E5%A8%98/%E6%AD%A3%E5%B8%B8.png" alt="头像缩略图" />
+                      <span><strong>头像</strong><small>列表、消息与状态区</small></span>
+                      <label class="pick-label" for="avatar-file">选择</label>
+                      <button class="calibrate-button" type="button" data-calibrate="avatar">校准</button>
+                      <input id="avatar-file" type="file" accept="image/png,image/jpeg,image/webp" />
+                    </div>
+                    <div class="asset-row">
+                      <span class="asset-symbol">人</span>
+                      <span><strong>主立绘</strong><small>总览与桌宠预览</small></span>
+                      <label class="pick-label" for="portrait-file">选择</label>
+                      <button class="calibrate-button" type="button" data-calibrate="portrait">校准</button>
+                      <input id="portrait-file" type="file" accept="image/png,image/jpeg,image/webp" />
+                    </div>
+                    <div class="asset-row">
+                      <span class="asset-symbol">景</span>
+                      <span><strong>控制中心背景</strong><small>角色空间氛围</small></span>
+                      <label class="pick-label" for="background-file">选择</label>
+                      <button class="calibrate-button" type="button" data-calibrate="background">校准</button>
+                      <input id="background-file" type="file" accept="image/png,image/jpeg,image/webp" />
+                    </div>
+                    <div class="asset-row">
+                      <span class="asset-symbol">你</span>
+                      <span><strong>用户头像</strong><small>聊天区自己的消息</small></span>
+                      <label class="pick-label" for="user-avatar-file">选择</label>
+                      <button class="calibrate-button" type="button" data-calibrate="userAvatar">校准</button>
+                      <input id="user-avatar-file" type="file" accept="image/png,image/jpeg,image/webp" />
+                    </div>
+                  </div>
+                </section>
+
+                <section class="settings-card glass-panel">
+                  <div class="card-heading"><div><p class="kicker">THEME</p><h3>界面主题</h3></div><button class="text-action" type="button" id="reset-theme">恢复样例</button></div>
+                  <div class="control-grid">
+                    <div class="theme-mode range-control" role="group" aria-label="明暗主题">
+                      <button class="is-active" type="button" data-theme-mode="dark">深色</button>
+                      <button type="button" data-theme-mode="light">浅色</button>
+                      <button type="button" data-theme-mode="system">跟随系统</button>
+                    </div>
+                    <label><span>强调色</span><input id="accent-control" type="color" value="#79a6ff" /></label>
+                    <label><span>字体</span><select id="font-control"><option value="system">系统默认</option><option value="soft">柔和圆体</option><option value="serif">文艺衬线</option></select></label>
+                    <label class="range-control"><span>面板透明度 <output id="opacity-output">76%</output></span><input id="opacity-control" type="range" min="58" max="96" value="76" /></label>
+                    <label class="range-control"><span>背景压暗 <output id="shade-output">34%</output></span><input id="shade-control" type="range" min="10" max="68" value="34" /></label>
+                    <label class="range-control"><span>模糊强度 <output id="blur-output">22px</output></span><input id="blur-control" type="range" min="0" max="36" value="22" /></label>
+                  </div>
+                </section>
+              </aside>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div class="calibration-modal" id="calibration-modal" role="dialog" aria-modal="true" aria-labelledby="calibration-title" hidden>
+      <div class="calibration-backdrop" data-close-calibration></div>
+      <section class="calibration-dialog glass-panel">
+        <header>
+          <div><p class="kicker">NON-DESTRUCTIVE FRAMING</p><h2 id="calibration-title">调整图片构图</h2><p class="muted" id="calibration-description">拖动图片改变取景，原文件不会被裁剪。</p></div>
+          <button class="round-button" type="button" data-close-calibration aria-label="关闭构图调整">×</button>
+        </header>
+        <div class="calibration-body">
+          <div class="calibration-preview" id="calibration-preview">
+            <img id="calibration-image" alt="构图预览" draggable="false" />
+            <div class="safe-frame"><span>安全显示范围</span></div>
+          </div>
+          <aside class="calibration-controls">
+            <div><span class="control-label">正在调整</span><strong id="calibration-slot-label">角色头像</strong></div>
+            <p>按住图片拖动；使用缩放滑杆控制留白。位置与缩放按槽位独立保存。</p>
+            <label class="zoom-control"><span>缩放 <output id="calibration-zoom-output">100%</output></span><input id="calibration-zoom" type="range" min="70" max="220" value="100" /></label>
+            <div class="calibration-values"><span>X <output id="calibration-x">0</output></span><span>Y <output id="calibration-y">0</output></span></div>
+            <div class="calibration-actions">
+              <button class="soft-action" type="button" id="calibration-reset">恢复居中</button>
+              <button class="primary-action" type="button" id="calibration-apply">应用预览</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,196 @@
+/* Story Panel */
+.panel-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.panel-header-row .panel-intro {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted, #7c726d);
+  line-height: 1.45;
+  flex: 1;
+}
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--ink, #2c2523);
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.1));
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+.action-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.08);
+  border-color: var(--accent, #b35c39);
+  color: var(--accent, #b35c39);
+}
+.action-btn:disabled,
+.action-btn.is-busy {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.action-btn.import-btn {
+  background: rgba(179, 92, 57, 0.08);
+  border-color: rgba(179, 92, 57, 0.25);
+  color: var(--accent, #b35c39);
+}
+.action-btn.import-btn:hover:not(.is-busy) {
+  background: rgba(179, 92, 57, 0.15);
+}
+.story-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.story-card {
+  display: flex;
+  gap: 14px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+  border-radius: 12px;
+  padding: 14px;
+  transition: all 0.2s ease;
+}
+.story-card.is-active {
+  border-color: var(--accent, #b35c39);
+  background: rgba(255, 250, 245, 0.95);
+  box-shadow: 0 4px 16px rgba(179, 92, 57, 0.12);
+}
+.story-cover {
+  position: relative;
+  width: 130px;
+  min-width: 130px;
+  height: 96px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #dfc7b0, #b98e72);
+}
+.story-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.story-cover-fallback {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #dfc7b0, #b98e72);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.story-badge {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.story-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.story-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.story-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink, #2c2523);
+}
+.status-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.status-pill.in-progress {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+.status-pill.paused {
+  background: #fff3e0;
+  color: #e65100;
+}
+.story-desc {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  color: var(--muted, #7c726d);
+  line-height: 1.45;
+}
+.story-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.secondary-button {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.15));
+  background: transparent;
+  color: var(--muted, #7c726d);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.secondary-button:hover:not(:disabled) {
+  border-color: var(--ink, #2c2523);
+  color: var(--ink, #2c2523);
+}
+.story-empty-state {
+  text-align: center;
+  padding: 36px 16px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px dashed var(--line, rgba(0, 0, 0, 0.15));
+  border-radius: 12px;
+  margin-top: 14px;
+  color: var(--muted, #7c726d);
+}
+.story-empty-state h4 {
+  margin: 8px 0 4px;
+  color: var(--ink, #2c2523);
+  font-size: 15px;
+}
+.story-empty-state p {
+  font-size: 12px;
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+.story-empty-state code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 4px;
+  border-radius: 4px;
+}

@@ -1,0 +1,417 @@
+from __future__ import annotations
+
+import json
+import re
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from companion_v01.desktop_pet_character_resources import DesktopPetCharacterResourceService
+from companion_v01.petdesk_bridge import (
+    PET_DISPLAY_SCHEMA_VERSION,
+    build_petdesk_display_envelope,
+    build_petdesk_health_payload,
+    build_petdesk_resource_bundle,
+    safe_handle_segment,
+)
+from companion_v01.routes.petdesk import build_petdesk_router
+
+
+def write_bytes(path: Path, content: bytes = b"stub") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+class FakeRuntimeMetrics:
+    def __init__(self) -> None:
+        self.observed: list[tuple[str, bool]] = []
+
+    def observe_request(self, name: str, *, duration_ms: float, ok: bool) -> None:
+        self.observed.append((name, ok))
+
+
+class FakeGuard:
+    def __init__(self) -> None:
+        self.released = 0
+
+    def try_acquire(self):
+        return SimpleNamespace(allowed=True, acquired=True, reason="", message="")
+
+    def release(self) -> None:
+        self.released += 1
+
+
+class PetdeskBridgeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.characters_dir = Path(self.temp_dir.name) / "characters"
+        self.pack_dir = self.characters_dir / "mika_pack"
+        write_bytes(self.pack_dir / "assets" / "characters" / "猫娘" / "开心.png")
+        write_bytes(self.pack_dir / "assets" / "characters" / "猫娘" / "害羞.png")
+        write_json(
+            self.pack_dir / "character.json",
+            {
+                "identity": {"id": "mika_pack", "name": "Mika"},
+                "appearance": {"default_outfit": "猫娘", "default_emotion": "开心"},
+                "emotion_aliases": {"cheerful": ["开心"], "shy": ["害羞"]},
+            },
+        )
+        self.resources = DesktopPetCharacterResourceService(characters_dir=self.characters_dir)
+
+    def test_static_manifest_uses_safe_handles_and_petdesk_urls(self) -> None:
+        bundle = build_petdesk_resource_bundle(self.resources, "mika_pack")
+
+        self.assertEqual(bundle.character_pack_id, "mika_pack")
+        static_images = bundle.runtime_manifest["staticImages"]
+        self.assertEqual(len(static_images), 2)
+        for handle, entry in static_images.items():
+            self.assertNotIn("猫娘", handle)
+            self.assertNotIn("开心", handle)
+            self.assertNotIn("://", handle)
+            self.assertNotIn("..", handle)
+            self.assertNotIn("\\", handle)
+            self.assertRegex(handle, r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)+$")
+            self.assertEqual(entry["kind"], "static_image")
+            self.assertEqual(entry["handle"], handle)
+            self.assertTrue(entry["url"].startswith("/petdesk-character-packs/mika_pack/assets/characters/"))
+            self.assertNotIn("/desktop-pet-character-packs/", entry["url"])
+        serialized = json.dumps(bundle.runtime_manifest, ensure_ascii=False)
+        self.assertNotIn(str(self.characters_dir), serialized)
+
+    def test_scoped_runtime_keeps_petdesk_routes_and_assets_in_one_bot_namespace(self) -> None:
+        resources = DesktopPetCharacterResourceService(
+            characters_dir=self.characters_dir,
+            public_prefix="/api/bots/finance/desktop-pet-character-packs",
+        )
+        bundle = build_petdesk_resource_bundle(resources, "mika_pack")
+        health = build_petdesk_health_payload(
+            resources,
+            "mika_pack",
+            route_prefix="/api/bots/finance",
+        )
+
+        urls = [item["url"] for item in bundle.runtime_manifest["staticImages"].values()]
+        self.assertTrue(urls)
+        self.assertTrue(all(url.startswith("/api/bots/finance/petdesk-character-packs/") for url in urls))
+        self.assertEqual(health["snapshot"], "/api/bots/finance/pet/snapshot")
+        self.assertEqual(health["turn"], "/api/bots/finance/pet/turn")
+        self.assertEqual(
+            health["runtimeEnv"]["VITE_PETDESK_RESOURCE_MANIFEST_URL"],
+            "/api/bots/finance/pet/resource-manifest",
+        )
+
+    def test_display_envelope_preserves_labels_but_uses_safe_asset_handle(self) -> None:
+        bundle = build_petdesk_resource_bundle(self.resources, "mika_pack")
+        manifest = self.resources.get_manifest("mika_pack")
+
+        envelope = build_petdesk_display_envelope(
+            {
+                "status": "ok",
+                "speech": "我在。",
+                "speech_segments": [{"text": "我在。"}],
+                "emotion": "cheerful",
+                "character": {"outfit": "猫娘"},
+            },
+            bundle=bundle,
+            resource_manifest=manifest,
+            turn_id="turn-1",
+        )
+
+        self.assertEqual(envelope["schemaVersion"], PET_DISPLAY_SCHEMA_VERSION)
+        self.assertEqual(envelope["turnId"], "turn-1")
+        self.assertEqual(envelope["speech"], "我在。")
+        self.assertEqual(envelope["visual"]["renderer"], "static_portrait")
+        self.assertEqual(envelope["visual"]["emotion"], "开心")
+        self.assertEqual(envelope["visual"]["outfit"], "猫娘")
+        self.assertEqual(envelope["visual"]["motion"], "speaking")
+        self.assertIn(envelope["visual"]["assetHandle"], bundle.runtime_manifest["staticImages"])
+        self.assertEqual(envelope["safety"]["status"], "ok")
+
+    def test_display_envelope_preserves_allowed_motion_intent(self) -> None:
+        bundle = build_petdesk_resource_bundle(self.resources, "mika_pack")
+        manifest = self.resources.get_manifest("mika_pack")
+
+        thinking = build_petdesk_display_envelope(
+            {
+                "speech": "我想一下。",
+                "emotion": "cheerful",
+                "character": {"outfit": "猫娘"},
+                "visual": {"motion": "thinking"},
+            },
+            bundle=bundle,
+            resource_manifest=manifest,
+        )
+        invalid = build_petdesk_display_envelope(
+            {
+                "speech": "我在。",
+                "emotion": "cheerful",
+                "character": {"outfit": "猫娘"},
+                "pet": {"motion": "../jump"},
+            },
+            bundle=bundle,
+            resource_manifest=manifest,
+        )
+
+        self.assertEqual(thinking["visual"]["motion"], "thinking")
+        self.assertEqual(invalid["visual"]["motion"], "speaking")
+
+    def test_router_exposes_health_snapshot_and_turn_stream(self) -> None:
+        runtime = FakeRuntimeMetrics()
+        guard = FakeGuard()
+        calls: list[dict[str, Any]] = []
+
+        class FakeEngine:
+            def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+                calls.append(payload)
+                return {
+                    "status": "ok",
+                    "speech": f"echo: {payload['message']}",
+                    "emotion": "shy",
+                    "character": {"outfit": "猫娘"},
+                }
+
+        app = FastAPI()
+        app.include_router(
+            build_petdesk_router(
+                engine=FakeEngine(),
+                character_resources=self.resources,
+                runtime_metrics=runtime,
+                public_guard=guard,
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+        client = TestClient(app)
+
+        health = client.get("/pet/health?character_pack_id=mika_pack")
+        snapshot = client.get("/pet/snapshot?character_pack_id=mika_pack")
+        resource_manifest = client.get("/pet/resource-manifest?character_pack_id=mika_pack")
+        turn = client.post(
+            "/pet/turn",
+            json={
+                "text": "hi",
+                "turnId": "turn-2",
+                "metadata": {
+                    "character_pack_id": "mika_pack",
+                    "user_id": "desktop",
+                    "real_user_id": "master",
+                },
+            },
+        )
+
+        self.assertEqual(health.status_code, 200)
+        self.assertTrue(health.json()["ok"])
+        self.assertEqual(health.json()["resourceManifest"]["endpoint"], "/pet/resource-manifest")
+        self.assertEqual(health.json()["resourceManifest"]["staticImageCount"], 2)
+        self.assertEqual(
+            health.json()["runtimeEnv"]["VITE_PETDESK_RESOURCE_MANIFEST_URL"],
+            "/pet/resource-manifest",
+        )
+        self.assertEqual(health.json()["runtimeEnv"]["VITE_PETDESK_INTERACTION_PROFILE"], "default")
+        profile_json = health.json()["runtimeEnv"]["VITE_PETDESK_INTERACTION_PROFILE_JSON"]
+        profile = json.loads(profile_json)
+        self.assertEqual(profile["window"]["baseSize"], {"width": 320, "height": 560})
+        self.assertEqual(profile["layout"]["--pet-static-width"], "94%")
+        self.assertTrue(profile["nativeHitTest"]["includeControls"])
+        self.assertEqual(snapshot.status_code, 200)
+        self.assertEqual(snapshot.json()["schemaVersion"], PET_DISPLAY_SCHEMA_VERSION)
+        self.assertEqual(resource_manifest.status_code, 200)
+        self.assertIn(snapshot.json()["visual"]["assetHandle"], resource_manifest.json()["staticImages"])
+        self.assertEqual(turn.status_code, 200)
+        self.assertIn("event: resource_manifest", turn.text)
+        self.assertIn("event: display", turn.text)
+        self.assertIn("event: done", turn.text)
+        self.assertEqual(calls[0]["message"], "hi")
+        self.assertEqual(calls[0]["client_mode"], "desktop_pet")
+        self.assertEqual(calls[0]["character_pack_id"], "mika_pack")
+        self.assertEqual(calls[0]["user_id"], "desktop")
+        self.assertEqual(calls[0]["real_user_id"], "master")
+        self.assertEqual(guard.released, 1)
+        self.assertIn(("pet_turn", True), runtime.observed)
+
+        display_match = re.search(r"event: display\ndata: (.+?)\n\n", turn.text, flags=re.S)
+        self.assertIsNotNone(display_match)
+        display = json.loads(display_match.group(1)) if display_match else {}
+        self.assertEqual(display["turnId"], "turn-2")
+        self.assertEqual(display["speech"], "echo: hi")
+        self.assertEqual(display["visual"]["emotion"], "害羞")
+        static_images = build_petdesk_resource_bundle(self.resources, "mika_pack").runtime_manifest["staticImages"]
+        self.assertIn(display["visual"]["assetHandle"], static_images)
+
+    def test_turn_stream_registers_tts_audio_for_runtime(self) -> None:
+        runtime = FakeRuntimeMetrics()
+
+        class FakeEngine:
+            def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "status": "ok",
+                    "speech": f"voice: {payload['message']}",
+                    "emotion": "cheerful",
+                    "character": {"outfit": "猫娘"},
+                }
+
+        class FakeTTS:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def synthesize(self, text: str) -> bytes:
+                self.calls.append(text)
+                return b"fake-audio-bytes"
+
+        tts = FakeTTS()
+        app = FastAPI()
+        app.include_router(
+            build_petdesk_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                tts_client=tts,
+                character_resources=self.resources,
+                runtime_metrics=runtime,
+                log_event=lambda *_args, **_kwargs: None,
+            )
+        )
+        client = TestClient(app)
+
+        turn = client.post(
+            "/pet/turn",
+            json={
+                "text": "hi",
+                "turnId": "turn-audio",
+                "metadata": {
+                    "character_pack_id": "mika_pack",
+                    "user_id": "desktop",
+                    "real_user_id": "master",
+                },
+            },
+        )
+
+        self.assertEqual(turn.status_code, 200)
+        self.assertEqual(tts.calls, ["voice: hi"])
+        manifests = _sse_payloads(turn.text, "resource_manifest")
+        displays = _sse_payloads(turn.text, "display")
+        self.assertGreaterEqual(len(manifests), 2)
+        self.assertGreaterEqual(len(displays), 2)
+
+        audio_manifest = manifests[-1]
+        audio_bucket = audio_manifest["audio"]
+        self.assertEqual(len(audio_bucket), 1)
+        audio_handle, audio_entry = next(iter(audio_bucket.items()))
+        self.assertRegex(audio_handle, r"^akane/tts/[0-9a-f]{32}$")
+        self.assertEqual(audio_entry["kind"], "audio")
+        self.assertEqual(audio_entry["handle"], audio_handle)
+        self.assertTrue(audio_entry["url"].startswith("/audio/petdesk/"))
+        self.assertNotIn(str(self.characters_dir), json.dumps(audio_manifest, ensure_ascii=False))
+
+        final_display = displays[-1]
+        self.assertEqual(final_display["audio"]["tts"]["enabled"], True)
+        self.assertEqual(final_display["audio"]["tts"]["audioHandle"], audio_handle)
+        self.assertEqual(final_display["speech"], "voice: hi")
+
+        audio_response = client.get(audio_entry["url"])
+        self.assertEqual(audio_response.status_code, 200)
+        self.assertEqual(audio_response.content, b"fake-audio-bytes")
+        self.assertEqual(audio_response.headers["content-type"], "audio/mpeg")
+        self.assertIn(("pet_tts", True), runtime.observed)
+        self.assertIn(("pet_turn", True), runtime.observed)
+
+    def test_turn_stream_keeps_display_when_petdesk_tts_fails(self) -> None:
+        class FakeEngine:
+            def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "status": "ok",
+                    "speech": "文字仍然要显示",
+                    "emotion": "cheerful",
+                    "character": {"outfit": "猫娘"},
+                }
+
+        class ExplodingTTS:
+            async def synthesize(self, text: str) -> bytes:
+                raise RuntimeError(r"secret token from C:\voices\bad.wav")
+
+        logs: list[dict[str, Any]] = []
+
+        def log_event(event: str, **fields: Any) -> None:
+            logs.append({"event": event, **fields})
+
+        app = FastAPI()
+        app.include_router(
+            build_petdesk_router(
+                engine=FakeEngine(),
+                config_module=SimpleNamespace(DATA_DIR=None),
+                tts_client=ExplodingTTS(),
+                character_resources=self.resources,
+                runtime_metrics=FakeRuntimeMetrics(),
+                log_event=log_event,
+            )
+        )
+        client = TestClient(app)
+
+        turn = client.post(
+            "/pet/turn",
+            json={
+                "text": "hi",
+                "metadata": {
+                    "character_pack_id": "mika_pack",
+                    "user_id": "desktop",
+                    "real_user_id": "master",
+                },
+            },
+        )
+
+        self.assertEqual(turn.status_code, 200)
+        displays = _sse_payloads(turn.text, "display")
+        self.assertEqual(len(displays), 1)
+        self.assertEqual(displays[0]["speech"], "文字仍然要显示")
+        self.assertNotIn("audio", displays[0])
+        self.assertIn("event: done", turn.text)
+        serialized_logs = json.dumps(logs, ensure_ascii=False).lower()
+        self.assertIn("petdesk_tts_failed", serialized_logs)
+        self.assertNotIn("secret", serialized_logs)
+        self.assertNotIn("token", serialized_logs)
+        self.assertNotIn("voices", serialized_logs)
+
+    def test_health_runtime_env_is_host_owned_starter_glue(self) -> None:
+        payload = build_petdesk_health_payload(self.resources, "mika_pack")
+
+        runtime_env = payload["runtimeEnv"]
+        self.assertEqual(
+            set(runtime_env),
+            {
+                "VITE_PETDESK_INTERACTION_PROFILE",
+                "VITE_PETDESK_INTERACTION_PROFILE_JSON",
+                "VITE_PETDESK_RESOURCE_MANIFEST_URL",
+            },
+        )
+        self.assertEqual(runtime_env["VITE_PETDESK_RESOURCE_MANIFEST_URL"], "/pet/resource-manifest")
+        self.assertLess(len(runtime_env["VITE_PETDESK_INTERACTION_PROFILE_JSON"]), 20000)
+        self.assertNotIn(str(self.characters_dir), json.dumps(runtime_env, ensure_ascii=False))
+
+    def test_safe_handle_segment_never_returns_path_or_url_shape(self) -> None:
+        for raw in ("../secret.png", "https://example.com/a.png", "C:/Users/a.png", "猫娘/开心"):
+            segment = safe_handle_segment(raw, "asset")
+            self.assertNotIn("/", segment)
+            self.assertNotIn("\\", segment)
+            self.assertNotIn(":", segment)
+            self.assertRegex(segment, r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+def _sse_payloads(stream_text: str, event: str) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    pattern = rf"event: {re.escape(event)}\ndata: (.+?)\n\n"
+    for match in re.finditer(pattern, stream_text, flags=re.S):
+        payloads.append(json.loads(match.group(1)))
+    return payloads
+
+
+if __name__ == "__main__":
+    unittest.main()

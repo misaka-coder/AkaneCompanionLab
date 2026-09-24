@@ -1,0 +1,680 @@
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import shutil
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from fastapi import APIRouter, Request, WebSocket
+from fastapi.responses import JSONResponse, Response
+
+from ..capability_adapters import InvocationContext, OpenAICompatASRAdapter
+from ..desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, build_desktop_pet_error_payload
+from ..local_capability_config import (
+    CONFIGURABLE_PROVIDER_BY_ID,
+    build_provider_config_entry,
+    load_capability_config,
+)
+from ..runtime_settings import runtime_setting
+from ..tts_provider_runtime import (
+    EDGE_TTS_PROVIDER_ID,
+    GPT_SOVITS_PROVIDER_ID,
+    resolve_tts_runtime_provider as _resolve_tts_runtime_provider,
+    synthesize_tts_resolution,
+    tts_resolution_failure,
+)
+from ..voice_runtime.realtime_transport import (
+    VoiceRealtimeCallFactory,
+    VoiceRealtimeCoordinatorFactory,
+    handle_voice_realtime_websocket,
+)
+
+
+LogEvent = Callable[..., None]
+
+
+def build_voice_router(
+    *,
+    engine: Any,
+    config_module: Any,
+    tts_client: Any,
+    runtime_metrics: Any,
+    log_event: LogEvent,
+    settings: Any = None,
+    capability_config_base_dir: str | Path | None = None,
+    asr_adapter_factory: Callable[[str], Any] | None = None,
+    realtime_asr_coordinator_factory: VoiceRealtimeCoordinatorFactory | None = None,
+    realtime_asr_call_factory: VoiceRealtimeCallFactory | None = None,
+) -> APIRouter:
+    router = APIRouter()
+    provider_config_base_dir = _resolve_provider_config_base_dir(
+        capability_config_base_dir=capability_config_base_dir,
+        config_module=config_module,
+    )
+
+    @router.websocket("/voice/realtime")
+    async def voice_realtime(websocket: WebSocket) -> None:
+        await handle_voice_realtime_websocket(
+            websocket,
+            coordinator_factory=realtime_asr_coordinator_factory,
+            call_factory=realtime_asr_call_factory,
+            runtime_metrics=runtime_metrics,
+            log_event=log_event,
+        )
+
+    @router.post("/asr")
+    async def asr(request: Request) -> JSONResponse:
+        started_at = time.perf_counter()
+        try:
+            form = await request.form()
+        except Exception as exc:
+            runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "multipart_parse_failed",
+                    "message": f"无法读取录音上传内容：{str(exc)[:160]}",
+                },
+                status_code=400,
+            )
+
+        upload = form.get("file") or form.get("audio")
+        if upload is None or not hasattr(upload, "read"):
+            runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            return JSONResponse(
+                {"ok": False, "error": "missing_file", "message": "没有收到录音文件。"},
+                status_code=400,
+            )
+
+        audio_bytes = await upload.read()
+        max_bytes = int(
+            float(runtime_setting(settings, config_module, "asr_max_upload_mb", "ASR_MAX_UPLOAD_MB", 20)) * 1024 * 1024
+        )
+        if len(audio_bytes) > max_bytes:
+            runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            return JSONResponse(
+                {"ok": False, "error": "audio_too_large", "message": "录音太长啦，先说短一点试试。"},
+                status_code=413,
+            )
+        if len(audio_bytes) < 512:
+            runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            return JSONResponse({"ok": False, "error": "audio_too_short", "message": "录音太短啦，我没听清。"})
+
+        filename = str(getattr(upload, "filename", "") or "akane_voice_input.webm")
+        language = str(form.get("language") or "zh").strip()
+        profile_user_id = (
+            str(form.get("real_user_id") or form.get("profileUserId") or form.get("profile_user_id") or "").strip()
+            or "master"
+        )
+        asr_resolution = _resolve_asr_runtime_provider(
+            base_dir=provider_config_base_dir,
+            profile_user_id=profile_user_id,
+            config_module=config_module,
+            settings=settings,
+            asr_adapter_factory=asr_adapter_factory,
+        )
+        if asr_resolution.get("activeProviderId") == OPENAI_COMPAT_ASR_PROVIDER_ID:
+            try:
+                result = await _invoke_asr_adapter(
+                    adapter=asr_resolution["adapter"],
+                    audio_bytes=audio_bytes,
+                    filename=filename,
+                    content_type=str(getattr(upload, "content_type", "") or ""),
+                    language=language,
+                    profile_user_id=profile_user_id,
+                )
+                duration_ms = (time.perf_counter() - started_at) * 1000
+                runtime_metrics.observe_request("asr", duration_ms=duration_ms, ok=bool(result.get("ok")))
+                log_event(
+                    "asr_complete",
+                    ok=bool(result.get("ok")),
+                    duration_ms=round(duration_ms, 1),
+                    text_length=len(str(result.get("text") or "")),
+                    provider=OPENAI_COMPAT_ASR_PROVIDER_ID,
+                    error=str(result.get("error") or ""),
+                )
+                status_code = 200 if result.get("ok") else int(result.get("_status_code") or 200)
+                result.pop("_status_code", None)
+                return JSONResponse(result, status_code=status_code)
+            except Exception as exc:
+                log_event(
+                    "asr_provider_fallback",
+                    provider=OPENAI_COMPAT_ASR_PROVIDER_ID,
+                    fallbackProviderId="provider.asr.faster_whisper",
+                    reason="openai_compat_asr_failed",
+                    errorType=_safe_tts_reason(type(exc).__name__),
+                )
+        try:
+            result = await asyncio.to_thread(
+                run_asr_transcription,
+                engine=engine,
+                config_module=config_module,
+                settings=settings,
+                audio_bytes=audio_bytes,
+                filename=filename,
+                language=language,
+                content_type=str(getattr(upload, "content_type", "") or ""),
+            )
+        except Exception as exc:
+            runtime_metrics.observe_request("asr", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            log_event("asr_error", message=str(exc)[:240])
+            return JSONResponse(
+                {"ok": False, "error": "asr_failed", "message": f"语音识别失败：{str(exc)[:160]}"},
+                status_code=500,
+            )
+
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        runtime_metrics.observe_request("asr", duration_ms=duration_ms, ok=bool(result.get("ok")))
+        log_event(
+            "asr_complete",
+            ok=bool(result.get("ok")),
+            duration_ms=round(duration_ms, 1),
+            text_length=len(str(result.get("text") or "")),
+            error=str(result.get("error") or ""),
+        )
+        status_code = 200 if result.get("ok") else int(result.get("_status_code") or 200)
+        result.pop("_status_code", None)
+        return JSONResponse(result, status_code=status_code)
+
+    @router.post("/tts")
+    async def tts(request: Request) -> Response:
+        started_at = time.perf_counter()
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="invalid_json",
+                    message=f"无法读取 TTS 请求：{str(exc)[:160]}",
+                    retryable=False,
+                ),
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="missing_text",
+                    message="text is required",
+                    retryable=False,
+                ),
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        resolution = _resolve_tts_runtime_provider(
+            engine=engine,
+            payload=payload,
+        )
+        failure = tts_resolution_failure(resolution)
+        if failure:
+            reason = _safe_tts_reason(failure)
+            failure_resolution = {
+                **resolution,
+                "status": "disabled" if reason == "text_only_requested" else "unavailable",
+                "activeProviderId": "",
+                "fallbackProviderId": "",
+                "reason": reason,
+            }
+            runtime_metrics.observe_request(
+                "tts",
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                ok=False,
+            )
+            log_event(
+                "tts_requested_provider_unavailable",
+                provider=resolution.get("requestedProviderId") or "",
+                reason=reason,
+                text_length=len(text),
+            )
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="tts_disabled" if reason in {"text_only_requested", "tts_client_unavailable"} else "requested_tts_provider_unavailable",
+                    message="当前配置为仅文字。" if reason == "text_only_requested" else "指定的语音服务暂不可用，没有改用其他声线。",
+                    retryable=reason
+                    not in {
+                        "requested_voice_profile_missing",
+                        "requested_provider_disabled",
+                        "requested_provider_invalid_config",
+                        "requested_provider_invalid",
+                        "requested_provider_unknown",
+                        "text_only_requested",
+                        "tts_client_unavailable",
+                    },
+                ),
+                status_code=503,
+                headers=_tts_response_headers(failure_resolution),
+            )
+        headers = _tts_response_headers(resolution)
+
+        try:
+            synthesized = await synthesize_tts_resolution(
+                resolution=resolution,
+                text=text,
+                payload=payload,
+                default_media_type="audio/mpeg",
+            )
+            audio, media_type = synthesized.audio, synthesized.media_type
+        except ValueError as exc:
+            runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            log_event("tts_error", message=str(exc), text_length=len(text))
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error="tts_request_invalid",
+                    message=str(exc),
+                    retryable=False,
+                ),
+                status_code=400,
+                headers=headers,
+            )
+        except Exception as exc:
+            runtime_metrics.observe_request("tts", duration_ms=(time.perf_counter() - started_at) * 1000, ok=False)
+            reason = _safe_tts_reason(getattr(exc, "reason", "tts_failed"))
+            log_event("tts_error", reason=reason, text_length=len(text))
+            return JSONResponse(
+                build_desktop_pet_error_payload(
+                    error=reason,
+                    message="语音服务暂不可用，没有改用其他声线。",
+                    retryable=False,
+                ),
+                status_code=503,
+                headers=_tts_response_headers({**resolution, "status": "unavailable", "reason": reason,
+                    "activeProviderId": ""}),
+            )
+
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        runtime_metrics.observe_request("tts", duration_ms=duration_ms, ok=True)
+        log_event(
+            "tts_complete",
+            duration_ms=round(duration_ms, 1),
+            text_length=len(text),
+            provider=resolution.get("activeProviderId") or EDGE_TTS_PROVIDER_ID,
+            status=resolution.get("status"),
+        )
+        return Response(
+            content=audio,
+            media_type=media_type,
+            headers={**headers,
+                "X-Akane-TTS-Service-Provider": synthesized.origin.get("plugin_id", ""),
+                "X-Akane-TTS-Service-Generation": synthesized.origin.get("generation_id", "")},
+        )
+
+    return router
+
+
+async def _invoke_asr_adapter(
+    *,
+    adapter: Any,
+    audio_bytes: bytes,
+    filename: str,
+    content_type: str,
+    language: str,
+    profile_user_id: str,
+) -> dict[str, Any]:
+    result = await adapter.invoke(
+        "asr.transcribe",
+        {
+            "audio": audio_bytes,
+            "filename": filename,
+            "content_type": content_type,
+            "language": language,
+        },
+        InvocationContext(profile_user_id=profile_user_id, client_mode="desktop_pet"),
+    )
+    content = result.content if isinstance(result.content, Mapping) else {}
+    text = " ".join(str(content.get("text") or "").split()).strip()
+    if result.is_error or not text:
+        return {
+            "ok": False,
+            "error": result.reason or result.status or "no_speech",
+            "message": "没听清，可以再说一次。",
+        }
+    payload: dict[str, Any] = {
+        "ok": True,
+        "text": text,
+        "providerId": OPENAI_COMPAT_ASR_PROVIDER_ID,
+    }
+    language_value = str(content.get("language") or "").strip()
+    if language_value:
+        payload["language"] = language_value
+    duration = content.get("duration_seconds")
+    if isinstance(duration, (int, float)) and duration >= 0:
+        payload["duration_seconds"] = duration
+    return payload
+
+
+OPENAI_COMPAT_ASR_PROVIDER_ID = "provider.asr.openai_compat.local"
+
+
+def _resolve_asr_runtime_provider(
+    *,
+    base_dir: Path | None,
+    profile_user_id: str,
+    config_module: Any,
+    asr_adapter_factory: Callable[[str], Any] | None,
+    settings: Any = None,
+) -> dict[str, Any]:
+    resolution: dict[str, Any] = {
+        "status": "default",
+        "reason": "",
+        "requestedProviderId": "provider.asr.faster_whisper",
+        "activeProviderId": "",
+        "adapter": None,
+        "profileUserId": profile_user_id,
+    }
+    provider_spec = CONFIGURABLE_PROVIDER_BY_ID.get(OPENAI_COMPAT_ASR_PROVIDER_ID)
+    if provider_spec is None:
+        return resolution
+    config = load_capability_config(base_dir=base_dir, profile_user_id=profile_user_id)
+    provider_config = config.get("providers", {}).get(OPENAI_COMPAT_ASR_PROVIDER_ID)
+    provider_entry = build_provider_config_entry(provider_spec, provider_config)
+    status = str(provider_entry.get("status") or "").strip()
+    endpoint = str(provider_entry.get("endpoint") or "").strip()
+    if status not in {"configured", "ready"} or not endpoint:
+        return {
+            **resolution,
+            "status": "degraded",
+            "reason": _provider_unavailable_reason(status),
+            "requestedProviderId": OPENAI_COMPAT_ASR_PROVIDER_ID if provider_config else "provider.asr.faster_whisper",
+        }
+    try:
+        if asr_adapter_factory is not None:
+            adapter = asr_adapter_factory(endpoint)
+        else:
+            adapter = OpenAICompatASRAdapter(
+                provider_id=OPENAI_COMPAT_ASR_PROVIDER_ID,
+                endpoint=endpoint,
+                timeout_seconds=float(
+                    runtime_setting(
+                        settings,
+                        config_module,
+                        "openai_compat_asr_timeout_seconds",
+                        "OPENAI_COMPAT_ASR_TIMEOUT_SECONDS",
+                        45.0,
+                    )
+                    or 45.0
+                ),
+                model=str(
+                    runtime_setting(
+                        settings,
+                        config_module,
+                        "openai_compat_asr_model",
+                        "OPENAI_COMPAT_ASR_MODEL",
+                        "whisper-1",
+                    )
+                    or "whisper-1"
+                ),
+            )
+    except Exception:
+        return {
+            **resolution,
+            "status": "degraded",
+            "reason": "openai_compat_asr_adapter_unavailable",
+            "requestedProviderId": OPENAI_COMPAT_ASR_PROVIDER_ID,
+        }
+    return {
+        **resolution,
+        "status": "ready",
+        "reason": "",
+        "requestedProviderId": OPENAI_COMPAT_ASR_PROVIDER_ID,
+        "activeProviderId": OPENAI_COMPAT_ASR_PROVIDER_ID,
+        "adapter": adapter,
+    }
+
+
+def _safe_voice_profile_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > 120:
+        return ""
+    lowered = text.lower()
+    if (
+        "://" in text
+        or "/" in text
+        or "\\" in text
+        or ":" in text
+        or ".." in text
+        or "token" in lowered
+        or "secret" in lowered
+        or "password" in lowered
+        or "api_key" in lowered
+    ):
+        return ""
+    return text
+
+
+def _provider_unavailable_reason(status: str) -> str:
+    if status == "missing_config":
+        return "requested_provider_missing_config"
+    if status == "disabled":
+        return "requested_provider_disabled"
+    if status == "invalid_config":
+        return "requested_provider_invalid_config"
+    if status == "unreachable":
+        return "requested_provider_unreachable"
+    if status:
+        return "requested_provider_not_ready"
+    return "requested_provider_unknown"
+
+
+def _safe_media_type(value: Any, *, default: str) -> str:
+    text = str(value or "").split(";", 1)[0].strip().lower()
+    if "/" not in text or any(ch in text for ch in "\r\n"):
+        return default
+    return text[:80]
+
+
+def _tts_response_headers(resolution: Mapping[str, Any]) -> dict[str, str]:
+    requested = str(resolution.get("requestedProviderId") or "")
+    active = str(resolution.get("activeProviderId") or "")
+    return {
+        "Cache-Control": "no-store",
+        "X-Akane-Contract": DESKTOP_PET_CONTRACT_VERSION,
+        "X-Akane-TTS-Requested-Provider": requested,
+        "X-Akane-TTS-Provider": active,
+        "X-Akane-TTS-Status": str(resolution.get("status") or ""),
+        "X-Akane-TTS-Fallback": str(resolution.get("fallbackProviderId") or ""),
+        "X-Akane-TTS-Reason": _safe_tts_reason(resolution.get("reason")),
+    }
+
+
+def _safe_tts_reason(value: Any) -> str:
+    reason = str(value or "").strip()
+    if not reason:
+        return ""
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in reason)
+    return safe[:120]
+
+
+def _resolve_provider_config_base_dir(
+    *,
+    capability_config_base_dir: str | Path | None,
+    config_module: Any = None,
+) -> Path | None:
+    if capability_config_base_dir is not None:
+        return Path(capability_config_base_dir)
+    data_dir = getattr(config_module, "DATA_DIR", None)
+    if data_dir:
+        return Path(data_dir)
+    return None
+
+
+def run_asr_transcription(
+    *,
+    engine: Any,
+    config_module: Any,
+    settings: Any = None,
+    audio_bytes: bytes,
+    filename: str,
+    language: str,
+    content_type: str,
+) -> dict[str, object]:
+    local_executor = getattr(engine, "local_media_executor", None)
+    if local_executor is not None:
+        try:
+            result = local_executor.transcribe_bytes(
+                audio_bytes,
+                filename=filename,
+                content_type=content_type,
+                language=language,
+                model=str(
+                    runtime_setting(
+                        settings,
+                        config_module,
+                        "asr_whisper_model_size",
+                        "ASR_WHISPER_MODEL_SIZE",
+                        getattr(config_module, "WHISPER_MODEL_SIZE", "small") if config_module is not None else "small",
+                    )
+                ),
+                vad_filter=bool(runtime_setting(settings, config_module, "asr_vad_filter", "ASR_VAD_FILTER", True)),
+            )
+            return {
+                "ok": True,
+                "text": str(result.get("text") or ""),
+                "language": str(result.get("language") or language or ""),
+                "duration_seconds": result.get("duration_seconds"),
+                "provider": str(result.get("provider") or "local_media_executor"),
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(getattr(exc, "reason", "") or "local_asr_failed"),
+                "message": str(getattr(exc, "public_message", "") or "本地语音识别失败。")[:160],
+                "_status_code": 503,
+            }
+    if importlib.util.find_spec("faster_whisper") is None:
+        return {
+            "ok": False,
+            "error": "faster_whisper_not_found",
+            "message": "本机还没有安装 faster-whisper，暂时不能语音识别。",
+            "_status_code": 503,
+        }
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return {
+            "ok": False,
+            "error": "ffmpeg_not_found",
+            "message": "本机没有找到 ffmpeg，暂时不能处理录音。",
+            "_status_code": 503,
+        }
+
+    service = engine._get_generated_file_service()
+    if service is None:
+        return {
+            "ok": False,
+            "error": "asr_service_unavailable",
+            "message": "语音识别服务暂时不可用。",
+            "_status_code": 503,
+        }
+
+    suffix = safe_audio_suffix(filename, content_type)
+    with tempfile.TemporaryDirectory(prefix="akane_asr_") as tmp:
+        work_dir = Path(tmp)
+        source_path = work_dir / f"input{suffix}"
+        prepared_path = work_dir / "prepared.wav"
+        source_path.write_bytes(audio_bytes)
+
+        prepared = service._prepare_transcription_input(
+            ffmpeg_path=ffmpeg_path,
+            source_path=source_path,
+            prepared_path=prepared_path,
+        )
+        if not prepared.get("ok"):
+            return {
+                "ok": False,
+                "error": "audio_prepare_failed",
+                "message": f"录音预处理失败：{str(prepared.get('error') or '')[:160]}",
+            }
+
+        model_size = service._normalize_whisper_model_size(
+            runtime_setting(
+                settings,
+                config_module,
+                "asr_whisper_model_size",
+                "ASR_WHISPER_MODEL_SIZE",
+                getattr(config_module, "WHISPER_MODEL_SIZE", "small") if config_module is not None else "small",
+            )
+        )
+        device = service._normalize_whisper_device(
+            runtime_setting(
+                settings,
+                config_module,
+                "asr_whisper_device",
+                "ASR_WHISPER_DEVICE",
+                getattr(config_module, "WHISPER_DEVICE", "auto") if config_module is not None else "auto",
+            )
+        )
+        compute_type = service._normalize_whisper_compute_type(
+            runtime_setting(
+                settings,
+                config_module,
+                "asr_whisper_compute_type",
+                "ASR_WHISPER_COMPUTE_TYPE",
+                getattr(config_module, "WHISPER_COMPUTE_TYPE", "auto") if config_module is not None else "auto",
+            )
+        )
+        normalized_language = service._normalize_transcript_language(
+            language or runtime_setting(settings, config_module, "asr_language", "ASR_LANGUAGE", "zh")
+        )
+        whisper_cache_dir = (
+            runtime_setting(settings, config_module, "whisper_cache_dir", "WHISPER_CACHE_DIR", "") or None
+        )
+        model = service._load_faster_whisper_model(
+            model_size=model_size,
+            device=device,
+            compute_type=compute_type,
+            download_root=whisper_cache_dir,
+        )
+        transcript = service._transcribe_prepared_audio(
+            model=model,
+            audio_path=prepared_path,
+            source={
+                "source_type": "desktop_pet_voice",
+                "source_id": "desktop_pet_voice",
+                "handle": "voice_input",
+                "title": filename,
+                "absolute_path": source_path,
+                "input_ext": suffix.lstrip("."),
+            },
+            source_index=1,
+            language=normalized_language,
+            vad_filter=bool(runtime_setting(settings, config_module, "asr_vad_filter", "ASR_VAD_FILTER", True)),
+        )
+
+    if transcript.get("status") != "ready":
+        return {
+            "ok": False,
+            "error": "transcribe_failed",
+            "message": str(transcript.get("error") or "语音识别失败")[:160],
+        }
+
+    text = " ".join(str(transcript.get("text") or "").split()).strip()
+    if not text:
+        return {"ok": False, "error": "no_speech", "message": "没听清，可以再说一次。"}
+
+    return {
+        "ok": True,
+        "text": text,
+        "language": transcript.get("language") or normalized_language,
+        "duration_seconds": transcript.get("duration_seconds"),
+    }
+
+
+def safe_audio_suffix(filename: str, content_type: str) -> str:
+    suffix = Path(str(filename or "")).suffix.lower()
+    if suffix in {".webm", ".ogg", ".oga", ".mp3", ".wav", ".m4a", ".mp4", ".aac", ".opus"}:
+        return suffix
+    mime = str(content_type or "").lower()
+    if "ogg" in mime or "opus" in mime:
+        return ".ogg"
+    if "mp4" in mime or "m4a" in mime:
+        return ".m4a"
+    if "wav" in mime:
+        return ".wav"
+    return ".webm"

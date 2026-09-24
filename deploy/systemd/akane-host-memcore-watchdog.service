@@ -1,0 +1,12 @@
+[Unit]
+Description=Akane Host MemCore stuck-compaction watchdog
+After=akane-host.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/akane/ops/akane-host-memcore-watchdog.py
+StateDirectory=akane-host-watchdog
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

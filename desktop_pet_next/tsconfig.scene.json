@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler",
+    "strict": true, "noEmit": true, "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true, "esModuleInterop": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"], "types": ["vite/client"],
+    "skipLibCheck": true, "noUnusedLocals": true, "noUnusedParameters": true
+  },
+  "include": ["src/scene/**/*.ts", "src/scene/**/*.vue"]
+}

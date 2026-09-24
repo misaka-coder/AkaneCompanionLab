@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-image-generation"
+version = "0.2.0"
+description = "Bounded image generation and reference editing business runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["akane-plugin>=0.14,<0.15", "requests>=2.31,<3", "urllib3>=2.2,<3", "Pillow>=10,<13"]
+
+[project.entry-points."akane.plugins.v1"]
+"akane.image-generation" = "akane_image_generation.plugin:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

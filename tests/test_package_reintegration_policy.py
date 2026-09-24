@@ -1,0 +1,209 @@
+from __future__ import annotations
+
+import ast
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class PackageReintegrationPolicyTests(unittest.TestCase):
+    def test_m63_policy_records_reintegration_as_replacement(self) -> None:
+        doc = (ROOT / "docs" / "package_reintegration_policy_m63.md").read_text(encoding="utf-8")
+
+        self.assertIn("Package Reintegration Policy M63", doc)
+        self.assertIn("Package reintegration must reduce owning implementations.", doc)
+        self.assertIn("Applying a package back to Akane is a replacement", doc)
+        self.assertIn("deleted", doc)
+        self.assertIn("thin adapter", doc)
+        self.assertIn("documented migration window", doc)
+        self.assertIn("Not allowed", doc)
+        self.assertIn("old and new implementations both own business logic indefinitely", doc)
+        self.assertIn("Reintegration Gate", doc)
+        self.assertIn("Find the old implementation entry points with `rg`", doc)
+        self.assertIn("Pick one authority implementation", doc)
+        self.assertIn("Lean Reintegration Rule", doc)
+        self.assertIn("only when it clearly reduces Akane's iteration complexity", doc)
+        self.assertIn('Do not leave "we will clean it later" as the default outcome', doc.replace("\n", " "))
+        self.assertIn("Future-facing ideas belong in docs or tickets", doc)
+        self.assertIn("public-hard", doc)
+        self.assertIn("optional-runtime", doc)
+        self.assertIn("dev-only", doc)
+        self.assertIn("incubating", doc)
+        self.assertIn("Out of scope for M63", doc)
+        self.assertIn("`memcore`", doc)
+
+    def test_m63_policy_audits_non_memcore_package_statuses(self) -> None:
+        doc = (ROOT / "docs" / "package_reintegration_policy_m63.md").read_text(encoding="utf-8")
+
+        expected_packages = (
+            "promptpack-core",
+            "charpack-core",
+            "channelcore-onebot",
+            "capcore",
+            "capcore-provider-openai",
+            "capcore-provider-native-tools",
+            "capcore-provider-anthropic",
+            "capcore-host-utils",
+            "capcore-adapter-python",
+            "capcore-adapter-mcp",
+            "capcore-adapter-speech",
+            "capcore-adapter-comfyui",
+            "petcore-protocol",
+            "petdesk-character-host",
+            "petdesk-runtime",
+            "petdesk-live2d-pixi-driver",
+        )
+        for package_name in expected_packages:
+            self.assertIn(package_name, doc)
+
+        self.assertIn("After LD006, the promptpack ownership decision is closed for now", doc)
+        self.assertIn("PromptBuilder.build_final_generation_context()", doc)
+        self.assertIn("old `ResourceManifest` implementation is no longer Akane-owned", doc)
+        self.assertIn("Legacy JSON `tool_call` and provider-native tool calls coexist", doc)
+        self.assertIn("Akane `/pet/*`", doc)
+        self.assertIn("must remain a bridge, not a second runtime", doc)
+        self.assertIn("Live2D Productization L1 pending", doc)
+
+    def test_agents_records_package_reintegration_guardrail(self) -> None:
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        self.assertIn("抽包回填", agents)
+        self.assertIn("必须减少权威实现数量", agents)
+        self.assertIn("docs/package_reintegration_policy_m63.md", agents)
+        self.assertIn("deleted / thin adapter / documented migration window", agents)
+        self.assertIn("只有明显降低 Akane 迭代复杂度", agents)
+        self.assertIn("冗余字段、冗余状态和重复提示", agents)
+        self.assertIn("future-only 占位提示", agents)
+
+    def test_ld003_records_future_only_capability_noise_cleanup(self) -> None:
+        doc = (ROOT / "docs" / "akane_lean_down_ld003_capability_noise.md").read_text(encoding="utf-8")
+
+        self.assertIn("AKANE-LD-003", doc)
+        self.assertIn("desktop_environment", doc)
+        self.assertIn("Future-only capabilities belong in docs or tickets", doc)
+        self.assertIn("real runtime data or real tools", doc)
+
+    def test_desktop_pet_capabilities_do_not_expose_future_only_environment_hint(self) -> None:
+        from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
+        from companion_v01.client_protocol import ClientMode
+
+        selection = CapabilityRegistry().select(
+            CapabilitySnapshot(
+                client_mode=ClientMode.DESKTOP_PET,
+                has_any_attachment=True,
+                has_media_attachment=True,
+            )
+        )
+
+        self.assertIn("desktop_file_workspace", selection.module_names)
+        self.assertIn("desktop_managed_browser", selection.module_names)
+        self.assertIn("desktop_music_request", selection.module_names)
+        self.assertIn("desktop_workspace", selection.layer_names)
+        self.assertIn("desktop_browser", selection.layer_names)
+        self.assertIn("music_request", selection.layer_names)
+        self.assertNotIn("open_browser", selection.tool_names)
+        self.assertIn("browser_page", selection.tool_names)
+        self.assertIn("open_music_search", selection.tool_names)
+        self.assertNotIn("desktop_environment", selection.module_names)
+        self.assertNotIn("desktop_environment", selection.layer_names)
+        self.assertFalse(any("未来可以获得桌面观察" in hint for hint in selection.light_hints))
+
+    def test_charpack_compat_layer_does_not_import_private_helpers(self) -> None:
+        source_path = ROOT / "companion_v01" / "desktop_pet_character_resources.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+        private_imports: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module != "charpack_core.character_resources":
+                continue
+            private_imports.extend(alias.name for alias in node.names if alias.name.startswith("_"))
+
+        self.assertEqual(private_imports, [])
+
+    def test_mcp_adapter_wrapper_does_not_call_package_private_core_methods(self) -> None:
+        source_path = ROOT / "companion_v01" / "capability_adapters" / "mcp_stdio.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+        private_core_attrs: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute) or not node.attr.startswith("_"):
+                continue
+            value = node.value
+            if isinstance(value, ast.Attribute) and value.attr == "_core":
+                private_core_attrs.append(node.attr)
+
+        self.assertEqual(private_core_attrs, [])
+
+    def test_qq_gateway_uses_channelcore_reply_policy_without_parallel_claim_state(self) -> None:
+        source = (ROOT / "companion_v01" / "qq_gateway.py").read_text(encoding="utf-8")
+
+        self.assertIn("ReplyReferenceLedger", source)
+        self.assertIn("_reply_reference_for_content", source)
+        self.assertNotIn("_reply_reference_claims", source)
+        self.assertNotIn("_claim_reply_message_id", source)
+
+    def test_dynamic_mcp_handler_builder_uses_public_descriptor_api(self) -> None:
+        source = (ROOT / "companion_v01" / "engine_services" / "tool_rounds.py").read_text(encoding="utf-8")
+
+        self.assertIn("adapter.descriptor_for_tool(tool)", source)
+        self.assertNotIn("adapter._descriptor_for_tool(tool)", source)
+
+    def test_dynamic_adapter_execution_uses_single_capcore_prepare_gate(self) -> None:
+        source = (ROOT / "companion_v01" / "tool_handlers" / "adapters.py").read_text(encoding="utf-8")
+        compatibility = (ROOT / "companion_v01" / "tool_runtime.py").read_text(encoding="utf-8")
+
+        self.assertIn("capcore_prepare_invocation(", source)
+        self.assertNotIn("capcore_validate_invocation_args", source)
+        # The host may ask CapCore whether an ops policy applies. That request
+        # is not an authorization decision; validation and admission still use
+        # the one prepare_invocation gate, never standalone host interpreters.
+        tree = ast.parse(source)
+        request_callers = [
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "capcore_build_permission_request"
+                for call in ast.walk(node)
+            )
+        ]
+        self.assertEqual(request_callers, ["admit_execution"])
+        request_fields = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "permission_request"
+        }
+        self.assertEqual(request_fields, {"required"})
+        self.assertNotIn("capcore_resolve_permission_for_profile", source)
+        self.assertNotIn("capcore_validate_invocation_args", compatibility)
+        self.assertNotIn("capcore_build_permission_request", compatibility)
+
+    def test_ld006_records_promptpack_ownership_decision(self) -> None:
+        doc = (ROOT / "docs" / "akane_lean_down_ld006_promptpack_ownership.md").read_text(encoding="utf-8")
+        policy = (ROOT / "docs" / "package_reintegration_policy_m63.md").read_text(encoding="utf-8")
+
+        self.assertIn("remains the owner of Akane final chat prompt assembly", policy)
+        self.assertIn("PromptBuilder.build_final_generation_context()", doc)
+        self.assertIn("remains the reusable primitive layer", doc)
+        self.assertIn("must not add a second final chat prompt assembler", doc)
+
+    def test_companion_runtime_does_not_add_promptpack_assembler_parallel_path(self) -> None:
+        offenders: list[str] = []
+        for path in (ROOT / "companion_v01").rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            if "PromptAssembler" in source:
+                offenders.append(str(path.relative_to(ROOT)).replace("\\", "/"))
+
+        self.assertEqual(offenders, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

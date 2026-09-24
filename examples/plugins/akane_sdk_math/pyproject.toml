@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-sdk-math-example"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["akane-plugin>=0.14,<0.15"]
+
+[project.entry-points."akane.plugins.v1"]
+"example.math" = "akane_sdk_math:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

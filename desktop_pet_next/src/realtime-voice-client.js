@@ -1,0 +1,2027 @@
+const VOICE_REALTIME_PROTOCOL_VERSION = 1;
+const VOICE_PLAYBACK_OUTPUT_MODE = "binary_audio_ack_v1";
+const DEFAULT_SOCKET_OPEN_TIMEOUT_MS = 5000;
+const DEFAULT_PROVIDER_READY_TIMEOUT_MS = 30000;
+const CAPTURE_FLUSH_TIMEOUT_MS = 750;
+const DEFAULT_DUCK_VOLUME_FACTOR = 0.24;
+const DEFAULT_IDLE_PRE_ROLL_MS = 800;
+const DEFAULT_IDLE_CAPTURE_MAX_MS = 2 * 60 * 1000;
+const DEFAULT_FALLBACK_PCM_MAX_MS = 2 * 60 * 1000;
+const CANCEL_RECEIPT_TIMEOUT_MS = 2000;
+
+export function buildVoiceWebSocketUrl(endpoint) {
+  const url = new URL(String(endpoint || ""));
+  if (url.protocol === "http:") url.protocol = "ws:";
+  else if (url.protocol === "https:") url.protocol = "wss:";
+  else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+    throw new Error("voice_realtime_endpoint_invalid");
+  }
+  return url.toString();
+}
+
+export function supportsRealtimeVoiceCapture(scope = globalThis) {
+  const AudioContextImpl = scope.AudioContext || scope.webkitAudioContext;
+  return Boolean(
+    scope.WebSocket &&
+      AudioContextImpl &&
+      scope.AudioWorkletNode &&
+      scope.URL?.createObjectURL &&
+      scope.Blob
+  );
+}
+
+export class RealtimeVoicePlaybackQueue {
+  constructor({
+    audioElement,
+    sendJson,
+    getVolume = () => 1,
+    callbacks = {},
+    duckVolumeFactor = DEFAULT_DUCK_VOLUME_FACTOR,
+    createObjectUrl = (blob) => URL.createObjectURL(blob),
+    revokeObjectUrl = (url) => URL.revokeObjectURL(url),
+    BlobImpl = Blob,
+    now = () => performance.now(),
+    playbackAuthority = null
+  }) {
+    if (!audioElement) throw new Error("voice_playback_audio_element_missing");
+    this.audioElement = audioElement;
+    this.sendJson = sendJson;
+    this.getVolume = getVolume;
+    this.callbacks = callbacks;
+    this.duckVolumeFactor = clampVolume(duckVolumeFactor);
+    this.createObjectUrl = createObjectUrl;
+    this.revokeObjectUrl = revokeObjectUrl;
+    this.BlobImpl = BlobImpl;
+    this.now = now;
+    this.playbackAuthority = playbackAuthority;
+    this.queue = [];
+    this.current = null;
+    this.controlReceipts = new Map();
+    this.closed = false;
+  }
+
+  enqueue(header, audioBytes) {
+    if (this.closed) throw new Error("voice_playback_queue_closed");
+    const deliveryId = String(header?.delivery_id || "").trim();
+    const mediaType = String(header?.media_type || "audio/mpeg").trim();
+    const expectedLength = Number(header?.byte_length);
+    const actualLength = Number(audioBytes?.byteLength || 0);
+    if (!deliveryId || !header?.binary_follows || !actualLength) {
+      throw new Error("voice_playback_payload_invalid");
+    }
+    if (Number.isFinite(expectedLength) && expectedLength !== actualLength) {
+      this.sendTerminal("client.playback.failed", header, {
+        reason: "audio_byte_length_mismatch"
+      });
+      throw new Error("voice_playback_byte_length_mismatch");
+    }
+
+    const objectUrl = this.createObjectUrl(new this.BlobImpl([audioBytes], { type: mediaType }));
+    const item = {
+      header,
+      objectUrl,
+      startedAt: 0,
+      startedAcknowledged: false,
+      endedBeforeStartAck: false,
+      ducked: false
+    };
+    this.queue.push(item);
+    this.sendJson({
+      type: "client.playback.enqueued",
+      delivery_id: deliveryId
+    });
+    this.notify("onPlaybackEnqueued", header);
+    void this.playNext();
+  }
+
+  async playNext() {
+    if (this.closed || this.current || !this.queue.length) return;
+    if (this.playbackAuthority && !this.playbackAuthority.acquirePlayback(this)) return;
+    const item = this.queue.shift();
+    this.current = item;
+    const { audioElement } = this;
+    const handleEnded = () => {
+      if (!item.startedAcknowledged) {
+        item.endedBeforeStartAck = true;
+        return;
+      }
+      this.finishCurrent("completed");
+    };
+    const handleError = () => this.finishCurrent("failed", "audio_element_error");
+    item.cleanupListeners = () => {
+      audioElement.removeEventListener("ended", handleEnded);
+      audioElement.removeEventListener("error", handleError);
+    };
+    audioElement.addEventListener("ended", handleEnded, { once: true });
+    audioElement.addEventListener("error", handleError, { once: true });
+    audioElement.src = item.objectUrl;
+    audioElement.currentTime = 0;
+    audioElement.volume = clampVolume(this.getVolume());
+
+    try {
+      await audioElement.play();
+      if (this.current !== item || this.closed) return;
+      item.startedAt = this.now();
+      item.startedAcknowledged = true;
+      this.sendJson({
+        type: "client.playback.started",
+        delivery_id: String(item.header.delivery_id),
+        resume_token: `desktop-pet-next:${String(item.header.delivery_id).slice(0, 120)}`
+      });
+      this.notify("onPlaybackStarted", item.header);
+      if (item.endedBeforeStartAck) this.finishCurrent("completed");
+    } catch {
+      if (this.current === item) this.finishCurrent("failed", "audio_play_rejected");
+    }
+  }
+
+  interrupt(reason = "user_interrupted") {
+    const wasClosed = this.closed;
+    this.closed = true;
+    if (this.current) {
+      this.audioElement.pause();
+      this.finishCurrent("interrupted", reason);
+    }
+    while (this.queue.length) {
+      const item = this.queue.shift();
+      this.sendTerminal("client.playback.interrupted", item.header, { reason, played_ms: 0 });
+      this.releaseItem(item);
+      this.notify("onPlaybackInterrupted", item.header, reason);
+    }
+    this.closed = wasClosed;
+  }
+
+  applyControl(control) {
+    const controlId = String(control?.control_id || "").trim();
+    const commandId = String(control?.command_id || "").trim();
+    const action = String(control?.action || "").trim();
+    const deliveryId = String(control?.delivery_id || "").trim();
+    if (!controlId || !commandId || !deliveryId || !["duck", "resume", "stop"].includes(action)) {
+      throw new Error("voice_playback_control_invalid");
+    }
+    const existing = this.controlReceipts.get(controlId);
+    if (existing) {
+      if (existing.command_id !== commandId || existing.action !== action) {
+        throw new Error("voice_playback_control_conflict");
+      }
+      this.sendJson(existing);
+      return existing.status === "applied";
+    }
+
+    const currentMatches = String(this.current?.header?.delivery_id || "") === deliveryId;
+    const queuedIndex = this.queue.findIndex(
+      (item) => String(item?.header?.delivery_id || "") === deliveryId
+    );
+    let receipt;
+    if (action === "duck") {
+      if (!currentMatches || !this.current?.startedAcknowledged) {
+        receipt = this.buildControlReceipt(control, "failed", {
+          reason: "target_not_playing"
+        });
+      } else {
+        this.current.ducked = true;
+        const appliedVolume = clampVolume(this.getVolume()) * this.duckVolumeFactor;
+        this.audioElement.volume = clampVolume(appliedVolume);
+        receipt = this.buildControlReceipt(control, "applied", {
+          played_ms: measurePlayedMs(this.audioElement, this.current.startedAt, this.now),
+          applied_volume: this.audioElement.volume
+        });
+        this.notify("onPlaybackDucked", this.current.header, this.audioElement.volume);
+      }
+    } else if (action === "resume") {
+      if (!currentMatches || !this.current?.ducked) {
+        receipt = this.buildControlReceipt(control, "failed", {
+          reason: "target_not_ducked"
+        });
+      } else {
+        this.current.ducked = false;
+        this.audioElement.volume = clampVolume(this.getVolume());
+        receipt = this.buildControlReceipt(control, "applied", {
+          played_ms: measurePlayedMs(this.audioElement, this.current.startedAt, this.now),
+          applied_volume: this.audioElement.volume
+        });
+        this.notify("onPlaybackResumed", this.current.header, this.audioElement.volume);
+      }
+    } else if (currentMatches) {
+      const item = this.current;
+      const playedMs = measurePlayedMs(this.audioElement, item.startedAt, this.now);
+      this.audioElement.pause();
+      this.current = null;
+      this.releaseItem(item);
+      receipt = this.buildControlReceipt(control, "applied", { played_ms: playedMs });
+      this.notify("onPlaybackInterrupted", item.header, String(control?.reason || "interrupted"));
+    } else if (queuedIndex >= 0) {
+      const [item] = this.queue.splice(queuedIndex, 1);
+      this.releaseItem(item);
+      receipt = this.buildControlReceipt(control, "applied", { played_ms: 0 });
+      this.notify("onPlaybackInterrupted", item.header, String(control?.reason || "interrupted"));
+    } else {
+      receipt = this.buildControlReceipt(control, "failed", {
+        reason: "target_not_available"
+      });
+    }
+
+    this.controlReceipts.set(controlId, receipt);
+    this.sendJson(receipt);
+    if (receipt.status === "failed") {
+      this.notify("onPlaybackControlFailed", control, receipt.reason);
+    }
+    if (action === "stop" && receipt.status === "applied") this.continuePlayback();
+    return receipt.status === "applied";
+  }
+
+  buildControlReceipt(control, status, extra = {}) {
+    return {
+      type: "client.playback.control_ack",
+      control_id: String(control.control_id),
+      command_id: String(control.command_id),
+      action: String(control.action),
+      status,
+      ...extra
+    };
+  }
+
+  close(reason = "client_closed") {
+    if (this.closed) return;
+    this.closed = true;
+    this.interrupt(reason);
+    if (this.playbackAuthority) {
+      this.playbackAuthority.unregisterPlaybackQueue(this);
+    } else {
+      this.audioElement.pause();
+      this.audioElement.removeAttribute("src");
+      this.audioElement.load?.();
+    }
+  }
+
+  finishCurrent(kind, reason = "") {
+    const item = this.current;
+    if (!item) return;
+    this.current = null;
+    const playedMs = measurePlayedMs(this.audioElement, item.startedAt, this.now);
+    if (kind === "completed") {
+      this.sendTerminal("client.playback.completed", item.header, { played_ms: playedMs });
+      this.notify("onPlaybackCompleted", item.header, playedMs);
+    } else if (kind === "interrupted") {
+      this.sendTerminal("client.playback.interrupted", item.header, {
+        reason: reason || "user_interrupted",
+        played_ms: playedMs
+      });
+      this.notify("onPlaybackInterrupted", item.header, reason || "user_interrupted");
+    } else {
+      this.sendTerminal("client.playback.failed", item.header, {
+        reason: reason || "audio_playback_failed",
+        played_ms: playedMs
+      });
+      this.notify("onPlaybackFailed", item.header, reason || "audio_playback_failed");
+    }
+    this.releaseItem(item);
+    this.continuePlayback();
+  }
+
+  continuePlayback() {
+    if (!this.closed && this.queue.length) {
+      void this.playNext();
+      return;
+    }
+    this.playbackAuthority?.releasePlayback(this);
+  }
+
+  sendTerminal(type, header, extra) {
+    this.sendJson({
+      type,
+      delivery_id: String(header?.delivery_id || ""),
+      ...extra
+    });
+  }
+
+  releaseItem(item) {
+    item?.cleanupListeners?.();
+    if (item?.objectUrl) this.revokeObjectUrl(item.objectUrl);
+  }
+
+  notify(name, ...args) {
+    try {
+      this.callbacks?.[name]?.(...args);
+    } catch {
+      // Presentation callbacks must not corrupt delivery acknowledgement order.
+    }
+  }
+}
+
+export class RealtimeVoiceCallResources {
+  constructor({
+    mediaStream,
+    audioElement,
+    captureReceiptTimeoutMs = CAPTURE_FLUSH_TIMEOUT_MS,
+    idlePreRollMs = DEFAULT_IDLE_PRE_ROLL_MS,
+    idleCaptureMaxMs = DEFAULT_IDLE_CAPTURE_MAX_MS
+  }) {
+    if (!mediaStream) throw new Error("voice_call_media_stream_missing");
+    if (!audioElement) throw new Error("voice_call_audio_element_missing");
+    this.mediaStream = mediaStream;
+    this.audioElement = audioElement;
+    this.captureReceiptTimeoutMs = Math.max(1, Number(captureReceiptTimeoutMs) || CAPTURE_FLUSH_TIMEOUT_MS);
+    this.playbackQueues = new Set();
+    this.playbackWaiters = new Set();
+    this.playbackOwner = null;
+    this.captureScope = null;
+    this.captureModuleUrl = "";
+    this.captureStartTask = null;
+    this.captureContext = null;
+    this.captureSourceNode = null;
+    this.captureWorkletNode = null;
+    this.captureMuteGain = null;
+    this.captureOwner = null;
+    this.captureClaimOwner = null;
+    this.captureReleaseTask = null;
+    this.capturePcmSink = null;
+    this.captureErrorSink = null;
+    this.captureFlushResolver = null;
+    this.captureResetResolver = null;
+    this.idlePreRollMs = Math.max(0, Number(idlePreRollMs) || 0);
+    this.idleCaptureMaxMs = Math.max(
+      this.idlePreRollMs,
+      Number(idleCaptureMaxMs) || DEFAULT_IDLE_CAPTURE_MAX_MS
+    );
+    this.idleCaptureFrames = [];
+    this.idleCaptureFrameCount = 0;
+    this.idleCaptureHeld = false;
+    this.idleCaptureOverflowed = false;
+    this.idleCapturePcmSink = null;
+    this.idleCaptureErrorSink = null;
+    this.closed = false;
+  }
+
+  setIdleCaptureObserver({ onPcm = null, onError = null } = {}) {
+    this.idleCapturePcmSink = typeof onPcm === "function" ? onPcm : null;
+    this.idleCaptureErrorSink = typeof onError === "function" ? onError : null;
+  }
+
+  holdIdleCapture() {
+    if (this.closed) return false;
+    this.idleCaptureHeld = true;
+    return true;
+  }
+
+  resetIdleCapture() {
+    this.idleCaptureFrames = [];
+    this.idleCaptureFrameCount = 0;
+    this.idleCaptureHeld = false;
+    this.idleCaptureOverflowed = false;
+  }
+
+  replayIdleCapture(owner) {
+    if (this.captureOwner !== owner || typeof this.capturePcmSink !== "function") {
+      return 0;
+    }
+    const frames = this.idleCaptureFrames;
+    const frameCount = this.idleCaptureFrameCount;
+    this.resetIdleCapture();
+    for (const frame of frames) {
+      try {
+        this.capturePcmSink(frame.buffer, frame.frameCount);
+      } catch (error) {
+        this.captureErrorSink?.(error);
+        break;
+      }
+    }
+    return frameCount;
+  }
+
+  async acquireCapture(owner, { scope = globalThis, workletModuleUrl, onPcm, onError = null }) {
+    if (this.closed) throw new Error("voice_call_resources_closed");
+    if (!owner || typeof onPcm !== "function") {
+      throw new Error("voice_call_capture_lease_invalid");
+    }
+    if (this.captureReleaseTask) await this.captureReleaseTask;
+    if (this.closed) throw new Error("voice_call_resources_closed");
+    if (this.captureOwner === owner) {
+      this.capturePcmSink = onPcm;
+      this.captureErrorSink = onError;
+      return Number(this.captureContext?.sampleRate || 0);
+    }
+    if (
+      (this.captureOwner && this.captureOwner !== owner) ||
+      (this.captureClaimOwner && this.captureClaimOwner !== owner)
+    ) {
+      throw new Error("voice_call_capture_busy");
+    }
+
+    this.captureClaimOwner = owner;
+    try {
+      await this.ensureCaptureStarted({ scope, workletModuleUrl });
+      await this.requestCaptureReceipt("reset");
+      if (this.closed) throw new Error("voice_call_resources_closed");
+      if (this.captureOwner && this.captureOwner !== owner) {
+        throw new Error("voice_call_capture_busy");
+      }
+      this.captureOwner = owner;
+      this.capturePcmSink = onPcm;
+      this.captureErrorSink = onError;
+      return Number(this.captureContext?.sampleRate || 0);
+    } finally {
+      if (this.captureClaimOwner === owner) this.captureClaimOwner = null;
+    }
+  }
+
+  releaseCapture(owner, { flush = false } = {}) {
+    if (this.captureOwner !== owner) {
+      return this.captureReleaseTask || Promise.resolve(false);
+    }
+    if (this.captureReleaseTask) return this.captureReleaseTask;
+    const releaseTask = this.releaseCaptureInternal(owner, { flush });
+    const trackedTask = releaseTask.finally(() => {
+      if (this.captureReleaseTask === trackedTask) this.captureReleaseTask = null;
+    });
+    this.captureReleaseTask = trackedTask;
+    return trackedTask;
+  }
+
+  async releaseCaptureInternal(owner, { flush }) {
+    if (flush) {
+      try {
+        await this.requestCaptureReceipt("flush");
+      } finally {
+        if (this.captureOwner === owner) {
+          this.captureOwner = null;
+          this.capturePcmSink = null;
+          this.captureErrorSink = null;
+        }
+      }
+      return true;
+    } else {
+      this.captureOwner = null;
+      this.capturePcmSink = null;
+      this.captureErrorSink = null;
+      await this.requestCaptureReceipt("reset");
+      return true;
+    }
+  }
+
+  async ensureCaptureStarted({ scope, workletModuleUrl }) {
+    const normalizedModuleUrl = String(workletModuleUrl || "").trim();
+    if (!normalizedModuleUrl) throw new Error("voice_call_capture_worklet_missing");
+    if (this.captureModuleUrl && this.captureModuleUrl !== normalizedModuleUrl) {
+      throw new Error("voice_call_capture_config_changed");
+    }
+    if (this.captureStartTask) return this.captureStartTask;
+    this.captureScope = scope;
+    this.captureModuleUrl = normalizedModuleUrl;
+    this.captureStartTask = this.startCaptureEngine().catch((error) => {
+      this.captureStartTask = null;
+      throw error;
+    });
+    return this.captureStartTask;
+  }
+
+  async startCaptureEngine() {
+    const AudioContextImpl = this.captureScope?.AudioContext || this.captureScope?.webkitAudioContext;
+    const AudioWorkletNodeImpl = this.captureScope?.AudioWorkletNode;
+    if (!AudioContextImpl || !AudioWorkletNodeImpl) {
+      throw new Error("voice_realtime_audio_worklet_unavailable");
+    }
+    const context = new AudioContextImpl({ latencyHint: "interactive" });
+    this.captureContext = context;
+    try {
+      await context.audioWorklet.addModule(this.captureModuleUrl);
+      if (this.closed) throw new Error("voice_call_resources_closed");
+      if (context.state === "suspended") await context.resume();
+      const frameSamples = Math.max(128, Math.round(context.sampleRate * 0.02));
+      const node = new AudioWorkletNodeImpl(context, "akane-voice-pcm-capture", {
+        channelCount: 1,
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: { frameSamples }
+      });
+      this.captureWorkletNode = node;
+      node.port.onmessage = (event) => this.handleCaptureMessage(event?.data);
+      this.captureSourceNode = context.createMediaStreamSource(this.mediaStream);
+      this.captureMuteGain = context.createGain();
+      this.captureMuteGain.gain.value = 0;
+      this.captureSourceNode.connect(node);
+      node.connect(this.captureMuteGain);
+      this.captureMuteGain.connect(context.destination);
+      return Number(context.sampleRate || 0);
+    } catch (error) {
+      await this.stopCaptureEngine();
+      throw error;
+    }
+  }
+
+  handleCaptureMessage(payload) {
+    const type = String(payload?.type || "");
+    if (type === "pcm" && payload.buffer instanceof ArrayBuffer) {
+      const frames = Number(payload.frames || payload.buffer.byteLength / 4);
+      if (!this.captureOwner || !this.capturePcmSink) {
+        this.retainIdleCaptureFrame(payload.buffer, frames);
+        try {
+          this.idleCapturePcmSink?.(
+            payload.buffer,
+            frames,
+            Number(this.captureContext?.sampleRate || 0)
+          );
+        } catch (error) {
+          this.idleCaptureErrorSink?.(error);
+        }
+        return;
+      }
+      try {
+        this.capturePcmSink(payload.buffer, frames);
+      } catch (error) {
+        this.captureErrorSink?.(error);
+      }
+      return;
+    }
+    if (type === "flushed" && this.captureFlushResolver) {
+      this.captureFlushResolver();
+    } else if (type === "reset" && this.captureResetResolver) {
+      this.captureResetResolver();
+    }
+  }
+
+  retainIdleCaptureFrame(buffer, frameCount) {
+    const frames = Math.max(0, Math.round(Number(frameCount) || 0));
+    if (!(buffer instanceof ArrayBuffer) || !frames) return;
+    this.idleCaptureFrames.push({ buffer, frameCount: frames });
+    this.idleCaptureFrameCount += frames;
+    const sampleRate = Math.max(1, Number(this.captureContext?.sampleRate || 0));
+    const maxMs = this.idleCaptureHeld
+      ? this.idleCaptureMaxMs
+      : this.idlePreRollMs;
+    const maxFrames = Math.max(1, Math.round((sampleRate * maxMs) / 1000));
+    while (
+      this.idleCaptureFrameCount > maxFrames &&
+      this.idleCaptureFrames.length > 1
+    ) {
+      const removed = this.idleCaptureFrames.shift();
+      this.idleCaptureFrameCount -= Number(removed?.frameCount || 0);
+      if (this.idleCaptureHeld && !this.idleCaptureOverflowed) {
+        this.idleCaptureOverflowed = true;
+        this.idleCaptureErrorSink?.(
+          new Error("voice_call_idle_capture_overflow")
+        );
+      }
+    }
+  }
+
+  requestCaptureReceipt(action) {
+    const node = this.captureWorkletNode;
+    if (!node) return Promise.resolve();
+    const resolverKey = action === "flush" ? "captureFlushResolver" : "captureResetResolver";
+    if (this[resolverKey]) {
+      return Promise.reject(new Error(`voice_call_capture_${action}_busy`));
+    }
+    return new Promise((resolve, reject) => {
+      const finish = (error = null) => {
+        if (this[resolverKey] === finish) this[resolverKey] = null;
+        if (error) reject(error);
+        else resolve();
+      };
+      this[resolverKey] = finish;
+      node.port.postMessage({ type: action });
+      const setTimeoutImpl = this.captureScope?.setTimeout?.bind(this.captureScope) || globalThis.setTimeout;
+      setTimeoutImpl(
+        () => finish(new Error(`voice_call_capture_${action}_timeout`)),
+        this.captureReceiptTimeoutMs
+      );
+    });
+  }
+
+  createPlaybackQueue(options = {}) {
+    if (this.closed) throw new Error("voice_call_resources_closed");
+    const queue = new RealtimeVoicePlaybackQueue({
+      ...options,
+      audioElement: this.audioElement,
+      playbackAuthority: this
+    });
+    this.playbackQueues.add(queue);
+    return queue;
+  }
+
+  acquirePlayback(queue) {
+    if (this.closed || !this.playbackQueues.has(queue) || queue?.closed) return false;
+    if (!this.playbackOwner || this.playbackOwner === queue) {
+      this.playbackOwner = queue;
+      this.playbackWaiters.delete(queue);
+      return true;
+    }
+    this.playbackWaiters.add(queue);
+    return false;
+  }
+
+  releasePlayback(queue) {
+    this.playbackWaiters.delete(queue);
+    if (this.playbackOwner !== queue) return;
+    this.playbackOwner = null;
+    this.promotePlaybackWaiter();
+  }
+
+  unregisterPlaybackQueue(queue) {
+    this.playbackQueues.delete(queue);
+    this.playbackWaiters.delete(queue);
+    if (this.playbackOwner === queue) {
+      this.playbackOwner = null;
+      this.promotePlaybackWaiter();
+    }
+  }
+
+  promotePlaybackWaiter() {
+    if (this.closed || this.playbackOwner) return;
+    for (const queue of this.playbackWaiters) {
+      this.playbackWaiters.delete(queue);
+      if (queue?.closed || !this.playbackQueues.has(queue)) continue;
+      void queue.playNext();
+      return;
+    }
+  }
+
+  close(reason = "voice_call_closed") {
+    if (this.closed) return Promise.resolve();
+    this.closed = true;
+    this.captureOwner = null;
+    this.captureClaimOwner = null;
+    this.capturePcmSink = null;
+    this.captureErrorSink = null;
+    this.idleCapturePcmSink = null;
+    this.idleCaptureErrorSink = null;
+    this.resetIdleCapture();
+    for (const queue of [...this.playbackQueues]) queue.close(reason);
+    this.playbackQueues.clear();
+    this.playbackWaiters.clear();
+    this.playbackOwner = null;
+    this.audioElement.pause();
+    this.audioElement.removeAttribute("src");
+    this.audioElement.load?.();
+    for (const track of this.mediaStream?.getTracks?.() || []) track.stop();
+    return this.stopCaptureEngine();
+  }
+
+  async stopCaptureEngine() {
+    this.captureFlushResolver?.();
+    this.captureResetResolver?.();
+    this.captureWorkletNode?.port?.postMessage?.({ type: "stop" });
+    this.captureSourceNode?.disconnect?.();
+    this.captureWorkletNode?.disconnect?.();
+    this.captureMuteGain?.disconnect?.();
+    this.captureSourceNode = null;
+    this.captureWorkletNode = null;
+    this.captureMuteGain = null;
+    const context = this.captureContext;
+    this.captureContext = null;
+    if (context && context.state !== "closed") {
+      try {
+        await context.close();
+      } catch {
+        // Device release must still stop the media tracks above.
+      }
+    }
+  }
+}
+
+export class RealtimeVoiceSession {
+  constructor({
+    websocketUrl,
+    mediaStream,
+    audioElement,
+    callResources = null,
+    openPayload,
+    workletModuleUrl,
+    endpointDetector = null,
+    getVolume = () => 1,
+    callbacks = {},
+    socketOpenTimeoutMs = DEFAULT_SOCKET_OPEN_TIMEOUT_MS,
+    readyTimeoutMs = DEFAULT_PROVIDER_READY_TIMEOUT_MS,
+    fallbackPcmMaxMs = DEFAULT_FALLBACK_PCM_MAX_MS,
+    scope = globalThis
+  }) {
+    this.websocketUrl = websocketUrl;
+    this.callResources = callResources;
+    this.mediaStream = callResources?.mediaStream || mediaStream;
+    this.audioElement = callResources?.audioElement || audioElement;
+    this.openPayload = openPayload;
+    this.workletModuleUrl = workletModuleUrl;
+    this.endpointDetector = endpointDetector;
+    this.getVolume = getVolume;
+    this.callbacks = callbacks;
+    this.socketOpenTimeoutMs = socketOpenTimeoutMs;
+    this.readyTimeoutMs = readyTimeoutMs;
+    this.fallbackPcmMaxMs = Math.max(
+      1000,
+      Number(fallbackPcmMaxMs) || DEFAULT_FALLBACK_PCM_MAX_MS
+    );
+    this.scope = scope;
+    this.socket = null;
+    this.audioContext = null;
+    this.captureSampleRate = 0;
+    this.callCaptureAttached = false;
+    this.sourceNode = null;
+    this.workletNode = null;
+    this.muteGain = null;
+    this.playbackQueue = null;
+    this.ready = false;
+    this.transportOpen = false;
+    this.failed = false;
+    this.closed = false;
+    this.endpointSent = false;
+    this.serverFinalCommitted = false;
+    this.responseTerminal = false;
+    this.interruptionSent = false;
+    this.pendingInterruptionClockMs = null;
+    this.pendingFrames = [];
+    this.pendingSpeechHeader = null;
+    this.sequence = 0;
+    this.audioFramesSent = 0;
+    this.fallbackPcmFrames = [];
+    this.fallbackPcmFrameCount = 0;
+    this.fallbackPcmDroppedFrames = 0;
+    this.flushResolver = null;
+    this.cancelPromise = null;
+    this.cancelResolver = null;
+    this.cancelTimeoutId = 0;
+    this.startPromise = null;
+    this.readyTimeoutId = 0;
+    this.readyWaiters = new Set();
+  }
+
+  start() {
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startInternal();
+    return this.startPromise;
+  }
+
+  async startInternal() {
+    await this.startCapture();
+    await this.openSocket();
+    return this;
+  }
+
+  async startCapture() {
+    if (this.callResources) {
+      this.captureSampleRate = await this.callResources.acquireCapture(this, {
+        scope: this.scope,
+        workletModuleUrl: this.workletModuleUrl,
+        onPcm: (buffer, frames) => this.acceptPcmFrame(buffer, frames),
+        onError: (error) => {
+          this.fail(String(error?.message || "voice_realtime_capture_frame_failed"), {
+            terminal: true
+          });
+        }
+      });
+      this.callCaptureAttached = true;
+      this.callResources.replayIdleCapture(this);
+      if (this.closed) {
+        await this.stopCapture();
+        throw new Error("voice_realtime_session_closed");
+      }
+      return;
+    }
+    const AudioContextImpl = this.scope.AudioContext || this.scope.webkitAudioContext;
+    const AudioWorkletNodeImpl = this.scope.AudioWorkletNode;
+    if (!AudioContextImpl || !AudioWorkletNodeImpl) {
+      throw new Error("voice_realtime_audio_worklet_unavailable");
+    }
+    const context = new AudioContextImpl({ latencyHint: "interactive" });
+    this.audioContext = context;
+    this.captureSampleRate = Number(context.sampleRate || 0);
+    await context.audioWorklet.addModule(this.workletModuleUrl);
+    if (context.state === "suspended") await context.resume();
+    const frameSamples = Math.max(128, Math.round(context.sampleRate * 0.02));
+    const node = new AudioWorkletNodeImpl(context, "akane-voice-pcm-capture", {
+      channelCount: 1,
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { frameSamples }
+    });
+    this.workletNode = node;
+    node.port.onmessage = (event) => this.handleWorkletMessage(event?.data);
+    this.sourceNode = context.createMediaStreamSource(this.mediaStream);
+    this.muteGain = context.createGain();
+    this.muteGain.gain.value = 0;
+    this.sourceNode.connect(node);
+    node.connect(this.muteGain);
+    this.muteGain.connect(context.destination);
+  }
+
+  openSocket() {
+    return new Promise((resolve, reject) => {
+      const WebSocketImpl = this.scope.WebSocket;
+      if (!WebSocketImpl) {
+        reject(new Error("voice_realtime_websocket_unavailable"));
+        return;
+      }
+      let settled = false;
+      const socket = new WebSocketImpl(this.websocketUrl);
+      this.socket = socket;
+      socket.binaryType = "arraybuffer";
+      const timeoutId = this.scope.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.fail("voice_realtime_websocket_open_timeout", {
+          terminal: true,
+          retryable: true
+        });
+        reject(new Error("voice_realtime_websocket_open_timeout"));
+      }, this.socketOpenTimeoutMs);
+
+      socket.addEventListener("open", () => {
+        if (settled || this.closed) return;
+        settled = true;
+        this.transportOpen = true;
+        this.scope.clearTimeout(timeoutId);
+        this.sendJson({
+          ...this.openPayload,
+          type: "client.open",
+          protocol_version: VOICE_REALTIME_PROTOCOL_VERSION,
+          input: {
+            format: "f32le",
+            sample_rate: Math.round(this.captureSampleRate),
+            channels: 1
+          },
+          output: { mode: VOICE_PLAYBACK_OUTPUT_MODE }
+        });
+        this.armProviderReadyTimeout();
+        this.notify("onTransportOpen");
+        resolve(this);
+      });
+      socket.addEventListener("message", (event) => {
+        void this.handleSocketMessage(event?.data);
+      });
+      socket.addEventListener("error", () => {
+        if (!settled) {
+          settled = true;
+          this.scope.clearTimeout(timeoutId);
+          reject(new Error("voice_realtime_websocket_failed"));
+        }
+        this.fail("voice_realtime_websocket_failed", {
+          terminal: true,
+          retryable: true
+        });
+      });
+      socket.addEventListener("close", () => {
+        this.scope.clearTimeout(timeoutId);
+        if (!settled) {
+          settled = true;
+          reject(new Error("voice_realtime_closed_before_ready"));
+        }
+        this.settleReadyWaiters(false);
+        if (!this.closed && !this.responseTerminal) {
+          this.fail("voice_realtime_connection_closed", {
+            terminal: true,
+            retryable: true
+          });
+        }
+      });
+    });
+  }
+
+  async finishInput() {
+    await this.flushAndStopCapture();
+    await this.start();
+    if (!this.ready && !(await this.waitUntilReady())) {
+      throw new Error("voice_realtime_not_ready");
+    }
+    if (this.failed || !this.ready) throw new Error("voice_realtime_not_ready");
+    if (!this.endpointSent) {
+      this.endpointSent = true;
+      if (!this.sendJson({ type: "client.endpoint" })) {
+        throw new Error("voice_realtime_endpoint_send_failed");
+      }
+      this.notify("onFinalizing");
+    }
+  }
+
+  reportInterruptionSuspected() {
+    if (this.closed || this.endpointSent || this.failed || this.interruptionSent) {
+      return false;
+    }
+    const sampleRate = Number(this.captureSampleRate || 1);
+    const audioClockMs = Math.max(
+      0,
+      Math.round((this.audioFramesSent * 1000) / sampleRate)
+    );
+    if (!this.ready) {
+      this.pendingInterruptionClockMs = audioClockMs;
+      return true;
+    }
+    return this.sendInterruptionSignal(audioClockMs);
+  }
+
+  sendInterruptionSignal(audioClockMs) {
+    if (this.interruptionSent) return false;
+    const sent = this.sendJson({
+      type: "client.interruption.suspected",
+      audio_clock_ms: Math.max(0, Math.round(Number(audioClockMs) || 0))
+    });
+    if (sent) {
+      this.interruptionSent = true;
+      this.pendingInterruptionClockMs = null;
+    }
+    return sent;
+  }
+
+  async cancel(reason = "client_cancelled") {
+    if (this.cancelPromise) return this.cancelPromise;
+    this.cancelPromise = this.cancelInternal(reason);
+    return this.cancelPromise;
+  }
+
+  async cancelInternal(reason) {
+    if (this.closed) return false;
+    this.playbackQueue?.interrupt(reason);
+    await this.stopCapture();
+    if (
+      this.closed ||
+      !this.sendJson({ type: "client.cancel", reason: safeReason(reason) })
+    ) {
+      this.dispose(reason);
+      return false;
+    }
+    return new Promise((resolve) => {
+      this.cancelResolver = resolve;
+      this.cancelTimeoutId = this.scope.setTimeout(() => {
+        this.resolveCancel(false);
+        this.dispose("voice_cancel_receipt_timeout");
+      }, CANCEL_RECEIPT_TIMEOUT_MS);
+    });
+  }
+
+  dispose(reason = "client_closed") {
+    if (this.closed) return;
+    this.closed = true;
+    this.clearProviderReadyTimeout();
+    this.settleReadyWaiters(false);
+    this.resolveCancel(false);
+    this.playbackQueue?.close(reason);
+    void this.stopCapture();
+    try {
+      this.socket?.close(1000, "voice_client_closed");
+    } catch {
+      // The browser may already have disposed the socket.
+    }
+  }
+
+  handleWorkletMessage(payload) {
+    const type = String(payload?.type || "");
+    if (type === "pcm" && payload.buffer instanceof ArrayBuffer) {
+      const frames = Number(payload.frames || payload.buffer.byteLength / 4);
+      this.acceptPcmFrame(payload.buffer, frames);
+    } else if ((type === "flushed" || type === "stopped") && this.flushResolver) {
+      const resolve = this.flushResolver;
+      this.flushResolver = null;
+      resolve();
+    }
+  }
+
+  acceptPcmFrame(buffer, frameCount) {
+    if (this.closed || this.endpointSent || this.failed) return;
+    this.retainFallbackPcmFrame(buffer, frameCount);
+    try {
+      this.endpointDetector?.acceptPcmFrame?.(
+        buffer,
+        frameCount,
+        this.captureSampleRate
+      );
+    } catch (error) {
+      this.fail(String(error?.message || "voice_realtime_endpoint_detector_failed"), {
+        terminal: true
+      });
+      return;
+    }
+    if (this.closed || this.endpointSent || this.failed) return;
+    const frame = { buffer, frameCount: Math.max(0, Math.round(frameCount)) };
+    if (!this.ready) {
+      this.pendingFrames.push(frame);
+      return;
+    }
+    this.sendPcmFrame(frame);
+  }
+
+  retainFallbackPcmFrame(buffer, frameCount) {
+    const frames = Math.max(0, Math.round(Number(frameCount) || 0));
+    if (!(buffer instanceof ArrayBuffer) || !frames) return;
+    this.fallbackPcmFrames.push({ buffer, frameCount: frames });
+    this.fallbackPcmFrameCount += frames;
+    const maxFrames = Math.max(
+      1,
+      Math.round(
+        (Math.max(1, Number(this.captureSampleRate || 0)) *
+          this.fallbackPcmMaxMs) /
+          1000
+      )
+    );
+    while (
+      this.fallbackPcmFrameCount > maxFrames &&
+      this.fallbackPcmFrames.length > 1
+    ) {
+      const removed = this.fallbackPcmFrames.shift();
+      const removedFrames = Number(removed?.frameCount || 0);
+      this.fallbackPcmFrameCount -= removedFrames;
+      this.fallbackPcmDroppedFrames += removedFrames;
+    }
+  }
+
+  buildFallbackPcmBlob() {
+    if (
+      !this.fallbackPcmFrameCount ||
+      this.fallbackPcmDroppedFrames ||
+      !this.captureSampleRate
+    ) {
+      return null;
+    }
+    return encodeFloat32PcmAsWav(
+      this.fallbackPcmFrames,
+      this.captureSampleRate,
+      this.scope.Blob || globalThis.Blob
+    );
+  }
+
+  releaseFallbackPcm() {
+    this.fallbackPcmFrames = [];
+    this.fallbackPcmFrameCount = 0;
+    this.fallbackPcmDroppedFrames = 0;
+  }
+
+  resolveCancel(acknowledged) {
+    if (this.cancelTimeoutId) {
+      this.scope.clearTimeout(this.cancelTimeoutId);
+      this.cancelTimeoutId = 0;
+    }
+    const resolve = this.cancelResolver;
+    this.cancelResolver = null;
+    resolve?.(Boolean(acknowledged));
+  }
+
+  sendPcmFrame(frame) {
+    const sampleRate = Number(this.captureSampleRate || 1);
+    const audioClockMs = Math.round((this.audioFramesSent * 1000) / sampleRate);
+    this.sendJson({
+      type: "client.audio",
+      sequence: this.sequence,
+      audio_clock_ms: audioClockMs
+    });
+    this.socket.send(frame.buffer);
+    this.sequence += 1;
+    this.audioFramesSent += frame.frameCount;
+  }
+
+  async handleSocketMessage(data) {
+    if (typeof data === "string") {
+      let payload;
+      try {
+        payload = JSON.parse(data);
+      } catch {
+        this.fail("voice_realtime_server_json_invalid", { terminal: true });
+        return;
+      }
+      this.handleServerEvent(payload);
+      return;
+    }
+    if (data instanceof ArrayBuffer) {
+      this.handleSpeechBinary(data);
+      return;
+    }
+    if (data?.arrayBuffer) {
+      this.handleSpeechBinary(await data.arrayBuffer());
+      return;
+    }
+    this.fail("voice_realtime_server_frame_invalid", { terminal: true });
+  }
+
+  handleServerEvent(payload) {
+    const type = String(payload?.type || "");
+    if (type === "server.ready") {
+      this.ready = true;
+      this.clearProviderReadyTimeout();
+      this.settleReadyWaiters(true);
+      const playbackQueueOptions = {
+        sendJson: (message) => this.sendJson(message),
+        getVolume: this.getVolume,
+        callbacks: this.callbacks,
+        BlobImpl: this.scope.Blob,
+        createObjectUrl: (blob) => this.scope.URL.createObjectURL(blob),
+        revokeObjectUrl: (url) => this.scope.URL.revokeObjectURL(url),
+        now: () => this.scope.performance?.now?.() ?? Date.now()
+      };
+      this.playbackQueue = this.callResources
+        ? this.callResources.createPlaybackQueue(playbackQueueOptions)
+        : new RealtimeVoicePlaybackQueue({
+            ...playbackQueueOptions,
+            audioElement: this.audioElement
+          });
+      if (this.pendingInterruptionClockMs !== null) {
+        this.sendInterruptionSignal(this.pendingInterruptionClockMs);
+      }
+      for (const frame of this.pendingFrames.splice(0)) this.sendPcmFrame(frame);
+      this.notify("onReady", payload);
+      return;
+    }
+    if (type === "server.partial" || type === "server.checkpoint") {
+      const transcript = {
+        kind: type.slice("server.".length),
+        text: String(payload.text || ""),
+        unstableTail: String(payload.unstable_tail || "")
+      };
+      try {
+        this.endpointDetector?.observeTranscript?.(transcript);
+      } catch (error) {
+        this.fail(String(error?.message || "voice_realtime_endpoint_detector_failed"), {
+          terminal: true
+        });
+        return;
+      }
+      this.notify("onTranscript", transcript);
+      return;
+    }
+    if (type === "server.final") {
+      this.serverFinalCommitted = true;
+      this.notify("onFinal", payload);
+      return;
+    }
+    if (type === "server.turn.interaction") {
+      if (payload?.state !== "committed" || payload?.disposition !== "interaction") return;
+      this.responseTerminal = true;
+      this.notify("onInteraction", payload);
+      return;
+    }
+    if (type === "server.speech") {
+      if (this.pendingSpeechHeader) {
+        this.fail("voice_realtime_speech_binary_missing", { terminal: true });
+        return;
+      }
+      this.pendingSpeechHeader = payload;
+      return;
+    }
+    if (type === "server.playback.control") {
+      try {
+        this.playbackQueue?.applyControl(payload);
+      } catch (error) {
+        this.fail(String(error?.message || "voice_playback_control_failed"), {
+          terminal: false
+        });
+      }
+      return;
+    }
+    if (
+      type === "server.interruption.accepted" ||
+      type === "server.interruption.skipped"
+    ) {
+      this.notify(
+        type === "server.interruption.accepted"
+          ? "onInterruptionAccepted"
+          : "onInterruptionSkipped",
+        payload
+      );
+      return;
+    }
+    if (type === "server.response.completed") {
+      this.responseTerminal = true;
+      this.notify("onResponseCompleted", payload);
+      return;
+    }
+    if (type === "server.response.presentation") {
+      if (!this.responseTerminal) this.notify("onPresentation", payload);
+      return;
+    }
+    if (type === "server.response.failed") {
+      this.responseTerminal = true;
+      this.notify("onResponseFailed", payload);
+      return;
+    }
+    if (type === "server.failed") {
+      this.fail(String(payload.reason || "voice_realtime_failed"), {
+        terminal: Boolean(payload.terminal),
+        message: String(payload.message || ""),
+        retryable: Boolean(payload.retryable)
+      });
+      return;
+    }
+    if (type === "server.cancelled") {
+      this.responseTerminal = true;
+      this.resolveCancel(true);
+      this.notify("onCancelled", payload);
+      this.dispose("server_cancelled");
+      return;
+    }
+    if (type === "server.playback.ack" || type === "server.finalizing" || type === "server.audio_accepted") {
+      this.notify("onProtocolEvent", payload);
+    }
+  }
+
+  handleSpeechBinary(buffer) {
+    const header = this.pendingSpeechHeader;
+    this.pendingSpeechHeader = null;
+    if (!header) {
+      this.fail("voice_realtime_speech_header_missing", { terminal: true });
+      return;
+    }
+    try {
+      this.playbackQueue.enqueue(header, buffer);
+    } catch (error) {
+      this.fail(String(error?.message || "voice_playback_enqueue_failed"), { terminal: true });
+    }
+  }
+
+  fail(reason, { terminal = false, message = "", retryable = false } = {}) {
+    if (terminal) this.failed = true;
+    this.notify("onFailure", {
+      reason: safeReason(reason),
+      message,
+      retryable,
+      terminal,
+      committed: this.serverFinalCommitted
+    });
+    if (terminal) this.dispose(reason);
+  }
+
+  armProviderReadyTimeout() {
+    this.clearProviderReadyTimeout();
+    if (this.ready || this.closed) return;
+    this.readyTimeoutId = this.scope.setTimeout(() => {
+      this.readyTimeoutId = 0;
+      if (this.ready || this.closed) return;
+      this.fail("voice_realtime_provider_ready_timeout", {
+        terminal: true,
+        retryable: true
+      });
+    }, this.readyTimeoutMs);
+  }
+
+  clearProviderReadyTimeout() {
+    if (!this.readyTimeoutId) return;
+    this.scope.clearTimeout(this.readyTimeoutId);
+    this.readyTimeoutId = 0;
+  }
+
+  waitUntilReady() {
+    if (this.ready) return Promise.resolve(true);
+    if (this.failed || this.closed) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      this.readyWaiters.add(resolve);
+    });
+  }
+
+  settleReadyWaiters(ready) {
+    if (!this.readyWaiters.size) return;
+    for (const resolve of this.readyWaiters) resolve(Boolean(ready));
+    this.readyWaiters.clear();
+  }
+
+  sendJson(payload) {
+    if (this.socket?.readyState !== 1) return false;
+    this.socket.send(JSON.stringify(payload));
+    return true;
+  }
+
+  async flushAndStopCapture() {
+    if (this.callResources) {
+      if (!this.callCaptureAttached) return;
+      this.callCaptureAttached = false;
+      await this.callResources.releaseCapture(this, { flush: true });
+      return;
+    }
+    if (!this.workletNode) return;
+    const flushed = new Promise((resolve) => {
+      this.flushResolver = resolve;
+      this.workletNode.port.postMessage({ type: "stop" });
+      this.scope.setTimeout(resolve, CAPTURE_FLUSH_TIMEOUT_MS);
+    });
+    await flushed;
+    await this.stopCapture();
+  }
+
+  async stopCapture() {
+    if (this.callResources) {
+      if (!this.callCaptureAttached) return;
+      this.callCaptureAttached = false;
+      await this.callResources.releaseCapture(this, { flush: false });
+      return;
+    }
+    this.sourceNode?.disconnect?.();
+    this.workletNode?.disconnect?.();
+    this.muteGain?.disconnect?.();
+    this.sourceNode = null;
+    this.workletNode = null;
+    this.muteGain = null;
+    const context = this.audioContext;
+    this.audioContext = null;
+    if (context && context.state !== "closed") {
+      try {
+        await context.close();
+      } catch {
+        // Closing capture must not hide the server-side result.
+      }
+    }
+  }
+
+  notify(name, ...args) {
+    try {
+      this.callbacks?.[name]?.(...args);
+    } catch {
+      // UI callbacks are observational; protocol state remains authoritative.
+    }
+  }
+}
+
+const VOICE_REALTIME_CALL_PROTOCOL_VERSION = 2;
+const DEFAULT_CALL_READY_TIMEOUT_MS = 8000;
+const DEFAULT_CALL_PENDING_PCM_MAX_MS = 10000;
+const CALL_RESPONSE_CANCEL_TIMEOUT_MS = 2000;
+
+/** One WebSocket and one provider session for the whole desktop call. */
+export class RealtimeVoiceCallSession {
+  constructor({
+    websocketUrl,
+    callResources,
+    openPayload,
+    workletModuleUrl,
+    getVolume = () => 1,
+    callbacks = {},
+    callReadyTimeoutMs = DEFAULT_CALL_READY_TIMEOUT_MS,
+    scope = globalThis
+  }) {
+    if (!callResources) throw new Error("voice_call_resources_missing");
+    this.websocketUrl = websocketUrl;
+    this.callResources = callResources;
+    this.openPayload = openPayload || {};
+    this.workletModuleUrl = workletModuleUrl;
+    this.getVolume = getVolume;
+    this.callbacks = callbacks;
+    this.callReadyTimeoutMs = Math.max(1000, Number(callReadyTimeoutMs) || DEFAULT_CALL_READY_TIMEOUT_MS);
+    this.scope = scope;
+    this.socket = null;
+    this.captureSampleRate = 0;
+    this.startPromise = null;
+    this.readyPromise = null;
+    this.readyResolver = null;
+    this.readyRejecter = null;
+    this.readyTimeoutId = 0;
+    this.ready = false;
+    this.transportOpen = false;
+    this.closed = false;
+    this.failed = false;
+    this.currentTurn = null;
+    this.turns = new Map();
+    this.pendingSpeechHeader = null;
+  }
+
+  createTurn({
+    voiceTurnId,
+    audioStreamId,
+    endpointDetector,
+    callbacks = {}
+  }) {
+    if (this.closed) throw new Error("voice_call_session_closed");
+    const turnId = String(voiceTurnId || "").trim();
+    const streamId = String(audioStreamId || "").trim();
+    if (!turnId || !streamId) throw new Error("voice_call_turn_identity_missing");
+    if (this.turns.has(turnId)) throw new Error("voice_call_turn_identity_reused");
+    const turn = new RealtimeVoiceCallTurn({
+      session: this,
+      voiceTurnId: turnId,
+      audioStreamId: streamId,
+      endpointDetector,
+      callbacks
+    });
+    this.turns.set(turnId, turn);
+    return turn;
+  }
+
+  start() {
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startInternal();
+    return this.startPromise;
+  }
+
+  async startInternal() {
+    this.captureSampleRate = Number(
+      await this.callResources.ensureCaptureStarted({
+        scope: this.scope,
+        workletModuleUrl: this.workletModuleUrl
+      }) || 0
+    );
+    await this.openSocket();
+    await this.waitUntilReady();
+    return this;
+  }
+
+  async startTurn(turn) {
+    if (!(turn instanceof RealtimeVoiceCallTurn) || turn.session !== this) {
+      throw new Error("voice_call_turn_invalid");
+    }
+    if (this.currentTurn && this.currentTurn !== turn) {
+      throw new Error("voice_call_input_turn_active");
+    }
+    this.currentTurn = turn;
+    try {
+      await this.callResources.ensureCaptureStarted({
+        scope: this.scope,
+        workletModuleUrl: this.workletModuleUrl
+      });
+      await this.callResources.acquireCapture(turn, {
+        scope: this.scope,
+        workletModuleUrl: this.workletModuleUrl,
+        onPcm: (buffer, frames) => turn.acceptPcmFrame(buffer, frames),
+        onError: (error) => turn.fail(String(error?.message || "voice_capture_failed"), true)
+      });
+      turn.captureAttached = true;
+      turn.captureSampleRate = this.captureSampleRate || Number(this.callResources.captureContext?.sampleRate || 0);
+      this.callResources.replayIdleCapture(turn);
+      await this.start();
+      if (!this.ready) await this.waitUntilReady();
+      if (this.closed || this.failed) throw new Error("voice_call_session_unavailable");
+      if (!this.sendJson({
+        type: "client.turn.start",
+        protocol_version: VOICE_REALTIME_CALL_PROTOCOL_VERSION,
+        voice_turn_id: turn.voiceTurnId,
+        audio_stream_id: turn.audioStreamId
+      })) {
+        throw new Error("voice_call_turn_start_send_failed");
+      }
+      const turnReady = await turn.waitUntilReady();
+      if (!turnReady || turn.closed || turn.failed) {
+        throw new Error("voice_call_turn_not_ready");
+      }
+      return turn;
+    } catch (error) {
+      await turn.releaseCapture(false);
+      if (this.currentTurn === turn) this.currentTurn = null;
+      throw error;
+    }
+  }
+
+  openSocket() {
+    return new Promise((resolve, reject) => {
+      const WebSocketImpl = this.scope.WebSocket;
+      if (!WebSocketImpl) {
+        reject(new Error("voice_realtime_websocket_unavailable"));
+        return;
+      }
+      let settled = false;
+      const socket = new WebSocketImpl(this.websocketUrl);
+      this.socket = socket;
+      socket.binaryType = "arraybuffer";
+      const settle = (error = null) => {
+        if (settled) return;
+        settled = true;
+        this.scope.clearTimeout(timeoutId);
+        if (error) reject(error);
+        else resolve(this);
+      };
+      const timeoutId = this.scope.setTimeout(() => {
+        this.fail("voice_call_websocket_open_timeout", true, true);
+        settle(new Error("voice_call_websocket_open_timeout"));
+      }, 5000);
+      socket.addEventListener("open", () => {
+        if (this.closed) return;
+        this.transportOpen = true;
+        if (!this.sendJson({
+          ...this.openPayload,
+          type: "client.call.open",
+          protocol_version: VOICE_REALTIME_CALL_PROTOCOL_VERSION,
+          input: {
+            format: "f32le",
+            sample_rate: Math.round(this.captureSampleRate),
+            channels: 1
+          },
+          output: { mode: VOICE_PLAYBACK_OUTPUT_MODE }
+        })) {
+          settle(new Error("voice_call_open_send_failed"));
+          return;
+        }
+        this.notify("onTransportOpen");
+        settle();
+      });
+      socket.addEventListener("message", (event) => { void this.handleSocketMessage(event?.data); });
+      socket.addEventListener("error", () => {
+        const error = new Error("voice_call_websocket_failed");
+        if (!settled) settle(error);
+        this.fail("voice_call_websocket_failed", true, true);
+      });
+      socket.addEventListener("close", () => {
+        if (!settled) settle(new Error("voice_call_closed_before_open"));
+        if (!this.closed && !this.failed) this.fail("voice_call_connection_closed", true, true);
+      });
+    });
+  }
+
+  waitUntilReady() {
+    if (this.ready) return Promise.resolve(true);
+    if (this.failed || this.closed) return Promise.reject(new Error("voice_call_not_ready"));
+    if (!this.readyPromise) {
+      this.readyPromise = new Promise((resolve, reject) => {
+        this.readyResolver = resolve;
+        this.readyRejecter = reject;
+      });
+      this.readyTimeoutId = this.scope.setTimeout(() => {
+        this.readyTimeoutId = 0;
+        this.fail(
+          "voice_call_ready_timeout",
+          true,
+          true,
+          "实时识别服务没有及时就绪，已停止等待。"
+        );
+      }, this.callReadyTimeoutMs);
+    }
+    return this.readyPromise;
+  }
+
+  acceptPcmFrame(turn, buffer, frameCount) {
+    if (this.closed || this.failed || turn.closed || turn.endpointSent) return;
+    turn.retainFallbackPcmFrame(buffer, frameCount);
+    try {
+      turn.endpointDetector?.acceptPcmFrame?.(buffer, frameCount, turn.captureSampleRate);
+    } catch (error) {
+      turn.fail(String(error?.message || "voice_endpoint_detector_failed"), true);
+      return;
+    }
+    if (!turn.ready) {
+      turn.pendingFrames.push({ buffer, frameCount: Math.max(0, Math.round(frameCount)) });
+      turn.pendingPcmFrameCount += Math.max(0, Math.round(frameCount));
+      const maxPendingFrames = Math.max(
+        1,
+        Math.round(
+          (Math.max(1, Number(turn.captureSampleRate || this.captureSampleRate || 0)) *
+            turn.pendingPcmMaxMs) /
+            1000
+        )
+      );
+      if (turn.pendingPcmFrameCount > maxPendingFrames) {
+        this.fail(
+          "voice_call_provider_not_ready_for_input",
+          true,
+          true,
+          "实时识别服务没有及时接住这句话，已停止等待。"
+        );
+      }
+      return;
+    }
+    turn.sendPcmFrame({ buffer, frameCount });
+  }
+
+  handleSocketMessage(data) {
+    if (typeof data === "string") {
+      let payload;
+      try { payload = JSON.parse(data); } catch { this.fail("voice_call_server_json_invalid", true, false); return; }
+      this.handleServerEvent(payload);
+      return;
+    }
+    if (data instanceof ArrayBuffer) { this.handleSpeechBinary(data); return; }
+    if (data?.arrayBuffer) { void data.arrayBuffer().then((value) => this.handleSpeechBinary(value)); return; }
+    this.fail("voice_call_server_frame_invalid", true, false);
+  }
+
+  handleServerEvent(payload) {
+    const type = String(payload?.type || "");
+    if (type === "server.call.ready") {
+      if (this.closed || this.failed) return;
+      this.ready = true;
+      if (this.readyTimeoutId) this.scope.clearTimeout(this.readyTimeoutId);
+      this.readyTimeoutId = 0;
+      this.readyResolver?.(true);
+      this.readyResolver = null;
+      this.readyRejecter = null;
+      this.notify("onReady", payload);
+      return;
+    }
+    if (type === "server.turn.ready") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      if (!turn) return;
+      turn.ready = true;
+      turn.readyAt = Date.now();
+      turn.createPlaybackQueue();
+      for (const frame of turn.pendingFrames.splice(0)) turn.sendPcmFrame(frame);
+      turn.pendingPcmFrameCount = 0;
+      turn.resolveReady(true);
+      turn.notify("onReady", payload);
+      return;
+    }
+    if (type === "server.turn.partial" || type === "server.turn.checkpoint") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      if (!turn) return;
+      turn.handleTranscript({
+        kind: type === "server.turn.checkpoint" ? "checkpoint" : "partial",
+        text: String(payload?.text || ""),
+        unstableTail: String(payload?.unstable_tail || "")
+      });
+      return;
+    }
+    if (type === "server.turn.final") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      if (!turn) return;
+      turn.serverFinalCommitted = true;
+      if (this.currentTurn === turn) this.currentTurn = null;
+      turn.notify("onFinal", payload);
+      return;
+    }
+    if (type === "server.turn.interaction") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      if (!turn || payload?.state !== "committed" || payload?.disposition !== "interaction") return;
+      turn.responseTerminal = true;
+      turn.notify("onInteraction", payload);
+      return;
+    }
+    if (type === "server.speech") {
+      if (this.pendingSpeechHeader) { this.fail("voice_call_speech_header_pending", true, false); return; }
+      this.pendingSpeechHeader = payload;
+      return;
+    }
+    if (type === "server.playback.control") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      try { turn?.playbackQueue?.applyControl(payload); } catch (error) { this.fail(String(error?.message || "voice_playback_control_failed"), false, false); }
+      return;
+    }
+    if (type === "server.interruption.accepted" || type === "server.interruption.skipped") {
+      this.turns.get(String(payload?.voice_turn_id || ""))?.notify(
+        type === "server.interruption.accepted" ? "onInterruptionAccepted" : "onInterruptionSkipped",
+        payload
+      );
+      return;
+    }
+    if (type === "server.response.completed" || type === "server.response.failed") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      if (!turn) return;
+      turn.responseTerminal = true;
+      turn.notify(type === "server.response.completed" ? "onResponseCompleted" : "onResponseFailed", payload);
+      return;
+    }
+    if (type === "server.response.presentation") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      if (turn && !turn.responseTerminal) turn.notify("onPresentation", payload);
+      return;
+    }
+    if (type === "server.response.cancelled" || type === "server.turn.cancelled") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      if (!turn) return;
+      turn.resolveCancel(true);
+      turn.notify("onCancelled", payload);
+      return;
+    }
+    if (type === "server.failed") {
+      const turn = this.turns.get(String(payload?.voice_turn_id || ""));
+      if (turn && !payload?.terminal) {
+        const startupFailure = !turn.ready;
+        turn.fail(
+          String(payload?.reason || "voice_call_turn_failed"),
+          startupFailure,
+          Boolean(payload?.retryable),
+          payload?.message
+        );
+      } else if (!turn && !payload?.terminal && this.currentTurn && !this.currentTurn.ready) {
+        this.currentTurn.fail(
+          String(payload?.reason || "voice_call_turn_failed"),
+          true,
+          Boolean(payload?.retryable),
+          payload?.message
+        );
+      } else {
+        this.fail(String(payload?.reason || "voice_call_failed"), Boolean(payload?.terminal), Boolean(payload?.retryable), payload?.message);
+      }
+      return;
+    }
+    if (type === "server.call.closed") {
+      this.closed = true;
+      this.notify("onCallClosed", payload);
+      return;
+    }
+    this.notify("onProtocolEvent", payload);
+  }
+
+  handleSpeechBinary(buffer) {
+    const header = this.pendingSpeechHeader;
+    this.pendingSpeechHeader = null;
+    if (!header) { this.fail("voice_call_speech_header_missing", true, false); return; }
+    const turn = this.turns.get(String(header?.voice_turn_id || ""));
+    if (!turn) { this.fail("voice_call_speech_turn_unknown", true, false); return; }
+    try { turn.enqueueSpeech(header, buffer); } catch (error) { this.fail(String(error?.message || "voice_playback_enqueue_failed"), true, false); }
+  }
+
+  sendJson(payload) {
+    if (this.socket?.readyState !== 1) return false;
+    this.socket.send(JSON.stringify(payload));
+    return true;
+  }
+
+  async close(reason = "voice_call_closed") {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.ready && this.socket?.readyState === 1) {
+      this.sendJson({ type: "client.call.close", reason: safeReason(reason) });
+    }
+    for (const turn of [...this.turns.values()]) turn.dispose(reason);
+    this.readyRejecter?.(new Error(safeReason(reason)));
+    this.readyRejecter = null;
+    this.readyResolver = null;
+    if (this.readyTimeoutId) this.scope.clearTimeout(this.readyTimeoutId);
+    this.readyTimeoutId = 0;
+    try { this.socket?.close(1000, "voice_call_closed"); } catch { /* socket already closed */ }
+  }
+
+  fail(reason, terminal = false, retryable = false, message = "") {
+    if (terminal) this.failed = true;
+    this.notify("onFailure", { reason: safeReason(reason), terminal, retryable, message });
+    if (terminal) {
+      this.readyRejecter?.(new Error(safeReason(reason)));
+      this.readyRejecter = null;
+      this.readyResolver = null;
+      for (const turn of [...this.turns.values()]) {
+        turn.fail(reason, true, retryable, message);
+      }
+    }
+  }
+
+  notify(name, ...args) {
+    try { this.callbacks?.[name]?.(...args); } catch { /* presentation is observational */ }
+  }
+}
+
+export class RealtimeVoiceCallTurn {
+  constructor({ session, voiceTurnId, audioStreamId, endpointDetector, callbacks }) {
+    this.session = session;
+    this.voiceTurnId = voiceTurnId;
+    this.audioStreamId = audioStreamId;
+    this.endpointDetector = endpointDetector;
+    this.callbacks = callbacks || {};
+    this.ready = false;
+    this.readyAt = 0;
+    this.captureAttached = false;
+    this.captureSampleRate = 0;
+    this.pendingFrames = [];
+    this.pendingPcmFrameCount = 0;
+    this.pendingPcmMaxMs = DEFAULT_CALL_PENDING_PCM_MAX_MS;
+    this.sequence = 0;
+    this.audioFramesSent = 0;
+    this.endpointSent = false;
+    this.serverFinalCommitted = false;
+    this.responseTerminal = false;
+    this.closed = false;
+    this.failed = false;
+    this.readyPromise = new Promise((resolve) => { this.readyResolver = resolve; });
+    this.cancelPromise = null;
+    this.cancelResolver = null;
+    this.cancelTimeoutId = 0;
+    this.fallbackPcmFrames = [];
+    this.fallbackPcmFrameCount = 0;
+    this.fallbackPcmDroppedFrames = 0;
+    this.fallbackPcmMaxMs = DEFAULT_FALLBACK_PCM_MAX_MS;
+    this.playbackQueue = null;
+  }
+
+  start() { return this.session.startTurn(this); }
+
+  waitUntilReady() {
+    if (this.ready) return Promise.resolve(true);
+    if (this.failed || this.closed) return Promise.resolve(false);
+    return this.readyPromise;
+  }
+
+  resolveReady(ok) {
+    this.readyResolver?.(Boolean(ok));
+    this.readyResolver = null;
+  }
+
+  createPlaybackQueue() {
+    if (this.playbackQueue || this.session.closed) return this.playbackQueue;
+    this.playbackQueue = this.session.callResources.createPlaybackQueue({
+      sendJson: (payload) => this.session.sendJson(payload),
+      getVolume: this.session.getVolume,
+      callbacks: this.callbacks,
+      BlobImpl: this.session.scope.Blob,
+      createObjectUrl: (blob) => this.session.scope.URL.createObjectURL(blob),
+      revokeObjectUrl: (url) => this.session.scope.URL.revokeObjectURL(url),
+      now: () => this.session.scope.performance?.now?.() ?? Date.now()
+    });
+    return this.playbackQueue;
+  }
+
+  enqueueSpeech(header, audioBytes) {
+    this.createPlaybackQueue()?.enqueue(header, audioBytes);
+  }
+
+  handleTranscript(transcript) {
+    try { this.endpointDetector?.observeTranscript?.(transcript); } catch (error) { this.fail(String(error?.message || "voice_endpoint_detector_failed"), true); return; }
+    this.notify("onTranscript", transcript);
+  }
+
+  acceptPcmFrame(buffer, frameCount) {
+    this.session.acceptPcmFrame(this, buffer, frameCount);
+  }
+
+  retainFallbackPcmFrame(buffer, frameCount) {
+    const frames = Math.max(0, Math.round(Number(frameCount) || 0));
+    if (!(buffer instanceof ArrayBuffer) || !frames) return;
+    this.fallbackPcmFrames.push({ buffer, frameCount: frames });
+    this.fallbackPcmFrameCount += frames;
+    const maxFrames = Math.max(1, Math.round((Math.max(1, Number(this.captureSampleRate || 0)) * this.fallbackPcmMaxMs) / 1000));
+    while (this.fallbackPcmFrameCount > maxFrames && this.fallbackPcmFrames.length > 1) {
+      const removed = this.fallbackPcmFrames.shift();
+      this.fallbackPcmFrameCount -= Number(removed?.frameCount || 0);
+      this.fallbackPcmDroppedFrames += Number(removed?.frameCount || 0);
+    }
+  }
+
+  buildFallbackPcmBlob() {
+    if (!this.fallbackPcmFrameCount || this.fallbackPcmDroppedFrames || !this.captureSampleRate) return null;
+    return encodeFloat32PcmAsWav(this.fallbackPcmFrames, this.captureSampleRate, this.session.scope.Blob || globalThis.Blob);
+  }
+
+  releaseFallbackPcm() {
+    this.fallbackPcmFrames = [];
+    this.fallbackPcmFrameCount = 0;
+    this.fallbackPcmDroppedFrames = 0;
+  }
+
+  sendPcmFrame(frame) {
+    const sampleRate = Number(this.captureSampleRate || 1);
+    const audioClockMs = Math.round((this.audioFramesSent * 1000) / sampleRate);
+    if (!this.session.sendJson({
+      type: "client.audio",
+      voice_turn_id: this.voiceTurnId,
+      sequence: this.sequence,
+      audio_clock_ms: audioClockMs
+    })) return false;
+    this.session.socket.send(frame.buffer);
+    this.sequence += 1;
+    this.audioFramesSent += Math.max(0, Math.round(Number(frame.frameCount) || 0));
+    return true;
+  }
+
+  async flushAndStopCapture() { await this.releaseCapture(true); }
+  async stopCapture() { await this.releaseCapture(false); }
+
+  async releaseCapture(flush) {
+    if (!this.captureAttached) return;
+    this.captureAttached = false;
+    await this.session.callResources.releaseCapture(this, { flush });
+  }
+
+  async finishInput() {
+    await this.session.start();
+    await this.waitUntilReady();
+    if (this.closed || this.failed || this.endpointSent) return;
+    this.endpointSent = true;
+    if (!this.session.sendJson({
+      type: "client.turn.endpoint",
+      protocol_version: VOICE_REALTIME_CALL_PROTOCOL_VERSION,
+      voice_turn_id: this.voiceTurnId
+    })) throw new Error("voice_call_turn_endpoint_send_failed");
+    this.notify("onFinalizing");
+  }
+
+  reportInterruptionSuspected() {
+    if (this.closed || this.endpointSent || this.failed) return false;
+    const sampleRate = Number(this.captureSampleRate || 1);
+    return this.session.sendJson({
+      type: "client.interruption.suspected",
+      voice_turn_id: this.voiceTurnId,
+      audio_clock_ms: Math.max(0, Math.round((this.audioFramesSent * 1000) / sampleRate))
+    });
+  }
+
+  async cancel(reason = "client_cancelled") {
+    if (this.cancelPromise) return this.cancelPromise;
+    this.cancelPromise = this.cancelInternal(reason);
+    return this.cancelPromise;
+  }
+
+  async cancelInternal(reason) {
+    if (this.closed) return false;
+    this.playbackQueue?.interrupt(reason);
+    await this.releaseCapture(false);
+    if (!this.serverFinalCommitted) {
+      await this.session.close(reason);
+      return true;
+    }
+    if (!this.session.sendJson({
+      type: "client.response.cancel",
+      protocol_version: VOICE_REALTIME_CALL_PROTOCOL_VERSION,
+      voice_turn_id: this.voiceTurnId,
+      reason: safeReason(reason)
+    })) {
+      this.dispose(reason);
+      return false;
+    }
+    return new Promise((resolve) => {
+      this.cancelResolver = resolve;
+      this.cancelTimeoutId = this.session.scope.setTimeout(() => {
+        this.resolveCancel(false);
+        this.dispose("voice_call_cancel_timeout");
+      }, CALL_RESPONSE_CANCEL_TIMEOUT_MS);
+    });
+  }
+
+  resolveCancel(acknowledged) {
+    if (this.cancelTimeoutId) this.session.scope.clearTimeout(this.cancelTimeoutId);
+    this.cancelTimeoutId = 0;
+    const resolve = this.cancelResolver;
+    this.cancelResolver = null;
+    resolve?.(Boolean(acknowledged));
+  }
+
+  fail(reason, terminal = false, retryable = false, message = "") {
+    if (terminal) this.failed = true;
+    this.notify("onFailure", { reason: safeReason(reason), terminal, retryable, message, committed: this.serverFinalCommitted });
+    if (terminal) this.resolveReady(false);
+  }
+
+  dispose(reason = "voice_turn_closed") {
+    if (this.closed) return;
+    this.closed = true;
+    this.resolveReady(false);
+    this.resolveCancel(false);
+    void this.releaseCapture(false);
+    this.playbackQueue?.close(reason);
+    this.playbackQueue = null;
+    this.pendingFrames = [];
+    this.pendingPcmFrameCount = 0;
+    this.session.turns.delete(this.voiceTurnId);
+    if (this.session.currentTurn === this) this.session.currentTurn = null;
+  }
+
+  notify(name, ...args) {
+    try { this.callbacks?.[name]?.(...args); } catch { /* presentation is observational */ }
+  }
+}
+
+export function encodeFloat32PcmAsWav(
+  frames,
+  sampleRate,
+  BlobImpl = globalThis.Blob
+) {
+  if (typeof BlobImpl !== "function") return null;
+  const normalizedRate = Math.max(1, Math.round(Number(sampleRate) || 0));
+  const normalizedFrames = [];
+  let sampleCount = 0;
+  for (const frame of Array.isArray(frames) ? frames : []) {
+    if (!(frame?.buffer instanceof ArrayBuffer)) continue;
+    const available = Math.floor(frame.buffer.byteLength / 4);
+    const frameCount = Math.min(
+      available,
+      Math.max(0, Math.round(Number(frame.frameCount) || 0))
+    );
+    if (!frameCount) continue;
+    normalizedFrames.push({ buffer: frame.buffer, frameCount });
+    sampleCount += frameCount;
+  }
+  if (!sampleCount) return null;
+
+  const wav = new ArrayBuffer(44 + sampleCount * 2);
+  const view = new DataView(wav);
+  writeAscii(view, 0, "RIFF");
+  view.setUint32(4, 36 + sampleCount * 2, true);
+  writeAscii(view, 8, "WAVE");
+  writeAscii(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, normalizedRate, true);
+  view.setUint32(28, normalizedRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(view, 36, "data");
+  view.setUint32(40, sampleCount * 2, true);
+
+  let offset = 44;
+  for (const frame of normalizedFrames) {
+    const samples = new Float32Array(frame.buffer, 0, frame.frameCount);
+    for (const sample of samples) {
+      const clamped = Math.max(-1, Math.min(1, Number(sample) || 0));
+      view.setInt16(
+        offset,
+        clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7fff),
+        true
+      );
+      offset += 2;
+    }
+  }
+  return new BlobImpl([wav], { type: "audio/wav" });
+}
+
+function writeAscii(view, offset, value) {
+  for (let index = 0; index < value.length; index += 1) {
+    view.setUint8(offset + index, value.charCodeAt(index));
+  }
+}
+
+function measurePlayedMs(audioElement, startedAt, now) {
+  const currentTimeMs = Math.round(Math.max(0, Number(audioElement?.currentTime || 0)) * 1000);
+  if (currentTimeMs > 0) return currentTimeMs;
+  return startedAt ? Math.max(0, Math.round(now() - startedAt)) : 0;
+}
+
+function clampVolume(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 1;
+  return Math.max(0, Math.min(1, number));
+}
+
+function safeReason(value) {
+  const normalized = String(value || "voice_realtime_failed")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]+/g, "_")
+    .slice(0, 96);
+  return normalized || "voice_realtime_failed";
+}

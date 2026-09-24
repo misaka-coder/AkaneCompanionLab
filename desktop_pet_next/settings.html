@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="refresh" content="0; url=./control-center-lab.html" />
+    <title>正在打开 Akane 控制中心</title>
+  </head>
+  <body>
+    <p>设置中心已迁移到 <a id="control-center-link" href="./control-center-lab.html">Akane 控制中心</a>。</p>
+    <script>
+      const target = new URL("./control-center-lab.html", window.location.href);
+      target.search = window.location.search;
+      target.hash = window.location.hash;
+      document.querySelector("#control-center-link").href = target.href;
+      window.location.replace(target.href);
+    </script>
+  </body>
+</html>

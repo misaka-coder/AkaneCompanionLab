@@ -1,0 +1,2908 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from services.llm_client import _build_anthropic_payload, build_llm_client, normalize_api_protocol, normalize_base_url
+from companion_v01.llm_runtime import ChatJSONStreamResult, LLMRuntime, ModelBundle
+from companion_v01.native_tool_schema import NATIVE_TOOL_CAPABILITY_ID_FIELD
+from companion_v01.runtime_settings import BotSettingsView
+from companion_v01.tool_invocation import (
+    NATIVE_ANTHROPIC,
+    NATIVE_OPENAI,
+    NATIVE_REASONING_CONTENT_FIELD,
+    NATIVE_TOOL_CALL_FIELD,
+    NATIVE_TOOL_CALLS_FIELD,
+    TOOL_INVOCATION_ID_FIELD,
+    TOOL_MODEL_NAME_FIELD,
+    TOOL_MODEL_ARGUMENTS_FIELD,
+    TOOL_PARSE_ERROR_FIELD,
+    TOOL_RAW_ARGUMENTS_FIELD,
+    TOOL_SOURCE_FIELD,
+)
+
+
+class LLMClientConfigTests(unittest.TestCase):
+    def test_openai_payload_preserves_stable_context_and_append_only_history_message_boundaries(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://gateway.example/v1"),
+            model="model",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="stable system",
+            user_prompt="dynamic current tail",
+            temperature=0.1,
+            history_turns=[
+                {"role": "user", "content": "stable tool context"},
+                {"role": "user", "content": "stable summaries"},
+                {"role": "user", "content": "first user turn"},
+                {"role": "assistant", "content": "first assistant turn"},
+            ],
+        )
+        normalized_history = runtime._normalize_history_turns_for_payload(
+            [
+                {"role": "user", "content": "stable tool context"},
+                {"role": "user", "content": "stable summaries"},
+                {"role": "user", "content": "first user turn"},
+                {"role": "assistant", "content": "first assistant turn"},
+            ],
+            bundle=bundle,
+        )
+
+        self.assertEqual(
+            [(item["role"], item["content"]) for item in payload["messages"]],
+            [
+                ("system", "stable system"),
+                ("user", "stable tool context"),
+                ("user", "stable summaries"),
+                ("user", "first user turn"),
+                ("assistant", "first assistant turn"),
+                ("user", "dynamic current tail"),
+            ],
+        )
+        self.assertEqual(payload["messages"][1:-1], normalized_history)
+
+    def test_ollama_protocol_normalizes_to_openai_compatible_v1_endpoint(self) -> None:
+        self.assertEqual(normalize_api_protocol(protocol="ollama", base_url=""), "ollama")
+        self.assertEqual(normalize_api_protocol(protocol="auto", base_url="http://127.0.0.1:11434"), "ollama")
+        self.assertEqual(
+            normalize_base_url(protocol="ollama", base_url="http://127.0.0.1:11434"),
+            "http://127.0.0.1:11434/v1",
+        )
+        self.assertEqual(
+            normalize_base_url(protocol="ollama", base_url="http://127.0.0.1:11434/v1"),
+            "http://127.0.0.1:11434/v1",
+        )
+
+    def test_ollama_client_can_be_built_without_api_key(self) -> None:
+        client = build_llm_client(
+            api_key="",
+            base_url="http://127.0.0.1:11434",
+            protocol="ollama",
+            timeout=1.0,
+            max_retries=0,
+        )
+
+        self.assertEqual(str(client.base_url).rstrip("/"), "http://127.0.0.1:11434/v1")
+        self.assertEqual(client.api_key, "ollama")
+
+    def test_opencode_client_uses_edge_compatible_user_agent(self) -> None:
+        with patch("services.llm_client.OpenAI") as openai:
+            build_llm_client(
+                api_key="test-key",
+                base_url="https://opencode.ai/zen/go/v1",
+                protocol="openai",
+                timeout=1.0,
+                max_retries=0,
+            )
+
+        self.assertEqual(
+            openai.call_args.kwargs["default_headers"],
+            {"User-Agent": "Mozilla/5.0 AkaneCompanionLab/1.0"},
+        )
+
+    def test_other_openai_compatible_clients_do_not_get_opencode_headers(self) -> None:
+        with patch("services.llm_client.OpenAI") as openai:
+            build_llm_client(
+                api_key="test-key",
+                base_url="https://api.deepseek.com/v1",
+                protocol="openai",
+                timeout=1.0,
+                max_retries=0,
+            )
+
+        self.assertIsNone(openai.call_args.kwargs["default_headers"])
+
+    def test_responses_protocol_normalizes_base_url(self) -> None:
+        self.assertEqual(
+            normalize_base_url(protocol="responses", base_url="https://api.pinaic.com"),
+            "https://api.pinaic.com/v1",
+        )
+        client = build_llm_client(
+            api_key="test-key",
+            base_url="https://api.pinaic.com",
+            protocol="responses",
+            timeout=1.0,
+            max_retries=0,
+        )
+        self.assertEqual(str(client.base_url).rstrip("/"), "https://api.pinaic.com/v1")
+        self.assertEqual(client._akane_protocol, "responses")
+
+    def test_responses_payload_preserves_tools_history_and_privacy_controls(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://api.pinaic.com/v1"),
+            model="gpt-5.6-sol",
+        )
+        with (
+            patch("config.LLM_REASONING_EFFORT", "max"),
+            patch("config.LLM_DISABLE_RESPONSE_STORAGE", True),
+            patch("config.PROMPT_CACHE_NAMESPACE", "akane"),
+            patch("config.PROMPT_CACHE_RETENTION", "24h"),
+        ):
+            chat_payload = runtime._build_completion_kwargs(
+                bundle=bundle,
+                system_prompt="stable instructions",
+                user_prompt="current question",
+                temperature=0.7,
+                json_mode=True,
+                prompt_cache_key="chat:final:reimu",
+                native_tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search related evidence.",
+                            "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                        },
+                    }
+                ],
+                post_user_turns=[
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "web_search", "arguments": '{"q":"Nikkei"}'},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "search result"},
+                ],
+            )
+            request = runtime._responses_payload_from_chat(chat_payload)
+
+        self.assertEqual(request["instructions"], "stable instructions")
+        self.assertEqual(request["reasoning"], {"effort": "max"})
+        self.assertFalse(request["store"])
+        self.assertNotIn("temperature", request)
+        self.assertEqual(request["prompt_cache_key"], "akane:chat:final:reimu")
+        self.assertEqual(request["prompt_cache_retention"], "in-memory")
+        # Native tool rounds keep JSON mode prompt-only so a function call can
+        # coexist with the eventual structured Akane answer.
+        self.assertNotIn("text", request)
+        self.assertTrue(request["parallel_tool_calls"])
+        self.assertEqual(request["tools"][0]["name"], "web_search")
+        self.assertIn("function_call", [item.get("type") for item in request["input"]])
+        self.assertIn("function_call_output", [item.get("type") for item in request["input"]])
+
+    def test_responses_reasoning_effort_can_differ_between_aux_and_chat(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        aux = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="aux"))
+        chat = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="chat"))
+        with (
+            patch("config.LLM_REASONING_EFFORT", "medium"),
+            patch("config.LLM_AUX_REASONING_EFFORT", "low"),
+            patch("config.LLM_CHAT_REASONING_EFFORT", "max"),
+        ):
+            self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=aux), {"reasoning": {"effort": "low"}})
+            self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=chat), {"reasoning": {"effort": "max"}})
+
+    def test_responses_reasoning_effort_uses_per_bot_snapshot(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_reasoning_effort="medium",
+            llm_aux_reasoning_effort="low",
+            llm_chat_reasoning_effort="high",
+        )
+        aux = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="aux"))
+        chat = SimpleNamespace(client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="chat"))
+
+        self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=aux), {"reasoning": {"effort": "low"}})
+        self.assertEqual(runtime._build_reasoning_control_kwargs(bundle=chat), {"reasoning": {"effort": "high"}})
+
+    def test_pinai_responses_omits_unsupported_forced_json_wire_hint(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        pinai = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://api.pinaic.com/v1"),
+            model="gpt-5.6-sol",
+        )
+        official = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="responses", base_url="https://api.openai.com/v1"),
+            model="gpt-5.4",
+        )
+        with patch("config.LLM_REASONING_EFFORT", "low"):
+            pinai_payload = runtime._build_completion_kwargs(
+                bundle=pinai,
+                system_prompt="Return JSON.",
+                user_prompt="Return one object.",
+                temperature=0.2,
+                json_mode=True,
+            )
+            official_payload = runtime._build_completion_kwargs(
+                bundle=official,
+                system_prompt="Return JSON.",
+                user_prompt="Return one object.",
+                temperature=0.2,
+                json_mode=True,
+            )
+
+        self.assertNotIn("response_format", pinai_payload)
+        self.assertEqual(official_payload["response_format"], {"type": "json_object"})
+
+    def test_responses_result_and_stream_adapt_to_existing_tool_pipeline(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        response = SimpleNamespace(
+            status="completed",
+            output_text="",
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call_2",
+                    name="web_search",
+                    arguments='{"q":"rates"}',
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=40, output_tokens=5),
+        )
+        adapted = runtime._adapt_responses_result(response)
+        self.assertEqual(adapted.choices[0].message.tool_calls[0]["id"], "call_2")
+        self.assertEqual(adapted.choices[0].message.tool_calls[0]["function"]["name"], "web_search")
+
+        from companion_v01.llm_runtime import _ResponsesStreamAdapter
+
+        usage = SimpleNamespace(input_tokens=100, input_tokens_details=SimpleNamespace(cached_tokens=64))
+        events = [
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=SimpleNamespace(type="function_call", call_id="call_3", name="web_search"),
+            ),
+            SimpleNamespace(type="response.function_call_arguments.delta", output_index=0, delta='{"q":'),
+            SimpleNamespace(type="response.function_call_arguments.delta", output_index=0, delta='"oil"}'),
+            SimpleNamespace(type="response.output_text.delta", delta='{"speech":"checking"}'),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(usage=usage)),
+        ]
+        stream_adapter = _ResponsesStreamAdapter(events)
+        chunks = list(stream_adapter)
+        self.assertIsNone(stream_adapter.usage)
+        parts: dict[object, dict[str, object]] = {}
+        for chunk in chunks:
+            runtime._collect_stream_native_tool_call_parts(chunk, parts)
+        calls = runtime._stream_native_tool_calls_from_parts(
+            parts,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "web_search", "parameters": {"type": "object"}},
+                }
+            ],
+        )
+        self.assertEqual(calls[0]["type"], "web_search")
+        self.assertEqual(calls[0]["q"], "oil")
+        self.assertEqual(calls[0][TOOL_INVOCATION_ID_FIELD], "call_3")
+        self.assertEqual("".join(runtime._extract_stream_text(chunk) for chunk in chunks), '{"speech":"checking"}')
+
+    def test_responses_input_drops_orphaned_tool_outputs(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+
+        request = runtime._responses_input_from_messages(
+            [
+                {"role": "user", "content": "当前问题"},
+                {"role": "tool", "tool_call_id": "call-compacted-away", "content": "旧结果"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-live",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"q":"rates"}'},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call-live", "content": "实时结果"},
+            ]
+        )
+
+        self.assertEqual(
+            request,
+            [
+                {"role": "user", "content": "当前问题"},
+                {
+                    "type": "function_call",
+                    "call_id": "call-live",
+                    "name": "web_search",
+                    "arguments": '{"q":"rates"}',
+                },
+                {"type": "function_call_output", "call_id": "call-live", "output": "实时结果"},
+            ],
+        )
+
+    def test_responses_input_drops_dangling_tool_calls_from_interrupted_turns(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+
+        request = runtime._responses_input_from_messages(
+            [
+                {"role": "user", "content": "上一轮请求"},
+                {
+                    "role": "assistant",
+                    "content": "我先核验一下。",
+                    "tool_calls": [
+                        {
+                            "id": "call-complete",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"q":"rates"}'},
+                        },
+                        {
+                            "id": "call-interrupted",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": '{"q":"unfinished"}'},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call-complete", "content": "核验结果"},
+                {"role": "user", "content": "新的无关请求"},
+            ]
+        )
+
+        self.assertEqual(
+            request,
+            [
+                {"role": "user", "content": "上一轮请求"},
+                {"role": "assistant", "content": "我先核验一下。"},
+                {
+                    "type": "function_call",
+                    "call_id": "call-complete",
+                    "name": "web_search",
+                    "arguments": '{"q":"rates"}',
+                },
+                {"type": "function_call_output", "call_id": "call-complete", "output": "核验结果"},
+                {"role": "user", "content": "新的无关请求"},
+            ],
+        )
+
+    def test_responses_input_preserves_plain_message_boundaries_for_source_attribution(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        messages = [
+            {"role": "user", "content": "stable tool context"},
+            {"role": "user", "content": "stable memory context"},
+            {"role": "assistant", "content": "first assistant fragment"},
+            {"role": "assistant", "content": "second assistant fragment"},
+            {"role": "user", "content": [{"type": "text", "text": "multimodal text"}]},
+            {"role": "user", "content": "plain text after structured content"},
+        ]
+
+        result = runtime._responses_input_from_messages(messages)
+
+        self.assertEqual(
+            result,
+            [
+                {"role": "user", "content": "stable tool context"},
+                {"role": "user", "content": "stable memory context"},
+                {"role": "assistant", "content": "first assistant fragment"},
+                {"role": "assistant", "content": "second assistant fragment"},
+                {"role": "user", "content": [{"type": "input_text", "text": "multimodal text"}]},
+                {"role": "user", "content": "plain text after structured content"},
+            ],
+        )
+
+    def test_request_observer_sees_final_responses_wire_without_plain_message_coalescing(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        seen: list[dict[str, object]] = []
+        bundle = ModelBundle(
+            client=SimpleNamespace(_akane_protocol="responses", protocol="responses"),
+            model="gpt-test",
+        )
+        payload = {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "stable"},
+                {"role": "user", "content": "current"},
+            ],
+            "tools": [],
+        }
+
+        runtime._observe_completion_request(
+            bundle=bundle,
+            payload=payload,
+            observer=lambda request: seen.append(request) or {"ok": True},
+            persistent_turn_messages=[{"role": "user", "content": "current"}],
+        )
+
+        self.assertEqual(
+            seen[0]["audit_history_messages"],
+            [
+                {"role": "user", "content": "stable"},
+                {"role": "user", "content": "current"},
+            ],
+        )
+        self.assertEqual(
+            seen[0]["persistent_turn_messages"],
+            [{"role": "user", "content": "current"}],
+        )
+
+    def test_completion_payload_keeps_persistent_ephemeral_and_tool_turns_in_order(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.test/v1"),
+            model="vision-chat",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            history_turns=[{"role": "assistant", "content": "history"}],
+            user_prompt="current",
+            user_images=[{"data_url": "data:image/jpeg;base64,abc"}],
+            ephemeral_turns=[{"role": "user", "content": "request evidence"}],
+            post_user_turns=[
+                {"role": "assistant", "content": "tool request"},
+                {"role": "user", "content": "tool result"},
+            ],
+            temperature=0.1,
+        )
+        persistent = runtime._persistent_turn_messages_from_payload(
+            payload=payload,
+            bundle=bundle,
+            history_turns=[{"role": "assistant", "content": "history"}],
+            ephemeral_turns=[{"role": "user", "content": "request evidence"}],
+            post_user_turns=[
+                {"role": "assistant", "content": "tool request"},
+                {"role": "user", "content": "tool result"},
+            ],
+        )
+
+        self.assertEqual([message["role"] for message in payload["messages"]], ["system", "assistant", "user", "user", "assistant", "user"])
+        self.assertEqual(payload["messages"][3]["content"], "request evidence")
+        self.assertEqual(persistent, [payload["messages"][2], payload["messages"][4], payload["messages"][5]])
+
+    def test_gemini_completion_keeps_memcore_persistent_turn_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="gemini", base_url="https://api.example.test"),
+            model="gemini-3.5-flash",
+        )
+        history = [{"role": "assistant", "content": "history"}]
+        ephemeral = [{"role": "user", "content": "request evidence"}]
+        post_user = [
+            {
+                "role": "assistant",
+                "content": "先查一下",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "retrieve_memory", "arguments": '{"query":"线索"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": '{"status":"ok"}'},
+        ]
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            history_turns=history,
+            user_prompt="current event",
+            ephemeral_turns=ephemeral,
+            post_user_turns=post_user,
+            temperature=0.1,
+        )
+        persistent = runtime._persistent_turn_messages_from_payload(
+            payload=payload,
+            bundle=bundle,
+            history_turns=history,
+            ephemeral_turns=ephemeral,
+            post_user_turns=post_user,
+        )
+
+        self.assertEqual(
+            [message["role"] for message in persistent],
+            ["user", "assistant", "tool"],
+        )
+        self.assertEqual(persistent[0]["content"], "current event")
+        self.assertEqual(persistent[1]["tool_calls"][0]["id"], "call-1")
+        self.assertEqual(persistent[2]["tool_call_id"], "call-1")
+
+    def test_request_observer_rejection_stops_nonstream_before_provider_transport(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        provider_calls: list[dict[str, object]] = []
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._build_completion_kwargs = lambda **_kwargs: {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "stable system"},
+                {"role": "user", "content": "current"},
+            ],
+        }
+        runtime._create_completion = lambda **kwargs: provider_calls.append(dict(kwargs))
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._capture_runtime_error = lambda *_args, **_kwargs: None
+
+        result = runtime._call_json_result(
+            bundle=ModelBundle(
+                client=SimpleNamespace(_akane_protocol="openai", protocol="openai"),
+                model="gpt-test",
+            ),
+            system_prompt="stable system",
+            user_prompt="current",
+            fallback={"speech": "persona fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+            request_observer=lambda _request: {
+                "ok": False,
+                "status": "failed",
+                "reason": "projection_write_failed",
+            },
+        )
+
+        self.assertEqual(provider_calls, [])
+        self.assertIn("request_observer_rejected:projection_write_failed", result.error)
+        self.assertEqual(result.raw_text, "")
+
+    def test_nonstream_json_decode_error_recovers_through_stream(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        metrics: list[str] = []
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._record_metric = lambda key, *_args, **_kwargs: metrics.append(str(key))
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._capture_runtime_error = lambda *_args, **_kwargs: self.fail("decode error should be recovered")
+
+        def fail_nonstream(**_kwargs: object) -> object:
+            raise json.JSONDecodeError("Extra data", "{}{}", 2)
+
+        runtime._create_completion = fail_nonstream
+
+        def recovered_stream(**_kwargs: object):
+            if False:
+                yield {}
+            return ChatJSONStreamResult(
+                parsed={"speech": "主动推送已恢复"},
+                raw_text='{"speech":"主动推送已恢复"}',
+                elapsed_ms=1.0,
+                error="",
+                latest_emotion="",
+                latest_speech="主动推送已恢复",
+                latest_reply_medium="text",
+                fallback_used=False,
+            )
+
+        runtime._stream_chat_json = recovered_stream
+        result = runtime._call_json_result(
+            bundle=ModelBundle(
+                client=SimpleNamespace(_akane_protocol="responses", protocol="responses"),
+                model="gpt-test",
+            ),
+            system_prompt="system",
+            user_prompt="current",
+            fallback={"speech": "fallback"},
+            temperature=0.0,
+            prompt_cache_key="chat:final:test",
+        )
+
+        self.assertEqual(result.parsed["speech"], "主动推送已恢复")
+        self.assertFalse(result.fallback_used)
+        self.assertIn("chat_nonstream_stream_recoveries", metrics)
+
+    def test_request_observer_rejection_stops_stream_before_provider_transport(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        provider_calls: list[dict[str, object]] = []
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._build_completion_kwargs = lambda **_kwargs: {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "stable system"},
+                {"role": "user", "content": "current"},
+            ],
+        }
+        runtime._create_completion = lambda **kwargs: provider_calls.append(dict(kwargs)) or []
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._capture_runtime_error = lambda *_args, **_kwargs: None
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._close_stream = lambda *_args, **_kwargs: None
+        runtime._stream_native_tool_calls_from_parts = lambda *_args, **_kwargs: []
+        runtime._note_parse_fallback = lambda *_args, **_kwargs: None
+
+        generator = runtime._stream_chat_json(
+            bundle=ModelBundle(
+                client=SimpleNamespace(_akane_protocol="openai", protocol="openai"),
+                model="gpt-test",
+            ),
+            system_prompt="stable system",
+            user_prompt="current",
+            fallback={"speech": "persona fallback"},
+            temperature=0.0,
+            early_tool_call_validator=None,
+            prompt_cache_key="",
+            request_observer=lambda _request: {
+                "ok": False,
+                "status": "failed",
+                "reason": "projection_write_failed",
+            },
+        )
+        with self.assertRaises(StopIteration) as stopped:
+            while True:
+                next(generator)
+        result = stopped.exception.value
+
+        self.assertEqual(provider_calls, [])
+        self.assertIn("request_observer_rejected:projection_write_failed", result.error)
+        self.assertEqual(result.raw_text, "")
+
+    def test_responses_failures_surface_bounded_structured_reasons(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        failed = SimpleNamespace(
+            status="failed",
+            error=SimpleNamespace(type="server_error", code="upstream_failed", message="do not echo this"),
+            output=[],
+        )
+        with self.assertRaisesRegex(RuntimeError, "responses_failed type=server_error code=upstream_failed"):
+            runtime._adapt_responses_result(failed)
+
+        from companion_v01.llm_runtime import _ResponsesStreamAdapter
+
+        events = [
+            SimpleNamespace(
+                type="response.failed",
+                response=SimpleNamespace(error=SimpleNamespace(type="invalid_request_error", code="bad_input")),
+            )
+        ]
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "responses_stream_failed type=invalid_request_error code=bad_input",
+        ):
+            list(_ResponsesStreamAdapter(events))
+
+    def test_openai_nested_cached_tokens_are_recorded(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        response = SimpleNamespace(
+            usage=SimpleNamespace(
+                input_tokens=120,
+                output_tokens=9,
+                input_tokens_details=SimpleNamespace(cached_tokens=96),
+            )
+        )
+
+        runtime._record_cache_metrics(response)
+
+        self.assertEqual(runtime._metrics["cache_read_tokens"], 96)
+        self.assertEqual(runtime._metrics["reported_input_tokens"], 120)
+        self.assertEqual(runtime._metrics["reported_output_tokens"], 9)
+
+    def test_final_cache_usage_is_recorded_separately(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        response = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=200,
+                completion_tokens=11,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=150),
+            )
+        )
+
+        runtime._record_cache_metrics(response, prompt_cache_key="chat:final:conversation")
+
+        self.assertEqual(runtime._metrics["final_cache_read_tokens"], 150)
+        self.assertEqual(runtime._metrics["final_reported_input_tokens"], 200)
+        self.assertEqual(runtime._metrics["final_reported_output_tokens"], 11)
+        self.assertEqual(runtime._metrics["final_cache_usage_calls"], 1)
+        self.assertEqual(runtime._metrics["final_cache_hit_calls"], 1)
+
+    def test_chat_bundle_uses_chat_config_instead_of_aux_config(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_build_llm_client(**kwargs):
+            calls.append(dict(kwargs))
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace()))
+
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        with patch("companion_v01.llm_runtime.build_llm_client", side_effect=fake_build_llm_client):
+            with patch("config.CHAT_API_KEY", "chat-key"), patch("config.CHAT_BASE_URL", "http://chat.example/v1"):
+                with patch("config.CHAT_API_PROTOCOL", "openai"), patch("config.CHAT_MODEL_NAME", "chat-model"):
+                    bundle = runtime._build_chat_bundle()
+
+        self.assertEqual(bundle.model, "chat-model")
+        self.assertEqual(calls[0]["api_key"], "chat-key")
+        self.assertEqual(calls[0]["base_url"], "http://chat.example/v1")
+        self.assertEqual(calls[0]["protocol"], "openai")
+
+    def test_chat_model_override_reuses_current_chat_client(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._bundle_lock = threading.RLock()
+        client = SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1")
+        runtime.chat = ModelBundle(client=client, model="deepseek-chat")
+
+        override_bundle = runtime._chat_bundle_for_override("deepseek-v4-flash")
+        default_bundle = runtime._chat_bundle_for_override("")
+        prefixed_bundle = runtime._chat_bundle_for_override("[ruru20]gemini-2.5-flash")
+        invalid_bundle = runtime._chat_bundle_for_override("bad model")
+
+        self.assertIs(override_bundle.client, client)
+        self.assertEqual(override_bundle.model, "deepseek-v4-flash")
+        self.assertIs(prefixed_bundle.client, client)
+        self.assertEqual(prefixed_bundle.model, "[ruru20]gemini-2.5-flash")
+        self.assertIs(default_bundle, runtime.chat)
+        self.assertIs(invalid_bundle, runtime.chat)
+
+    def test_llm_runtime_error_detail_redacts_secrets(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._last_error_lock = threading.RLock()
+        runtime._last_error = {}
+
+        runtime._record_error_detail(
+            RuntimeError("Authorization: Bearer sk-testsecret123456 api_key=sk-othersecret123456"),
+            phase="call_json",
+        )
+        detail = runtime.snapshot_last_error()
+
+        self.assertEqual(detail["phase"], "call_json")
+        self.assertEqual(detail["type"], "RuntimeError")
+        self.assertNotIn("sk-testsecret", detail["message"])
+        self.assertNotIn("sk-othersecret", detail["message"])
+        self.assertIn("[redacted]", detail["message"])
+
+    def test_runtime_error_capture_logs_only_redacted_detail(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._last_error_lock = threading.RLock()
+        runtime._last_error = {}
+
+        with patch("companion_v01.llm_runtime.logger.warning") as warning:
+            runtime._capture_runtime_error(
+                RuntimeError("Authorization: Bearer sk-testsecret123456"),
+                phase="stream_chat_json",
+            )
+
+        rendered = " ".join(str(value) for value in warning.call_args.args)
+        self.assertNotIn("sk-testsecret123456", rendered)
+        self.assertIn("[redacted]", rendered)
+        self.assertEqual(runtime.snapshot_last_error()["phase"], "stream_chat_json")
+
+    def test_llm_runtime_uses_json_mode_for_ollama_json_calls(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="ollama"),
+            model="qwen2.5:7b",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertIs(payload["stream"], True)
+
+    def test_llm_runtime_can_attach_user_images_to_chat_prompt(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.test/v1"),
+            model="vision-chat",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user text",
+            temperature=0.1,
+            user_images=[
+                {"data_url": "data:image/jpeg;base64,abc"},
+                {"data_url": "https://example.test/not-inline.jpg"},
+            ],
+        )
+
+        content = payload["messages"][1]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0], {"type": "text", "text": "user text"})
+        self.assertEqual(content[1], {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}})
+        self.assertEqual(len(content), 2)
+
+    def test_llm_runtime_preserves_system_extra_blocks_for_openai_compatible_payloads(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            system_extra_blocks=["resource block", "semantic block"],
+        )
+
+        self.assertIn("system", payload["messages"][0]["content"])
+        self.assertIn("resource block", payload["messages"][0]["content"])
+        self.assertIn("semantic block", payload["messages"][0]["content"])
+        self.assertNotIn("system_extra_blocks", payload)
+
+    def test_llm_runtime_keeps_system_extra_blocks_separate_for_anthropic(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="anthropic"),
+            model="claude-test",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            system_extra_blocks=["resource block", "semantic block"],
+        )
+
+        self.assertEqual(payload["messages"][0]["content"], "system")
+        self.assertEqual(payload["system_extra_blocks"], ["resource block", "semantic block"])
+
+    def test_llm_runtime_adds_prompt_cache_hints_for_official_openai(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.openai.com/v1"),
+            model="gpt-5",
+        )
+
+        with patch("config.PROMPT_CACHE_HINTS_ENABLED", True), patch("config.PROMPT_CACHE_HINTS_FORCE", False):
+            with patch("config.PROMPT_CACHE_NAMESPACE", "akane"), patch("config.PROMPT_CACHE_RETENTION", "24h"):
+                payload = runtime._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt="system",
+                    user_prompt="user",
+                    temperature=0.1,
+                    prompt_cache_key="chat:final",
+                )
+
+        self.assertEqual(payload["prompt_cache_key"], "akane:chat:final")
+        self.assertEqual(payload["prompt_cache_retention"], "24h")
+
+    def test_llm_runtime_writes_prompt_audit_without_prompt_text(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime.log_dir = Path(temp_dir)
+            runtime.instance_id = "finance-prod"
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+                with patch("config.LOG_DIR", str(Path(temp_dir) / "wrong-global-log-root")):
+                    runtime._build_completion_kwargs(
+                        bundle=bundle,
+                        system_prompt="system private prompt",
+                        user_prompt="user private prompt",
+                        temperature=0.1,
+                        stream=True,
+                        json_mode=True,
+                        prompt_cache_key="chat:final",
+                        system_extra_blocks=["semantic private block"],
+                        history_turns=[
+                            {"role": "user", "content": "history private turn"},
+                            {"role": "assistant", "content": "assistant private turn"},
+                        ],
+                        ephemeral_turns=[{"role": "user", "content": "ephemeral private evidence"}],
+                        prompt_audit_sections=[
+                            {"name": "user.current_message", "text": "current private message"},
+                            {"name": "user.raw_recent_timeline", "text": "raw private timeline"},
+                        ],
+                        native_tools=[
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "private_tool_name",
+                                    "description": "private tool description",
+                                    "parameters": {"type": "object"},
+                                },
+                            }
+                        ],
+                    )
+
+            files = list((Path(temp_dir) / "llm_prompt_audit").glob("*.jsonl"))
+            self.assertEqual(len(files), 1)
+            record = json.loads(files[0].read_text(encoding="utf-8").strip())
+
+        self.assertEqual(record["prompt_cache_key"], "chat:final")
+        self.assertEqual(record["record_type"], "prompt")
+        self.assertEqual(record["instance_id"], "finance-prod")
+        self.assertTrue(record["runtime_object_id"])
+        self.assertTrue(record["client_object_id"])
+        self.assertEqual(record["bundle_role"], "")
+        self.assertEqual(record["model"], "deepseek-v4-pro")
+        self.assertTrue(record["stream"])
+        self.assertEqual(record["history_turn_count"], 2)
+        self.assertEqual(record["ephemeral_turn_count"], 1)
+        source_by_name = {section["name"]: section for section in record["source_sections"]}
+        self.assertEqual(source_by_name["user.current_message"]["chars"], len("current private message"))
+        self.assertIn("sha256_16", source_by_name["user.raw_recent_timeline"])
+        serialized = json.dumps(record, ensure_ascii=False)
+        self.assertNotIn("current private message", serialized)
+        self.assertNotIn("raw private timeline", serialized)
+        self.assertNotIn("history private turn", serialized)
+        self.assertNotIn("ephemeral private evidence", serialized)
+        self.assertNotIn("semantic private block", serialized)
+        self.assertNotIn("system private prompt", serialized)
+        self.assertNotIn("private tool description", serialized)
+        self.assertEqual(record["native_tool_count"], 1)
+        self.assertEqual(record["native_tool_names"], ["private_tool_name"])
+        self.assertTrue(record["native_tool_schema"]["sha256_16"])
+        self.assertGreater(record["payload_totals"]["estimated_tokens"], 0)
+        self.assertIn("messages", record["request_field_order"])
+        self.assertIn("tools", record["request_field_order"])
+        self.assertEqual(
+            [item["role"] for item in record["message_fingerprints"]],
+            ["system", "user", "assistant", "user", "user"],
+        )
+        self.assertTrue(all(item["sha256_16"] for item in record["message_fingerprints"]))
+        field_names = {item["name"] for item in record["request_field_fingerprints"]}
+        self.assertIn("payload.field.model", field_names)
+        self.assertIn("payload.field.tools", field_names)
+
+    def test_llm_runtime_writes_per_call_cache_usage_audit(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime.instance_id = "personal-prod"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime.log_dir = Path(temp_dir)
+            response = SimpleNamespace(
+                model="pin-model",
+                usage=SimpleNamespace(
+                    prompt_tokens=1_000,
+                    completion_tokens=25,
+                    prompt_tokens_details=SimpleNamespace(cached_tokens=800),
+                ),
+            )
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+                runtime._record_cache_metrics(response, prompt_cache_key="chat:final:conversation")
+
+            path = next((Path(temp_dir) / "llm_prompt_audit").glob("*.jsonl"))
+            record = json.loads(path.read_text(encoding="utf-8").strip())
+
+        self.assertEqual(record["record_type"], "usage")
+        self.assertEqual(record["reported_input_tokens"], 1_000)
+        self.assertEqual(record["cache_read_tokens"], 800)
+        self.assertEqual(record["cache_hit_ratio"], 0.8)
+        self.assertEqual(record["model"], "pin-model")
+
+    def test_llm_runtime_writes_order_sensitive_responses_request_audit_without_prompt_text(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="responses", _akane_bundle_role="chat"),
+            model="pin-model",
+        )
+        request = {
+            "model": "pin-model",
+            "instructions": "private system prompt",
+            "input": [
+                {"role": "user", "content": "private stable input"},
+                {"type": "function_call_output", "call_id": "call-private", "output": "private output"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "private_tool",
+                    "description": "private description",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "prompt_cache_key": "akane:chat:final:conversation",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime.log_dir = Path(temp_dir)
+            runtime.instance_id = "personal-prod"
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+                with patch("config.PROMPT_CACHE_NAMESPACE", "akane"):
+                    runtime._record_responses_request_audit_if_enabled(bundle=bundle, request=request)
+
+            path = next((Path(temp_dir) / "llm_prompt_audit").glob("*.jsonl"))
+            record = json.loads(path.read_text(encoding="utf-8").strip())
+
+        self.assertEqual(record["record_type"], "responses_request")
+        self.assertEqual(record["prompt_cache_key"], "akane:chat:final:conversation")
+        self.assertEqual(record["request_field_order"], list(request))
+        self.assertEqual([item["role"] for item in record["input_item_fingerprints"]], ["user", ""])
+        self.assertEqual(record["tool_fingerprints"][0]["name"], "private_tool")
+        self.assertEqual(record["tool_fingerprints"][0]["field_order"], list(request["tools"][0]))
+        serialized = json.dumps(record, ensure_ascii=False)
+        self.assertNotIn("private system prompt", serialized)
+        self.assertNotIn("private stable input", serialized)
+        self.assertNotIn("private output", serialized)
+        self.assertNotIn("private description", serialized)
+
+    def test_llm_runtime_prompt_audit_defaults_to_chat_final_only(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+                with patch("config.LOG_DIR", temp_dir):
+                    runtime._build_completion_kwargs(
+                        bundle=bundle,
+                        system_prompt="system",
+                        user_prompt="user",
+                        temperature=0.1,
+                        prompt_cache_key="aux:summary",
+                    )
+
+            self.assertFalse((Path(temp_dir) / "llm_prompt_audit").exists())
+
+        with patch("config.LLM_PROMPT_AUDIT_ENABLED", True), patch("config.LLM_PROMPT_AUDIT_INCLUDE_AUX", False):
+            self.assertFalse(runtime._should_record_prompt_audit("chat:finance_push"))
+
+    def test_llm_runtime_adds_native_tools_for_verified_profile(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+
+    def test_llm_runtime_adds_native_tools_for_verified_pinai_chat_profiles(self) -> None:
+        for model in ("gpt-5.6-sol", "gpt-5.6-luna"):
+            with self.subTest(model=model):
+                runtime = LLMRuntime.__new__(LLMRuntime)
+                runtime._metrics_lock = threading.RLock()
+                runtime._metrics = {}
+                bundle = SimpleNamespace(
+                    client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.pinaic.com/v1"),
+                    model=model,
+                )
+
+                payload = runtime._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt="system",
+                    user_prompt="user",
+                    temperature=0.1,
+                    json_mode=True,
+                    native_tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "description": "Search the public web.",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    native_tool_choice="auto",
+                )
+
+                self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+                self.assertEqual(payload["tool_choice"], "auto")
+                self.assertNotIn("response_format", payload)
+
+    def test_openai_compatible_gemini_model_strips_non_gemini_tool_schema_fields(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.pinaic.com/v1"),
+            model="[channel-a]gemini-3.8-flash",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write_document",
+                        "description": "Write a document.",
+                        "strict": True,
+                        "parameters": {
+                            "type": "object",
+                            "x-capcore-kind": "object",
+                            "properties": {
+                                "sections": {
+                                    "type": "array",
+                                    "x-capcore-kind": "array",
+                                    "uniqueItems": True,
+                                    "items": {"type": "string", "x-capcore-kind": "string"},
+                                }
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        function = payload["tools"][0]["function"]
+        self.assertNotIn("strict", function)
+        parameters = function["parameters"]
+        self.assertEqual(parameters["type"], "object")
+        self.assertNotIn("x-capcore-kind", parameters)
+        self.assertNotIn("additionalProperties", parameters)
+        sections = parameters["properties"]["sections"]
+        self.assertNotIn("x-capcore-kind", sections)
+        self.assertNotIn("uniqueItems", sections)
+
+        for model in (
+            "gemini-2.5-flash",
+            "google/gemini-3-pro",
+            "[channel-a]gemini-3.8-flash",
+            "relay gemini-flash",
+        ):
+            self.assertTrue(runtime._is_gemini_family_model(SimpleNamespace(client=bundle.client, model=model)))
+        self.assertFalse(
+            runtime._is_gemini_family_model(
+                SimpleNamespace(client=bundle.client, model="notgemini-compatible")
+            )
+        )
+
+    def test_llm_runtime_strips_internal_native_tool_mapping_from_payload(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                    "function": {
+                        "name": "mcp_demo_echo_abcd123456",
+                        "description": "Echo.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "mcp_demo_echo_abcd123456")
+        self.assertNotIn(NATIVE_TOOL_CAPABILITY_ID_FIELD, payload["tools"][0])
+
+    def test_llm_runtime_never_combines_native_tools_with_forced_json(self) -> None:
+        for model in ("deepseek-v4-flash", "deepseek-v4-pro"):
+            with self.subTest(model=model):
+                runtime = LLMRuntime.__new__(LLMRuntime)
+                bundle = SimpleNamespace(
+                    client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+                    model=model,
+                )
+
+                payload = runtime._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt="system",
+                    user_prompt="user",
+                    temperature=0.1,
+                    json_mode=True,
+                    native_tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "description": "Search the public web.",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    native_tool_choice="auto",
+                )
+
+                self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+                self.assertNotIn("response_format", payload)
+
+    def test_main_chat_json_protocol_does_not_force_provider_json_mode(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        captured: dict[str, object] = {}
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._request_bundle = lambda **_kwargs: SimpleNamespace()
+
+        def fake_call(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(parsed={"speech": "ok"})
+
+        runtime._call_json_result = fake_call
+        runtime.call_chat_json_result(
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "fallback"},
+        )
+
+        self.assertIs(captured["force_response_json"], False)
+
+    def test_streaming_main_chat_does_not_force_provider_json_mode(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        captured: dict[str, object] = {}
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._request_bundle = lambda **_kwargs: SimpleNamespace()
+
+        def fake_stream(**kwargs):
+            captured.update(kwargs)
+            return iter(())
+
+        runtime._stream_chat_json = fake_stream
+        list(
+            runtime.stream_chat_json(
+                system_prompt="system",
+                user_prompt="user",
+                fallback={"speech": "fallback"},
+            )
+        )
+
+        self.assertIs(captured["force_response_json"], False)
+
+    def test_llm_runtime_adds_native_tools_for_anthropic_protocol(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="anthropic", base_url="https://api.anthropic.com"),
+            model="claude-sonnet-5",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertNotIn("response_format", payload)
+
+    def test_llm_runtime_sends_native_tools_for_unverified_openai_compatible_model(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.openai.com/v1"),
+            model="gpt-5",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+
+    def test_llm_runtime_unknown_openai_compatible_provider_is_native_first(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://opencode.ai/zen/go/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertNotIn("response_format", payload)
+
+    def test_llm_runtime_native_tools_do_not_force_json_mode(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://opencode.ai/zen/go/v1"),
+            model="deepseek-v4-pro",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertNotIn("response_format", payload)
+
+    def test_llm_runtime_sends_native_tools_to_tokenrhythm_model_variant_without_allowlist(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.tokenrhythm.studio/v1"),
+            model="deepseek-v4-flash-0731",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            json_mode=True,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertEqual(payload["tools"][0]["function"]["name"], "web_search")
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertNotIn("response_format", payload)
+
+    def test_llm_runtime_skips_native_tools_for_non_openai_protocol(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="ollama", base_url="http://127.0.0.1:11434/v1"),
+            model="qwen2.5:7b",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            native_tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the public web.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            native_tool_choice="auto",
+        )
+
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+
+    def test_anthropic_payload_converts_native_tools_to_messages_shape(self) -> None:
+        payload = _build_anthropic_payload(
+            {
+                "model": "claude-test",
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        NATIVE_TOOL_CAPABILITY_ID_FIELD: "internal.should_not_leak",
+                        "function": {
+                            "name": "web_search",
+                            "description": "Search the public web.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                                "required": ["query"],
+                            },
+                        },
+                    }
+                ],
+                "tool_choice": "auto",
+            }
+        )
+
+        self.assertEqual(
+            payload["tools"],
+            [
+                {
+                    "name": "web_search",
+                    "description": "Search the public web.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                }
+            ],
+        )
+        self.assertEqual(payload["tool_choice"], {"type": "auto"})
+        self.assertNotIn(NATIVE_TOOL_CAPABILITY_ID_FIELD, json.dumps(payload, ensure_ascii=False))
+
+    def test_llm_runtime_appends_post_user_turns_after_current_user_prompt_for_anthropic(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="current user prompt",
+            temperature=0.1,
+            post_user_turns=[
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "我先查一下。"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "web_search",
+                            "input": {"query": "Akane"},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "result text",
+                        }
+                    ],
+                },
+            ],
+        )
+
+        self.assertEqual([message["role"] for message in payload["messages"]], ["system", "user", "assistant", "user"])
+        self.assertEqual(payload["messages"][1]["content"], "current user prompt")
+        self.assertEqual(payload["messages"][2]["content"][0], {"type": "text", "text": "我先查一下。"})
+        self.assertEqual(payload["messages"][2]["content"][1]["type"], "tool_use")
+        self.assertEqual(payload["messages"][3]["content"][0]["type"], "tool_result")
+
+        anthropic_payload = _build_anthropic_payload(payload)
+        self.assertEqual([message["role"] for message in anthropic_payload["messages"]], ["user", "assistant", "user"])
+        self.assertEqual(anthropic_payload["messages"][1]["content"][0], {"type": "text", "text": "我先查一下。"})
+        self.assertEqual(anthropic_payload["messages"][1]["content"][1]["type"], "tool_use")
+        self.assertEqual(anthropic_payload["messages"][2]["content"][0]["type"], "tool_result")
+
+    def test_llm_runtime_appends_standard_openai_parallel_tool_history(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="openai"), model="gpt-test")
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="current user prompt",
+            temperature=0.1,
+            post_user_turns=[
+                {
+                    "role": "assistant",
+                    "content": "我一起查一下。",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": {"query": "日经指数"}},
+                        },
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {"name": "retrieve_memory", "arguments": '{"query":"风险偏好"}'},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "market result"},
+                {"role": "tool", "tool_call_id": "call_2", "content": "memory result"},
+            ],
+        )
+
+        self.assertEqual(
+            [message["role"] for message in payload["messages"]],
+            ["system", "user", "assistant", "tool", "tool"],
+        )
+        assistant_message = payload["messages"][2]
+        self.assertEqual(assistant_message["content"], "我一起查一下。")
+        self.assertEqual(
+            [call["id"] for call in assistant_message["tool_calls"]],
+            ["call_1", "call_2"],
+        )
+        self.assertEqual(
+            json.loads(assistant_message["tool_calls"][0]["function"]["arguments"]),
+            {"query": "日经指数"},
+        )
+        self.assertEqual(
+            [message["tool_call_id"] for message in payload["messages"][3:]],
+            ["call_1", "call_2"],
+        )
+
+    def test_llm_runtime_preserves_provider_native_tools_from_cross_turn_history(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        openai_bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="openai"), model="gpt-test")
+        anthropic_bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="anthropic"),
+            model="claude-test",
+        )
+        openai_history = [
+            {
+                "role": "assistant",
+                "content": "我一起查一下。",
+                "tool_calls": [
+                    {
+                        "id": "call_history",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query":"Akane"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_history", "content": "result verbatim"},
+        ]
+        anthropic_history = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "我一起查一下。"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_history",
+                        "name": "web_search",
+                        "input": {"query": "Akane"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_history",
+                        "content": "cancelled verbatim",
+                        "is_error": True,
+                    }
+                ],
+            },
+        ]
+
+        self.assertEqual(
+            runtime._normalize_history_turns_for_payload(openai_history, bundle=openai_bundle),
+            openai_history,
+        )
+        self.assertEqual(
+            runtime._normalize_history_turns_for_payload(anthropic_history, bundle=anthropic_bundle),
+            anthropic_history,
+        )
+
+    def test_llm_runtime_extracts_native_tool_call_to_akane_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments='{"query":"Akane","max_results":3,"type":"ignored"}',
+                                )
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response),
+            {"type": "web_search", "query": "Akane", "max_results": 3, TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+             TOOL_MODEL_ARGUMENTS_FIELD: {"query": "Akane", "max_results": 3, "type": "ignored"}},
+        )
+
+    def test_llm_runtime_maps_provider_safe_native_tool_name_to_capability_id(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        native_tools = [
+            {
+                "type": "function",
+                NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                "function": {
+                    "name": "mcp_demo_echo_abcd123456",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_mapped_1",
+                                function=SimpleNamespace(
+                                    name="mcp_demo_echo_abcd123456",
+                                    arguments='{"text":"hi","type":"ignored"}',
+                                ),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response, native_tools=native_tools),
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_mapped_1",
+                TOOL_MODEL_ARGUMENTS_FIELD: {"text": "hi", "type": "ignored"},
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
+            },
+        )
+
+    def test_llm_runtime_extracts_anthropic_tool_use_to_akane_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=[
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "web_search",
+                                "input": {"query": "Akane", "max_results": 3, "type": "ignored"},
+                            }
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response, native_tools=None, bundle=bundle),
+            {
+                "type": "web_search",
+                "query": "Akane",
+                "max_results": 3,
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_1",
+                TOOL_MODEL_ARGUMENTS_FIELD: {"query": "Akane", "max_results": 3, "type": "ignored"},
+            },
+        )
+
+    def test_llm_runtime_preserves_multiple_anthropic_tool_uses(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=[
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "web_search",
+                                "input": {"query": "日经指数"},
+                            },
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_2",
+                                "name": "retrieve_memory",
+                                "input": {"query": "风险偏好"},
+                            },
+                        ]
+                    )
+                )
+            ]
+        )
+
+        calls = runtime._extract_native_tool_calls(response, native_tools=None, bundle=bundle)
+
+        self.assertEqual([call["type"] for call in calls], ["web_search", "retrieve_memory"])
+        self.assertEqual(
+            [call[TOOL_INVOCATION_ID_FIELD] for call in calls],
+            ["toolu_1", "toolu_2"],
+        )
+
+    def test_llm_runtime_keeps_anthropic_model_tool_name_for_safe_name_mapping(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        native_tools = [
+            {
+                "type": "function",
+                NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                "function": {
+                    "name": "mcp_demo_echo_abcd123456",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=[
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_safe",
+                                "name": "mcp_demo_echo_abcd123456",
+                                "input": {"text": "hi"},
+                            }
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response, native_tools=native_tools, bundle=bundle),
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_safe",
+                TOOL_MODEL_ARGUMENTS_FIELD: {"text": "hi"},
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
+            },
+        )
+
+    def test_llm_runtime_keeps_openai_model_tool_name_for_safe_name_mapping(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="openai"), model="gpt-test")
+        native_tools = [
+            {
+                "type": "function",
+                NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                "function": {
+                    "name": "mcp_demo_echo_abcd123456",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_safe",
+                                function=SimpleNamespace(
+                                    name="mcp_demo_echo_abcd123456",
+                                    arguments='{"text":"hi"}',
+                                ),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        self.assertEqual(
+            runtime._extract_native_tool_call(response, native_tools=native_tools, bundle=bundle),
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_safe",
+                TOOL_MODEL_ARGUMENTS_FIELD: {"text": "hi"},
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
+            },
+        )
+
+    def test_llm_runtime_returns_native_tool_call_on_internal_carrier(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._create_completion = lambda **_kwargs: object()
+        runtime._record_cache_metrics = lambda _response, **_kwargs: None
+        runtime._extract_text = lambda _response: "我先查一下。"
+        runtime._extract_reasoning_content = lambda _response: "private tool reasoning"
+        runtime._extract_native_tool_calls = lambda _response, **_kwargs: [
+            {
+                "type": "web_search",
+                "query": "Akane",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_native_1",
+            }
+        ]
+
+        result = runtime._call_json(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "", "tool_call": None},
+            temperature=0.0,
+            prompt_cache_key="test:native_tool",
+            native_tools=[{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}],
+            native_tool_choice="auto",
+        )
+
+        self.assertIsNone(result["tool_call"])
+        self.assertEqual(len(result[NATIVE_TOOL_CALLS_FIELD]), 1)
+        self.assertEqual(result[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
+        self.assertEqual(result[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(result[NATIVE_REASONING_CONTENT_FIELD], "private tool reasoning")
+        self.assertEqual(result["speech"], "我先查一下。")
+        self.assertNotIn("speech_segments", result)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
+
+    def test_llm_runtime_preserves_all_native_tool_calls_in_provider_order(self) -> None:
+        runtime = LLMRuntime()
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_1",
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments='{"action":"search","query":"日经指数"}',
+                                ),
+                            ),
+                            SimpleNamespace(
+                                id="call_2",
+                                function=SimpleNamespace(
+                                    name="retrieve_memory",
+                                    arguments='{"query":"风险偏好"}',
+                                ),
+                            ),
+                        ]
+                    )
+                )
+            ]
+        )
+
+        calls = runtime._extract_native_tool_calls(response)
+
+        self.assertEqual([call["type"] for call in calls], ["web_search", "retrieve_memory"])
+        self.assertEqual(
+            [call[TOOL_INVOCATION_ID_FIELD] for call in calls],
+            ["call_1", "call_2"],
+        )
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_extra"], 1)
+
+    def test_llm_runtime_preserves_every_call_beyond_parallel_execution_width(self) -> None:
+        runtime = LLMRuntime()
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id=f"call_{index}",
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments=json.dumps({"query": f"query-{index}"}),
+                                ),
+                            )
+                            for index in range(25)
+                        ]
+                    )
+                )
+            ]
+        )
+
+        calls = runtime._extract_native_tool_calls(response)
+        history_calls = runtime._normalize_openai_history_tool_calls(
+            [
+                {
+                    "id": f"call_{index}",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": json.dumps({"query": f"query-{index}"}),
+                    },
+                }
+                for index in range(25)
+            ]
+        )
+
+        self.assertEqual(len(calls), 25)
+        self.assertEqual([call["query"] for call in calls], [f"query-{index}" for index in range(25)])
+        self.assertEqual(len(history_calls), 25)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_extra"], 24)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_calls_truncated"], 0)
+
+    def test_llm_runtime_preserves_malformed_native_arguments_for_tool_feedback(self) -> None:
+        runtime = LLMRuntime()
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_bad_json",
+                                function=SimpleNamespace(
+                                    name="web_search",
+                                    arguments='{"query":"weather"',
+                                ),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        calls = runtime._extract_native_tool_calls(response)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["type"], "web_search")
+        self.assertEqual(calls[0][TOOL_INVOCATION_ID_FIELD], "call_bad_json")
+        self.assertEqual(calls[0][TOOL_PARSE_ERROR_FIELD], "invalid_tool_arguments_json")
+        self.assertEqual(calls[0][TOOL_RAW_ARGUMENTS_FIELD], '{"query":"weather"')
+
+    def test_llm_runtime_stream_returns_native_tool_call_on_internal_carrier(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._record_cache_metrics = lambda _response, **_kwargs: None
+        runtime._close_stream = lambda _response: None
+        runtime._extract_stream_text = lambda _chunk: "我先查一下。"
+        runtime._create_completion = lambda **_kwargs: [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            reasoning_content="private stream reasoning",
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id="call_stream_1",
+                                    function=SimpleNamespace(
+                                        name="web_search",
+                                        arguments='{"query":"Akane"}',
+                                    ),
+                                )
+                            ]
+                        )
+                    )
+                ]
+            )
+        ]
+
+        generator = runtime._stream_chat_json(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "", "tool_call": None},
+            temperature=0.0,
+            early_tool_call_validator=None,
+            prompt_cache_key="test:native_tool_stream",
+            native_tools=[{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}],
+            native_tool_choice="auto",
+        )
+
+        while True:
+            try:
+                next(generator)
+            except StopIteration as exc:
+                result = exc.value
+                break
+
+        self.assertIsNone(result.parsed["tool_call"])
+        self.assertEqual(len(result.parsed[NATIVE_TOOL_CALLS_FIELD]), 1)
+        self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD]["type"], "web_search")
+        self.assertEqual(result.parsed[NATIVE_TOOL_CALL_FIELD][TOOL_SOURCE_FIELD], NATIVE_OPENAI)
+        self.assertEqual(result.parsed[NATIVE_REASONING_CONTENT_FIELD], "private stream reasoning")
+        self.assertEqual(result.parsed["speech"], "我先查一下。")
+        self.assertEqual(result.native_preface_text, "我先查一下。")
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_call_extracted"], 1)
+
+    def test_llm_runtime_collects_stream_native_tool_call_to_akane_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        parts: dict[object, dict[str, object]] = {}
+        first_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_stream_1",
+                                function=SimpleNamespace(name="web_search", arguments='{"query":"A'),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+        second_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id=None,
+                                function=SimpleNamespace(name="", arguments='kane","max_results":3}'),
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        runtime._collect_stream_native_tool_call_parts(first_chunk, parts)
+        runtime._collect_stream_native_tool_call_parts(second_chunk, parts)
+
+        self.assertEqual(
+            runtime._stream_native_tool_call_from_parts(parts),
+            {
+                "type": "web_search",
+                "query": "Akane",
+                "max_results": 3,
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_stream_1",
+                TOOL_MODEL_ARGUMENTS_FIELD: {"query": "Akane", "max_results": 3},
+            },
+        )
+
+    def test_llm_runtime_maps_stream_provider_safe_native_tool_name_to_capability_id(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        native_tools = [
+            {
+                "type": "function",
+                NATIVE_TOOL_CAPABILITY_ID_FIELD: "mcp.demo.echo",
+                "function": {
+                    "name": "mcp_demo_echo_abcd123456",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ]
+        parts: dict[object, dict[str, object]] = {}
+        first_chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    index=0,
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_stream_mapped",
+                                function=SimpleNamespace(name="mcp_demo_echo_abcd123456", arguments='{"text":"'),
+                            )
+                        ]
+                    ),
+                )
+            ]
+        )
+        second_chunk = {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"arguments": 'hi"}'},
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+
+        runtime._collect_stream_native_tool_call_parts(first_chunk, parts)
+        runtime._collect_stream_native_tool_call_parts(second_chunk, parts)
+
+        self.assertEqual(
+            runtime._stream_native_tool_call_from_parts(parts, native_tools=native_tools),
+            {
+                "type": "mcp.demo.echo",
+                "text": "hi",
+                TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                TOOL_INVOCATION_ID_FIELD: "call_stream_mapped",
+                TOOL_MODEL_ARGUMENTS_FIELD: {"text": "hi"},
+                TOOL_MODEL_NAME_FIELD: "mcp_demo_echo_abcd123456",
+            },
+        )
+
+    def test_llm_runtime_collects_anthropic_stream_tool_use_to_akane_shape(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        parts: dict[object, dict[str, object]] = {}
+        first_chunk = {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_stream_1",
+                "name": "web_search",
+                "input": {},
+            },
+        }
+        second_chunk = {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"query":"A'},
+        }
+        third_chunk = {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": 'kane","max_results":3}'},
+        }
+
+        runtime._collect_stream_native_tool_call_parts(first_chunk, parts, bundle=bundle)
+        runtime._collect_stream_native_tool_call_parts(second_chunk, parts, bundle=bundle)
+        runtime._collect_stream_native_tool_call_parts(third_chunk, parts, bundle=bundle)
+
+        self.assertEqual(
+            runtime._stream_native_tool_call_from_parts(parts, native_tools=None, bundle=bundle),
+            {
+                "type": "web_search",
+                "query": "Akane",
+                "max_results": 3,
+                TOOL_SOURCE_FIELD: NATIVE_ANTHROPIC,
+                TOOL_INVOCATION_ID_FIELD: "toolu_stream_1",
+                TOOL_MODEL_ARGUMENTS_FIELD: {"query": "Akane", "max_results": 3},
+            },
+        )
+
+    def test_llm_runtime_collects_multiple_anthropic_stream_tool_uses(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(client=SimpleNamespace(_akane_protocol="anthropic"), model="claude-test")
+        parts: dict[object, dict[str, object]] = {}
+        chunks = [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_1", "name": "web_search", "input": {}},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"query":"日经指数"}'},
+            },
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_2",
+                    "name": "retrieve_memory",
+                    "input": {},
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '{"query":"风险偏好"}'},
+            },
+        ]
+        for chunk in chunks:
+            runtime._collect_stream_native_tool_call_parts(chunk, parts, bundle=bundle)
+
+        calls = runtime._stream_native_tool_calls_from_parts(parts, native_tools=None, bundle=bundle)
+
+        self.assertEqual([call["type"] for call in calls], ["web_search", "retrieve_memory"])
+        self.assertEqual(
+            [call[TOOL_INVOCATION_ID_FIELD] for call in calls],
+            ["toolu_1", "toolu_2"],
+        )
+
+    def test_llm_runtime_skips_prompt_cache_hints_for_non_openai_base_url_by_default(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-chat",
+        )
+
+        with patch("config.PROMPT_CACHE_HINTS_ENABLED", True), patch("config.PROMPT_CACHE_HINTS_FORCE", False):
+            with patch("config.PROMPT_CACHE_NAMESPACE", "akane"), patch("config.PROMPT_CACHE_RETENTION", "24h"):
+                payload = runtime._build_completion_kwargs(
+                    bundle=bundle,
+                    system_prompt="system",
+                    user_prompt="user",
+                    temperature=0.1,
+                    prompt_cache_key="chat:final",
+                )
+
+        self.assertNotIn("prompt_cache_key", payload)
+        self.assertNotIn("prompt_cache_retention", payload)
+
+    def test_llm_runtime_disables_deepseek_thinking_by_default(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.deepseek.com/v1"),
+            model="deepseek-v4-flash",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertEqual(payload["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(payload["temperature"], 0.1)
+        self.assertEqual(payload["stream_options"], {"include_usage": True})
+
+    def test_llm_runtime_enables_deepseek_thinking_without_temperature(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_thinking_mode="enabled",
+            llm_chat_reasoning_effort="high",
+            prompt_cache_hints_enabled=False,
+        )
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            model="deepseek-v4-flash",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.8,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertEqual(
+            payload["extra_body"],
+            {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+        )
+        self.assertNotIn("temperature", payload)
+
+    def test_deepseek_open_tool_reasoning_is_wire_only_and_not_persistent(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_thinking_mode="enabled",
+            llm_chat_reasoning_effort="high",
+            prompt_cache_hints_enabled=False,
+        )
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            model="deepseek-v4-flash",
+        )
+        post_user = [
+            {
+                "role": "assistant",
+                "reasoning_content": "private provider reasoning",
+                "tool_calls": [
+                    {
+                        "id": "call_reasoning_1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query":"Akane"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_reasoning_1", "content": "result"},
+        ]
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="stable system",
+            user_prompt="current user",
+            post_user_turns=post_user,
+            temperature=0.1,
+        )
+        persistent = runtime._persistent_turn_messages_from_payload(
+            payload=payload,
+            bundle=bundle,
+            history_turns=None,
+            ephemeral_turns=None,
+            post_user_turns=post_user,
+        )
+
+        self.assertEqual(payload["messages"][2]["reasoning_content"], "private provider reasoning")
+        self.assertNotIn("reasoning_content", persistent[1])
+        self.assertNotIn("private provider reasoning", json.dumps(persistent, ensure_ascii=False))
+
+    def test_deepseek_reasoning_keeps_stable_prefix_and_tool_schema_unchanged(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_thinking_mode="enabled",
+            llm_chat_reasoning_effort="high",
+            prompt_cache_hints_enabled=False,
+        )
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            model="deepseek-v4-flash",
+        )
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        common = dict(
+            bundle=bundle,
+            system_prompt="stable system",
+            user_prompt="current user",
+            history_turns=[{"role": "assistant", "content": "stable history"}],
+            native_tools=tools,
+            temperature=0.1,
+        )
+        first = runtime._build_completion_kwargs(**common)
+        second = runtime._build_completion_kwargs(
+            **common,
+            post_user_turns=[
+                {
+                    "role": "assistant",
+                    "reasoning_content": "request-local reasoning",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+            ],
+        )
+
+        self.assertEqual(first["extra_body"], second["extra_body"])
+        self.assertEqual(first["tools"], second["tools"])
+        self.assertEqual(first["messages"], second["messages"][: len(first["messages"])])
+        self.assertEqual(second["messages"][-2]["reasoning_content"], "request-local reasoning")
+
+    def test_non_deepseek_history_drops_provider_private_reasoning(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(llm_thinking_mode="enabled")
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.test/v1"),
+            model="chat-model",
+        )
+
+        normalized = runtime._normalize_post_user_turn_for_payload(
+            {
+                "role": "assistant",
+                "reasoning_content": "must not cross providers",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            bundle=bundle,
+        )
+
+        self.assertNotIn("reasoning_content", normalized or {})
+
+    def test_reasoning_content_extractors_support_nonstream_and_stream_shapes(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(reasoning_content="reasoning A"))]
+        )
+        chunk = {"choices": [{"delta": {"reasoning_content": "reasoning B"}}]}
+
+        self.assertEqual(runtime._extract_reasoning_content(response), "reasoning A")
+        self.assertEqual(runtime._extract_stream_reasoning_content(chunk), "reasoning B")
+
+    def test_non_deepseek_model_keeps_temperature_when_thinking_setting_is_enabled(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_thinking_mode="enabled",
+            prompt_cache_hints_enabled=False,
+        )
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.com/v1"),
+            model="regular-chat-model",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.8,
+        )
+
+        self.assertEqual(payload["temperature"], 0.8)
+        self.assertNotIn("extra_body", payload)
+
+    def test_chat_output_budget_is_provider_payload_not_prompt_content(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_chat_max_output_tokens=4096,
+            prompt_cache_hints_enabled=False,
+        )
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.example.com/v1",
+            ),
+            model="gemini-test",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertEqual(payload["max_tokens"], 4096)
+        self.assertNotIn("4096", json.dumps(payload["messages"], ensure_ascii=False))
+        responses_payload = runtime._responses_payload_from_chat(payload)
+        self.assertNotIn("max_tokens", responses_payload)
+        self.assertEqual(responses_payload["max_output_tokens"], 4096)
+
+    def test_request_scoped_output_budget_overrides_chat_default(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_chat_max_output_tokens=4096,
+            prompt_cache_hints_enabled=False,
+        )
+        runtime._metrics_lock = threading.RLock()
+        runtime._metrics = {}
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(
+                _akane_protocol="openai",
+                _akane_bundle_role="chat",
+                base_url="https://api.example.com/v1",
+            ),
+            model="repair-model",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="repair JSON",
+            user_prompt="malformed",
+            temperature=0.0,
+            json_mode=True,
+            max_output_tokens=512,
+        )
+
+        self.assertEqual(payload["max_tokens"], 512)
+        self.assertEqual(runtime._responses_payload_from_chat(payload)["max_output_tokens"], 512)
+
+    def test_prompt_limit_counts_native_image_as_visual_budget_not_base64_text(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_auto_compact_token_limit=20_000,
+            llm_context_window=0,
+        )
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        image_data_url = "data:image/png;base64," + ("A" * 1_500_000)
+        payload = {
+            "messages": [
+                {"role": "system", "content": "system"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "请看图"},
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                    ],
+                },
+            ],
+            "tools": [],
+        }
+
+        estimated = runtime._estimate_prompt_payload_tokens(payload)
+
+        self.assertGreaterEqual(estimated, 8192)
+        self.assertLess(estimated, 10_000)
+        runtime._enforce_prompt_token_limits(payload)
+
+    def test_prompt_limit_still_rejects_oversized_real_text_with_native_image(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime.settings = BotSettingsView(
+            llm_auto_compact_token_limit=10_000,
+            llm_context_window=0,
+        )
+        metrics: list[str] = []
+        runtime._record_metric = lambda name, *_args, **_kwargs: metrics.append(name)
+        payload = {
+            "messages": [
+                {"role": "system", "content": "x" * 12_000},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "请看图"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64," + ("A" * 200_000)},
+                        },
+                    ],
+                },
+            ],
+            "tools": [],
+        }
+
+        with self.assertRaisesRegex(ValueError, "llm_prompt_token_limit_exceeded"):
+            runtime._enforce_prompt_token_limits(payload)
+
+        self.assertEqual(metrics, ["prompt_token_limit_exceeded"])
+
+    def test_anthropic_system_extra_blocks_are_preserved_beyond_cache_limit(self) -> None:
+        payload = _build_anthropic_payload(
+            {
+                "model": "claude-test",
+                "messages": [
+                    {"role": "system", "content": "base system"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "system_extra_blocks": ["extra-1", "extra-2", "extra-3", "extra-4", "extra-5"],
+            }
+        )
+
+        system_blocks = payload["system"]
+        self.assertEqual(
+            [block["text"] for block in system_blocks],
+            ["base system", "extra-1", "extra-2", "extra-3", "extra-4", "extra-5"],
+        )
+        self.assertEqual(sum(1 for block in system_blocks if "cache_control" in block), 4)
+        self.assertNotIn("cache_control", system_blocks[-1])
+        self.assertEqual(payload["max_tokens"], 4096)
+
+    def test_llm_runtime_records_deepseek_cache_usage_fields(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        recorded: list[tuple[str, int]] = []
+        runtime._record_metric = lambda key, amount=1: recorded.append((key, amount))
+
+        runtime._record_cache_metrics(
+            SimpleNamespace(
+                usage=SimpleNamespace(
+                    prompt_cache_hit_tokens=12,
+                    prompt_cache_miss_tokens=34,
+                    prompt_tokens=56,
+                    completion_tokens=7,
+                )
+            )
+        )
+
+        self.assertIn(("cache_read_tokens", 12), recorded)
+        self.assertIn(("cache_creation_tokens", 34), recorded)
+        self.assertIn(("reported_input_tokens", 56), recorded)
+        self.assertIn(("reported_output_tokens", 7), recorded)
+
+    def test_llm_runtime_does_not_send_deepseek_thinking_control_to_other_hosts(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(_akane_protocol="openai", base_url="https://api.example.test/v1"),
+            model="chat-model",
+        )
+
+        payload = runtime._build_completion_kwargs(
+            bundle=bundle,
+            system_prompt="system",
+            user_prompt="user",
+            temperature=0.1,
+            stream=True,
+            json_mode=True,
+        )
+
+        self.assertNotIn("extra_body", payload)
+        self.assertNotIn("stream_options", payload)
+
+    def test_llm_runtime_retries_without_prompt_cache_hints_when_client_rejects_them(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        calls: list[dict[str, object]] = []
+
+        def fake_create(**kwargs):
+            calls.append(dict(kwargs))
+            if "prompt_cache_key" in kwargs or "prompt_cache_retention" in kwargs:
+                raise TypeError("unexpected keyword argument 'prompt_cache_key'")
+            return {"ok": True}
+
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))),
+            model="gpt-5",
+        )
+
+        result = runtime._create_completion(
+            bundle=bundle,
+            payload={
+                "model": "gpt-5",
+                "messages": [],
+                "prompt_cache_key": "akane:chat:final",
+                "prompt_cache_retention": "24h",
+            },
+        )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(calls), 2)
+        self.assertIn("prompt_cache_key", calls[0])
+        self.assertNotIn("prompt_cache_key", calls[1])
+        self.assertNotIn("prompt_cache_retention", calls[1])
+
+    def test_llm_runtime_never_silently_drops_rejected_native_tools(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics = {}
+        runtime._metrics_lock = threading.RLock()
+        calls: list[dict[str, object]] = []
+
+        def fake_create(**kwargs):
+            calls.append(dict(kwargs))
+            if "tools" in kwargs:
+                raise RuntimeError("This model does not support tools")
+            return {"ok": True}
+
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))),
+            model="legacy-model",
+        )
+        with self.assertRaisesRegex(RuntimeError, "native_tools_unsupported"):
+            runtime._create_completion(
+                bundle=bundle,
+                payload={
+                    "model": "legacy-model",
+                    "messages": [{"role": "system", "content": "answer"}],
+                    "tools": [{"type": "function", "function": {"name": "echo"}}],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                },
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(runtime.snapshot_metrics()["native_tool_provider_unsupported"], 1)
+
+    def test_llm_runtime_does_not_hide_tools_for_unrelated_provider_400(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        calls: list[dict[str, object]] = []
+
+        def fake_create(**kwargs):
+            calls.append(dict(kwargs))
+            raise RuntimeError("400 reasoning_content in thinking mode must be passed back")
+
+        bundle = SimpleNamespace(
+            client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create))),
+            model="deepseek-v4-flash-0731",
+        )
+        with self.assertRaisesRegex(RuntimeError, "reasoning_content"):
+            runtime._create_completion(
+                bundle=bundle,
+                payload={
+                    "model": bundle.model,
+                    "messages": [],
+                    "tools": [{"type": "function", "function": {"name": "echo"}}],
+                },
+            )
+
+        self.assertEqual(len(calls), 1)
+
+
+class ResponseTruncationDetectionTests(unittest.TestCase):
+    """Provider output limits can still cut a reply mid-JSON. These lock in
+    that finish_reason=length is surfaced (metric + last_error) instead of
+    passing as a normal short answer."""
+
+    def _runtime(self) -> LLMRuntime:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics = {}
+        runtime._metrics_lock = threading.Lock()
+        runtime._last_error = {}
+        runtime._last_error_lock = threading.Lock()
+        return runtime
+
+    @staticmethod
+    def _response(finish_reason: str, content: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(content=content))]
+        )
+
+    def test_length_finish_reason_is_surfaced(self) -> None:
+        runtime = self._runtime()
+        self.assertTrue(
+            runtime._note_truncation(
+                self._response("length", '{"speech":"长长的回答被切'),
+                phase="call_json",
+            )
+        )
+        self.assertEqual(runtime.snapshot_metrics().get("response_truncated"), 1)
+        error = runtime.snapshot_last_error()
+        self.assertEqual(error.get("type"), "ResponseTruncated")
+        self.assertIn("finish_reason=length", error.get("message", ""))
+        self.assertEqual(error.get("phase"), "call_json")
+
+    def test_normal_finish_reason_is_ignored(self) -> None:
+        runtime = self._runtime()
+        self.assertFalse(runtime._note_truncation(self._response("stop", '{"speech":"ok"}'), phase="call_json"))
+        self.assertIsNone(runtime.snapshot_metrics().get("response_truncated"))
+        self.assertEqual(runtime.snapshot_last_error(), {})
+
+    def test_malformed_response_does_not_raise(self) -> None:
+        runtime = self._runtime()
+        self.assertFalse(runtime._note_truncation(SimpleNamespace(choices=[]), phase="call_json"))
+        self.assertIsNone(runtime.snapshot_metrics().get("response_truncated"))
+
+    def test_nonstream_length_never_returns_a_complete_model_decision(self) -> None:
+        runtime = self._runtime()
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._observe_completion_request = lambda **_kwargs: None
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._create_completion = lambda **_kwargs: self._response(
+            "length",
+            '{"speech":"看似完整但供应商声明已截断"}',
+        )
+
+        result = runtime._call_json_result(
+            bundle=ModelBundle(client=SimpleNamespace(), model="test"),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "host fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+        )
+
+        self.assertEqual(result.error, "response_truncated")
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(result.parsed["speech"], "host fallback")
+
+    def test_stream_length_is_returned_as_explicit_retryable_error(self) -> None:
+        runtime = self._runtime()
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._observe_completion_request = lambda **_kwargs: None
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._close_stream = lambda *_args, **_kwargs: None
+        chunk = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content='{"speech":"半截'),
+                    finish_reason="length",
+                )
+            ]
+        )
+        runtime._create_completion = lambda **_kwargs: [chunk]
+
+        iterator = runtime._stream_chat_json(
+            bundle=ModelBundle(client=SimpleNamespace(), model="test"),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "host fallback"},
+            temperature=0.0,
+            early_tool_call_validator=None,
+            prompt_cache_key="",
+        )
+        while True:
+            try:
+                next(iterator)
+            except StopIteration as stopped:
+                result = stopped.value
+                break
+
+        self.assertEqual(result.error, "response_truncated")
+        self.assertEqual(result.finish_reason, "length")
+        self.assertIn("半截", result.raw_text)
+
+
+class ChatJSONFallbackSampleTests(unittest.TestCase):
+    """D3: a reply that doesn't parse as JSON falls back. The fallback is
+    counted (chat_json_fallbacks) but without a sample it can't be reproduced;
+    _note_parse_fallback records a sanitized head sample into last_error."""
+
+    def _runtime(self) -> LLMRuntime:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics = {}
+        runtime._metrics_lock = threading.Lock()
+        runtime._last_error = {}
+        runtime._last_error_lock = threading.Lock()
+        return runtime
+
+    def test_fallback_sample_is_recorded_and_redacted(self) -> None:
+        runtime = self._runtime()
+        runtime._note_parse_fallback("sorry I cannot, sk-secret123456789 not json", phase="stream_chat_json")
+        error = runtime.snapshot_last_error()
+        self.assertEqual(error.get("type"), "ChatJSONFallback")
+        self.assertEqual(error.get("phase"), "stream_chat_json")
+        self.assertIn("not valid JSON", error.get("message", ""))
+        # Secret in the sampled content must be redacted (reuses SECRET_PATTERNS).
+        self.assertNotIn("sk-secret123456789", error.get("message", ""))
+
+    def test_missing_lock_is_safe(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._note_parse_fallback("x", phase="call_json")  # must not raise
+
+
+if __name__ == "__main__":
+    unittest.main()

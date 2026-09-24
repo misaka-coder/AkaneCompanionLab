@@ -1,0 +1,8 @@
+schema: capability_adapter/v1
+provider:
+  id: defaults_provider
+  type: mcp_stdio
+capabilities:
+  - id: echo
+    display_name: Echo
+    visible_in: [base]

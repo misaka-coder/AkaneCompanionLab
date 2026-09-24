@@ -1,0 +1,334 @@
+from __future__ import annotations
+
+import unittest
+from types import SimpleNamespace
+
+from companion_v01.llm_runtime import LLMRuntime, _TopLevelJSONStreamTap
+
+
+class TopLevelJSONStreamTapTests(unittest.TestCase):
+    def test_closed_sentence_reaches_delivery_before_metadata(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed('{"speech":"\\uD83D')
+        self.assertFalse(events)
+        events += tap.feed('\\uDE0A第一句？！')
+        self.assertFalse([e for e in events if e["type"] == "speech_segment"])
+        events += tap.feed('"')
+        self.assertEqual([e["text"] for e in events if e["type"] == "speech_segment"], ["😊第一句？！"])
+        self.assertEqual(tap.latest_speech, "😊第一句？！")
+        self.assertEqual(tap.delivered_speech, "😊第一句？！")
+        self.assertEqual(tap.feed(',"memory_metadata":{}}') + tap.finish(), [])
+
+    @staticmethod
+    def _sync_runtime(raw_text: str) -> LLMRuntime:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._normalize_native_tools = lambda _tools: []
+        runtime._create_completion = lambda **_kwargs: SimpleNamespace()
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._extract_native_tool_calls = lambda *_args, **_kwargs: []
+        runtime._note_truncation = lambda *_args, **_kwargs: None
+        runtime._extract_text = lambda _response: raw_text
+        runtime._record_metric = lambda *_args, **_kwargs: None
+        runtime._note_parse_fallback = lambda *_args, **_kwargs: None
+        return runtime
+
+    def test_sync_chat_json_result_preserves_exact_provider_text(self) -> None:
+        raw_text = '{  "speech": "在的。", "emotion": "happy"  }'
+        runtime = self._sync_runtime(raw_text)
+
+        result = runtime._call_json_result(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+        )
+
+        self.assertEqual(result.parsed, {"speech": "在的。", "emotion": "happy"})
+        self.assertEqual(result.raw_text, raw_text)
+        self.assertEqual(result.metadata_status, "missing")
+        self.assertFalse(result.metadata_present)
+        self.assertNotEqual(result.raw_text, '{"speech": "在的。", "emotion": "happy"}')
+
+    def test_sync_model_metadata_object_is_accepted_even_when_empty(self) -> None:
+        runtime = self._sync_runtime('{"speech":"在的。","memory_metadata":{}}')
+
+        result = runtime._call_json_result(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+        )
+
+        self.assertEqual(result.metadata_status, "accepted_model")
+        self.assertTrue(result.metadata_present)
+
+    def test_sync_parse_fallback_keeps_real_raw_separate_from_fallback(self) -> None:
+        raw_text = "provider returned broken json"
+        runtime = self._sync_runtime(raw_text)
+
+        result = runtime._call_json_result(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"speech": "fallback"},
+            temperature=0.0,
+            prompt_cache_key="",
+        )
+
+        self.assertEqual(result.parsed, {"speech": "fallback"})
+        self.assertEqual(result.raw_text, raw_text)
+        self.assertEqual(result.metadata_status, "missing")
+        self.assertFalse(result.metadata_present)
+
+    def test_emits_ui_event_and_speech_chunks_from_split_json(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = []
+        chunks = [
+            '{"emotion":"happy","speech":"喵呜，',
+            '主人欢迎回来……',
+            '课上辛苦啦！","status":"final"}',
+        ]
+
+        for chunk in chunks:
+            events.extend(tap.feed(chunk))
+
+        self.assertEqual(events[0], {"type": "ui", "emotion": "happy"})
+        speech_events = [event for event in events if event.get("type") == "speech_chunk"]
+        self.assertGreaterEqual(len(speech_events), 1)
+        self.assertEqual(tap.latest_emotion, "happy")
+        self.assertEqual(tap.latest_speech, "喵呜，主人欢迎回来……课上辛苦啦！")
+
+    def test_external_report_before_json_is_not_streamed_as_shortened_speech(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+
+        events = tap.feed(
+            '项目路径：/work/plugin；测试 7/7。\n'
+            '{"emotion":"happy","speech":"验收通过。","tool_call":null}'
+        )
+        events.extend(tap.finish())
+
+        self.assertEqual(events, [])
+        self.assertEqual(tap.latest_speech, "验收通过。")
+        self.assertEqual(tap.delivered_speech, "")
+
+    def test_ignores_legacy_speech_segments_array_without_speech(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+
+        events = tap.feed('{"emotion":"happy","speech_segments":["第一句。","第二句。"],"tool_call":null}')
+
+        self.assertFalse([event for event in events if event.get("type", "").startswith("speech_")])
+        self.assertEqual(tap.latest_speech, "")
+        self.assertEqual(tap.finish(), [])
+
+    def test_emits_delivery_hint_before_speech_when_reply_medium_closes(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+
+        events = tap.feed('{"emotion":"happy","reply_medium":"voice","speech":"第一句。')
+
+        self.assertIn({"type": "delivery_hint", "medium": "voice"}, events)
+        self.assertEqual(tap.latest_reply_medium, "voice")
+        delivery_index = events.index({"type": "delivery_hint", "medium": "voice"})
+        first_speech_index = next(index for index, event in enumerate(events) if event.get("type") == "speech_chunk")
+        self.assertLess(delivery_index, first_speech_index)
+
+    def test_legacy_array_cannot_override_speech_field(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed(
+            '{"emotion":"happy","speech":"第一句。","speech_segments":["伪造第一句。","伪造第二句。"]}'
+        )
+        events.extend(tap.finish())
+
+        segment_events = [event for event in events if event.get("type") == "speech_segment"]
+        self.assertEqual(segment_events, [{"type": "speech_segment", "index": 0, "text": "第一句。"}])
+        self.assertEqual(tap.latest_speech, "第一句。")
+
+    def test_speech_stream_preserves_punctuation_clusters_and_more_than_three_segments(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed(
+            '{"emotion":"happy","speech":"哈啊？！真的吗。第一句。第二句！第三句？第四句。第五句。"}'
+        )
+        events.extend(tap.finish())
+
+        segment_events = [event for event in events if event.get("type") == "speech_segment"]
+        self.assertEqual(
+            [event["text"] for event in segment_events],
+            ["哈啊？！", "真的吗。", "第一句。", "第二句！", "第三句？", "第四句。", "第五句。"],
+        )
+        self.assertEqual([event["index"] for event in segment_events], list(range(7)))
+
+    def test_speech_stream_preserves_single_punctuation_segment(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed('{"emotion":"normal","speech":"？"}')
+        events.extend(tap.finish())
+
+        self.assertIn({"type": "speech_segment", "index": 0, "text": "？"}, events)
+
+    def test_native_tool_preface_does_not_flush_incomplete_tail(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed('{"speech":"文件整理好了，本"')
+        events.extend(tap.finish(include_incomplete_remainder=False))
+
+        self.assertEqual([event for event in events if event.get("type") == "speech_segment"], [])
+        self.assertEqual(tap.delivered_speech, "")
+
+    def test_native_tool_preface_keeps_completed_sentence_only(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = tap.feed('{"speech":"文件整理好了。本"')
+        events.extend(tap.finish(include_incomplete_remainder=False))
+
+        self.assertEqual(
+            [event["text"] for event in events if event.get("type") == "speech_segment"],
+            ["文件整理好了。"],
+        )
+        self.assertEqual(tap.delivered_speech, "文件整理好了。")
+
+    def test_speech_stream_keeps_numbered_items_across_character_deltas(self) -> None:
+        tap = _TopLevelJSONStreamTap()
+        events = []
+        raw = '{"emotion":"normal","speech":"1. 第一条\\n2. 第二条"}'
+        for character in raw:
+            events.extend(tap.feed(character))
+        events.extend(tap.finish())
+
+        self.assertEqual(
+            [event["text"] for event in events if event.get("type") == "speech_segment"],
+            ["1. 第一条", "2. 第二条"],
+        )
+
+    def test_leading_tool_call_probe_handles_null(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        state, call = runtime._try_extract_leading_tool_call('{"tool_call":null,"emotion":"normal"}')
+
+        self.assertEqual(state, "null")
+        self.assertIsNone(call)
+
+    def test_leading_tool_call_probe_extracts_object(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        state, call = runtime._try_extract_leading_tool_call(
+            '{"tool_call":{"type":"retrieve_memory","query":"扬州城","keywords":["二十四桥"]},"emotion":"normal"}'
+        )
+
+        self.assertEqual(state, "object")
+        self.assertEqual(call["type"], "retrieve_memory")
+        self.assertEqual(call["query"], "扬州城")
+        self.assertEqual(call["keywords"], ["二十四桥"])
+
+    def test_stream_tool_call_probe_extracts_object_after_speech_segments(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        state, call = runtime._try_extract_stream_tool_call(
+            '{"emotion":"normal","speech":"我查一下。","speech_segments":[],"tool_call":{"type":"retrieve_memory","query":"扬州城","keywords":["二十四桥"]}'
+        )
+
+        self.assertEqual(state, "object")
+        self.assertEqual(call["type"], "retrieve_memory")
+        self.assertEqual(call["query"], "扬州城")
+        self.assertEqual(call["keywords"], ["二十四桥"])
+
+    def test_stream_tool_call_probe_waits_for_prior_value_to_close(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        state, call = runtime._try_extract_stream_tool_call(
+            '{"emotion":"normal","speech":"我还没说完'
+        )
+
+        self.assertEqual(state, "pending")
+        self.assertIsNone(call)
+
+    def test_stream_chat_json_stops_on_tool_call_after_speech_segments(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._record_cache_metrics = lambda _response, **_kwargs: None
+        runtime._close_stream = lambda _response: None
+
+        def chunk(text: str) -> SimpleNamespace:
+            return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=text))])
+
+        runtime._create_completion = lambda **_kwargs: [
+            chunk('{"emotion":"normal","speech":"我查一下。","speech_segments":[],'),
+            chunk('"tool_call":{"type":"retrieve_memory","query":"扬州城"}}'),
+            chunk(',"status":"final"}'),
+        ]
+
+        generator = runtime._stream_chat_json(
+            bundle=SimpleNamespace(),
+            system_prompt="system",
+            user_prompt="user",
+            fallback={"emotion": "normal", "speech": "", "speech_segments": [], "tool_call": None},
+            temperature=0.0,
+            early_tool_call_validator=None,
+            prompt_cache_key="test:stream_tool_call_after_speech",
+        )
+
+        while True:
+            try:
+                next(generator)
+            except StopIteration as exc:
+                result = exc.value
+                break
+
+        self.assertTrue(result.stopped_early)
+        self.assertEqual(result.parsed["tool_call"]["type"], "retrieve_memory")
+        self.assertEqual(result.parsed["tool_call"]["query"], "扬州城")
+        self.assertEqual(
+            result.raw_text,
+            '{"emotion":"normal","speech":"我查一下。","speech_segments":[],"tool_call":{"type":"retrieve_memory","query":"扬州城"}}',
+        )
+        self.assertNotIn('"status"', result.raw_text)
+        self.assertEqual(result.metadata_status, "missing")
+
+    def test_extract_text_flattens_content_blocks(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        text = runtime._flatten_message_content(
+            [
+                {"type": "text", "text": '{"emotion":"normal",'},
+                {"type": "text", "text": '"speech":"在的。"}'},
+            ]
+        )
+
+        self.assertEqual(text, '{"emotion":"normal","speech":"在的。"}')
+
+    def test_extract_json_uses_first_balanced_object(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        parsed = runtime._extract_json(
+            '好的，JSON 如下：\n```json\n{"emotion":"happy","speech":"在的。"}\n```\n{"ignored":true}'
+        )
+
+        self.assertEqual(parsed, {"emotion": "happy", "speech": "在的。"})
+
+    def test_partial_chat_json_recovery_keeps_generated_speech(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        recovered = runtime._recover_partial_chat_json(
+            '{"emotion":"happy","speech":"我听到啦，主人。","speech_segments":[]',
+            fallback={"emotion": "normal", "speech": "fallback", "speech_segments": []},
+        )
+
+        self.assertEqual(recovered["emotion"], "happy")
+        self.assertEqual(recovered["speech"], "我听到啦，主人。")
+        self.assertNotIn("speech_segments", recovered)
+
+    def test_partial_chat_json_recovery_does_not_promote_legacy_segments(self) -> None:
+        runtime = object.__new__(LLMRuntime)
+
+        recovered = runtime._recover_partial_chat_json(
+            '{"emotion":"happy","speech":"","speech_segments":["第一句。","第二句。"],"tool_call":null',
+            fallback={"emotion": "normal", "speech": "fallback", "speech_segments": []},
+        )
+
+        self.assertEqual(recovered["emotion"], "happy")
+        self.assertEqual(recovered["speech"], "fallback")
+        self.assertNotIn("speech_segments", recovered)
+
+
+if __name__ == "__main__":
+    unittest.main()

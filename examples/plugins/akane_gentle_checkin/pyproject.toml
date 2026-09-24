@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-gentle-checkin"
+version = "0.2.0"
+description = "Akane SDK companion plugin example for one gentle check-in per quiet period"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["akane-plugin>=0.14,<0.15"]
+
+[project.entry-points."akane.plugins.v1"]
+"akane.sample.gentle-checkin" = "akane_gentle_checkin:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+akane_gentle_checkin = ["skills/gentle-checkin/SKILL.md"]
