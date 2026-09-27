@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.qq_group_attention import QQGroupAttentionState
 from companion_v01.turn_coordination import TurnCoordinator
@@ -165,7 +166,12 @@ class QQGroupAttentionGatewayTests(unittest.TestCase):
     def test_listen_command_is_admitted_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "qq-state.json"
-            gateway = NapCatQQGateway(state_path=state_path)
+            channel = QQChannelRuntimeConfig(
+                enabled=True, profile_ref="attention-test", bot_id="10001",
+                onebot_http_url="http://127.0.0.1:1", webhook_secret="", onebot_access_token="",
+                require_webhook_auth=False, require_self_id=True,
+            )
+            gateway = NapCatQQGateway(state_path=state_path, channel_config=channel)
             context = gateway.build_message_context(
                 {
                     "post_type": "message",
@@ -174,7 +180,10 @@ class QQGroupAttentionGatewayTests(unittest.TestCase):
                     "user_id": 20002,
                     "group_id": 30003,
                     "message_id": "listen-1",
-                    "raw_message": "/listen adaptive",
+                    "message": [
+                        {"type": "at", "data": {"qq": "10001"}},
+                        {"type": "text", "data": {"text": " /listen adaptive"}},
+                    ],
                 }
             )
 
@@ -187,7 +196,7 @@ class QQGroupAttentionGatewayTests(unittest.TestCase):
             )
             self.assertTrue(result["ok"])
             self.assertEqual(result["attention_mode"], "adaptive")
-            restored = NapCatQQGateway(state_path=state_path)
+            restored = NapCatQQGateway(state_path=state_path, channel_config=channel)
             self.assertEqual(restored.resolve_group_attention_mode(30003), "adaptive")
 
     def test_passive_message_is_not_falsely_addressed_to_assistant(self) -> None:
@@ -899,7 +908,11 @@ class QQGroupAttentionRecoveryTests(unittest.TestCase):
         self.now = [0.0]
         self.state = QQGroupAttentionState(clock=lambda: self.now[0])
         self.sequence = 0
-        self.gateway = NapCatQQGateway()
+        self.gateway = NapCatQQGateway(channel_config=QQChannelRuntimeConfig(
+            enabled=True, profile_ref="attention-recovery-test", bot_id="10001",
+            onebot_http_url="http://127.0.0.1:1", webhook_secret="", onebot_access_token="",
+            require_webhook_auth=False, require_self_id=True,
+        ))
         self.gateway.send_reply = lambda *_args, **_kwargs: {"ok": True}
 
         def record(payload):
@@ -953,12 +966,14 @@ class QQGroupAttentionRecoveryTests(unittest.TestCase):
         self.addCleanup(self.client.close)
         self.addCleanup(lambda: [coroutine.close() for coroutine in self.scheduled])
 
-    def post(self, text="看看这张图", *, image=False, user_id=20002):
+    def post(self, text="看看这张图", *, image=False, user_id=20002, targeted_command=True):
         self.sequence += 1
         if not text.startswith("/listen"):
             text = f"{text} {self.sequence}"
         message = ([{"type": "image", "data": {"file": "test.png", "url": "http://127.0.0.1/test.png"}}]
                    if image else [{"type": "text", "data": {"text": text}}])
+        if text.startswith("/listen") and targeted_command:
+            message.insert(0, {"type": "at", "data": {"qq": "10001"}})
         response = self.client.post("/api/qq/napcat/event", json={
             "post_type": "message", "message_type": "group", "self_id": 10001,
             "user_id": user_id, "group_id": 30003, "message_id": f"recovery-{self.sequence}",
@@ -967,6 +982,26 @@ class QQGroupAttentionRecoveryTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 200)
         return response.json()
+
+    def test_unselected_command_does_not_cancel_or_extend_attention(self):
+        first = self.post("正常群聊话题")
+        self.assertTrue(first["attention"]["scheduled"])
+        pending = len(self.scheduled)
+        command = self.post("/listen off", targeted_command=False)
+        self.assertEqual(command["reason"], "group_command_requires_explicit_mention")
+        self.assertEqual(self.gateway.resolve_group_attention_mode(30003, default="adaptive"), "adaptive")
+        self.assertEqual(len(self.scheduled), pending)
+        self.assertEqual(self.processed, [])
+
+    def test_queued_unselected_command_remains_record_only(self):
+        with patch.object(self.coordinator, "is_busy", return_value=True):
+            command = self.post("/listen off", targeted_command=False)
+        self.assertEqual(command["reason"], "group_command_requires_explicit_mention")
+        self.assertEqual(len(self.scheduled), 1)
+        asyncio.run(self.scheduled.pop(0))
+        self.assertEqual(self.scheduled, [])
+        self.assertEqual(self.processed, [])
+        self.assertEqual(self.gateway.resolve_group_attention_mode(30003, default="adaptive"), "adaptive")
 
     async def stage_image(self):
         self.post(image=True)

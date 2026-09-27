@@ -6,6 +6,7 @@ import json
 import re
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
@@ -104,6 +105,45 @@ _QQ_STOP_COMMANDS = frozenset(
 def _is_qq_stop_command(value: Any) -> bool:
     normalized = re.sub(r"[\s，。！？!?、]+$", "", str(value or "").strip().lower())
     return normalized in _QQ_STOP_COMMANDS
+
+
+def _group_command_target_status(qq_gateway: Any, context: Any, plugin_broker: Any = None) -> str:
+    """Classify the current group message using existing command parsers only."""
+    if not bool(getattr(context, "is_group", False)) or getattr(context, "inbound_message", None) is None:
+        return "not_command"
+    message = str(getattr(context, "clean_message", "") or "").strip()
+    if not message:
+        return "not_command"
+    parsers = (
+        "parse_group_vision_command",
+        "parse_group_emotion_command",
+        "parse_group_attention_command",
+        "parse_access_permission_command",
+        "parse_capability_approval_command",
+        "parse_character_command",
+        "parse_outfit_command",
+        "parse_reply_mode_command",
+        "parse_thinking_mode_command",
+        "parse_chat_model_command",
+        "parse_mface_config_command",
+        "parse_economy_command",
+    )
+    is_command = _is_qq_stop_command(message) or _parse_qq_workspace_command(qq_gateway, message) is not None
+    if not is_command:
+        is_command = any(
+            callable(parser) and parser(message) is not None
+            for name in parsers
+            if (parser := getattr(qq_gateway, name, None)) is not None
+        )
+    slash_text = re.sub(r"^(?:@\S+\s+)+", "", message)
+    if not is_command and slash_text.startswith("/"):
+        token = slash_text.split(None, 1)[0]
+        is_command = bool(re.fullmatch(r"/[A-Za-z][A-Za-z0-9_-]*", token))
+        if not is_command and plugin_broker is not None:
+            is_command = bool(plugin_broker.handles(token))
+    if not is_command:
+        return "not_command"
+    return "selected" if bool(getattr(context, "mentioned_bot", False)) else "unselected"
 
 
 def _normalize_qq_route_base(value: Any) -> str:
@@ -2725,6 +2765,7 @@ def build_qq_router(
         *,
         event: dict[str, Any],
         turn_payload: dict[str, Any],
+        record_only: bool = False,
     ) -> dict[str, Any]:
         safe_turn_payload = dict(turn_payload)
         # Native pixels are recreated from the already-managed attachment IDs
@@ -2734,6 +2775,7 @@ def build_qq_router(
         return {
             "event": dict(event),
             "turn_payload": safe_turn_payload,
+            "record_only": bool(record_only),
         }
 
     def _restore_queued_context(item: Any, payload: dict[str, Any]) -> Any:
@@ -2895,28 +2937,38 @@ def build_qq_router(
                         if index < len(batch_results) and isinstance(batch_results[index], dict)
                         else {}
                     )
-                    _stage_attention_media(
-                        item_context,
-                        item_event,
-                        registered_items,
-                        timeline_source_id=str(item_record_result.get("source_id") or ""),
+                    if not bool(item_payload.get("record_only")):
+                        _stage_attention_media(
+                            item_context,
+                            item_event,
+                            registered_items,
+                            timeline_source_id=str(item_record_result.get("source_id") or ""),
+                        )
+                attention_items = [
+                    (index, item)
+                    for index, item in enumerate(items)
+                    if not bool((item.payload if isinstance(item.payload, dict) else {}).get("record_only"))
+                ]
+                attention_result = {"scheduled": False, "reason": "record_only"}
+                if attention_items:
+                    last_index, last_item = attention_items[-1]
+                    last_item_payload = last_item.payload if isinstance(last_item.payload, dict) else {}
+                    last_context = _restore_queued_context(last_item, last_item_payload)
+                    last_event = dict(last_item_payload.get("event") or {})
+                    last_record_result = (
+                        batch_results[last_index]
+                        if last_index < len(batch_results) and isinstance(batch_results[last_index], dict)
+                        else {}
                     )
-                last_item_payload = items[-1].payload if isinstance(items[-1].payload, dict) else {}
-                last_context = _restore_queued_context(items[-1], last_item_payload)
-                last_event = dict(last_item_payload.get("event") or {})
-                last_record_result = (
-                    batch_results[-1]
-                    if batch_results and isinstance(batch_results[-1], dict)
-                    else {}
-                )
-                attention_result = _schedule_group_attention(
-                    last_context,
-                    last_event,
-                    projection_anchor_source_id=str(last_record_result.get("source_id") or ""),
-                    participant_keys=tuple(
-                        _attention_actor_key(_restore_queued_context(item, item.payload)) for item in items
-                    ),
-                )
+                    attention_result = _schedule_group_attention(
+                        last_context,
+                        last_event,
+                        projection_anchor_source_id=str(last_record_result.get("source_id") or ""),
+                        participant_keys=tuple(
+                            _attention_actor_key(_restore_queued_context(item, item.payload))
+                            for _, item in attention_items
+                        ),
+                    )
                 log_event(
                     "qq_group_attention_considered",
                     session_id=session_id,
@@ -3046,6 +3098,7 @@ def build_qq_router(
         turn_payload: dict[str, Any],
         kind: str,
         schedule: bool = True,
+        record_only: bool = False,
     ) -> dict[str, Any]:
         key = _session_work_key(context)
         if isinstance(session_work_queue, DurableSessionWorkQueue):
@@ -3057,6 +3110,7 @@ def build_qq_router(
                 payload=_durable_qq_work_payload(
                     event=event,
                     turn_payload=turn_payload,
+                    record_only=record_only,
                 ),
                 source="qq",
                 source_event_id=str(getattr(context, "source_message_id", "") or ""),
@@ -3065,7 +3119,7 @@ def build_qq_router(
         return session_work_queue.enqueue(
             key,
             kind=kind,
-            payload={"context": context, "event": dict(event), "turn_payload": dict(turn_payload)},
+            payload={"context": context, "event": dict(event), "turn_payload": dict(turn_payload), "record_only": record_only},
         )
 
     async def _run_qq_turn_delivery(
@@ -3779,13 +3833,33 @@ def build_qq_router(
                     )
 
             context = qq_gateway.build_message_context(event)
-            _plugin_current_turn_note, _plugin_requested_agent_turn = (
-                await _dispatch_plugin_channel_event(
-                    context=context,
-                    event=event,
-                    request=request,
+            command_broker = None
+            if bool(getattr(context, "is_group", False)):
+                command_broker = (
+                    plugin_command_broker_provider()
+                    if plugin_command_broker_provider is not None
+                    else getattr(request.app.state, "akane_plugin_command_broker", None)
                 )
-            )
+            command_target = _group_command_target_status(qq_gateway, context, command_broker)
+            record_only_command = command_target == "unselected"
+            if record_only_command:
+                context = replace(
+                    context,
+                    should_respond=False,
+                    should_record=True,
+                    reason="group_command_requires_explicit_mention",
+                    addressed_to_assistant=False,
+                )
+            _plugin_current_turn_note = ""
+            _plugin_requested_agent_turn = False
+            if not record_only_command:
+                _plugin_current_turn_note, _plugin_requested_agent_turn = (
+                    await _dispatch_plugin_channel_event(
+                        context=context,
+                        event=event,
+                        request=request,
+                    )
+                )
             if _plugin_requested_agent_turn and not context.should_respond:
                 context = replace(
                     context,
@@ -3796,7 +3870,8 @@ def build_qq_router(
             pre_resolved_quote: dict[str, Any] = {}
             optional_reply = False
             if (
-                not context.should_respond
+                not record_only_command
+                and not context.should_respond
                 and bool(getattr(context, "is_group", False))
                 and context.inbound_message is not None
                 and context.inbound_message.reply_to is not None
@@ -3821,22 +3896,6 @@ def build_qq_router(
                             addressed_to_assistant=True,
                         )
                         optional_reply = not bool(getattr(context, "mentioned_bot", False))
-            master_qq = str(getattr(qq_gateway, "master_qq", "") or "").strip()
-            if (
-                not context.should_respond
-                and master_qq
-                and str(int(getattr(context, "user_id", 0) or 0)) == master_qq
-                and _is_qq_stop_command(getattr(context, "clean_message", ""))
-            ):
-                # Stop is a host control event, not a conversational reply
-                # trigger. It must reach the coordinator even without @ while
-                # passive group messages continue through the normal recorder.
-                context = replace(
-                    context,
-                    should_respond=True,
-                    reason="owner_stop_command",
-                    addressed_to_assistant=True,
-                )
             if not context.should_respond:
                 if bool(getattr(context, "should_record", False)):
                     passive_memory_policy = _resolve_group_passive_memory_policy(
@@ -3863,7 +3922,10 @@ def build_qq_router(
                         return JSONResponse(
                             {
                                 "status": "ignored",
-                                "reason": "group_passive_memory_filtered",
+                                "reason": (
+                                    "group_command_requires_explicit_mention"
+                                    if record_only_command else "group_passive_memory_filtered"
+                                ),
                                 "policy_mode": str(passive_memory_policy.get("mode") or "all"),
                             }
                         )
@@ -3882,8 +3944,9 @@ def build_qq_router(
                             event=dict(event),
                             turn_payload=dict(deferred_payload),
                             kind="passive",
+                            record_only=record_only_command,
                         )
-                        if queued.get("ok"):
+                        if queued.get("ok") and not record_only_command:
                             _supersede_attention_for_message(context)
                         duration_ms = (time.perf_counter() - started_at) * 1000
                         runtime_metrics.observe_request(
@@ -3902,12 +3965,15 @@ def build_qq_router(
                             pending_count=int(queued.get("pending_count") or 0),
                             duration_ms=round(duration_ms, 1),
                         )
+                        queue_status = "buffered" if queued.get("ok") else "record_failed"
+                        queue_reason = "passive_content_enrichment" if needs_passive_enrichment else "active_turn_in_progress"
+                        if record_only_command:
+                            queue_status = "ignored" if queued.get("ok") else "record_failed"
+                            queue_reason = "group_command_requires_explicit_mention"
                         return JSONResponse(
                             {
-                                "status": "buffered" if queued.get("ok") else "record_failed",
-                                "reason": (
-                                    "passive_content_enrichment" if needs_passive_enrichment else "active_turn_in_progress"
-                                ),
+                                "status": queue_status,
+                                "reason": queue_reason,
                                 "queue_reason": str(queued.get("reason") or "session_fifo"),
                                 "session_id": context.session_id,
                                 "profile_user_id": context.profile_user_id,
@@ -3941,7 +4007,7 @@ def build_qq_router(
                         record_status=str(record_payload.get("status") or ""),
                         duration_ms=round(duration_ms, 1),
                     )
-                    if record_ok:
+                    if record_ok and not record_only_command:
                         _supersede_attention_for_message(context)
                     attention_result = (
                         _schedule_group_attention(
@@ -3949,12 +4015,15 @@ def build_qq_router(
                             event,
                             projection_anchor_source_id=str(record_payload.get("source_id") or ""),
                         )
-                        if record_ok
-                        else {"scheduled": False, "reason": "record_failed"}
+                        if record_ok and not record_only_command
+                        else {"scheduled": False, "reason": "record_only" if record_only_command else "record_failed"}
                     )
+                    passive_status = "recorded" if record_ok else "record_failed"
+                    if record_only_command and record_ok:
+                        passive_status = "ignored"
                     return JSONResponse(
                         {
-                            "status": "recorded" if record_ok else "record_failed",
+                            "status": passive_status,
                             "reason": context.reason,
                             "session_id": context.session_id,
                             "profile_user_id": context.profile_user_id,

@@ -1907,7 +1907,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         app.include_router(
             build_qq_router(
                 engine=FakeEngine(),
-                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_GROUP_PASSIVE_MEMORY_MODE="off"),
                 qq_gateway=gateway,
                 runtime_metrics=runtime,
                 logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
@@ -1971,12 +1971,21 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)):
-            stopped = client.post(
+            bare_stop = client.post(
                 "/api/qq/napcat/event",
                 json={**event, "message_id": "owner-stop-other-actor", "message": [
                     {"type": "text", "data": {"text": "先别做了。"}},
                 ]},
             )
+            stopped = client.post(
+                "/api/qq/napcat/event",
+                json={**event, "message_id": "owner-targeted-stop-other-actor", "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": "先别做了。"}},
+                ]},
+            )
+        self.assertEqual(bare_stop.status_code, 200)
+        self.assertEqual(bare_stop.json()["reason"], "group_command_requires_explicit_mention")
         self.assertEqual(stopped.status_code, 200)
         self.assertEqual(stopped.json()["sent_count"], 1)
         self.assertEqual(stop_calls[-1]["actor_id"], "")

@@ -1089,7 +1089,7 @@ class NapCatQQGateway:
                 "handled": True,
                 "ok": True,
                 "status": "current",
-                "reply": f"本群注意力模式为 {current}。直接 @、唤醒词和回复 Akane 不受该模式影响。",
+                "reply": f"本群注意力模式为 {current}。普通聊天的真实 @ 和引用本 Bot 不受该模式影响；群指令请真实 @ 目标 Bot 后发送。",
                 "attention_mode": current,
             }
         role = str(sender_role or "").strip().lower()
@@ -1178,15 +1178,13 @@ class NapCatQQGateway:
         group_emotion_command = self.parse_group_emotion_command(clean_message)
         group_attention_command = self.parse_group_attention_command(clean_message)
         group_reason = ""
-        if is_group and access_permission_command is not None:
+        if is_group and mentions_bot and access_permission_command is not None:
             group_reason = "qq_access_permission_command"
-        elif is_group and capability_approval_command is not None:
+        elif is_group and mentions_bot and capability_approval_command is not None:
             group_reason = "qq_capability_approval_command"
-        elif is_group and group_emotion_command is not None:
-            # Emotion delivery is a group control-plane setting too; it must
-            # not require addressing the bot or wake-word admission.
+        elif is_group and mentions_bot and group_emotion_command is not None:
             group_reason = "qq_group_emotion_command"
-        elif is_group and group_attention_command is not None:
+        elif is_group and mentions_bot and group_attention_command is not None:
             group_reason = "qq_group_attention_command"
         elif is_group:
             if mentions_bot:
@@ -1848,6 +1846,7 @@ class NapCatQQGateway:
                 lines.append(f"extensions 扩展管理：{labels[modes['extensions']]}")
             lines.append("设置：/access ops|extensions|all on|ask|off")
             lines.append("审批：/approvals · /approve [编号] · /deny [编号]")
+            lines.append("群聊请先真实 @ 目标 Bot 再发送指令；私聊可直接发送。")
             return {"handled": True, "ok": True, "status": "current", "reply": "\n".join(lines), "modes": modes}
         target_mode = {"on": "trusted_auto_allow", "ask": "ask_each_time", "off": "disabled"}.get(action)
         if not target_mode or scope not in {"ops", "extensions", "all"}:
@@ -1938,6 +1937,8 @@ class NapCatQQGateway:
                     lines.append(f"{index}. {capability_id} · {request_id[-8:]}")
                 lines.append("使用 /approve 编号后8位 或 /deny 编号后8位。只有一项时可省略编号。")
                 reply = "\n".join(lines)
+            if context.is_group:
+                reply += "\n群聊请先真实 @ 目标 Bot 再发送审批指令；私聊可直接发送。"
             return {"handled": True, "ok": True, "status": "listed", "reply": reply}
 
         selector = str(command.get("selector") or "").strip()
