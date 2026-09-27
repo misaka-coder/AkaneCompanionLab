@@ -202,6 +202,45 @@ class MemoryConversationSelectionTests(unittest.TestCase):
         self.assertFalse(self.store.has_trusted_qq_group_session(
             "qq_group_shared_200", character_pack_id="char-b"))
 
+    def test_group_directory_uses_message_character_when_session_keeps_older_character(self) -> None:
+        group = "qq_group_shared_400"
+        self.store.add_message(
+            profile_user_id=group, session_id=group, character_pack_id="char-old",
+            role="user", content="old character", memory_metadata={"client_mode": "qq_text"},
+            index_in_vector=False,
+        )
+        self.store.add_message(
+            profile_user_id=group, session_id=group, character_pack_id="char-a",
+            role="user", content="current character", memory_metadata={"client_mode": "qq_text"},
+            index_in_vector=False,
+        )
+        self.assertEqual(self.store.get_session(group, group)["character_pack_id"], "char-old")
+        self.assertTrue(self.store.has_trusted_qq_group_session(group, character_pack_id="char-a"))
+        self.assertIn(group, [row["session_id"] for row in self.store.list_trusted_qq_group_sessions(
+            character_pack_id="char-a")])
+        owner = self.context(kind="direct", number=12345)
+        current_group = self.context(kind="group", number=100)
+        for context in (owner, current_group):
+            target, _, error = self.policy.prepare(
+                context=context, call={"conversation": "group:400"}, tool="retrieve_memory")
+            self.assertIsNone(error)
+            self.assertEqual(target.session_id, group)
+            self.assertIn("group:400", [item["conversation"] for item in
+                self.policy.list_conversations(context=context)["items"]])
+
+        other_group = "qq_group_shared_500"
+        self.store.add_message(
+            profile_user_id=other_group, session_id=other_group, character_pack_id="char-old",
+            role="user", content="old character", memory_metadata={"client_mode": "qq_text"},
+            index_in_vector=False,
+        )
+        self.store.add_message(
+            profile_user_id=other_group, session_id=other_group, character_pack_id="char-a",
+            role="user", content="unverified", memory_metadata={}, index_in_vector=False,
+        )
+        self.assertFalse(self.store.has_trusted_qq_group_session(other_group, character_pack_id="char-a"))
+        self.assertFalse(self.policy.list_conversations(context=owner)["directory_complete"])
+
     def test_real_memcore_reads_one_namespace_and_recent_external_target(self) -> None:
         manager = MemcoreManager(
             backend="memcore", storage_path=Path(self.temporary.name) / "memcore.db",

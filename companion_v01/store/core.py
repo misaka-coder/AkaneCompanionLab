@@ -1334,27 +1334,23 @@ class MemoryStore:
         ))
 
     def qq_group_directory_has_unverified_sessions(self, *, character_pack_id: str = "") -> bool:
-        """Flag old QQ-shaped sessions whose channel origin cannot be proven."""
+        """Flag group messages in this character domain without QQ provenance."""
 
         pack = normalize_character_pack_id(character_pack_id)
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT 1 FROM chat_sessions AS s
-                WHERE s.character_pack_id = ?
-                  AND s.profile_user_id = s.session_id
-                  AND s.session_id GLOB 'qq_group_shared_[1-9]*'
-                  AND length(s.session_id) BETWEEN 17 AND 36
-                  AND substr(s.session_id, 17) NOT GLOB '*[^0-9]*'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM chat_messages AS m
-                    WHERE m.profile_user_id = s.profile_user_id
-                      AND m.session_id = s.session_id
-                      AND m.character_pack_id = s.character_pack_id
-                      AND (CASE WHEN json_valid(m.memory_metadata_json)
-                           THEN json_extract(m.memory_metadata_json, '$.client_mode')
-                           ELSE '' END) IN ('qq', 'qq_text')
-                  )
+                SELECT 1 FROM chat_messages AS m
+                WHERE m.character_pack_id = ?
+                  AND m.profile_user_id = m.session_id
+                  AND m.session_id GLOB 'qq_group_shared_[1-9]*'
+                  AND length(m.session_id) BETWEEN 17 AND 36
+                  AND substr(m.session_id, 17) NOT GLOB '*[^0-9]*'
+                GROUP BY m.session_id
+                HAVING SUM(CASE WHEN json_valid(m.memory_metadata_json)
+                           THEN CASE WHEN json_extract(m.memory_metadata_json, '$.client_mode')
+                                IN ('qq', 'qq_text') THEN 1 ELSE 0 END
+                           ELSE 0 END) = 0
                 LIMIT 1
                 """,
                 (pack,),
@@ -1369,11 +1365,10 @@ class MemoryStore:
         limit: int = 20,
         exact_session_id: str = "",
     ) -> list[dict[str, Any]]:
-        """Read a bounded, restart-stable QQ directory from Akane's own store.
+        """Read QQ-origin messages in the selected character domain.
 
-        A session title or a QQ-shaped ID alone is not evidence of a verified
-        channel event.  Historical entries need a QQ-origin message in the
-        same character domain.  No MemCore private storage is inspected.
+        chat_sessions has one row per session, so its character_pack_id may
+        belong to an older character even when this one has verified messages.
         """
 
         pack = normalize_character_pack_id(character_pack_id)
@@ -1383,25 +1378,20 @@ class MemoryStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT s.session_id, s.profile_user_id, s.character_pack_id, s.display_title
-                FROM chat_sessions AS s
-                WHERE s.character_pack_id = ?
-                  AND s.profile_user_id = s.session_id
-                  AND s.session_id GLOB 'qq_group_shared_[1-9]*'
-                  AND length(s.session_id) BETWEEN 17 AND 36
-                  AND substr(s.session_id, 17) NOT GLOB '*[^0-9]*'
-                  AND s.session_id > ?
-                  AND (? = '' OR s.session_id = ?)
-                  AND EXISTS (
-                    SELECT 1 FROM chat_messages AS m
-                    WHERE m.profile_user_id = s.profile_user_id
-                      AND m.session_id = s.session_id
-                      AND m.character_pack_id = s.character_pack_id
-                      AND (CASE WHEN json_valid(m.memory_metadata_json)
-                           THEN json_extract(m.memory_metadata_json, '$.client_mode')
-                           ELSE '' END) IN ('qq', 'qq_text')
-                  )
-                ORDER BY s.session_id ASC
+                SELECT DISTINCT m.session_id, m.profile_user_id, m.character_pack_id,
+                       '' AS display_title
+                FROM chat_messages AS m
+                WHERE m.character_pack_id = ?
+                  AND m.profile_user_id = m.session_id
+                  AND m.session_id GLOB 'qq_group_shared_[1-9]*'
+                  AND length(m.session_id) BETWEEN 17 AND 36
+                  AND substr(m.session_id, 17) NOT GLOB '*[^0-9]*'
+                  AND m.session_id > ?
+                  AND (? = '' OR m.session_id = ?)
+                  AND (CASE WHEN json_valid(m.memory_metadata_json)
+                       THEN json_extract(m.memory_metadata_json, '$.client_mode')
+                       ELSE '' END) IN ('qq', 'qq_text')
+                ORDER BY m.session_id ASC
                 LIMIT ?
                 """,
                 (pack, after, exact, exact, bounded_limit),
