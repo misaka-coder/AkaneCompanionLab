@@ -99,7 +99,7 @@ class QQShellPermissionRouteTests(unittest.TestCase):
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
 
-    def _event(self, *, user_id: int, message: str) -> dict[str, object]:
+    def _event(self, *, user_id: int, message: str, targeted: bool = False) -> dict[str, object]:
         return {
             "post_type": "message",
             "message_type": "group",
@@ -108,7 +108,10 @@ class QQShellPermissionRouteTests(unittest.TestCase):
             "group_id": QQ_GROUP_ID,
             "message_id": f"shell-{user_id}-{message}",
             "raw_message": message,
-            "message": [{"type": "text", "data": {"text": message}}],
+            "message": (
+                ([{"type": "at", "data": {"qq": str(QQ_BOT_ID)}}] if targeted else [])
+                + [{"type": "text", "data": {"text": message}}]
+            ),
         }
 
     @patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response())
@@ -117,7 +120,7 @@ class QQShellPermissionRouteTests(unittest.TestCase):
     def test_access_command_sets_owner_scoped_families_without_running_chat(self, _request) -> None:
         response = self.client.post(
             "/api/qq/napcat/event",
-            json=self._event(user_id=QQ_MASTER_ID, message="/access all on"),
+            json=self._event(user_id=QQ_MASTER_ID, message="/access all on", targeted=True),
         )
 
         self.assertEqual(response.status_code, 200)
@@ -155,7 +158,7 @@ class QQShellPermissionRouteTests(unittest.TestCase):
                 json=self._event(user_id=QQ_MASTER_ID, message=message),
             )
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["reason"], "group_passive_observed")
+            self.assertEqual(response.json()["reason"], "group_command_requires_explicit_mention")
 
         policy = get_approval_policy_config(
             base_dir=self.config_root,
@@ -186,7 +189,7 @@ class QQShellPermissionRouteTests(unittest.TestCase):
         )
         response = self.client.post(
             "/api/qq/napcat/event",
-            json=self._event(user_id=QQ_MASTER_ID, message="/approve"),
+            json=self._event(user_id=QQ_MASTER_ID, message="/approve", targeted=True),
         )
 
         self.assertEqual(response.status_code, 200)
