@@ -2220,6 +2220,24 @@ def build_qq_router(
         group_attention.cancel(key)
         attention_latest.pop(key, None)
 
+    def _group_attention_can_continue(ticket: AttentionTicket, context: Any) -> bool:
+        reason = ""
+        if not group_attention.is_current(ticket):
+            reason = "cancelled"
+        elif _group_attention_mode(context) == "off":
+            reason = "mode_off"
+        if not reason:
+            return True
+        log_event(
+            "qq_group_attention_skipped",
+            session_id=context.session_id,
+            profile_user_id=context.profile_user_id,
+            group_id=int(getattr(context, "group_id", 0) or 0),
+            reason=reason,
+            attention_reason=ticket.reason,
+        )
+        return False
+
     async def _run_group_attention_ticket(ticket: AttentionTicket) -> None:
         await asyncio.sleep(max(0.0, ticket.deadline - time.monotonic()))
         if not group_attention.claim(ticket):
@@ -2234,6 +2252,8 @@ def build_qq_router(
         # Clear only the delivery reply reference so Akane joins the discussion
         # naturally instead of quoting an arbitrary last line.
         context = replace(context, source_message_id="")
+        if not _group_attention_can_continue(ticket, context):
+            return
         if turn_coordinator.is_busy(context.profile_user_id, context.session_id) or session_work_queue.has_work(
             ticket.key
         ):
@@ -2252,8 +2272,9 @@ def build_qq_router(
                 reason="session_busy",
                 attention_reason=ticket.reason,
             )
-            group_attention.finish(ticket, discard_dirty=True)
-            attention_latest.pop(ticket.key, None)
+            if group_attention.is_current(ticket):
+                group_attention.finish(ticket, discard_dirty=True)
+                attention_latest.pop(ticket.key, None)
             return
         review_event = _group_attention_review_event(ticket.reason)
         turn_payload = context.to_turn_payload()
@@ -2278,24 +2299,30 @@ def build_qq_router(
                 },
             }
         )
-        if attachment_ids:
+        if attachment_ids and qq_gateway.is_group_vision_enabled(context.group_id):
             turn_payload["qq_current_attachment_ids"] = list(attachment_ids)
             native_prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
             if callable(native_prepare):
-                native_result = await asyncio.to_thread(
-                    native_prepare,
-                    profile_user_id=context.profile_user_id,
-                    session_id=context.session_id,
-                    attachment_ids=list(attachment_ids),
-                    chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
-                    timeout_seconds=max(
-                        0.0,
-                        min(
-                            15.0,
-                            float(getattr(config_module, "QQ_ATTACHMENT_READY_WAIT_SECONDS", 8.0) or 0.0),
+                try:
+                    native_result = await asyncio.to_thread(
+                        native_prepare,
+                        profile_user_id=context.profile_user_id,
+                        session_id=context.session_id,
+                        attachment_ids=list(attachment_ids),
+                        chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
+                        timeout_seconds=max(
+                            0.0,
+                            min(
+                                15.0,
+                                float(getattr(config_module, "QQ_ATTACHMENT_READY_WAIT_SECONDS", 8.0) or 0.0),
+                            ),
                         ),
-                    ),
-                )
+                    )
+                except Exception:
+                    logger.exception("qq group attention media preparation failed")
+                    if group_attention.is_current(ticket):
+                        group_attention.finish(ticket, discard_dirty=True)
+                    return
                 native_images = [
                     dict(item)
                     for item in list((native_result or {}).get("images") or [])
@@ -2313,8 +2340,12 @@ def build_qq_router(
                     native_status=str((native_result or {}).get("status") or "unavailable"),
                 )
         _apply_group_attention_actor_scope(turn_payload, reason=ticket.reason)
+        if not _group_attention_can_continue(ticket, context):
+            return
         try:
-            result = await _run_qq_turn_delivery(context=context, event=event, turn_payload=turn_payload)
+            result = await _run_qq_turn_delivery(
+                context=context, event=event, turn_payload=turn_payload, attention_ticket=ticket,
+            )
         except Exception as exc:
             if ticket.reason == "idle_observation":
                 group_attention.mark_idle_observed(
@@ -2332,8 +2363,11 @@ def build_qq_router(
                 attention_reason=ticket.reason,
                 reason=exc.__class__.__name__,
             )
-            group_attention.finish(ticket, discard_dirty=True)
-            attention_latest.pop(ticket.key, None)
+            if group_attention.is_current(ticket):
+                group_attention.finish(ticket, discard_dirty=True)
+                attention_latest.pop(ticket.key, None)
+            return
+        if result.get("attention_skipped") or not group_attention.is_current(ticket):
             return
         if ticket.reason == "idle_observation" and not _turn_has_real_visible_delivery(result):
             group_attention.mark_idle_observed(
@@ -2485,13 +2519,35 @@ def build_qq_router(
         event: dict[str, Any],
         turn_payload: dict[str, Any],
     ) -> dict[str, Any]:
-        remote_prefetch_result = await asyncio.to_thread(
-            engine.prefetch_remote_media_links_for_message,
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            message=context.clean_message or context.raw_message,
-            character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
-            timestamp=int(event.get("time") or time.time()),
+        turn_kind = str(turn_payload.get("turn_kind") or "").strip().lower()
+        is_plugin_event = turn_kind == "plugin_event"
+        plugin_event_message = str(turn_payload.get("message") or "")
+        if is_plugin_event and re.search(r"https?://", plugin_event_message, re.IGNORECASE):
+            original_extra_context = str(turn_payload.get("extra_context") or "").strip()
+            turn_payload["extra_context"] = "\n\n".join(
+                part
+                for part in (
+                    original_extra_context,
+                    (
+                        "【插件事件来源链接】\n"
+                        "本轮由插件触发，消息里的 URL 是事件来源或溯源标记，不是用户提交的媒体下载请求。"
+                        "不要尝试把它作为音视频素材下载，也不要在回复中声称链接无法打开、平台不受支持，"
+                        "或要求用户更换媒体直链；需要核验事实时仍可使用可用的只读检索工具。"
+                    ),
+                )
+                if part
+            )
+        remote_prefetch_result = (
+            await asyncio.to_thread(
+                engine.prefetch_remote_media_links_for_message,
+                profile_user_id=context.profile_user_id,
+                session_id=context.session_id,
+                message=context.clean_message or context.raw_message,
+                character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
+                timestamp=int(event.get("time") or time.time()),
+            )
+            if not is_plugin_event
+            else {}
         )
         if isinstance(remote_prefetch_result, dict) and remote_prefetch_result:
             turn_payload["message"] = redact_remote_media_urls_for_prompt(str(turn_payload.get("message") or ""))
@@ -2953,7 +3009,10 @@ def build_qq_router(
         context: Any,
         event: dict[str, Any],
         turn_payload: dict[str, Any],
+        attention_ticket: AttentionTicket | None = None,
     ) -> dict[str, Any]:
+        if attention_ticket is not None and not _group_attention_can_continue(attention_ticket, context):
+            return {"attention_skipped": True, "frame": {}, "reply_messages": []}
         qq_user_id = int(getattr(context, "user_id", 0) or 0)
         actor_id = f"qq:{qq_user_id}" if qq_user_id else f"qq-profile:{context.profile_user_id}"
         steer_text = str(turn_payload.get("message") or "").strip()
@@ -3140,6 +3199,8 @@ def build_qq_router(
             turn_kind=str(turn_payload.get("turn_kind") or "").strip(),
         ) as turn_control_id:
             queue_wait_ms = max(0.0, (time.perf_counter() - queue_wait_started_at) * 1000)
+            if attention_ticket is not None and not _group_attention_can_continue(attention_ticket, context):
+                return {"attention_skipped": True, "frame": {}, "reply_messages": []}
             turn_payload["_turn_control_id"] = turn_control_id
             result = await _run_qq_turn_delivery_unlocked(
                 context=context,

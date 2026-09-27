@@ -109,9 +109,15 @@ class QQGroupAttentionState:
         normalized_key = str(key or "").strip()
         with self._lock:
             removed = self._tickets.pop(normalized_key, None) is not None
+            running = self._in_flight.pop(normalized_key, None) is not None
             dirty = normalized_key in self._dirty_during_flight
             self._dirty_during_flight.discard(normalized_key)
-            return removed or dirty
+            return removed or running or dirty
+
+    def is_current(self, ticket: AttentionTicket) -> bool:
+        """A cancelled generation cannot resume or clean up its replacement."""
+        with self._lock:
+            return self._in_flight.get(ticket.key) == ticket.token
 
     def mark_visible_reply(self, key: str, *, ttl_seconds: float) -> None:
         normalized_key = str(key or "").strip()
