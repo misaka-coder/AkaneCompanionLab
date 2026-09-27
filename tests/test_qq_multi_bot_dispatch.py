@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -28,6 +30,11 @@ class _Engine:
     def __init__(self, reply: str) -> None:
         self.reply = reply
         self.turns: list[dict[str, Any]] = []
+        self.records: list[dict[str, Any]] = []
+
+    def record_passive_qq_message(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.records.append(dict(payload))
+        return {"ok": True, "status": "recorded", "source_id": str(len(self.records))}
 
     def prefetch_remote_media_links_for_message(self, **_kwargs: Any) -> dict[str, Any]:
         return {}
@@ -76,6 +83,15 @@ class _Broker:
         return PluginQQCommandResult(handled=True, reply_text=self.reply)
 
 
+class _EventBroker:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def emit(self, event_type: str, *_args: Any, **_kwargs: Any) -> Any:
+        self.calls.append(event_type)
+        return SimpleNamespace(status="accepted")
+
+
 def _channel(*, profile_ref: str, bot_id: str, port: int, secret: str, token: str) -> QQChannelRuntimeConfig:
     return QQChannelRuntimeConfig(
         enabled=True,
@@ -90,7 +106,9 @@ def _channel(*, profile_ref: str, bot_id: str, port: int, secret: str, token: st
 
 
 class QQMultiBotDispatchTests(unittest.TestCase):
-    def _app(self, *, broker_a: Any = None, broker_b: Any = None):
+    def _app(self, *, broker_a: Any = None, broker_b: Any = None,
+             event_broker_a: Any = None, event_broker_b: Any = None,
+             state_root: Path | None = None):
         app = FastAPI()
         engine_a = _Engine("A 的正常回复")
         engine_b = _Engine("B 的正常回复")
@@ -108,8 +126,14 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             secret="secret-b",
             token="token-b",
         )
-        gateway_a = NapCatQQGateway(channel_config=channel_a, wake_words=("Akane",))
-        gateway_b = NapCatQQGateway(channel_config=channel_b, wake_words=("金融助手",))
+        gateway_a = NapCatQQGateway(
+            channel_config=channel_a, wake_words=("Akane",),
+            state_path=state_root / "bot-a.json" if state_root is not None else None,
+        )
+        gateway_b = NapCatQQGateway(
+            channel_config=channel_b, wake_words=("金融助手",),
+            state_path=state_root / "bot-b.json" if state_root is not None else None,
+        )
         common = {
             "config_module": SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_STREAM_REPLIES_ENABLED=False),
             "logger": SimpleNamespace(exception=lambda *_args, **_kwargs: None),
@@ -123,6 +147,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
                 channel_config=channel_a,
                 route_base="/api/bots/bot-a/qq",
                 plugin_command_broker_provider=lambda: broker_a,
+                plugin_event_broker_provider=lambda: event_broker_a,
                 **common,
             )
         )
@@ -134,6 +159,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
                 channel_config=channel_b,
                 route_base="/api/bots/bot-b/qq",
                 plugin_command_broker_provider=lambda: broker_b,
+                plugin_event_broker_provider=lambda: event_broker_b,
                 **common,
             )
         )
@@ -145,6 +171,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
                 channel_config=channel_a,
                 route_base="/api/qq",
                 plugin_command_broker_provider=lambda: broker_a,
+                plugin_event_broker_provider=lambda: event_broker_a,
                 **common,
             )
         )
@@ -233,6 +260,39 @@ class QQMultiBotDispatchTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(engine_a.turns), 1)
         self.assertEqual(engine_b.turns, [])
+
+    def test_targeted_setting_persists_only_for_selected_bot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_root = Path(temp_dir)
+            app, _engine_a, _engine_b, gateway_a, gateway_b = self._app(state_root=state_root)
+            event = {
+                "post_type": "message", "message_type": "group", "group_id": "30000001",
+                "user_id": "20000001", "message_id": "persist-a-only",
+                "sender": {"role": "admin"},
+                "message": [
+                    {"type": "at", "data": {"qq": "10000001"}},
+                    {"type": "text", "data": {"text": " /emotion off"}},
+                ],
+            }
+            with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()):
+                client = TestClient(app)
+                a = client.post(
+                    "/api/bots/bot-a/qq/napcat/event",
+                    headers={"Authorization": "Bearer secret-a"},
+                    json={**event, "self_id": "10000001"},
+                )
+                b = client.post(
+                    "/api/bots/bot-b/qq/napcat/event",
+                    headers={"Authorization": "Bearer secret-b"},
+                    json={**event, "self_id": "10000002"},
+                )
+            self.assertEqual(a.json()["reason"], "qq_group_emotion_command")
+            self.assertEqual(b.json()["reason"], "group_command_requires_explicit_mention")
+            self.assertFalse(gateway_a.is_group_emotion_enabled(30000001))
+            self.assertTrue(gateway_b.is_group_emotion_enabled(30000001))
+            _app, _engine_a, _engine_b, restored_a, restored_b = self._app(state_root=state_root)
+            self.assertFalse(restored_a.is_group_emotion_enabled(30000001))
+            self.assertTrue(restored_b.is_group_emotion_enabled(30000001))
 
     def test_default_alias_and_canonical_path_share_duplicate_event_guard(self) -> None:
         app, engine_a, engine_b, _gateway_a, _gateway_b = self._app()
@@ -330,6 +390,112 @@ class QQMultiBotDispatchTests(unittest.TestCase):
         self.assertEqual(engine_b.turns, [])
         self.assertIn("A 插件命令", _message_text(posts[0]))
         self.assertIn("B 插件命令", _message_text(posts[1]))
+
+    def test_group_commands_only_reach_explicitly_mentioned_bot(self) -> None:
+        broker_a, broker_b = _Broker("A 插件命令"), _Broker("B 插件命令")
+        events_a, events_b = _EventBroker(), _EventBroker()
+        app, engine_a, engine_b, gateway_a, gateway_b = self._app(
+            broker_a=broker_a, broker_b=broker_b,
+            event_broker_a=events_a, event_broker_b=events_b,
+        )
+        client = TestClient(app)
+        posts: list[dict[str, Any]] = []
+
+        def fake_post(_method: str, url: str, **kwargs: Any) -> _Response:
+            posts.append({"url": url, **kwargs})
+            return _Response()
+
+        def deliver(sequence: int, command: str, mentions: tuple[str, ...] = (),
+                    *, reply_to: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
+            parts = [{"type": "at", "data": {"qq": item}} for item in mentions]
+            if reply_to:
+                parts.append({"type": "reply", "data": {"id": reply_to}})
+            parts.append({"type": "text", "data": {"text": f" {command}"}})
+            base = {
+                "post_type": "message", "message_type": "group",
+                "group_id": "30000001", "user_id": "20000001",
+                "message_id": f"target-{sequence}", "message": parts,
+                "sender": {"role": "admin"},
+            }
+            results = []
+            for bot, secret in (("a", "secret-a"), ("b", "secret-b")):
+                response = client.post(
+                    f"/api/bots/bot-{bot}/qq/napcat/event",
+                    headers={"Authorization": f"Bearer {secret}"},
+                    json={**base, "self_id": f"1000000{1 if bot == 'a' else 2}"},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                results.append(response.json())
+            return results[0], results[1]
+
+        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+            for sequence, command in enumerate((
+                "/listen off", "/emotion off", "/access all off", "/approve deadbeef",
+                "/identity now", "/stop", "角色列表", "清理工作台", "签到", "/unknown",
+            ), 1):
+                with self.subTest(command=command):
+                    a, b = deliver(sequence, command)
+                    self.assertEqual(a["status"], "ignored", a)
+                    self.assertEqual(b["status"], "ignored", b)
+                    self.assertEqual(a["reason"], "group_command_requires_explicit_mention")
+                    self.assertEqual(b["reason"], "group_command_requires_explicit_mention")
+            self.assertEqual(events_a.calls, [])
+            self.assertEqual(events_b.calls, [])
+            self.assertEqual(broker_a.calls, [])
+            self.assertEqual(broker_b.calls, [])
+            self.assertEqual(engine_a.turns, [])
+            self.assertEqual(engine_b.turns, [])
+            self.assertFalse(any(post["url"].endswith("/send_group_msg") for post in posts))
+
+            a, b = deliver(20, "/listen off", ("10000001",))
+            self.assertEqual(a["reason"], "qq_group_attention_command", a)
+            self.assertEqual(b["reason"], "group_command_requires_explicit_mention", b)
+            self.assertEqual(gateway_a.resolve_group_attention_mode(30000001), "off")
+            self.assertEqual(gateway_b.resolve_group_attention_mode(30000001), "engaged")
+
+            a, b = deliver(21, "/emotion off", ("10000001",), reply_to="quoted-b-message")
+            self.assertEqual(a["reason"], "qq_group_emotion_command", a)
+            self.assertEqual(b["reason"], "group_command_requires_explicit_mention", b)
+            self.assertFalse(gateway_a.is_group_emotion_enabled(30000001))
+            self.assertTrue(gateway_b.is_group_emotion_enabled(30000001))
+
+            a, b = deliver(22, "/identity now", ("10000002",))
+            self.assertEqual(a["reason"], "group_command_requires_explicit_mention", a)
+            self.assertEqual(b["reason"], "qq_plugin_command", b)
+            self.assertEqual(len(broker_a.calls), 0)
+            self.assertEqual(len(broker_b.calls), 1)
+
+            a, b = deliver(23, "/identity now", ("10000001", "10000002"))
+            self.assertEqual(a["reason"], "qq_plugin_command", a)
+            self.assertEqual(b["reason"], "qq_plugin_command", b)
+            self.assertEqual(len(broker_a.calls), 1)
+            self.assertEqual(len(broker_b.calls), 2)
+
+            a, b = deliver(27, "/listen status", ("10000002",))
+            self.assertEqual(a["reason"], "group_command_requires_explicit_mention", a)
+            self.assertEqual(b["reason"], "qq_group_attention_command", b)
+            a, b = deliver(28, "/access all off", ("10000001",))
+            self.assertEqual(a["reason"], "qq_access_permission_command", a)
+            self.assertEqual(b["reason"], "group_command_requires_explicit_mention", b)
+            a, b = deliver(29, "/approvals", ("10000001",))
+            self.assertEqual(a["reason"], "qq_capability_approval_command", a)
+            self.assertEqual(b["reason"], "group_command_requires_explicit_mention", b)
+
+            for sequence, command, mentions in (
+                (24, "/identity now", ("40000004",)),
+                (25, "/identity now", ("all",)),
+                (26, "@A /identity now", ()),
+            ):
+                a, b = deliver(sequence, command, mentions, reply_to="quoted-a-message")
+                self.assertEqual(a["reason"], "group_command_requires_explicit_mention", a)
+                self.assertEqual(b["reason"], "group_command_requires_explicit_mention", b)
+            self.assertEqual(len(broker_a.calls), 1)
+            self.assertEqual(len(broker_b.calls), 2)
+
+        self.assertTrue(engine_a.records)
+        self.assertTrue(engine_b.records)
+        self.assertEqual(engine_a.turns, [])
+        self.assertEqual(engine_b.turns, [])
 
 
 if __name__ == "__main__":

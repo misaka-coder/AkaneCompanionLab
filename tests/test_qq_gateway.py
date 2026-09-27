@@ -1222,7 +1222,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(context.reason, "group_passive_observed")
         self.assertTrue(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
 
-    def test_group_emotion_command_is_admitted_without_mention(self) -> None:
+    def test_group_emotion_command_requires_real_mention(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -1236,8 +1236,21 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(context.should_respond)
-        self.assertEqual(context.reason, "qq_group_emotion_command")
+        self.assertFalse(context.should_respond)
+        self.assertTrue(context.should_record)
+        mentioned = gateway.build_message_context(
+            {
+                "post_type": "message", "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID, "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID, "message_id": "group-emotion-off-at-1",
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": " /emotion off"}},
+                ],
+            }
+        )
+        self.assertTrue(mentioned.should_respond)
+        self.assertEqual(mentioned.reason, "qq_group_emotion_command")
         self.assertEqual(gateway.parse_group_emotion_command("／emotion 关闭"), {"action": "off"})
 
     def test_group_emotion_command_persists_and_master_can_change_setting(self) -> None:
@@ -1835,7 +1848,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(approved["status"], "approved")
         self.assertIn("自动续接", approved["reply"])
 
-    def test_group_capability_approval_command_bypasses_wake_word(self) -> None:
+    def test_group_capability_approval_command_requires_real_mention(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -1849,8 +1862,20 @@ class QQGatewayTests(unittest.TestCase):
                 "message": [{"type": "text", "data": {"text": "/approve"}}],
             }
         )
-        self.assertTrue(context.should_respond)
-        self.assertEqual(context.reason, "qq_capability_approval_command")
+        self.assertFalse(context.should_respond)
+        mentioned = gateway.build_message_context(
+            {
+                "post_type": "message", "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID, "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID, "message_id": "group-approval-control-at-1",
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": " /approve"}},
+                ],
+            }
+        )
+        self.assertTrue(mentioned.should_respond)
+        self.assertEqual(mentioned.reason, "qq_capability_approval_command")
 
     def test_thinking_mode_command_rejects_unsupported_model_without_writing(self) -> None:
         gateway = NapCatQQGateway()
