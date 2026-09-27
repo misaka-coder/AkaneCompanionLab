@@ -152,6 +152,8 @@ class Settings(BaseSettings):
     MEMCORE_STORAGE_PATH: str = ""
     # memcore 可见长期记忆作用域：conversation/user
     MEMCORE_VISIBLE_SCOPE: str = "user"
+    # Cross-QQ memory reads require an explicit conversation target even when enabled.
+    MEMORY_CROSS_CONVERSATION_ENABLED: bool = False
     # memcore mood/flavor 温度层；桌宠陪伴默认开启
     MEMCORE_ENABLE_FLAVOR: bool = True
     # 影子检索对比开关；只记录结构化统计，不改变用户可见回复
@@ -712,6 +714,7 @@ def _apply_settings(s: Settings) -> None:
     global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
     global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
+    global MEMORY_CROSS_CONVERSATION_ENABLED
     global \
         MEMCORE_RAW_TOKEN_TRIGGER, \
         MEMCORE_RAW_TOKEN_BATCH_RATIO, \
@@ -1010,6 +1013,7 @@ def _apply_settings(s: Settings) -> None:
     MEMCORE_VISIBLE_SCOPE = (
         raw_memcore_visible_scope if raw_memcore_visible_scope in {"conversation", "user"} else "user"
     )
+    MEMORY_CROSS_CONVERSATION_ENABLED = bool(s.MEMORY_CROSS_CONVERSATION_ENABLED)
     MEMCORE_ENABLE_FLAVOR = bool(s.MEMCORE_ENABLE_FLAVOR)
     MEMCORE_SHADOW_COMPARE = bool(s.MEMCORE_SHADOW_COMPARE)
     MEMCORE_RAW_TOKEN_TRIGGER = max(

@@ -88,6 +88,21 @@ def _memcore_tool_contract(package_name: str, product_name: str) -> tuple[str, d
     return str(_rename(spec.get("description")) or ""), dict(_rename(spec.get("parameters")) or {})
 
 
+def _conversation_read_contract(description: str, schema: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    properties = dict(schema.get("properties") or {})
+    properties.pop("cross_conversation", None)
+    properties["conversation"] = {
+        "type": "string", "maxLength": 48,
+        "description": 'Optional single target: "current" (default), "master", or "group:123456". '
+                       "Use list_memory_conversations if the group number is unknown.",
+    }
+    return (
+        "默认只读当前会话。跨 QQ 会话须明确指定一个 conversation；空结果不会自动搜索其他会话。"
+        "后续 open、段内检索和分页保持同一 conversation。 " + description,
+        {**schema, "properties": properties},
+    )
+
+
 _RETRIEVE_MEMORY_DESCRIPTION, _RETRIEVE_MEMORY_SCHEMA = _memcore_tool_contract(
     "retrieve_for_turn",
     "retrieve_memory",
@@ -104,6 +119,15 @@ _OPEN_MEMORY_DESCRIPTION, _OPEN_MEMORY_SCHEMA = _memcore_tool_contract(
     "open_memory",
     "open_memory",
 )
+
+_RETRIEVE_MEMORY_DESCRIPTION, _RETRIEVE_MEMORY_SCHEMA = _conversation_read_contract(
+    _RETRIEVE_MEMORY_DESCRIPTION, _RETRIEVE_MEMORY_SCHEMA)
+_READ_MEMORY_TIMELINE_DESCRIPTION, _READ_MEMORY_TIMELINE_SCHEMA = _conversation_read_contract(
+    _READ_MEMORY_TIMELINE_DESCRIPTION, _READ_MEMORY_TIMELINE_SCHEMA)
+_BROWSE_MEMORY_DESCRIPTION, _BROWSE_MEMORY_SCHEMA = _conversation_read_contract(
+    _BROWSE_MEMORY_DESCRIPTION, _BROWSE_MEMORY_SCHEMA)
+_OPEN_MEMORY_DESCRIPTION, _OPEN_MEMORY_SCHEMA = _conversation_read_contract(
+    _OPEN_MEMORY_DESCRIPTION, _OPEN_MEMORY_SCHEMA)
 
 
 def _clarify_explicit_kind_contract(schema: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +171,7 @@ COMMON_TOOL_NAMES = (
     "read_memory_timeline",
     "browse_memory",
     "open_memory",
+    "list_memory_conversations",
     "load_skill",
     "load_mcp",
     "invoke_mcp",
@@ -354,8 +379,8 @@ RETRIEVE_MEMORY_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="2.0.0",
-    schema_version=2,
+    spec_version="2.1.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=16384,
@@ -370,8 +395,8 @@ READ_MEMORY_TIMELINE_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="2.0.0",
-    schema_version=2,
+    spec_version="2.1.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=16384,
@@ -386,8 +411,8 @@ BROWSE_MEMORY_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="2.0.0",
-    schema_version=2,
+    spec_version="2.1.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=65536,
@@ -402,11 +427,29 @@ OPEN_MEMORY_TOOL_SPEC = CapabilityToolSpec(
     confirm="never",
     effects=(),
     visible_in=("desktop", "qq", "web"),
-    spec_version="2.0.0",
-    schema_version=2,
+    spec_version="2.1.0",
+    schema_version=3,
     execution_class="sync",
     idempotency="read_only",
     max_result_bytes=65536,
+)
+
+LIST_MEMORY_CONVERSATIONS_TOOL_SPEC = CapabilityToolSpec(
+    capability_id="list_memory_conversations",
+    display_name="List readable memory conversations",
+    description=("只列当前 Bot 与角色域中可读的 QQ 记忆会话目录，不检索消息。"
+                 "关闭跨会话开关或非主人私聊时仅列当前会话；用返回的 conversation 指定四个记忆读取工具。"),
+    input_schema={
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "cursor": {"type": "string", "description": "上一页返回的 opaque cursor；续页只传 cursor。"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
+        "required": [],
+    },
+    risk="low", confirm="never", effects=(), visible_in=("desktop", "qq", "web"),
+    spec_version="1.0.0", schema_version=1, execution_class="sync",
+    idempotency="read_only", max_result_bytes=16384,
 )
 
 # ── M66-C: Canonical ToolSpecs for remaining built-in families ──────────────

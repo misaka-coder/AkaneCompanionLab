@@ -2,15 +2,46 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Callable
 
+import config
+
 from ..capability_registry import (
     BROWSE_MEMORY_TOOL_SPEC,
+    LIST_MEMORY_CONVERSATIONS_TOOL_SPEC,
     OPEN_MEMORY_TOOL_SPEC,
     READ_MEMORY_TIMELINE_TOOL_SPEC,
     RETRIEVE_MEMORY_TOOL_SPEC,
 )
+
+
+def _memory_rejection(tool: str, status: str, reason: str = "") -> ToolExecutionResult:
+    detail = reason or status
+    feedback = f"记忆读取失败：status={status}；reason={detail}。"
+    return ToolExecutionResult(
+        tool_type=tool,
+        followup_context=feedback,
+        followup_envelope=ToolFollowupEnvelope(
+            content=feedback, producer_bounded=True, complete=True,
+            diagnostics={"status": status, "reason": detail},
+        ),
+    )
+
+
+def _prepare_read(policy_provider: Callable[[], Any] | None, *, call: dict[str, Any],
+                  context: ToolExecutionContext, tool: str):
+    policy = policy_provider() if policy_provider is not None else None
+    if policy is None:
+        if "cross_conversation" in call or call.get("conversation", "current") != "current":
+            return None, None, {}, _memory_rejection(tool, "forbidden")
+        return None, None, {key: value for key, value in call.items() if key not in {"type", "conversation"}}, None
+    target, arguments, error = policy.prepare(context=context, call=call, tool=tool)
+    if error is not None:
+        return policy, None, {}, _memory_rejection(tool, str(error.get("status") or "forbidden"),
+                                                    str(error.get("reason") or ""))
+    return policy, target, arguments, None
 from ..text_utils import normalize_text
 from .core import (
     BaseToolHandler,
@@ -70,7 +101,7 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
         include_explicit = value.get("include_explicit") is True
         kind_patterns = self._normalize_string_list(value.get("kind_patterns"), lowercase=True)
 
-        return {
+        normalized = {
             "type": self.tool_type,
             "query": query,
             "entity_anchors": entity_anchors,
@@ -83,6 +114,10 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
             "include_explicit": include_explicit,
             "kind_patterns": kind_patterns,
         }
+        for name in ("conversation", "cross_conversation"):
+            if name in value:
+                normalized[name] = value[name]
+        return normalized
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         return self.retrieve_fn(call=call, context=context)
@@ -111,8 +146,9 @@ class RetrieveMemoryToolHandler(BaseToolHandler):
 class ReadMemoryTimelineToolHandler(BaseToolHandler):
     tool_type = "read_memory_timeline"
 
-    def __init__(self, *, timeline_service: Any) -> None:
+    def __init__(self, *, timeline_service: Any, read_policy_provider: Callable[[], Any] | None = None) -> None:
         self.timeline_service = timeline_service
+        self.read_policy_provider = read_policy_provider
 
     def tool_spec(self):  # M66-B: canonical ToolSpec authority
         return READ_MEMORY_TIMELINE_TOOL_SPEC
@@ -130,32 +166,45 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        policy, target, arguments, rejection = _prepare_read(
+            self.read_policy_provider, call=call, context=context, tool=self.tool_type,
+        )
+        if rejection is not None:
+            return rejection
+        if policy is not None and str(getattr(config, "MEMORY_BACKEND", "memcore")).lower() != "memcore":
+            return _memory_rejection(self.tool_type, "unavailable", "precise_conversation_read_requires_memcore")
+        if target is not None and target.external and not bool(getattr(self.timeline_service, "package_native_dispatch", False)):
+            return _memory_rejection(self.tool_type, "unavailable", "precise_conversation_read_requires_memcore")
+        profile = target.profile_user_id if target is not None else context.profile_user_id
+        session = target.session_id if target is not None else context.session_id
         if bool(getattr(self.timeline_service, "package_native_dispatch", False)):
             result = self.timeline_service.read(
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
+                profile_user_id=profile,
+                session_id=session,
                 character_pack_id=context.character_pack_id,
-                arguments={key: item for key, item in call.items() if key != "type"},
+                arguments=arguments,
             )
         else:
             raw_periods = call.get("time_periods")
             period_values = list(raw_periods) if isinstance(raw_periods, list) else []
             result = self.timeline_service.read(
-                profile_user_id=context.profile_user_id,
-                session_id=context.session_id,
+                profile_user_id=profile,
+                session_id=session,
                 character_pack_id=context.character_pack_id,
-                time_range=dict(call.get("time_range") or {}) or None,
-                date_from=str(call.get("date_from") or ""),
-                date_to=str(call.get("date_to") or ""),
+                time_range=dict(arguments.get("time_range") or {}) or None,
+                date_from=str(arguments.get("date_from") or ""),
+                date_to=str(arguments.get("date_to") or ""),
                 time_periods=self.timeline_service.normalize_time_periods(period_values),
-                anchor_source_id=str(call.get("anchor_source_id") or ""),
-                before_turns=int(call.get("before_turns") or 0),
-                after_turns=int(call.get("after_turns") or 0),
-                projection=str(call.get("projection") or "conversation"),
-                page_token_budget=int(call.get("page_token_budget") or 0),
-                cursor=str(call.get("cursor") or ""),
+                anchor_source_id=str(arguments.get("anchor_source_id") or ""),
+                before_turns=int(arguments.get("before_turns") or 0),
+                after_turns=int(arguments.get("after_turns") or 0),
+                projection=str(arguments.get("projection") or "conversation"),
+                page_token_budget=int(arguments.get("page_token_budget") or 0),
+                cursor=str(arguments.get("cursor") or ""),
                 exclude_source_ids=[context.current_user_source_id] if context.current_user_source_id else [],
             )
+        if policy is not None and target is not None:
+            result = policy.project(context=context, target=target, tool=self.tool_type, result=result)
         coverage = dict(result.get("coverage") or {})
         complete = bool(
             result.get(
@@ -203,8 +252,9 @@ class ReadMemoryTimelineToolHandler(BaseToolHandler):
 class BrowseMemoryToolHandler(BaseToolHandler):
     tool_type = "browse_memory"
 
-    def __init__(self, *, timeline_service: Any) -> None:
+    def __init__(self, *, timeline_service: Any, read_policy_provider: Callable[[], Any] | None = None) -> None:
         self.timeline_service = timeline_service
+        self.read_policy_provider = read_policy_provider
 
     def tool_spec(self):
         return BROWSE_MEMORY_TOOL_SPEC
@@ -222,12 +272,21 @@ class BrowseMemoryToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.timeline_service.browse_memory(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            character_pack_id=context.character_pack_id,
-            arguments={key: item for key, item in call.items() if key != "type"},
+        policy, target, arguments, rejection = _prepare_read(
+            self.read_policy_provider, call=call, context=context, tool=self.tool_type,
         )
+        if rejection is not None:
+            return rejection
+        if target is not None and target.external and not bool(getattr(self.timeline_service, "package_native_dispatch", False)):
+            return _memory_rejection(self.tool_type, "unavailable", "precise_cross_conversation_requires_memcore")
+        result = self.timeline_service.browse_memory(
+            profile_user_id=target.profile_user_id if target is not None else context.profile_user_id,
+            session_id=target.session_id if target is not None else context.session_id,
+            character_pack_id=context.character_pack_id,
+            arguments=arguments,
+        )
+        if policy is not None and target is not None:
+            result = policy.project(context=context, target=target, tool=self.tool_type, result=result)
         complete = bool(result.get("page_complete", True))
         next_cursor = str(result.get("next_cursor") or "").strip()
         continuation = {"cursor": next_cursor} if next_cursor else None
@@ -266,8 +325,9 @@ class BrowseMemoryToolHandler(BaseToolHandler):
 class OpenMemoryToolHandler(BaseToolHandler):
     tool_type = "open_memory"
 
-    def __init__(self, *, timeline_service: Any) -> None:
+    def __init__(self, *, timeline_service: Any, read_policy_provider: Callable[[], Any] | None = None) -> None:
         self.timeline_service = timeline_service
+        self.read_policy_provider = read_policy_provider
 
     def tool_spec(self):
         return OPEN_MEMORY_TOOL_SPEC
@@ -285,12 +345,21 @@ class OpenMemoryToolHandler(BaseToolHandler):
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
-        result = self.timeline_service.open_memory(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            character_pack_id=context.character_pack_id,
-            arguments={key: item for key, item in call.items() if key != "type"},
+        policy, target, arguments, rejection = _prepare_read(
+            self.read_policy_provider, call=call, context=context, tool=self.tool_type,
         )
+        if rejection is not None:
+            return rejection
+        if target is not None and target.external and not bool(getattr(self.timeline_service, "package_native_dispatch", False)):
+            return _memory_rejection(self.tool_type, "unavailable", "precise_cross_conversation_requires_memcore")
+        result = self.timeline_service.open_memory(
+            profile_user_id=target.profile_user_id if target is not None else context.profile_user_id,
+            session_id=target.session_id if target is not None else context.session_id,
+            character_pack_id=context.character_pack_id,
+            arguments=arguments,
+        )
+        if policy is not None and target is not None:
+            result = policy.project(context=context, target=target, tool=self.tool_type, result=result)
         followup_context = self.timeline_service.render_open_memory_context(result)
         return ToolExecutionResult(
             tool_type=self.tool_type,
@@ -322,4 +391,40 @@ class OpenMemoryToolHandler(BaseToolHandler):
                 }
             },
             trace_receipt=dict(result.get("receipt") or {}) or None,
+        )
+
+
+class ListMemoryConversationsToolHandler(BaseToolHandler):
+    tool_type = "list_memory_conversations"
+
+    def __init__(self, *, read_policy_provider: Callable[[], Any]) -> None:
+        self.read_policy_provider = read_policy_provider
+
+    def tool_spec(self):
+        return LIST_MEMORY_CONVERSATIONS_TOOL_SPEC
+
+    def normalize_call(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
+            return None
+        return {str(key): item for key, item in value.items() if not str(key).startswith("_tool_")}
+
+    def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        policy = self.read_policy_provider()
+        if policy is None:
+            return _memory_rejection(self.tool_type, "unavailable", "memory_read_policy_unavailable")
+        if set(call) - {"type", "cursor", "limit"}:
+            return _memory_rejection(self.tool_type, "invalid_arguments")
+        result = policy.list_conversations(
+            context=context, cursor=call.get("cursor", ""), limit=call.get("limit", 20),
+        )
+        content = "【可读记忆会话】\n" + json.dumps(result, ensure_ascii=False, sort_keys=True)
+        next_cursor = str(result.get("next_cursor") or "")
+        return ToolExecutionResult(
+            tool_type=self.tool_type,
+            followup_context=content,
+            followup_envelope=ToolFollowupEnvelope(
+                content=content, producer_bounded=True, complete=not bool(next_cursor),
+                continuation={"cursor": next_cursor} if next_cursor else None,
+                diagnostics={"status": str(result.get("status") or "")},
+            ),
         )

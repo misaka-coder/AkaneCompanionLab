@@ -21,6 +21,21 @@ EMPTY_RETRIEVAL_FOLLOWUP_GUIDANCE = (
 )
 
 
+def _memory_read_error(tool: str, error: dict[str, Any]) -> ToolExecutionResult:
+    status = str(error.get("status") or "forbidden")
+    reason = str(error.get("reason") or status)
+    feedback = f"记忆读取失败：status={status}；reason={reason}。"
+    return ToolExecutionResult(
+        tool_type=tool,
+        followup_context=feedback,
+        followup_envelope=ToolFollowupEnvelope(
+            content=feedback, producer_bounded=True, complete=True,
+            diagnostics={"status": status, "reason": reason},
+        ),
+        state_updates={"memory_retrieval": {"status": status, "reason": reason, "backend": "memcore"}},
+    )
+
+
 def collect_visible_context_source_ids(
     *,
     recent_raw: list[dict[str, Any]],
@@ -210,6 +225,15 @@ def execute_retrieve_memory_tool(
     call: dict[str, Any],
     context: Any,
 ) -> ToolExecutionResult:
+    policy = getattr(engine, "memory_read_policy", None)
+    target = None
+    if policy is not None:
+        target, normalized_call, error = policy.prepare(context=context, call=call, tool="retrieve_memory")
+        if error is not None:
+            return _memory_read_error("retrieve_memory", error)
+        call = normalized_call
+    elif "cross_conversation" in call or call.get("conversation", "current") != "current":
+        return _memory_read_error("retrieve_memory", {"status": "forbidden", "reason": "forbidden"})
     query = normalize_text(str(call.get("query") or "")).strip()
     entity_anchors = [str(item).strip() for item in list(call.get("entity_anchors") or []) if str(item).strip()]
     topic_terms = [str(item).strip() for item in list(call.get("topic_terms") or []) if str(item).strip()]
@@ -243,6 +267,7 @@ def execute_retrieve_memory_tool(
         memcore_read_payload = execute_memcore_retrieve_memory(
             engine,
             context=context,
+            target=target,
             current_user_record=current_user_record,
             query=query,
             entity_anchors=entity_anchors,
@@ -256,6 +281,10 @@ def execute_retrieve_memory_tool(
             include_explicit=include_explicit,
             kind_patterns=kind_patterns,
         )
+        if policy is not None and target is not None:
+            memcore_read_payload = policy.project(
+                context=context, target=target, tool="retrieve_memory", result=memcore_read_payload,
+            )
         if memcore_read_payload.get("ok"):
             snippets = [str(item).strip() for item in memcore_read_payload.get("snippets", []) if str(item).strip()]
             return _build_retrieve_memory_tool_result(
@@ -302,6 +331,10 @@ def execute_retrieve_memory_tool(
             memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
             retrieval_diagnostics=_build_memcore_retrieval_diagnostics(memcore_read_payload),
         )
+    if policy is not None:
+        return _memory_read_error("retrieve_memory", {
+            "status": "unavailable", "reason": "precise_conversation_read_requires_memcore",
+        })
     # Legacy/dual migration adapter. The model-facing contract remains the
     # MemCore schema; old retrieval receives only a conservative projection.
     keywords = list(dict.fromkeys([*entity_anchors, *topic_terms]))
@@ -659,6 +692,7 @@ def execute_memcore_retrieve_memory(
     engine: Any,
     *,
     context: Any,
+    target: Any = None,
     current_user_record: dict[str, Any] | None,
     query: str,
     entity_anchors: list[str],
@@ -696,8 +730,8 @@ def execute_memcore_retrieve_memory(
         }
     try:
         return manager.retrieve_memory(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
+            profile_user_id=target.profile_user_id if target is not None else context.profile_user_id,
+            session_id=target.session_id if target is not None else context.session_id,
             character_pack_id=str(getattr(context, "character_pack_id", "") or "").strip(),
             current_user_record=current_user_record,
             query=query,
@@ -711,6 +745,7 @@ def execute_memcore_retrieve_memory(
             exclude_source_ids=exclude_source_ids,
             include_explicit=include_explicit,
             kind_patterns=list(kind_patterns or []),
+            external_target=bool(target is not None and target.external),
         )
     except Exception as exc:
         return {

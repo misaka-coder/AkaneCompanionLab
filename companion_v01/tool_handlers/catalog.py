@@ -34,6 +34,7 @@ from .generated_media import (
 )
 from .memory import (
     BrowseMemoryToolHandler,
+    ListMemoryConversationsToolHandler,
     OpenMemoryToolHandler,
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
@@ -75,6 +76,7 @@ def build_builtin_tool_handlers(
     attachment_ingest_service: Any,
     generated_file_service: Any,
     retrieve_fn: Any,
+    memory_read_policy_provider: Any | None = None,
     skill_registry: Any | None = None,
     execution_provider: Any | None = None,
     approval_store: Any | None = None,
@@ -93,12 +95,18 @@ def build_builtin_tool_handlers(
         ),
         "read_memory_timeline": ReadMemoryTimelineToolHandler(
             timeline_service=memory_timeline_service,
+            read_policy_provider=memory_read_policy_provider,
         ),
         "browse_memory": BrowseMemoryToolHandler(
             timeline_service=memory_timeline_service,
+            read_policy_provider=memory_read_policy_provider,
         ),
         "open_memory": OpenMemoryToolHandler(
             timeline_service=memory_timeline_service,
+            read_policy_provider=memory_read_policy_provider,
+        ),
+        "list_memory_conversations": ListMemoryConversationsToolHandler(
+            read_policy_provider=memory_read_policy_provider or (lambda: None),
         ),
         "load_character_context": LoadCharacterContextToolHandler(
             context_library_service=context_libraries,

@@ -336,8 +336,9 @@ class ReadMemoryTimelineToolHandlerTests(unittest.TestCase):
             )
             instruction = ReadMemoryTimelineToolHandler(timeline_service=service).build_prompt_instruction()
 
-            self.assertIn("date_from:string", instruction)
-            self.assertIn("date_to:string", instruction)
+            self.assertIn('"date_from":{"type":"string"', instruction)
+            self.assertIn('"date_to":{"type":"string"', instruction)
+            self.assertIn('"conversation":{"type":"string"', instruction)
             self.assertIn("anchor_source_id", instruction)
             self.assertIn("nearby turns", instruction)
             self.assertIn("finite complete-unit page", instruction)

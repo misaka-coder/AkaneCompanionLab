@@ -102,13 +102,14 @@ class MemcoreTimelineToolService:
                             page_token_budget=page_token_budget,
                             cursor=cursor,
                         )
-                    if not str(native_arguments.get("cursor") or "").strip() and not anchor_id:
-                        native_arguments.setdefault("cross_conversation", True)
+                    if "cross_conversation" in native_arguments:
+                        return self._unavailable("read_memory_timeline", "cross_conversation_requires_conversation")
+                    if not str(native_arguments.get("cursor") or "").strip():
+                        native_arguments["cross_conversation"] = False
                     result = manager.read_memory_timeline(
                         profile_user_id=profile_user_id,
-                        # The cursor remains scoped to the active conversation
-                        # namespace. Date/range reads cross only this user's
-                        # authorized conversations via explicit host policy.
+                        # The host selected one authorized conversation before
+                        # this adapter sees the request.
                         session_id=str(session_id or profile_user_id),
                         character_pack_id=character_pack_id,
                         arguments=native_arguments,
@@ -198,12 +199,10 @@ class MemcoreTimelineToolService:
             and getattr(manager, "available", False)
         ):
             native_arguments = dict(arguments or {})
+            if "cross_conversation" in native_arguments:
+                return self._unavailable("open_memory", "cross_conversation_requires_conversation")
             if not str(native_arguments.get("cursor") or "").strip():
-                # Retrieval and catalog reads may return a memory owned by an
-                # older conversation in the same hard user namespace.  The
-                # returned opaque ID must remain directly openable; making the
-                # model rediscover this host policy breaks the read loop.
-                native_arguments.setdefault("cross_conversation", True)
+                native_arguments["cross_conversation"] = False
             try:
                 result = manager.open_memory(
                     profile_user_id=profile_user_id,
@@ -234,8 +233,10 @@ class MemcoreTimelineToolService:
             and getattr(manager, "available", False)
         ):
             native_arguments = dict(arguments or {})
+            if "cross_conversation" in native_arguments:
+                return self._unavailable("browse_memory", "cross_conversation_requires_conversation")
             if not str(native_arguments.get("cursor") or "").strip():
-                native_arguments.setdefault("cross_conversation", True)
+                native_arguments["cross_conversation"] = False
             try:
                 result = manager.browse_memory(
                     profile_user_id=profile_user_id,

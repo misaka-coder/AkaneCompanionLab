@@ -2782,6 +2782,23 @@ def build_qq_router(
         file_target_allowed: Callable | None = None,
         attention_ticket: AttentionTicket | None = None,
     ) -> dict[str, Any]:
+        turn_payload = dict(turn_payload)
+        # Only this verified QQ route may attest a memory-tool origin.  A
+        # caller-supplied client_mode or delivery_context is not an authority.
+        turn_payload.pop("_memory_qq_ref", None)
+        if plugin_conversation_ref_issuer is not None:
+            reference = plugin_conversation_ref_issuer(
+                profile_user_id=str(getattr(context, "profile_user_id", "") or ""),
+                session_id=str(getattr(context, "session_id", "") or ""),
+                character_pack_id=str(getattr(context, "character_pack_id", "") or ""),
+                user_id=int(getattr(context, "user_id", 0) or 0),
+                group_id=int(getattr(context, "group_id", 0) or 0),
+                actor_stable_id=(f"qq:{int(context.user_id)}" if bool(getattr(context, "is_group", False))
+                                 and int(getattr(context, "user_id", 0) or 0) else ""),
+                actor_profile_user_id=str(getattr(context, "actor_profile_user_id", "") or ""),
+            )
+            if reference:
+                turn_payload["_memory_qq_ref"] = reference
         turn_kind = str(turn_payload.get("turn_kind") or "").strip().lower()
         is_plugin_event = turn_kind == "plugin_event"
         plugin_event_message = str(turn_payload.get("message") or "")

@@ -74,6 +74,24 @@ class SettingsOverrideStoreTests(unittest.TestCase):
         self.assertEqual(view.TOOL_ROUND_HARD_LIMIT, 4)
         self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, original)
 
+    def test_cross_conversation_switch_is_per_bot_and_defaults_closed(self) -> None:
+        first_store = _temp_store()
+        second_store = _temp_store()
+        first = so.RuntimeConfigView(config, so.load_saved_overrides(first_store))
+        second = so.RuntimeConfigView(config, so.load_saved_overrides(second_store))
+        original = config.MEMORY_CROSS_CONVERSATION_ENABLED
+        try:
+            self.assertFalse(first.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertFalse(second.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertTrue(so.set_override(
+                first, first_store, key="MEMORY_CROSS_CONVERSATION_ENABLED", raw_value="true"))
+            self.assertTrue(first.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertFalse(second.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertEqual(config.MEMORY_CROSS_CONVERSATION_ENABLED, original)
+            self.assertTrue(so.load_saved_overrides(first_store)["MEMORY_CROSS_CONVERSATION_ENABLED"])
+        finally:
+            config.MEMORY_CROSS_CONVERSATION_ENABLED = original
+
 
 class SettingsUpdateEndpointTests(unittest.TestCase):
     def _client(self, store) -> TestClient:

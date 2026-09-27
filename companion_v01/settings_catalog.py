@@ -146,6 +146,8 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("MEMORY_BACKEND", _MEM, SCOPE_RESTART_CLIENT, "记忆后端：memcore/legacy/dual"),
     _s("MEMCORE_STORAGE_PATH", _MEM, SCOPE_RESTART_CLIENT, "memcore SQLite 路径（留空=默认）"),
     _s("MEMCORE_VISIBLE_SCOPE", _MEM, SCOPE_RESTART_CLIENT, "memcore 可见长期记忆作用域：conversation/user"),
+    _s("MEMORY_CROSS_CONVERSATION_ENABLED", _MEM, SCOPE_RUNTIME,
+       "允许 QQ 主人私聊与群记忆按指定 conversation 互读；默认仍只读当前会话"),
     _s("MEMCORE_ENABLE_FLAVOR", _MEM, SCOPE_RESTART_CLIENT, "memcore 情绪/口吻温度层"),
     _s("MEMCORE_SHADOW_COMPARE", _MEM, SCOPE_RUNTIME, "memcore 影子检索对比（不改变回复）"),
     _s(

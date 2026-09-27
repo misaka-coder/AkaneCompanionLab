@@ -7,7 +7,7 @@ is being retired.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from concurrent.futures import Future, wait
 import hashlib
 import json
@@ -3207,6 +3207,7 @@ class MemcoreManager:
         exclude_source_ids: list[str] | None = None,
         include_explicit: bool = False,
         kind_patterns: list[str] | None = None,
+        external_target: bool = False,
     ) -> dict[str, Any]:
         shadow_enabled = bool(getattr(config, "MEMCORE_SHADOW_COMPARE", self.shadow_compare))
         if not shadow_enabled:
@@ -3229,6 +3230,7 @@ class MemcoreManager:
             include_explicit=include_explicit,
             kind_patterns=kind_patterns,
             include_snippets=False,
+            external_target=external_target,
         )
         if "snippets" in result:
             result = dict(result)
@@ -3253,6 +3255,7 @@ class MemcoreManager:
         exclude_source_ids: list[str] | None = None,
         include_explicit: bool = False,
         kind_patterns: list[str] | None = None,
+        external_target: bool = False,
     ) -> dict[str, Any]:
         return self._retrieve_memory(
             operation="retrieve_memory",
@@ -3272,6 +3275,7 @@ class MemcoreManager:
             include_explicit=include_explicit,
             kind_patterns=kind_patterns,
             include_snippets=True,
+            external_target=external_target,
         )
 
     def _retrieve_memory(
@@ -3294,6 +3298,7 @@ class MemcoreManager:
         include_explicit: bool,
         kind_patterns: list[str] | None,
         include_snippets: bool,
+        external_target: bool = False,
     ) -> dict[str, Any]:
         system = self._get_system_or_none(
             operation=operation,
@@ -3328,9 +3333,7 @@ class MemcoreManager:
                 **({"snippets": []} if include_snippets else {}),
             }
         try:
-            retrieval = system.retrieve_for_turn_structured(
-                current=current,
-                query=str(query or ""),
+            filters = dict(
                 entity_anchors=[str(item).strip() for item in (entity_anchors or []) if str(item).strip()],
                 topic_terms=[str(item).strip() for item in (topic_terms or []) if str(item).strip()],
                 time_hint=time_hint if isinstance(time_hint, dict) else None,
@@ -3341,8 +3344,16 @@ class MemcoreManager:
                 exclude_source_ids=[str(item).strip() for item in (exclude_source_ids or []) if str(item).strip()],
                 include_explicit=bool(include_explicit),
                 kind_patterns=explicit_patterns,
-                cross_conversation=True,
+                cross_conversation=False,
             )
+            if external_target:
+                # The target's prompt-visible window was not shown to the
+                # initiating turn, so excluding it would hide recent evidence.
+                retrieval = system.retrieve_structured(str(query or ""), **filters)
+            else:
+                retrieval = system.retrieve_for_turn_structured(
+                    current=current, query=str(query or ""), **filters,
+                )
             retrieval_status = str(getattr(retrieval, "status", "failed") or "failed")
             if retrieval_status not in {"found", "empty"}:
                 return {
@@ -4503,7 +4514,12 @@ class MemcoreManager:
                     namespace=namespace,
                     timezone=str(getattr(config, "MEMCORE_TIMEZONE", "") or "Asia/Shanghai").strip() or "Asia/Shanghai",
                     storage_dir=str(self.storage_path),
-                    config=self._memory_config,
+                    config=(
+                        replace(self._memory_config, visible_memory_scope="conversation")
+                        if (conversation_id == "master" and user_id == "master")
+                        or conversation_id.startswith(("qq_pri_", "qq_group_shared_"))
+                        else self._memory_config
+                    ),
                     store=self._store,
                     index=self._index,
                     embedding=self._embedding,

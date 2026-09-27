@@ -1322,6 +1322,93 @@ class MemoryStore:
             ).fetchall()
         return [self._row_to_session(dict(row)) for row in rows]
 
+    def has_trusted_qq_group_session(self, session_id: str, *, character_pack_id: str = "") -> bool:
+        """Accept an old group only when this Bot stored a QQ-origin message."""
+
+        normalized = str(session_id or "").strip()
+        if re.fullmatch(r"qq_group_shared_[1-9][0-9]{0,19}", normalized) is None:
+            return False
+        return bool(self.list_trusted_qq_group_sessions(
+            character_pack_id=character_pack_id, after_session_id="", limit=1,
+            exact_session_id=normalized,
+        ))
+
+    def qq_group_directory_has_unverified_sessions(self, *, character_pack_id: str = "") -> bool:
+        """Flag old QQ-shaped sessions whose channel origin cannot be proven."""
+
+        pack = normalize_character_pack_id(character_pack_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM chat_sessions AS s
+                WHERE s.character_pack_id = ?
+                  AND s.profile_user_id = s.session_id
+                  AND s.session_id GLOB 'qq_group_shared_[1-9]*'
+                  AND length(s.session_id) BETWEEN 17 AND 36
+                  AND substr(s.session_id, 17) NOT GLOB '*[^0-9]*'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM chat_messages AS m
+                    WHERE m.profile_user_id = s.profile_user_id
+                      AND m.session_id = s.session_id
+                      AND m.character_pack_id = s.character_pack_id
+                      AND (CASE WHEN json_valid(m.memory_metadata_json)
+                           THEN json_extract(m.memory_metadata_json, '$.client_mode')
+                           ELSE '' END) IN ('qq', 'qq_text')
+                  )
+                LIMIT 1
+                """,
+                (pack,),
+            ).fetchone()
+        return row is not None
+
+    def list_trusted_qq_group_sessions(
+        self,
+        *,
+        character_pack_id: str = "",
+        after_session_id: str = "",
+        limit: int = 20,
+        exact_session_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """Read a bounded, restart-stable QQ directory from Akane's own store.
+
+        A session title or a QQ-shaped ID alone is not evidence of a verified
+        channel event.  Historical entries need a QQ-origin message in the
+        same character domain.  No MemCore private storage is inspected.
+        """
+
+        pack = normalize_character_pack_id(character_pack_id)
+        after = str(after_session_id or "").strip()
+        exact = str(exact_session_id or "").strip()
+        bounded_limit = max(1, min(100, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.session_id, s.profile_user_id, s.character_pack_id, s.display_title
+                FROM chat_sessions AS s
+                WHERE s.character_pack_id = ?
+                  AND s.profile_user_id = s.session_id
+                  AND s.session_id GLOB 'qq_group_shared_[1-9]*'
+                  AND length(s.session_id) BETWEEN 17 AND 36
+                  AND substr(s.session_id, 17) NOT GLOB '*[^0-9]*'
+                  AND s.session_id > ?
+                  AND (? = '' OR s.session_id = ?)
+                  AND EXISTS (
+                    SELECT 1 FROM chat_messages AS m
+                    WHERE m.profile_user_id = s.profile_user_id
+                      AND m.session_id = s.session_id
+                      AND m.character_pack_id = s.character_pack_id
+                      AND (CASE WHEN json_valid(m.memory_metadata_json)
+                           THEN json_extract(m.memory_metadata_json, '$.client_mode')
+                           ELSE '' END) IN ('qq', 'qq_text')
+                  )
+                ORDER BY s.session_id ASC
+                LIMIT ?
+                """,
+                (pack, after, exact, exact, bounded_limit),
+            ).fetchall()
+        return [dict(row) for row in rows
+                if re.fullmatch(r"qq_group_shared_[1-9][0-9]{0,19}", str(row["session_id"]))]
+
     def get_session_messages(
         self,
         *,

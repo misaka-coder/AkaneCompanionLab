@@ -640,6 +640,18 @@ class BotRuntimeFactory:
                 qq_followup_tasks = None
                 plugin_runtime.bind_notification_port(NullNotificationPort())
 
+            from .memory_read_policy import MemoryReadPolicy
+            engine.memory_read_policy = MemoryReadPolicy(
+                store=engine.store,
+                bot_id=effective_bot_config.bot_id,
+                master_qq=(qq_gateway.master_qq if qq_gateway is not None else str(getattr(runtime_config, "MASTER_QQ", "") or "")),
+                enabled=lambda config_view=runtime_config: bool(
+                    getattr(config_view, "MEMORY_CROSS_CONVERSATION_ENABLED", False)
+                ),
+                resolve_origin=plugin_conversation_refs.resolve,
+                key_path=runtime_layout.state_dir / "memory_read_cursor.key",
+            )
+
             turn_coordinator = TurnCoordinator()
             engine.turn_coordinator = turn_coordinator
             session_inbox_store = SessionInboxStore(engine.store.db_path)

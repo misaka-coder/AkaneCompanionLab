@@ -4142,6 +4142,18 @@ class AkaneMemoryEngine:
                 if plugin_external_event is not None
                 else {}
             )
+            read_policy = getattr(self, "memory_read_policy", None)
+            if (
+                client_context.effective_mode == ClientMode.QQ_TEXT
+                and read_policy is not None
+                and read_policy.is_verified_qq_turn(
+                    profile_user_id=profile_user_id,
+                    session_id=session_id,
+                    character_pack_id=turn_character_pack_id,
+                    reference=payload.get("_memory_qq_ref"),
+                )
+            ):
+                user_memory_metadata["client_mode"] = "qq_text"
             if message_addressing:
                 user_memory_metadata["message_addressing"] = message_addressing
             if forward_references:
@@ -9035,6 +9047,7 @@ class AkaneMemoryEngine:
             attachment_ingest_service=self._get_attachment_ingest_service(),
             generated_file_service=self._get_generated_file_service(),
             retrieve_fn=self._execute_retrieve_memory_tool,
+            memory_read_policy_provider=lambda: getattr(self, "memory_read_policy", None),
             skill_registry=self._get_skill_registry(),
             execution_provider=self._build_execution_provider(),
             approval_store=self._get_approval_store(),

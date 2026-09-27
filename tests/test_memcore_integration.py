@@ -6432,7 +6432,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 },
                 role="user",
                 profile_user_id="u1",
-                session_id="older-session",
+                session_id="archive-session",
                 character_pack_id="char",
             )
             current = {
@@ -6452,7 +6452,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             with patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
                 result = manager.shadow_retrieve_memory(
                     profile_user_id="u1",
-                    session_id="current-session",
+                    session_id="archive-session",
                     character_pack_id="char",
                     current_user_record=current,
                     query="可乐",
@@ -6460,6 +6460,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     topic_terms=["饮料"],
                     memory_facets=["preference"],
                     about_roles=["user"],
+                    external_target=True,
                 )
 
             self.assertTrue(result["ok"])
@@ -6497,7 +6498,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     },
                     role="user",
                     profile_user_id="u1",
-                    session_id=f"older-session-{index}",
+                    session_id="archive-session",
                     character_pack_id="char",
                 )
             current = {
@@ -6516,7 +6517,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
             result = manager.retrieve_memory(
                 profile_user_id="u1",
-                session_id="current-session",
+                session_id="archive-session",
                 character_pack_id="char",
                 current_user_record=current,
                 query="可乐",
@@ -6525,6 +6526,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 source_layers=["raw"],
                 memory_facets=["preference"],
                 about_roles=["user"],
+                external_target=True,
             )
 
             self.assertTrue(result["ok"], result)
@@ -6617,7 +6619,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     },
                     role="user",
                     profile_user_id="u1",
-                    session_id=f"archive:{source_id}",
+                    session_id="archive-session",
                     character_pack_id="char",
                 )
             current = {
@@ -6636,7 +6638,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
             result = manager.retrieve_memory(
                 profile_user_id="u1",
-                session_id="current-session",
+                session_id="archive-session",
                 character_pack_id="char",
                 current_user_record=current,
                 query="和 misaka 一起来玩的另一个人是谁",
@@ -6649,6 +6651,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 source_layers=["raw"],
                 memory_facets=["relationship"],
                 about_roles=["third_party"],
+                external_target=True,
             )
 
             self.assertTrue(result["ok"], result)
@@ -6752,7 +6755,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
                 allowed = manager.retrieve_memory(
                     profile_user_id="u1",
-                    session_id="private:u1",
+                    session_id="private:archive",
                     character_pack_id="char",
                     current_user_record={
                         "source_id": "current-explicit-query",
@@ -6764,6 +6767,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     topic_terms=["政策方向"],
                     include_explicit=True,
                     kind_patterns=["event.finance.*"],
+                    external_target=True,
                 )
                 forbidden = manager.retrieve_memory(
                     profile_user_id="u1",
@@ -8741,7 +8745,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
         self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
         self.assertEqual(memcore_manager.calls[0]["time_periods"], ["上午"])
-        self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
+        self.assertFalse(memcore_manager.calls[0]["cross_conversation"])
         self.assertEqual(result.state_updates["memory_timeline"]["status"], "partial")
         self.assertEqual(result.state_updates["memory_timeline"]["message_count"], 1)
         self.assertFalse(result.state_updates["memory_timeline"]["coverage"]["complete"])
@@ -8805,7 +8809,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
         self.assertEqual(memcore_manager.calls[0]["session_id"], "group:42")
         self.assertEqual(memcore_manager.calls[0]["memory_id"], "tool-result-1")
-        self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
+        self.assertFalse(memcore_manager.calls[0]["cross_conversation"])
         self.assertIn("完整工具正文", result.followup_context)
         self.assertIsNotNone(result.followup_envelope)
         self.assertTrue(result.followup_envelope.producer_bounded)
@@ -8833,7 +8837,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
         forwarded = memcore_manager.calls[0]
         self.assertEqual(forwarded["session_id"], "group:42")
-        self.assertTrue(forwarded["cross_conversation"])
+        self.assertFalse(forwarded["cross_conversation"])
         self.assertIn("episode-1", result.followup_context)
         self.assertIn("早茶与同行者", result.followup_context)
         self.assertIn("live_source_count", result.followup_context)
