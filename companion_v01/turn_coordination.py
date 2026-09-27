@@ -12,9 +12,26 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+
+
+_CANCELLATION_CHECKS: ContextVar[tuple] = ContextVar("turn_cancellation_checks", default=())
+
+
+def cancellation_requested() -> bool:
+    return any(check() for check in _CANCELLATION_CHECKS.get())
+
+
+@contextmanager
+def cancellation_scope(check):
+    token = _CANCELLATION_CHECKS.set((*_CANCELLATION_CHECKS.get(), check))
+    try:
+        yield
+    finally:
+        _CANCELLATION_CHECKS.reset(token)
 
 
 def _identity_key(profile_user_id: Any, session_id: Any) -> str:
@@ -272,6 +289,15 @@ class TurnCoordinator:
                 "reason": "stop_requested_at_safe_boundary",
                 "turn_token": active.token,
             }
+
+    def request_stop_token(self, token: Any) -> bool:
+        normalized = str(token or "").strip()
+        with self._state_lock:
+            active = next((item for item in self._active.values() if item.token == normalized), None)
+            if active is None or active.phase != "running":
+                return False
+            active.stop_requested = True
+            return True
 
     def drain(self, token: Any) -> dict[str, Any]:
         normalized = str(token or "").strip()

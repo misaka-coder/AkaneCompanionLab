@@ -22,7 +22,9 @@ class QQGroupAttentionState:
     """Mechanical scheduling state; conversation content stays in MemCore.
 
     One pending ticket owns a fixed deadline. Later passive messages may update
-    MemCore, but never postpone the already scheduled observation.
+    MemCore, but never postpone the already scheduled observation. Once claimed,
+    its participant set is frozen so same-participant follow-ups can supersede
+    an unspoken response without letting newcomers interrupt it.
     """
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
@@ -33,6 +35,10 @@ class QQGroupAttentionState:
         self._tickets: dict[str, AttentionTicket] = {}
         self._in_flight: dict[str, str] = {}
         self._dirty_during_flight: set[str] = set()
+        self._pending_actors: dict[str, set[str]] = {}
+        self._active_actors: dict[str, set[str]] = {}
+        self._superseded: set[str] = set()
+        self._reply_started: set[str] = set()
 
     @staticmethod
     def normalize_mode(value: Any, *, default: str = "engaged") -> str:
@@ -48,6 +54,7 @@ class QQGroupAttentionState:
         *,
         mode: str,
         delay_seconds: float,
+        actor_keys: tuple[str, ...] = (),
     ) -> tuple[AttentionTicket | None, str]:
         normalized_key = str(key or "").strip()
         if not normalized_key:
@@ -65,6 +72,7 @@ class QQGroupAttentionState:
                 return None, "in_flight_dirty"
             existing = self._tickets.get(normalized_key)
             if existing is not None:
+                self._pending_actors.setdefault(normalized_key, set()).update(filter(None, actor_keys))
                 return existing, "already_pending"
             engaged = self._engaged_until.get(normalized_key, 0.0) > now
             if normalized_mode == "engaged" and not engaged:
@@ -82,6 +90,7 @@ class QQGroupAttentionState:
                 reason=reason,
             )
             self._tickets[normalized_key] = ticket
+            self._pending_actors[normalized_key] = set(filter(None, actor_keys))
             return ticket, "armed"
 
     def claim(self, ticket: AttentionTicket) -> bool:
@@ -91,8 +100,16 @@ class QQGroupAttentionState:
                 return False
             self._tickets.pop(ticket.key, None)
             self._in_flight[ticket.key] = ticket.token
+            self._active_actors[ticket.key] = self._pending_actors.pop(ticket.key, set())
+            self._superseded.discard(ticket.key)
+            self._reply_started.discard(ticket.key)
             self._dirty_during_flight.discard(ticket.key)
             return True
+
+    def note_pending_actors(self, key: str, actor_keys: tuple[str, ...]) -> None:
+        with self._lock:
+            if key in self._tickets:
+                self._pending_actors.setdefault(key, set()).update(filter(None, actor_keys))
 
     def finish(self, ticket: AttentionTicket, *, discard_dirty: bool = False) -> bool:
         """Close one claimed generation and report whether newer facts arrived."""
@@ -103,6 +120,9 @@ class QQGroupAttentionState:
             self._in_flight.pop(ticket.key, None)
             dirty = ticket.key in self._dirty_during_flight
             self._dirty_during_flight.discard(ticket.key)
+            self._active_actors.pop(ticket.key, None)
+            self._superseded.discard(ticket.key)
+            self._reply_started.discard(ticket.key)
             return bool(dirty and not discard_dirty)
 
     def cancel(self, key: str) -> bool:
@@ -112,7 +132,43 @@ class QQGroupAttentionState:
             running = self._in_flight.pop(normalized_key, None) is not None
             dirty = normalized_key in self._dirty_during_flight
             self._dirty_during_flight.discard(normalized_key)
+            self._pending_actors.pop(normalized_key, None)
+            self._active_actors.pop(normalized_key, None)
+            self._superseded.discard(normalized_key)
+            self._reply_started.discard(normalized_key)
             return removed or running or dirty
+
+    def supersede_for_actor(
+        self, key: str, actor_key: str, *, stop_running: Callable[[str], bool] | None = None,
+    ) -> str:
+        """Invalidate an unspoken observation when a window participant adds input.
+
+        Keep ownership until the worker exits: new observations must wait for
+        its delivery/persistence cleanup rather than overlap the old request.
+        """
+        with self._lock:
+            token = self._in_flight.get(key, "")
+            if (not token or key in self._reply_started or key in self._superseded
+                    or not actor_key or actor_key not in self._active_actors.get(key, set())):
+                return ""
+            # Once the engine has entered finalization, let persistence and
+            # delivery finish together instead of hiding an already stored reply.
+            if stop_running is not None and not stop_running(token):
+                return ""
+            self._superseded.add(key)
+            return token
+
+    def is_superseded(self, ticket: AttentionTicket) -> bool:
+        with self._lock:
+            return self._in_flight.get(ticket.key) == ticket.token and ticket.key in self._superseded
+
+    def begin_reply(self, ticket: AttentionTicket) -> bool:
+        """Atomically choose between restarting and beginning visible output."""
+        with self._lock:
+            if self._in_flight.get(ticket.key) != ticket.token or ticket.key in self._superseded:
+                return False
+            self._reply_started.add(ticket.key)
+            return True
 
     def is_current(self, ticket: AttentionTicket) -> bool:
         """A cancelled generation cannot resume or clean up its replacement."""

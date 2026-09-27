@@ -40,6 +40,7 @@ from ..host_completion_batch import (
     completion_timestamp,
     completion_turn_payload,
 )
+from ..turn_coordination import cancellation_requested, cancellation_scope
 from ..session_inbox import SessionInboxItem
 from ..turn_coordination import SessionWorkQueue, TurnCoordinator
 from ..qq_group_attention import AttentionTicket, QQGroupAttentionState
@@ -1356,6 +1357,7 @@ def _process_qq_turn_streaming(
     tts_client: Any = None,
     gpt_sovits_client_factory: Callable[[str], Any] | None = None,
     settings: Any = None,
+    begin_attention_reply: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     timing_started_at = time.perf_counter()
     timing: dict[str, float] = {}
@@ -1407,10 +1409,27 @@ def _process_qq_turn_streaming(
     stream_enabled = bool(getattr(config_module, "QQ_STREAM_REPLIES_ENABLED", True)) and not single_message_delivery
 
     engine_started_at = time.perf_counter()
-    for stream_event in engine.process_turn_stream(turn_payload):
+    stream_events = engine.process_turn_stream(turn_payload)
+    for stream_event in stream_events:
         if not isinstance(stream_event, dict):
             continue
         event_type = str(stream_event.get("type") or "").strip()
+        if begin_attention_reply is not None:
+            if cancellation_requested():
+                close_stream = getattr(stream_events, "close", None)
+                if callable(close_stream):
+                    close_stream()
+                break
+            candidate = stream_event.get("payload") if event_type == "final_ui" else {}
+            starts_reply = (
+                event_type == "speech_segment" and stream_enabled
+                and bool(str(stream_event.get("text") or "").strip())
+                and _streaming_allows_tool_preface(active_reply_mode, delivery_hint)
+            ) or (isinstance(candidate, dict) and bool(
+                str(candidate.get("speech") or "").strip() or _qq_has_visible_action_receipt(candidate.get("tool_events"))
+            ))
+            if starts_reply and not begin_attention_reply():
+                continue
         if event_type in {"generated_file_ready", "file_ready"}:
             streamed_delivery_events.append(dict(stream_event))
         if event_type == "delivery_hint":
@@ -1528,6 +1547,12 @@ def _process_qq_turn_streaming(
         ),
     )
 
+    if cancellation_requested():
+        frame = {"status": "stopped", "speech": "", "speech_segments": [], "tool_events": [],
+                 "reason": str(frame.get("reason") or "user_stopped"),
+                 "_turn_stopped": True, "_deliberate_silence": True}
+        streamed_delivery_events = []
+        final_frame_received = True
     frame_delivery_events = frame.get("tool_events") if isinstance(frame.get("tool_events"), list) else []
     visible_action_delivered = _qq_has_visible_action_receipt(frame_delivery_events)
     deliberate_silence = bool(frame.get("_deliberate_silence") or frame.get("_notification_suppressed"))
@@ -1991,9 +2016,10 @@ def build_qq_router(
     group_attention = QQGroupAttentionState()
     attention_latest: dict[
         str,
-        tuple[Any, dict[str, Any], str, tuple[str, ...], tuple[str, ...]],
+        tuple[Any, dict[str, Any], str, tuple[str, ...], tuple[str, ...], tuple[str, ...]],
     ] = {}
     attention_pending_media: dict[str, list[dict[str, Any]]] = {}
+    attention_control_tokens: dict[str, str] = {}
 
     def schedule_followup(coroutine: Any) -> Any:
         if async_task_supervisor is not None:
@@ -2220,10 +2246,34 @@ def build_qq_router(
         group_attention.cancel(key)
         attention_latest.pop(key, None)
 
+    def _supersede_attention_for_message(context: Any) -> None:
+        key = _session_work_key(context)
+        def stop_running(token: str) -> bool:
+            control_token = attention_control_tokens.get(token)
+            return not control_token or turn_coordinator.request_stop_token(control_token)
+
+        token = group_attention.supersede_for_actor(
+            key, _attention_actor_key(context), stop_running=stop_running,
+        )
+        if not token:
+            return
+        log_event(
+            "qq_group_attention_superseded",
+            session_id=context.session_id,
+            profile_user_id=context.profile_user_id,
+            group_id=int(getattr(context, "group_id", 0) or 0),
+            reason="window_participant_followup",
+        )
+
+    def _attention_cancelled(ticket: AttentionTicket) -> bool:
+        return not group_attention.is_current(ticket) or group_attention.is_superseded(ticket)
+
     def _group_attention_can_continue(ticket: AttentionTicket, context: Any) -> bool:
         reason = ""
         if not group_attention.is_current(ticket):
             reason = "cancelled"
+        elif group_attention.is_superseded(ticket):
+            reason = "window_participant_followup"
         elif _group_attention_mode(context) == "off":
             reason = "mode_off"
         if not reason:
@@ -2242,18 +2292,73 @@ def build_qq_router(
         await asyncio.sleep(max(0.0, ticket.deadline - time.monotonic()))
         if not group_attention.claim(ticket):
             return
-        snapshot = attention_latest.pop(ticket.key, None)
-        if snapshot is None:
-            group_attention.finish(ticket, discard_dirty=True)
+        completed = False
+        newer_generation_waiting = False
+        snapshot = None
+        try:
+            snapshot = attention_latest.pop(ticket.key, None)
+            if snapshot is not None:
+                completed = await _observe_group_attention_ticket(ticket, snapshot)
+        except Exception as exc:
+            if not _attention_cancelled(ticket) and ticket.reason == "idle_observation":
+                group_attention.mark_idle_observed(
+                    ticket.key,
+                    cooldown_seconds=float(
+                        getattr(config_module, "QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS", 60) or 60
+                    ),
+                )
+            logger.exception("qq group attention observation failed")
+            context = snapshot[0] if snapshot is not None else None
+            log_event(
+                "qq_group_attention_failed",
+                session_id=str(getattr(context, "session_id", "") or ""),
+                profile_user_id=str(getattr(context, "profile_user_id", "") or ""),
+                group_id=int(getattr(context, "group_id", 0) or 0),
+                attention_reason=ticket.reason,
+                reason=exc.__class__.__name__,
+            )
+        finally:
+            # Includes preparation failures and task cancellation. An obsolete
+            # task must never remove a newer generation's snapshot or ticket.
+            if group_attention.is_current(ticket):
+                restart = group_attention.is_superseded(ticket)
+                newer_generation_waiting = group_attention.finish(ticket, discard_dirty=not (completed or restart))
+                if not completed and not restart:
+                    attention_latest.pop(ticket.key, None)
+        if not newer_generation_waiting:
             return
-        context, event, projection_anchor_source_id, attachment_ids, stimulus_source_ids = snapshot
+        next_snapshot = attention_latest.get(ticket.key)
+        if next_snapshot is None:
+            return
+        next_context = next_snapshot[0]
+        next_ticket, next_reason = group_attention.arm(
+            ticket.key,
+            mode=_group_attention_mode(next_context),
+            actor_keys=next_snapshot[5],
+            delay_seconds=float(getattr(config_module, "QQ_GROUP_ATTENTION_DELAY_SECONDS", 10.0) or 0.0),
+        )
+        if next_ticket is not None and next_reason == "armed":
+            schedule_followup(_run_group_attention_ticket(next_ticket))
+            log_event(
+                "qq_group_attention_rearmed",
+                session_id=str(getattr(next_context, "session_id", "") or ""),
+                profile_user_id=str(getattr(next_context, "profile_user_id", "") or ""),
+                group_id=int(getattr(next_context, "group_id", 0) or 0),
+                reason="newer_memcore_generation",
+                attention_reason=next_ticket.reason,
+            )
+        elif next_reason not in {"already_pending", "in_flight_dirty"}:
+            attention_latest.pop(ticket.key, None)
+
+    async def _observe_group_attention_ticket(ticket: AttentionTicket, snapshot: tuple) -> bool:
+        context, event, projection_anchor_source_id, attachment_ids, stimulus_source_ids, _participant_keys = snapshot
         # Ambient participation is based on the whole MemCore projection, not
         # mechanically on the last message that happened to update the ticket.
         # Clear only the delivery reply reference so Akane joins the discussion
         # naturally instead of quoting an arbitrary last line.
         context = replace(context, source_message_id="")
         if not _group_attention_can_continue(ticket, context):
-            return
+            return False
         if turn_coordinator.is_busy(context.profile_user_id, context.session_id) or session_work_queue.has_work(
             ticket.key
         ):
@@ -2272,10 +2377,7 @@ def build_qq_router(
                 reason="session_busy",
                 attention_reason=ticket.reason,
             )
-            if group_attention.is_current(ticket):
-                group_attention.finish(ticket, discard_dirty=True)
-                attention_latest.pop(ticket.key, None)
-            return
+            return False
         review_event = _group_attention_review_event(ticket.reason)
         turn_payload = context.to_turn_payload()
         turn_payload.update(
@@ -2303,26 +2405,20 @@ def build_qq_router(
             turn_payload["qq_current_attachment_ids"] = list(attachment_ids)
             native_prepare = getattr(engine, "prepare_qq_native_image_inputs", None)
             if callable(native_prepare):
-                try:
-                    native_result = await asyncio.to_thread(
-                        native_prepare,
-                        profile_user_id=context.profile_user_id,
-                        session_id=context.session_id,
-                        attachment_ids=list(attachment_ids),
-                        chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
-                        timeout_seconds=max(
-                            0.0,
-                            min(
-                                15.0,
-                                float(getattr(config_module, "QQ_ATTACHMENT_READY_WAIT_SECONDS", 8.0) or 0.0),
-                            ),
+                native_result = await asyncio.to_thread(
+                    native_prepare,
+                    profile_user_id=context.profile_user_id,
+                    session_id=context.session_id,
+                    attachment_ids=list(attachment_ids),
+                    chat_model_override=str(getattr(context, "chat_model_override", "") or ""),
+                    timeout_seconds=max(
+                        0.0,
+                        min(
+                            15.0,
+                            float(getattr(config_module, "QQ_ATTACHMENT_READY_WAIT_SECONDS", 8.0) or 0.0),
                         ),
-                    )
-                except Exception:
-                    logger.exception("qq group attention media preparation failed")
-                    if group_attention.is_current(ticket):
-                        group_attention.finish(ticket, discard_dirty=True)
-                    return
+                    ),
+                )
                 native_images = [
                     dict(item)
                     for item in list((native_result or {}).get("images") or [])
@@ -2341,34 +2437,12 @@ def build_qq_router(
                 )
         _apply_group_attention_actor_scope(turn_payload, reason=ticket.reason)
         if not _group_attention_can_continue(ticket, context):
-            return
-        try:
-            result = await _run_qq_turn_delivery(
-                context=context, event=event, turn_payload=turn_payload, attention_ticket=ticket,
-            )
-        except Exception as exc:
-            if ticket.reason == "idle_observation":
-                group_attention.mark_idle_observed(
-                    ticket.key,
-                    cooldown_seconds=float(
-                        getattr(config_module, "QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS", 60) or 60
-                    ),
-                )
-            logger.exception("qq group attention observation failed")
-            log_event(
-                "qq_group_attention_failed",
-                session_id=context.session_id,
-                profile_user_id=context.profile_user_id,
-                group_id=int(getattr(context, "group_id", 0) or 0),
-                attention_reason=ticket.reason,
-                reason=exc.__class__.__name__,
-            )
-            if group_attention.is_current(ticket):
-                group_attention.finish(ticket, discard_dirty=True)
-                attention_latest.pop(ticket.key, None)
-            return
-        if result.get("attention_skipped") or not group_attention.is_current(ticket):
-            return
+            return False
+        result = await _run_qq_turn_delivery(
+            context=context, event=event, turn_payload=turn_payload, attention_ticket=ticket,
+        )
+        if result.get("attention_skipped") or _attention_cancelled(ticket):
+            return False
         if ticket.reason == "idle_observation" and not _turn_has_real_visible_delivery(result):
             group_attention.mark_idle_observed(
                 ticket.key,
@@ -2388,39 +2462,20 @@ def build_qq_router(
             silent=bool(result_frame.get("_deliberate_silence")) and not visible_reply,
             silent_reason="model_decision" if bool(result_frame.get("_deliberate_silence")) else "",
         )
-        newer_generation_waiting = group_attention.finish(ticket)
-        if not newer_generation_waiting:
-            return
-        next_snapshot = attention_latest.get(ticket.key)
-        if next_snapshot is None:
-            return
-        next_context = next_snapshot[0]
-        next_ticket, next_reason = group_attention.arm(
-            ticket.key,
-            mode=_group_attention_mode(next_context),
-            delay_seconds=float(getattr(config_module, "QQ_GROUP_ATTENTION_DELAY_SECONDS", 10.0) or 0.0),
-        )
-        if next_ticket is not None and next_reason == "armed":
-            schedule_followup(_run_group_attention_ticket(next_ticket))
-            log_event(
-                "qq_group_attention_rearmed",
-                session_id=str(getattr(next_context, "session_id", "") or ""),
-                profile_user_id=str(getattr(next_context, "profile_user_id", "") or ""),
-                group_id=int(getattr(next_context, "group_id", 0) or 0),
-                reason="newer_memcore_generation",
-                attention_reason=next_ticket.reason,
-            )
-        elif next_reason not in {"already_pending", "in_flight_dirty"}:
-            attention_latest.pop(ticket.key, None)
+        return True
 
     def _schedule_group_attention(
         context: Any,
         event: dict[str, Any],
         *,
         projection_anchor_source_id: str,
+        participant_keys: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         if not bool(getattr(context, "is_group", False)):
             return {"scheduled": False, "reason": "not_group"}
+        key = _session_work_key(context)
+        participant_keys = participant_keys or (_attention_actor_key(context),)
+        group_attention.note_pending_actors(key, participant_keys)
         if any(
             isinstance(item, dict) and str(item.get("kind") or "").strip().lower() == "image"
             for item in list(getattr(context, "attachments", None) or [])
@@ -2434,10 +2489,10 @@ def build_qq_router(
         anchor_source_id = str(projection_anchor_source_id or "").strip()
         if not anchor_source_id:
             return {"scheduled": False, "reason": "projection_anchor_missing"}
-        key = _session_work_key(context)
         ticket, reason = group_attention.arm(
             key,
             mode=_group_attention_mode(context),
+            actor_keys=participant_keys,
             delay_seconds=float(getattr(config_module, "QQ_GROUP_ATTENTION_DELAY_SECONDS", 10.0) or 0.0),
         )
         if ticket is None and reason != "in_flight_dirty":
@@ -2464,6 +2519,7 @@ def build_qq_router(
             anchor_source_id,
             attachment_ids,
             stimulus_source_ids,
+            tuple(dict.fromkeys([*(previous[5] if previous is not None else ()), *participant_keys])),
         )
         if reason != "armed":
             return {"scheduled": False, "reason": reason}
@@ -2518,6 +2574,7 @@ def build_qq_router(
         context: Any,
         event: dict[str, Any],
         turn_payload: dict[str, Any],
+        attention_ticket: AttentionTicket | None = None,
     ) -> dict[str, Any]:
         turn_kind = str(turn_payload.get("turn_kind") or "").strip().lower()
         is_plugin_event = turn_kind == "plugin_event"
@@ -2578,6 +2635,8 @@ def build_qq_router(
                 )
                 if part
             )
+        if attention_ticket is not None and not _group_attention_can_continue(attention_ticket, context):
+            return {"attention_skipped": True, "frame": {}, "reply_messages": []}
         turn_result = await asyncio.to_thread(
             _process_qq_turn_streaming,
             engine=engine,
@@ -2588,6 +2647,8 @@ def build_qq_router(
             tts_client=tts_client,
             settings=settings,
             gpt_sovits_client_factory=gpt_sovits_client_factory,
+            **({"begin_attention_reply": lambda: group_attention.begin_reply(attention_ticket)}
+               if attention_ticket is not None else {}),
         )
         file_send_result = dict(turn_result.get("file_send_result") or {"ok": True, "count": 0, "results": []})
         for item in list(file_send_result.get("results") or []):
@@ -2852,6 +2913,9 @@ def build_qq_router(
                     last_context,
                     last_event,
                     projection_anchor_source_id=str(last_record_result.get("source_id") or ""),
+                    participant_keys=tuple(
+                        _attention_actor_key(_restore_queued_context(item, item.payload)) for item in items
+                    ),
                 )
                 log_event(
                     "qq_group_attention_considered",
@@ -3202,11 +3266,20 @@ def build_qq_router(
             if attention_ticket is not None and not _group_attention_can_continue(attention_ticket, context):
                 return {"attention_skipped": True, "frame": {}, "reply_messages": []}
             turn_payload["_turn_control_id"] = turn_control_id
-            result = await _run_qq_turn_delivery_unlocked(
-                context=context,
-                event=event,
-                turn_payload=turn_payload,
-            )
+            if attention_ticket is not None:
+                attention_control_tokens[attention_ticket.token] = turn_control_id
+            try:
+                with (cancellation_scope(lambda: _attention_cancelled(attention_ticket))
+                      if attention_ticket is not None else nullcontext()):
+                    result = await _run_qq_turn_delivery_unlocked(
+                        context=context,
+                        event=event,
+                        turn_payload=turn_payload,
+                        attention_ticket=attention_ticket,
+                    )
+            finally:
+                if attention_ticket is not None:
+                    attention_control_tokens.pop(attention_ticket.token, None)
             if isinstance(result, dict):
                 timing = dict(result.get("timing") or {})
                 timing["queue_wait_ms"] = round(queue_wait_ms, 1)
@@ -3810,6 +3883,8 @@ def build_qq_router(
                             turn_payload=dict(deferred_payload),
                             kind="passive",
                         )
+                        if queued.get("ok"):
+                            _supersede_attention_for_message(context)
                         duration_ms = (time.perf_counter() - started_at) * 1000
                         runtime_metrics.observe_request(
                             "qq_napcat_event",
@@ -3866,6 +3941,8 @@ def build_qq_router(
                         record_status=str(record_payload.get("status") or ""),
                         duration_ms=round(duration_ms, 1),
                     )
+                    if record_ok:
+                        _supersede_attention_for_message(context)
                     attention_result = (
                         _schedule_group_attention(
                             context,
