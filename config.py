@@ -153,7 +153,7 @@ class Settings(BaseSettings):
     # memcore 可见长期记忆作用域：conversation/user
     MEMCORE_VISIBLE_SCOPE: str = "user"
     # Cross-QQ memory reads require an explicit conversation target even when enabled.
-    MEMORY_CROSS_CONVERSATION_ENABLED: bool = False
+    MEMORY_CROSS_CONVERSATION_ENABLED: bool = True
     # memcore mood/flavor 温度层；桌宠陪伴默认开启
     MEMCORE_ENABLE_FLAVOR: bool = True
     # 影子检索对比开关；只记录结构化统计，不改变用户可见回复

@@ -2,7 +2,7 @@
 
 四个记忆读取工具默认只查发起回合的当前会话。需要读取其他位置时，明确传入 `conversation="master"` 或 `conversation="group:<群号>"`；`conversation="current"` 等同于省略。一次调用只查询一个目标，不会在查空后自动扩大范围。`list_memory_conversations` 可分页列出当前 Bot、当前角色域里可选的目标，不读取消息内容。
 
-`MEMORY_CROSS_CONVERSATION_ENABLED` 默认 `false`。部署方在当前 Bot 的有效配置中设为 `true` 后，主人 QQ 私聊与群聊可相互选读，也可在两个群之间选读；修改 `.env` 需要重启，运行时设置可即时生效。普通群员在群内调用按群会话授权；非主人私聊仍只能读自己的当前会话。关闭开关会阻止后续跨会话读取及旧游标续页，不回删此前写入发起会话的合法工具证据。`MEMCORE_VISIBLE_SCOPE` 仍控制非 QQ 场景；QQ 命名空间的默认可见范围固定为当前 conversation。
+`MEMORY_CROSS_CONVERSATION_ENABLED` 默认 `true`。主人 QQ 私聊与群聊可相互选读，也可在两个群之间选读；修改 `.env` 需要重启，运行时设置可即时生效。普通群员在群内调用按群会话授权；非主人私聊仍只能读自己的当前会话。关闭开关会阻止后续跨会话读取及旧游标续页，不回删此前写入发起会话的合法工具证据。`MEMCORE_VISIBLE_SCOPE` 仍控制非 QQ 场景；QQ 命名空间的默认可见范围固定为当前 conversation。
 
 群目录从 Akane 自己的会话表读取，要求同一角色域中有带 QQ 来源标记的历史消息。被动群消息已有标记；新版本在可信 QQ 路由处理的活跃消息上也写入标记。只有旧版活跃消息、且没有其他 QQ 来源记录的群，无法仅凭形似群号的会话 ID 证明来源，因此不会出现在目录或成为外部读取目标；目录返回 `directory_complete=false` 和原因。该群再次通过真实 QQ 路由产生消息后即可登记。无需扫描 MemCore 私有表或网络群列表。
 

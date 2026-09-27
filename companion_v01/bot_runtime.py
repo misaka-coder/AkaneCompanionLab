@@ -646,7 +646,7 @@ class BotRuntimeFactory:
                 bot_id=effective_bot_config.bot_id,
                 master_qq=(qq_gateway.master_qq if qq_gateway is not None else str(getattr(runtime_config, "MASTER_QQ", "") or "")),
                 enabled=lambda config_view=runtime_config: bool(
-                    getattr(config_view, "MEMORY_CROSS_CONVERSATION_ENABLED", False)
+                    getattr(config_view, "MEMORY_CROSS_CONVERSATION_ENABLED", True)
                 ),
                 resolve_origin=plugin_conversation_refs.resolve,
                 key_path=runtime_layout.state_dir / "memory_read_cursor.key",
