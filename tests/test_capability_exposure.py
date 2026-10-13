@@ -197,7 +197,7 @@ class CapabilityExposureTests(unittest.TestCase):
         self.assertEqual(result.followup_context, "one")
         self.assertEqual(invoked.followup_context, "two")
 
-    def test_removed_target_returns_a_paired_rejected_envelope(self):
+    def test_removed_target_returns_a_paired_unavailable_envelope(self):
         selection = self.select()
         self.engine.tool_handlers.pop("demo.alpha")
         invocation = normalize_tool_invocation(self.engine, {"type":"demo.alpha", "text":"gone",
@@ -205,7 +205,7 @@ class CapabilityExposureTests(unittest.TestCase):
         result, envelope = execute_tool_invocation(self.engine, invocation=invocation,
             profile_user_id="alice", session_id="s", character_pack_id="a", visual_payload={}, now_ts=1)
         self.assertEqual(envelope.invocation_id, "removed-call")
-        self.assertEqual(envelope.status, "rejected")
+        self.assertEqual(envelope.status, "unavailable")
         self.assertFalse(envelope.data["executed"])
         self.assertTrue(result.capability_result.is_error)
         self.assertEqual(self.alpha.calls, [])
