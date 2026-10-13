@@ -313,15 +313,26 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
             except (TypeError, ValueError):
                 return self._page_failure("cursor_invalid", "cursor 偏移无效")
             expected_fingerprint = str(payload.get("f") or "")
-        result = self.attachment_service.read_section(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            target=str(call.get("target") or ""),
-            section=str(call.get("section") or ""),
-            kind=str(call.get("kind") or "document"),
-            max_chars=4_000_000,
-            timestamp=context.now_ts,
+        budget_chars, budget_lines = (
+            (FIRST_PAGE_BUDGET_CHARS, FIRST_PAGE_BUDGET_LINES)
+            if not cursor else (NEXT_PAGE_BUDGET_CHARS, NEXT_PAGE_BUDGET_LINES)
         )
+        request = {
+            "profile_user_id": context.profile_user_id, "session_id": context.session_id,
+            "target": str(call.get("target") or ""), "section": str(call.get("section") or ""),
+            "kind": str(call.get("kind") or "document"), "timestamp": context.now_ts,
+        }
+        page_reader = getattr(self.attachment_service, "read_section_page", None)
+        if callable(page_reader):
+            result = page_reader(
+                **request, start_offset=start_offset, expected_fingerprint=expected_fingerprint,
+                budget_chars=budget_chars, budget_lines=budget_lines,
+            )
+            if result.get("status") in {"source_unavailable", "stale_cursor", "cursor_invalid"}:
+                return self._page_failure(result["status"], result.get("reason") or "附件续读未执行")
+        else:
+            # Keep injected/legacy attachment services on the existing contract.
+            result = self.attachment_service.read_section(**request, max_chars=4_000_000)
         item = result.get("item") if isinstance(result, dict) else None
         events = []
         if isinstance(item, dict):
@@ -339,23 +350,23 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
             success_events=events,
         )
         if bool(result.get("ok")):
-            fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            if expected_fingerprint and fingerprint != expected_fingerprint:
-                return self._page_failure("stale_cursor", "附件内容在上一页后已变化")
-            if start_offset > len(content):
-                return self._page_failure("stale_cursor", "附件片段比 cursor 记录的更短")
-            budget_chars, budget_lines = (
-                (FIRST_PAGE_BUDGET_CHARS, FIRST_PAGE_BUDGET_LINES)
-                if not cursor
-                else (NEXT_PAGE_BUDGET_CHARS, NEXT_PAGE_BUDGET_LINES)
-            )
-            page_text, next_offset, total_chars = slice_page(
-                content,
-                start=start_offset,
-                budget_chars=budget_chars,
-                budget_lines=budget_lines,
-            )
-            complete = next_offset >= total_chars
+            page = result.get("page")
+            if isinstance(page, dict):
+                fingerprint = page["fingerprint"]
+                page_text, next_offset, total_chars = content, page["next_offset"], page["total_chars"]
+                complete, window_done = page["complete"], page["window_done"]
+                source_truncated = page["source_truncated"]
+            else:
+                fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if expected_fingerprint and fingerprint != expected_fingerprint:
+                    return self._page_failure("stale_cursor", "附件内容在上一页后已变化")
+                if start_offset > len(content):
+                    return self._page_failure("stale_cursor", "附件片段比 cursor 记录的更短")
+                page_text, next_offset, total_chars = slice_page(
+                    content, start=start_offset, budget_chars=budget_chars, budget_lines=budget_lines,
+                )
+                complete = window_done = next_offset >= total_chars
+                source_truncated = len(content) >= 4_000_000
             item = result.get("item") if isinstance(result.get("item"), dict) else {}
             stable_target = str(item.get("attachment_handle") or item.get("attachment_id") or call.get("target") or "")
             section = str(call.get("section") or "当前可用片段")
@@ -365,7 +376,7 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
                 "请基于这段展开内容自然回应；不要把材料全文默认写入长期记忆。"
             )
             continuation = None
-            if not complete:
+            if not window_done:
                 next_cursor = make_paged_cursor(
                     tool="as",
                     binding=owner_binding,
@@ -378,9 +389,12 @@ class ReadAttachmentSectionToolHandler(BaseToolHandler):
                     f"\n本页展示 {len(page_text)} 字，该 section 还有未展示内容。当前证据够用就直接回答；"
                     f'需要时再调用 read_attachment_section(cursor="{next_cursor}")。'
                 )
-            elif len(content) >= 4_000_000:
-                followup += "\n该 section 已达到4M提取窗口；窗口外内容未包含，需改用更精确的页、行或 sheet 范围。"
-            diagnostics = {"shown_chars": len(page_text), "total_chars": total_chars, "complete": complete}
+            elif source_truncated:
+                followup += "\n本次可提取窗口或预览已读完，原 section 仍未完整读取；需改用更精确的页、行或 sheet 范围，不能声称已读全文。"
+            diagnostics = {
+                "shown_chars": len(page_text), "total_chars": total_chars, "complete": complete,
+                "source_truncated": source_truncated,
+            }
             envelope = ToolFollowupEnvelope(
                 content=followup,
                 producer_bounded=True,

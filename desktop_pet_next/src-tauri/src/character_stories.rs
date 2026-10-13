@@ -1,9 +1,10 @@
-use std::fs;
 use serde::{Deserialize, Serialize};
+use std::fs;
 
-use crate::{
-    creator_kit_characters_dir, open_path_in_file_manager, safe_child_path, sanitize_pack_id,
+use crate::character_packs::paths::{
+    creator_kit_characters_dir, safe_child_path, sanitize_pack_id,
 };
+use crate::local_files::system_open::open_path_in_file_manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

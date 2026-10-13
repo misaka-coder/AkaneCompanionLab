@@ -5,8 +5,16 @@ import {
   cloneCareState,
   createUnresolvedCareFeature,
   isCareFeatureEnabled,
-  resetCareEvaluationBaseline,
-  resolveCareFeatureFromHealth
+  resolveCareFeatureFromHealth,
+  clampCareValue,
+  normalizeCareDecayConfig,
+  normalizeCareFeedback,
+  normalizeCareWorkConfig,
+  normalizeCareAllowanceConfig,
+  normalizeCareWorkTask,
+  normalizeCareState,
+  formatSignedCareDelta,
+  formatCareFeedbackText
 } from "../src/care-feature.js";
 
 const unresolved = createUnresolvedCareFeature();
@@ -22,15 +30,6 @@ const persisted = {
   workTask: { completeAt: 500 }
 };
 assert.deepEqual(cloneCareState(persisted), persisted);
-const reenabled = resetCareEvaluationBaseline(persisted, 1000);
-assert.equal(reenabled.hunger, 73);
-assert.equal(reenabled.energy, 44);
-assert.equal(reenabled.affection, 21);
-assert.equal(reenabled.coins, 12);
-assert.deepEqual(reenabled.inventory, { tea: 2 });
-assert.deepEqual(reenabled.workTask, { completeAt: 500 });
-assert.equal(reenabled.lastDecayAt, 1000);
-assert.equal(persisted.lastDecayAt, 100);
 
 const disabled = resolveCareFeatureFromHealth({
   features: { care: { enabled: false, reason: "feature_disabled" } }
@@ -60,5 +59,43 @@ assert.deepEqual(
 const legacy = resolveCareFeatureFromHealth({ status: "ok" });
 assert.equal(isCareFeatureEnabled(legacy), true);
 assert.equal(legacy.reason, "legacy_contract");
+
+// Config normalization & helper contracts
+assert.equal(clampCareValue(50, 0, 100), 50);
+assert.equal(clampCareValue(-5, 0, 100), 0);
+assert.equal(clampCareValue(150, 0, 100), 100);
+
+const decay = normalizeCareDecayConfig({});
+assert.equal(decay.hungerPerHour, 4);
+assert.equal(decay.energyPerReply, 1);
+assert.equal(decay.energyPerProactive, 0);
+
+const feedback = normalizeCareFeedback({ emotion: "happy", bubble: { text: "谢谢", durationMs: 2000 } });
+assert.equal(feedback.emotion, "happy");
+assert.equal(feedback.bubble.text, "谢谢");
+assert.equal(feedback.bubble.durationMs, 2000);
+
+const work = normalizeCareWorkConfig({ enabled: true, rewardCoinsMin: 10, rewardCoinsMax: 5 });
+assert.equal(work.rewardCoinsMin, 5);
+assert.equal(work.rewardCoinsMax, 10);
+
+const allowance = normalizeCareAllowanceConfig({ enabled: true, coins: 6 });
+assert.equal(allowance.coins, 6);
+
+assert.equal(normalizeCareWorkTask({}), null);
+const task = normalizeCareWorkTask({ startedAt: 100, completeAt: 200, rewardCoins: 15 });
+assert.equal(task?.status, "active");
+assert.equal(task?.completeAt, 200);
+
+const state = normalizeCareState({ coins: 50, hunger: 80, inventory: { tea: 2, invalid: 0 } }, { enabled: true, initialCoins: 10 });
+assert.equal(state.coins, 50);
+assert.equal(state.hunger, 80);
+assert.deepEqual(state.inventory, { tea: 2 });
+
+assert.equal(formatSignedCareDelta(5), "+5");
+assert.equal(formatSignedCareDelta(-3), "-3");
+assert.equal(formatSignedCareDelta(0), "0");
+
+assert.equal(formatCareFeedbackText("获得 {reward} 金币，现有 {coins}", { reward: 10, coins: 50 }), "获得 10 金币，现有 50");
 
 console.log("care feature smoke: ok");

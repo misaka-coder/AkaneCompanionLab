@@ -4,12 +4,134 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Iterable, Mapping
 
 import config
 
 
 logger = logging.getLogger("akane.memcore.timeline")
+
+
+def _project_catalog_participants(value: Any) -> Any:
+    """Present each card's flat list once; keep package identities in storage."""
+    if isinstance(value, list):
+        return [_project_catalog_participants(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    projected = {key: _project_catalog_participants(item) for key, item in value.items()}
+    refs = value.get("participant_refs")
+    if isinstance(refs, list) and value.get("memory_id") and value.get("node_type") in {"raw", "episodic", "semantic"}:
+        projected.pop("participant_refs", None)
+        participants = []
+        for ref in refs:
+            if not isinstance(ref, Mapping):
+                continue
+            actor_id = str(ref.get("actor_id") or "").strip()
+            if not actor_id:
+                continue
+            name = str(ref.get("display_name") or "").strip()
+            qq = re.fullmatch(r"qq:([0-9]+)", actor_id)
+            label = f"QQ {qq.group(1)}" if qq else f"ID {actor_id}"
+            duplicate_name = name in {actor_id, label, qq.group(1) if qq else actor_id}
+            participants.append(f"{name}（{label}）" if name and not duplicate_name else label)
+        projected["participants"] = participants
+    return projected
+
+
+def _compact_card(card: Mapping[str, Any]) -> dict[str, Any]:
+    """Display a navigation card, retaining full diagnostics in the trusted result."""
+    allowed = (
+        "memory_id", "node_type", "memory_title", "period_start_at", "period_end_at",
+        "participants", "matched_terms", "keyword_hits", "matched_source_count", "match_ref",
+    )
+    result = {key: card[key] for key in allowed if card.get(key) or key == "matched_source_count" and key in card}
+    # This bounds tag presentation, never the query pool or evidence membership.
+    remaining = 8
+    for key in ("entity_anchors", "topic_terms"):
+        words = list(card.get(key) or [])
+        if words and remaining:
+            result[key] = words[:remaining]
+            remaining -= len(result[key])
+    if card.get("keyword_evidence_complete") is False:
+        result["keyword_evidence_complete"] = False
+    if card.get("has_sources") is False:
+        result["has_sources"] = False
+    if not card.get("memory_title") and card.get("catalog_hint"):
+        result["catalog_hint"] = card["catalog_hint"]
+    preview = card.get("match_preview")
+    if isinstance(preview, Mapping):
+        identity = _project_catalog_participants({
+            "memory_id": "preview", "node_type": "raw", "participant_refs": [{
+                "actor_id": preview.get("actor_id"), "display_name": preview.get("actor_display_name"),
+            }],
+        }).get("participants", [])
+        result["match_preview"] = {
+            key: preview[key] for key in ("source_id", "timestamp", "text") if preview.get(key)
+        }
+        if identity:
+            result["match_preview"]["speaker"] = identity[0]
+    return result
+
+
+def _compact_native_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove duplicate scope/time/diagnostics before the provider sees a result."""
+    output = _project_catalog_participants(payload)
+    if isinstance(output.get("cards"), list):
+        output = {key: value for key, value in output.items() if key in {
+            "status", "reason", "conversation", "time_range", "date_from", "date_to", "time_periods",
+            "keywords", "keyword_match", "participants", "participant_match", "node_types",
+            "matched_card_count", "returned_card_count", "remaining_card_count", "page_complete", "next_cursor",
+            "cards", "coverage",
+        } and (value or key in {"page_complete", "returned_card_count", "remaining_card_count"})}
+        output["cards"] = [_compact_card(card) for card in output.get("cards", []) if isinstance(card, Mapping)]
+        coverage = payload.get("coverage") or {}
+        output["coverage"] = {key: coverage[key] for key in (
+            "total_source_count", "live_source_count", "gap_source_count", "history_start_at", "history_end_at",
+        ) if key in coverage}
+    elif output.get("view") == "card" and isinstance(output.get("result"), Mapping):
+        output["result"] = _compact_card(output["result"])
+        for key in ("memory_id", "node_type"):
+            if output["result"].get(key) == output.get(key):
+                output["result"].pop(key, None)
+    elif output.get("view") == "sources" and isinstance(output.get("result"), Mapping):
+        page = dict(output["result"])
+        # A single tree's signed cursor is also promoted to the root by policy.
+        # Batch children retain their independent cursors and paging state.
+        if not isinstance(page.get("items"), list):
+            for key in ("next_cursor", "page_complete"):
+                if key in output and page.get(key) == output[key]:
+                    page.pop(key, None)
+        output["result"] = page
+    elif "selected_entry_count" in output and isinstance(output.get("coverage"), Mapping):
+        coverage = dict(output["coverage"])
+        # Per-entry IDs already accompany the evidence. Counts and continuation
+        # belong in one place; retain actual returned spans and missing coverage.
+        coverage.pop("returned_logical_unit_ids", None)
+        for key, root_key in {
+            "complete": "coverage_complete", "entry_count": "returned_entry_count",
+            "logical_unit_count": "returned_logical_unit_count",
+            "projected_token_count": "returned_projected_token_count",
+            "total_entry_count": "selected_entry_count",
+            "total_logical_unit_count": "selected_logical_unit_count",
+        }.items():
+            if root_key in output and coverage.get(key) == output[root_key]:
+                coverage.pop(key, None)
+        for key in list(coverage):
+            if key in output and coverage[key] == output[key]:
+                coverage.pop(key)
+        time_range = output.get("time_range") or {}
+        for key, range_key in (("requested_start", "start_at"), ("requested_end", "end_at")):
+            if time_range.get(range_key) == coverage.get(key):
+                coverage.pop(key, None)
+        if output.get("message_count") == output.get("returned_entry_count"):
+            output.pop("message_count", None)
+        output["coverage"] = coverage
+    output.pop("result_projection", None)
+    if output.get("conversation"):
+        output.pop("source_label", None)
+    return output
+
 
 TIME_PERIOD_ORDER = ("midnight", "morning", "afternoon", "night")
 TIME_PERIOD_ALIASES = {
@@ -43,14 +165,11 @@ class MemcoreTimelineToolService:
 
     package_native_dispatch = True
 
-    def __init__(self, *, legacy_service: Any | None, memcore_manager: Any | None) -> None:
+    def __init__(self, *, legacy_service: Any | None = None, memcore_manager: Any | None = None) -> None:
         self.legacy_service = legacy_service
         self.memcore_manager = memcore_manager
 
     def normalize_time_periods(self, values: Iterable[str] | None) -> list[str]:
-        legacy_service = self.legacy_service
-        if legacy_service is not None:
-            return legacy_service.normalize_time_periods(values)
         normalized: list[str] = []
         seen: set[str] = set()
         for value in values or []:
@@ -102,13 +221,14 @@ class MemcoreTimelineToolService:
                             page_token_budget=page_token_budget,
                             cursor=cursor,
                         )
-                    if not str(native_arguments.get("cursor") or "").strip() and not anchor_id:
-                        native_arguments.setdefault("cross_conversation", True)
+                    if "cross_conversation" in native_arguments:
+                        return self._unavailable("read_memory_timeline", "cross_conversation_requires_conversation")
+                    if not str(native_arguments.get("cursor") or "").strip():
+                        native_arguments["cross_conversation"] = False
                     result = manager.read_memory_timeline(
                         profile_user_id=profile_user_id,
-                        # The cursor remains scoped to the active conversation
-                        # namespace. Date/range reads cross only this user's
-                        # authorized conversations via explicit host policy.
+                        # The host selected one authorized conversation before
+                        # this adapter sees the request.
                         session_id=str(session_id or profile_user_id),
                         character_pack_id=character_pack_id,
                         arguments=native_arguments,
@@ -118,31 +238,7 @@ class MemcoreTimelineToolService:
                 else:
                     if isinstance(result, dict):
                         return result
-            return self._unavailable("read_memory_timeline", "memcore_timeline_unavailable")
-
-        legacy_service = self.legacy_service
-        if legacy_service is None:
-            return self._unavailable("read_memory_timeline", "legacy_timeline_unavailable", backend="legacy")
-        if time_range or cursor or str(projection or "conversation") != "conversation" or int(page_token_budget or 0):
-            return self._unavailable(
-                "read_memory_timeline",
-                "precise_timeline_requires_memcore",
-                backend="legacy",
-            )
-        if anchor_id:
-            return self._unavailable(
-                "read_memory_timeline",
-                "raw_anchor_requires_memcore",
-                backend="legacy",
-            )
-        return legacy_service.read(
-            profile_user_id=profile_user_id,
-            character_pack_id=character_pack_id,
-            date_from=date_from,
-            date_to=date_to,
-            time_periods=time_periods,
-            exclude_source_ids=exclude_source_ids,
-        )
+        return self._unavailable("read_memory_timeline", "memcore_timeline_unavailable")
 
     @staticmethod
     def _timeline_arguments(
@@ -198,12 +294,16 @@ class MemcoreTimelineToolService:
             and getattr(manager, "available", False)
         ):
             native_arguments = dict(arguments or {})
-            if not str(native_arguments.get("cursor") or "").strip():
-                # Retrieval and catalog reads may return a memory owned by an
-                # older conversation in the same hard user namespace.  The
-                # returned opaque ID must remain directly openable; making the
-                # model rediscover this host policy breaks the read loop.
-                native_arguments.setdefault("cross_conversation", True)
+            speakers = native_arguments.get("speaker_ids")
+            if isinstance(speakers, list):
+                native_arguments["speaker_ids"] = [
+                    f"qq:{item}" if isinstance(item, str) and re.fullmatch(r"[0-9]+", item) else item
+                    for item in speakers
+                ]
+            if "cross_conversation" in native_arguments:
+                return self._unavailable("open_memory", "cross_conversation_requires_conversation")
+            if not str(native_arguments.get("cursor") or "").strip() and not native_arguments.get("match_ref"):
+                native_arguments["cross_conversation"] = False
             try:
                 result = manager.open_memory(
                     profile_user_id=profile_user_id,
@@ -234,8 +334,16 @@ class MemcoreTimelineToolService:
             and getattr(manager, "available", False)
         ):
             native_arguments = dict(arguments or {})
+            participants = native_arguments.get("participants")
+            if isinstance(participants, list):
+                native_arguments["participants"] = [
+                    f"qq:{item.strip()}" if isinstance(item, str) and re.fullmatch(r"[0-9]+", item.strip()) else item
+                    for item in participants
+                ]
+            if "cross_conversation" in native_arguments:
+                return self._unavailable("browse_memory", "cross_conversation_requires_conversation")
             if not str(native_arguments.get("cursor") or "").strip():
-                native_arguments.setdefault("cross_conversation", True)
+                native_arguments["cross_conversation"] = False
             try:
                 result = manager.browse_memory(
                     profile_user_id=profile_user_id,
@@ -266,14 +374,20 @@ class MemcoreTimelineToolService:
 
     @staticmethod
     def _render_native_result(label: str, result: Mapping[str, Any] | None) -> str:
-        """Serialize package-owned navigation metadata without reinterpreting it."""
+        """Preserve evidence and cursors while presenting paging once."""
 
         payload = dict(result or {})
         evidence_text = str(payload.pop("text", "") or "").strip()
         for internal_key in ("operation", "backend", "ok", "receipt"):
             payload.pop(internal_key, None)
-        metadata = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        metadata = json.dumps(_compact_native_metadata(payload), ensure_ascii=False, sort_keys=True, default=str)
         parts = [f"【{label}】", metadata]
+        if label in {"MemCore 原始时间线", "MemCore 记忆证据"} and (
+            payload.get("status") == "partial" or payload.get("coverage_complete") is False
+            or payload.get("page_complete") is False
+            or (isinstance(payload.get("result"), Mapping) and payload["result"].get("page_complete") is False)
+        ):
+            parts.append("当前证据不完整；需要完整总结时应沿续读凭据读取剩余记录，直接回答时须注明已读范围与缺失。")
         if evidence_text:
             parts.extend(("【本页证据正文】", evidence_text))
         return "\n".join(parts)

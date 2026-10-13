@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 
 from akane_plugin import Result
-from companion_v01.bot_runtime import _host_job_completion_request
+from companion_v01.bot_runtime_components.completion import _host_job_completion_request
 from companion_v01.desktop_satellite import DesktopSatelliteService, _SatelliteConnection
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.host_jobs import HostJobOwner, HostJobStore

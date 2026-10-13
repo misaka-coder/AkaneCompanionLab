@@ -266,7 +266,7 @@ if ($placeholderPngFiles.Count -eq 0) {
 $textExtensions = @(
     ".py", ".js", ".mjs", ".ts", ".rs", ".toml", ".json", ".jsonl",
     ".md", ".txt", ".html", ".css", ".yml", ".yaml", ".ps1", ".bat",
-    ".cmd", ".ini", ".example"
+    ".cmd", ".ini", ".example", ".sh", ".bash", ".psm1", ".conf"
 )
 $forbiddenTextPatterns = [ordered]@{
     "private_username" = ("L" + "enovo")

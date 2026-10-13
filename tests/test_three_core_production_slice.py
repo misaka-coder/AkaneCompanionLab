@@ -71,11 +71,11 @@ class ThreeCoreProductionSliceTests(unittest.TestCase):
         with patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", BOT_ID):
             gateway = NapCatQQGateway(wake_words=("Akane",))
             with patch(
-                "companion_v01.qq_gateway.normalize_inbound_event",
+                "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
                 wraps=normalize_inbound_event,
             ) as package_inbound:
                 context = gateway.build_message_context(event)
-        package_inbound.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=("Akane",))
+        package_inbound.assert_called_once_with(event, bot_account_id=BOT_ID, wake_words=())
         self.assertTrue(context.should_respond)
         self.assertEqual(context.reason, "group_mention")
         self.assertEqual(context.sender_label, "伙伴")
@@ -255,7 +255,7 @@ class ThreeCoreProductionSliceTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {"message_id": "sent-production-1"}}
 
         with (
-            patch("companion_v01.qq_gateway.build_message_action", wraps=build_message_action) as package_outbound,
+            patch("companion_v01.qq_gateway_runtime.messages.build_message_action", wraps=build_message_action) as package_outbound,
             patch(
                 "companion_v01.onebot_transport.normalize_action_response",
                 wraps=normalize_action_response,

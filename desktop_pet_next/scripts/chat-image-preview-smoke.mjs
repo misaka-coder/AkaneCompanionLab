@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
+import { createBridgeImagePreviews } from "../src/control-center-v2/bridge/previews.js";
 import { readChatImageBlob, createChatImagePreviews } from "../src/control-center/chat-image-preview.js";
 import { renderChat } from "../src/control-center-v2/components/chat.js";
 
@@ -57,29 +56,23 @@ assert.ok(!renderChat(state).includes("tracking.invalid"));
 state.viewModel.chat.previews["attachment:img_1"] = { status: "failed", reason: "preview_too_large" };
 assert.match(renderChat(state), /超过 8MB/);
 
-const bridgeSource = fs.readFileSync(new URL("../src/control-center-v2/bridge.js", import.meta.url), "utf8");
-const cacheStart = bridgeSource.indexOf("  const imagePreviews = createChatImagePreviews(");
-const cacheEnd = bridgeSource.indexOf("  const qqSetup", cacheStart);
-const methodStart = bridgeSource.indexOf("  async function previewChatImage(");
-const methodEnd = bridgeSource.indexOf("  return { start, refresh", methodStart);
 let bridgeReads = 0;
-const context = { createChatImagePreviews, publish() {},
+const context = {
   source: { backendUrl: "http://localhost:12001", botId: "a", profileUserId: "u", readChatImagePreview: async () => { bridgeReads++; return new Blob([bytes]); } },
   runtimeSnapshot: { state: { backendUrl: "http://localhost:12001", boundBotId: "b", profileUserId: "u", sessionId: "s", characterPackId: "reimu" } },
   publishedViewModel: { shell: { connected: true }, chat: { pendingAttachments: [card] } },
 };
-vm.createContext(context);
-vm.runInContext(bridgeSource.slice(cacheStart, cacheEnd) + bridgeSource.slice(methodStart, methodEnd)
-  + "globalThis.bridgePreviews = imagePreviews;", context);
-await context.previewChatImage({ ...item, handle: "not-on-a-card" });
+const bridgePreviews = createBridgeImagePreviews({ readSource: () => context.source,
+  readRuntime: () => context.runtimeSnapshot, readViewModel: () => context.publishedViewModel, publish() {} });
+await bridgePreviews.previewChatImage({ ...item, handle: "not-on-a-card" });
 assert.equal(bridgeReads, 0, "arbitrary refs outside visible cards cannot load");
-await context.previewChatImage(item);
+await bridgePreviews.previewChatImage(item);
 assert.equal(bridgeReads, 0, "stale bound source cannot read from a different Bot");
-assert.equal(context.bridgePreviews.snapshot()["attachment:img_1"].reason, "preview_scope_changed");
+assert.equal(bridgePreviews.snapshot()["attachment:img_1"].reason, "preview_scope_changed");
 context.source.botId = "b";
-await context.previewChatImage(item);
+await bridgePreviews.previewChatImage(item);
 assert.equal(bridgeReads, 1);
-context.bridgePreviews.dispose();
+bridgePreviews.dispose();
 
 if (process.argv.includes("--transfer")) {
   const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);

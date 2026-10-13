@@ -12,7 +12,7 @@ requirements = ["Python 3.11+、公共 SDK 0.14.2 与支持主人资格声明的
 source = "akane_tts"
 plugin_id = "akane.tts"
 display_name = "语音合成服务"
-summary = "通过既有声线配置合成 Edge 或 GPT-SoVITS 音频，供宿主发声入口调用。"
+summary = "通过既有声线配置合成 Edge、GPT-SoVITS 或 Irodori 音频，供宿主发声入口调用。"
 permissions = ["service.provide", "resource.read", "artifact.write", "network.read", "connection.tts.read"]
 requirements = ["Python 3.11+、公共 SDK 0.14、capcore-adapter-speech 0.1 与 Edge extra；由部署依赖源提供，不自动安装。", "FFmpeg 在 PATH，用于 MP3 验证。GPT-SoVITS 服务与参考声线须已配置，不启动模型。", "纯 tts v1 服务；安装许可与能力审批分别处理；取消等待实际结算，登记不代表已播放。"]
 

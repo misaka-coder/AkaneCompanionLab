@@ -25,6 +25,7 @@ from .execution import ExecCancelToolHandler, ExecInputToolHandler, ExecRunToolH
 from .extensions import ManageExtensionToolHandler
 from .character_world import LoadCharacterContextToolHandler
 from .core import BaseToolHandler
+from .text_cards import RenderCardToolHandler
 from .generated_media import (
     InspectGeneratedFileToolHandler,
     InspectMediaInfoToolHandler,
@@ -34,6 +35,7 @@ from .generated_media import (
 )
 from .memory import (
     BrowseMemoryToolHandler,
+    ListMemoryConversationsToolHandler,
     OpenMemoryToolHandler,
     ReadMemoryTimelineToolHandler,
     RetrieveMemoryToolHandler,
@@ -75,6 +77,8 @@ def build_builtin_tool_handlers(
     attachment_ingest_service: Any,
     generated_file_service: Any,
     retrieve_fn: Any,
+    memory_retrieval_enabled: bool = True,
+    memory_read_policy_provider: Any | None = None,
     skill_registry: Any | None = None,
     execution_provider: Any | None = None,
     approval_store: Any | None = None,
@@ -82,23 +86,27 @@ def build_builtin_tool_handlers(
     mcp_management_service: Any | None = None,
     extension_management_service: Any | None = None,
     executor_broker: Any | None = None,
+    character_resource_service: Any | None = None,
 ) -> dict[str, BaseToolHandler]:
     """Construct every built-in handler from explicitly injected services.
 
     Optional image generation is supplied only through the plugin bridge.
     """
     handlers: dict[str, BaseToolHandler] = {
-        "retrieve_memory": RetrieveMemoryToolHandler(
-            retrieve_fn=retrieve_fn,
-        ),
         "read_memory_timeline": ReadMemoryTimelineToolHandler(
             timeline_service=memory_timeline_service,
+            read_policy_provider=memory_read_policy_provider,
         ),
         "browse_memory": BrowseMemoryToolHandler(
             timeline_service=memory_timeline_service,
+            read_policy_provider=memory_read_policy_provider,
         ),
         "open_memory": OpenMemoryToolHandler(
             timeline_service=memory_timeline_service,
+            read_policy_provider=memory_read_policy_provider,
+        ),
+        "list_memory_conversations": ListMemoryConversationsToolHandler(
+            read_policy_provider=memory_read_policy_provider or (lambda: None),
         ),
         "load_character_context": LoadCharacterContextToolHandler(
             context_library_service=context_libraries,
@@ -128,6 +136,11 @@ def build_builtin_tool_handlers(
         ),
         "inspect_generated_file": InspectGeneratedFileToolHandler(
             generated_file_service=generated_file_service
+        ),
+        "render_card": RenderCardToolHandler(
+            generated_file_service=generated_file_service,
+            image_material_resolver=image_material_resolver,
+            character_resource_service=character_resource_service,
         ),
         "send_file": SendFileToolHandler(generated_file_service=generated_file_service,
                                         project_workspace_service=project_workspace_service),
@@ -174,7 +187,10 @@ def build_builtin_tool_handlers(
             tool_id="system_volume",
             offer_source=capability_offer_source,
         ),
-        "open_music_search": OpenMusicSearchToolHandler(),
+        "open_music_search": OpenMusicSearchToolHandler(
+            offer_source=capability_offer_source,
+            executor_broker=executor_broker,
+        ),
         "browser_page": BrowserPageToolHandler(
             personal_offer_source=capability_offer_source,
             executor_broker=executor_broker,
@@ -257,4 +273,6 @@ def build_builtin_tool_handlers(
                 service=project_workspace_service,
                 execution_provider=execution_provider,
             )
+    if memory_retrieval_enabled:
+        handlers["retrieve_memory"] = RetrieveMemoryToolHandler(retrieve_fn=retrieve_fn)
     return handlers

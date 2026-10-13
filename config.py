@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     EMBEDDING_TIMEOUT_SECONDS: float = 30.0
     # 设备：空=自动  cuda  cpu
     EMBEDDING_DEVICE: str = ""
+    # 本地推理精度；默认保持 FP32，CUDA 可选择 float16 / bfloat16。
+    EMBEDDING_PRECISION: str = Field(default="float32", pattern=r"^(float32|float16|bfloat16)$")
+    # 单次模型推理批量上限；不改变原文或最大文本长度。
+    EMBEDDING_BATCH_SIZE: int = Field(default=8, ge=1)
+    # CUDA 空闲缓存回收间隔；0=禁用。模型权重继续常驻。
+    EMBEDDING_IDLE_CACHE_SECONDS: float = Field(default=30.0, ge=0, allow_inf_nan=False)
     # 只使用本地缓存/本地模型目录，避免启动时联网下载
     EMBEDDING_LOCAL_FILES_ONLY: bool = True
     # HuggingFace/sentence-transformers 缓存目录（留空=默认缓存）
@@ -146,12 +152,16 @@ class Settings(BaseSettings):
     SEMANTIC_REINFORCEMENT_LOOKBACK: int = 8
     # 语义强化最小重叠次数（低于此数不强化）
     SEMANTIC_REINFORCEMENT_MIN_OVERLAP: int = 2
-    # 记忆后端：memcore=主记忆系统  legacy=旧系统兼容  dual=迁移/对比用双写
-    MEMORY_BACKEND: str = "memcore"
+    # navigation 不创建 Embedding/搜索索引；hybrid 保留混合检索，需要重启后端生效。
+    MEMCORE_RETRIEVAL_MODE: str = Field(default="navigation", pattern="^(navigation|hybrid)$")
     # memcore SQLite 路径；留空时使用 base_dir / memcore_v01.db
     MEMCORE_STORAGE_PATH: str = ""
     # memcore 可见长期记忆作用域：conversation/user
     MEMCORE_VISIBLE_SCOPE: str = "user"
+    # Cross-QQ memory reads require an explicit conversation target even when enabled.
+    MEMORY_CROSS_CONVERSATION_ENABLED: bool = True
+    OWNER_PRIVATE_SESSION_SHARED: bool = False
+    OWNER_PRIVATE_GROUP_MEMORY_MIRROR: bool = False
     # memcore mood/flavor 温度层；桌宠陪伴默认开启
     MEMCORE_ENABLE_FLAVOR: bool = True
     # 影子检索对比开关；只记录结构化统计，不改变用户可见回复
@@ -160,6 +170,8 @@ class Settings(BaseSettings):
     MEMCORE_RAW_TOKEN_TRIGGER: int = 48000
     # 触发后计划压缩的旧 raw token 比例；实际切点对齐完整 turn/component
     MEMCORE_RAW_TOKEN_BATCH_RATIO: float = 0.67
+    MEMCORE_COMPACTION_REQUEST_MODE: str = Field(default="independent", pattern="^(independent|chat_prefix)$")
+    MEMCORE_WORKING_TOKEN_TRIGGER: int = Field(default=200000, ge=0)
     # 单次结构化检索结果可回填给模型的 token 预算；0 表示不设预算
     MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET: int = 0
     # 原生时间线单页 token 上限；MemCore 按完整逻辑单元分页，0/省略模型参数使用此值
@@ -170,17 +182,22 @@ class Settings(BaseSettings):
     MEMCORE_LLM_TIMEOUT_SECONDS: float = 55.0
     # 一次压缩重试仍失败后，同 namespace 暂停后台摘要的秒数
     MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS: float = 60.0
-    # 可选的宿主级专用摘要路由。完整配置后，所有 Bot 的 MemCore 压缩
-    # 都使用这一独立凭据，不受各 Bot 聊天/生图模型切换影响。
+    # 可选的宿主级专用摘要模型；留空时跟随该会话的聊天模型和接口。
+    # 只指定模型时复用聊天接口；指定独立接口时 key/base 必须一起配置。
     MEMCORE_SUMMARY_API_KEY: str = ""
     MEMCORE_SUMMARY_BASE_URL: str = ""
-    MEMCORE_SUMMARY_MODEL_NAME: str = "gpt-5.6-luna"
+    MEMCORE_SUMMARY_MODEL_NAME: str = ""
     MEMCORE_SUMMARY_API_PROTOCOL: str = "auto"
     # 工具结果终局紧凑投影策略（部署级开关，不属角色人格能力）：
     #   full_until_raw_compaction = 完整结果直到 raw compaction（默认，零行为差异）
     #   compact_after_terminal    = 终局后长工具结果改为可回读紧凑回执
-    # 允许值仅上述两个稳定 wire value；非法值在配置加载阶段直接报错，不静默回退。
+    #   compact_arguments_after_terminal = 终局后收起长字符串参数与长结果，原文可回读
+    # 非法值在配置加载阶段直接报错，不静默回退。
     MEMCORE_OPERATION_PROJECTION_POLICY: str = "full_until_raw_compaction"
+    # 参数与结果收起后须节省的原文字节比例；只在回合结束时结算并冻结。
+    MEMCORE_OPERATION_SETTLEMENT_MIN_SAVED_RATIO: float = Field(default=0.3, gt=0.0, lt=1.0)
+    MEMCORE_OPERATION_ARGUMENT_MIN_UTF8_BYTES: int = 1024
+    MEMCORE_OPERATION_ARGUMENT_PREVIEW_CHARS: int = 96
     # === LLM 密钥 & 接入 ===
     # 键位角色：
     #   TEXT   = 辅助任务（路由判断、记忆总结、时间解析等）[必填，至少有一个 key]
@@ -358,16 +375,14 @@ class Settings(BaseSettings):
     QQ_ONEBOT_ACCESS_TOKEN: str = ""
     # QQ 文字聊天默认使用的 Creator Kit 角色包 id（留空=Akane 默认人设）
     QQ_CHARACTER_PACK_ID: str = ""
-    # QQ 回复投递模式：text=只文字 voice=只语音 both=文字+语音 auto=模型用 reply_medium 决定
-    QQ_REPLY_MODE: str = "auto"
+    # QQ 回复投递模式由宿主设置决定：text=只文字 voice=只语音 both=文字+语音
+    QQ_REPLY_MODE: str = "text"
     # 每回合最多即时推送多少个流式文字气泡；0=不限，正数才在超出后延迟到回合结束补发
     QQ_STREAM_IMMEDIATE_SEGMENTS: int = 0
     # QQ 语音合成读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）
     QQ_TTS_PROFILE_USER_ID: str = ""
     # QQ 联网搜索读取的本地能力配置 profile（留空=WEB_OWNER_PROFILE_USER_ID/master）
     QQ_WEB_SEARCH_PROFILE_USER_ID: str = ""
-    # QQ 语音回复最大合成文本长度，超过后降级为文字
-    QQ_VOICE_MAX_TEXT_CHARS: int = 280
     # QQ 语音回复最多合成的 speech segment 数
     QQ_VOICE_MAX_SEGMENTS: int = 3
     # 允许群聊使用明文（非 JSON 卡片）模式
@@ -434,12 +449,8 @@ class Settings(BaseSettings):
     AKANE_LOCAL_ASR_COMPUTE_TYPE: str = "int8"
     AKANE_LOCAL_RVC_SEPARATION_MODEL: str = "HP5_only_main_vocal"
 
-    # === Web 身份模式 ===
-    # owner  : 本地主创模式，所有浏览器共享同一主人 profile
-    # browser: 每个浏览器分配独立匿名 profile，适合公开试玩
-    # invite : 通过 URL 邀请码映射 profile，适合小范围闭测
-    WEB_IDENTITY_MODE: str = "owner"
-    # owner 模式下使用的 profile 标识
+    # === 主人身份 ===
+    # QQ 语音、搜索与能力权限共用的主人 profile；沿用现有配置键名。
     WEB_OWNER_PROFILE_USER_ID: str = "master"
 
     # 主人 QQ 号；留空时私聊使用独立 QQ 身份
@@ -474,11 +485,6 @@ def _load_settings() -> Settings:
 
 
 settings = _load_settings()
-
-
-def _normalize_web_identity_mode(value: str) -> str:
-    normalized = str(value or "owner").strip().lower()
-    return normalized if normalized in {"owner", "browser", "invite"} else "owner"
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +529,8 @@ _RETIRED_HOST_ENV_KEYS = {
     "NATIVE_TOOL_PROVIDER_ALLOWLIST",
     "RECENT_SUMMARY_LIMIT",
     "REMOTE_MEDIA_YTDLP_COOKIES_FROM_BROWSER",
+    "WEB_IDENTITY_MODE",
+    "MEMORY_BACKEND",
 }
 
 _RENAMED_ENV_KEYS = {
@@ -660,7 +668,6 @@ def _apply_settings(s: Settings) -> None:
         QQ_STREAM_IMMEDIATE_SEGMENTS, \
         QQ_TTS_PROFILE_USER_ID, \
         QQ_WEB_SEARCH_PROFILE_USER_ID, \
-        QQ_VOICE_MAX_TEXT_CHARS, \
         QQ_VOICE_MAX_SEGMENTS
     global \
         QQ_GROUP_PLAINTEXT_ENABLED, \
@@ -681,7 +688,7 @@ def _apply_settings(s: Settings) -> None:
     global REMOTE_MEDIA_YTDLP_COOKIEFILE
     global PUBLIC_URL_DNS_FALLBACK_ENABLED
     global REMOTE_MEDIA_YTDLP_USER_AGENT, REMOTE_MEDIA_YTDLP_REFERER
-    global WEB_IDENTITY_MODE, WEB_OWNER_PROFILE_USER_ID
+    global WEB_OWNER_PROFILE_USER_ID
     global RUN_MODE, AKANE_INSTANCE_ID, PERSONA_CONFIG_PATH, PERSONA_VARIANT
     global AKANE_PLUGIN_MARKET_INDEX
     global AKANE_PLUGIN_DEPENDENCY_WHEELHOUSE
@@ -697,6 +704,9 @@ def _apply_settings(s: Settings) -> None:
         EMBEDDING_DIMENSION, \
         EMBEDDING_TIMEOUT_SECONDS, \
         EMBEDDING_DEVICE, \
+        EMBEDDING_PRECISION, \
+        EMBEDDING_BATCH_SIZE, \
+        EMBEDDING_IDLE_CACHE_SECONDS, \
         EMBEDDING_LOCAL_FILES_ONLY, \
         EMBEDDING_CACHE_FOLDER
     global EMBEDDING_CACHE_SIZE, EMBEDDING_REINDEX_BATCH_SIZE
@@ -711,7 +721,10 @@ def _apply_settings(s: Settings) -> None:
     global DRIFT_PROBABILITY, SUMMARY_TRIGGER_COUNT, SUMMARY_BATCH_SIZE
     global EPISODIC_COMPACT_TRIGGER_COUNT, EPISODIC_COMPACT_BATCH_SIZE, EPISODIC_VISIBLE_MAX, SEMANTIC_VISIBLE_LIMIT
     global SEMANTIC_REINFORCEMENT_LOOKBACK, SEMANTIC_REINFORCEMENT_MIN_OVERLAP
-    global MEMORY_BACKEND, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
+    global MEMORY_BACKEND, MEMCORE_RETRIEVAL_MODE, MEMCORE_STORAGE_PATH, MEMCORE_VISIBLE_SCOPE, MEMCORE_ENABLE_FLAVOR, MEMCORE_SHADOW_COMPARE
+    global MEMORY_CROSS_CONVERSATION_ENABLED
+    global OWNER_PRIVATE_SESSION_SHARED
+    global OWNER_PRIVATE_GROUP_MEMORY_MIRROR
     global \
         MEMCORE_RAW_TOKEN_TRIGGER, \
         MEMCORE_RAW_TOKEN_BATCH_RATIO, \
@@ -720,9 +733,12 @@ def _apply_settings(s: Settings) -> None:
         MEMCORE_COMPACTION_WORKERS, \
         MEMCORE_LLM_TIMEOUT_SECONDS
     global MEMCORE_COMPACTION_FAILURE_COOLDOWN_SECONDS
+    global MEMCORE_COMPACTION_REQUEST_MODE, MEMCORE_WORKING_TOKEN_TRIGGER
     global MEMCORE_SUMMARY_API_KEY, MEMCORE_SUMMARY_BASE_URL
     global MEMCORE_SUMMARY_MODEL_NAME, MEMCORE_SUMMARY_API_PROTOCOL
     global MEMCORE_OPERATION_PROJECTION_POLICY
+    global MEMCORE_OPERATION_SETTLEMENT_MIN_SAVED_RATIO
+    global MEMCORE_OPERATION_ARGUMENT_MIN_UTF8_BYTES, MEMCORE_OPERATION_ARGUMENT_PREVIEW_CHARS
     global WHISPER_CACHE_DIR
     global MASTER_QQ, AKANE_ADMIN_TOKEN, AKANE_DESKTOP_SATELLITE_TOKEN, PORT, HOST
 
@@ -874,8 +890,8 @@ def _apply_settings(s: Settings) -> None:
         if raw_qq_character_pack_id and re.fullmatch(r"[A-Za-z0-9_.-]+", raw_qq_character_pack_id)
         else ""
     )
-    raw_qq_reply_mode = str(s.QQ_REPLY_MODE or "auto").strip().lower()
-    QQ_REPLY_MODE = raw_qq_reply_mode if raw_qq_reply_mode in {"text", "voice", "both", "auto"} else "auto"
+    raw_qq_reply_mode = str(s.QQ_REPLY_MODE or "text").strip().lower()
+    QQ_REPLY_MODE = raw_qq_reply_mode if raw_qq_reply_mode in {"text", "voice", "both"} else "text"
     raw_qq_tts_profile_user_id = str(s.QQ_TTS_PROFILE_USER_ID or s.WEB_OWNER_PROFILE_USER_ID or "master").strip()
     QQ_TTS_PROFILE_USER_ID = (
         raw_qq_tts_profile_user_id
@@ -894,7 +910,6 @@ def _apply_settings(s: Settings) -> None:
         )
         else "master"
     )
-    QQ_VOICE_MAX_TEXT_CHARS = max(20, min(1200, int(s.QQ_VOICE_MAX_TEXT_CHARS)))
     QQ_VOICE_MAX_SEGMENTS = max(1, min(10, int(s.QQ_VOICE_MAX_SEGMENTS)))
     QQ_STREAM_IMMEDIATE_SEGMENTS = max(0, min(100, int(s.QQ_STREAM_IMMEDIATE_SEGMENTS)))
     QQ_GROUP_PLAINTEXT_ENABLED = bool(s.QQ_GROUP_PLAINTEXT_ENABLED)
@@ -945,8 +960,7 @@ def _apply_settings(s: Settings) -> None:
     )
     REMOTE_MEDIA_YTDLP_REFERER = str(s.REMOTE_MEDIA_YTDLP_REFERER or "").strip() or "https://www.bilibili.com/"
 
-    # === web identity ===
-    WEB_IDENTITY_MODE = _normalize_web_identity_mode(s.WEB_IDENTITY_MODE)
+    # === owner identity ===
     WEB_OWNER_PROFILE_USER_ID = str(s.WEB_OWNER_PROFILE_USER_ID or "master").strip() or "master"
 
     # === persona / embedding / memory ===
@@ -969,6 +983,9 @@ def _apply_settings(s: Settings) -> None:
     EMBEDDING_DIMENSION = max(1, int(s.EMBEDDING_DIMENSION or 1024))
     EMBEDDING_TIMEOUT_SECONDS = max(1.0, min(120.0, float(s.EMBEDDING_TIMEOUT_SECONDS or 30.0)))
     EMBEDDING_DEVICE = str(s.EMBEDDING_DEVICE or "").strip()
+    EMBEDDING_PRECISION = str(s.EMBEDDING_PRECISION or "float32").strip().lower()
+    EMBEDDING_BATCH_SIZE = int(s.EMBEDDING_BATCH_SIZE)
+    EMBEDDING_IDLE_CACHE_SECONDS = float(s.EMBEDDING_IDLE_CACHE_SECONDS)
     EMBEDDING_LOCAL_FILES_ONLY = bool(s.EMBEDDING_LOCAL_FILES_ONLY)
     EMBEDDING_CACHE_FOLDER = str(s.EMBEDDING_CACHE_FOLDER or "").strip()
     EMBEDDING_CACHE_SIZE = max(0, int(s.EMBEDDING_CACHE_SIZE))
@@ -1003,13 +1020,18 @@ def _apply_settings(s: Settings) -> None:
     SEMANTIC_VISIBLE_LIMIT = max(1, int(s.SEMANTIC_VISIBLE_LIMIT))
     SEMANTIC_REINFORCEMENT_LOOKBACK = max(1, int(s.SEMANTIC_REINFORCEMENT_LOOKBACK))
     SEMANTIC_REINFORCEMENT_MIN_OVERLAP = max(1, int(s.SEMANTIC_REINFORCEMENT_MIN_OVERLAP))
-    raw_memory_backend = str(s.MEMORY_BACKEND or "memcore").strip().lower()
-    MEMORY_BACKEND = raw_memory_backend if raw_memory_backend in {"legacy", "dual", "memcore"} else "memcore"
+    # Host memory is always MemCore; programmatic migration/test adapters may
+    # still override this internal marker, but it is not a user setting.
+    MEMORY_BACKEND = "memcore"
     MEMCORE_STORAGE_PATH = str(s.MEMCORE_STORAGE_PATH or "").strip()
+    MEMCORE_RETRIEVAL_MODE = s.MEMCORE_RETRIEVAL_MODE
     raw_memcore_visible_scope = str(s.MEMCORE_VISIBLE_SCOPE or "user").strip().lower()
     MEMCORE_VISIBLE_SCOPE = (
         raw_memcore_visible_scope if raw_memcore_visible_scope in {"conversation", "user"} else "user"
     )
+    MEMORY_CROSS_CONVERSATION_ENABLED = bool(s.MEMORY_CROSS_CONVERSATION_ENABLED)
+    OWNER_PRIVATE_SESSION_SHARED = bool(s.OWNER_PRIVATE_SESSION_SHARED)
+    OWNER_PRIVATE_GROUP_MEMORY_MIRROR = bool(s.OWNER_PRIVATE_GROUP_MEMORY_MIRROR)
     MEMCORE_ENABLE_FLAVOR = bool(s.MEMCORE_ENABLE_FLAVOR)
     MEMCORE_SHADOW_COMPARE = bool(s.MEMCORE_SHADOW_COMPARE)
     MEMCORE_RAW_TOKEN_TRIGGER = max(
@@ -1017,6 +1039,8 @@ def _apply_settings(s: Settings) -> None:
         min(200000, int(s.MEMCORE_RAW_TOKEN_TRIGGER or 48000)),
     )
     MEMCORE_RAW_TOKEN_BATCH_RATIO = max(0.01, min(0.99, float(s.MEMCORE_RAW_TOKEN_BATCH_RATIO or 0.67)))
+    MEMCORE_COMPACTION_REQUEST_MODE = s.MEMCORE_COMPACTION_REQUEST_MODE
+    MEMCORE_WORKING_TOKEN_TRIGGER = s.MEMCORE_WORKING_TOKEN_TRIGGER
     MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET = max(
         0,
         min(200000, int(s.MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET or 0)),
@@ -1036,9 +1060,7 @@ def _apply_settings(s: Settings) -> None:
     )
     MEMCORE_SUMMARY_API_KEY = str(s.MEMCORE_SUMMARY_API_KEY or "").strip()
     MEMCORE_SUMMARY_BASE_URL = str(s.MEMCORE_SUMMARY_BASE_URL or "").strip()
-    MEMCORE_SUMMARY_MODEL_NAME = (
-        str(s.MEMCORE_SUMMARY_MODEL_NAME or "gpt-5.6-luna").strip() or "gpt-5.6-luna"
-    )
+    MEMCORE_SUMMARY_MODEL_NAME = str(s.MEMCORE_SUMMARY_MODEL_NAME or "").strip()
     MEMCORE_SUMMARY_API_PROTOCOL = (
         str(s.MEMCORE_SUMMARY_API_PROTOCOL or "auto").strip().lower() or "auto"
     )
@@ -1048,13 +1070,21 @@ def _apply_settings(s: Settings) -> None:
     if raw_operation_projection_policy not in {
         "full_until_raw_compaction",
         "compact_after_terminal",
+        "compact_arguments_after_terminal",
     }:
         raise RuntimeError(
             "invalid MEMCORE_OPERATION_PROJECTION_POLICY: "
             f"got {raw_operation_projection_policy!r}, expected one of "
-            "{'full_until_raw_compaction', 'compact_after_terminal'}"
+            "{'full_until_raw_compaction', 'compact_after_terminal', 'compact_arguments_after_terminal'}"
         )
     MEMCORE_OPERATION_PROJECTION_POLICY = raw_operation_projection_policy
+    MEMCORE_OPERATION_SETTLEMENT_MIN_SAVED_RATIO = s.MEMCORE_OPERATION_SETTLEMENT_MIN_SAVED_RATIO
+    for argument_setting in ("MEMCORE_OPERATION_ARGUMENT_MIN_UTF8_BYTES", "MEMCORE_OPERATION_ARGUMENT_PREVIEW_CHARS"):
+        value = getattr(s, argument_setting)
+        if value <= 0:
+            raise RuntimeError(f"invalid {argument_setting}: expected a positive integer")
+    MEMCORE_OPERATION_ARGUMENT_MIN_UTF8_BYTES = s.MEMCORE_OPERATION_ARGUMENT_MIN_UTF8_BYTES
+    MEMCORE_OPERATION_ARGUMENT_PREVIEW_CHARS = s.MEMCORE_OPERATION_ARGUMENT_PREVIEW_CHARS
     WHISPER_CACHE_DIR = str(s.WHISPER_CACHE_DIR or "").strip()
 
     # === host / port / qq ===

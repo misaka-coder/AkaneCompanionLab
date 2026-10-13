@@ -403,6 +403,43 @@ class VoiceRuntimeHostTests(unittest.TestCase):
             event_factory=self.factory,
         )
 
+    def test_bilingual_voice_keeps_display_out_of_tts_and_memory_in_chinese(self) -> None:
+        from companion_v01.speech_units import voice_segments, project_speech_units
+        from companion_v01.voice_runtime.speech_artifact import MEDIA_TYPE
+        bridge = self._start_fake_response()
+        payload = project_speech_units({"utterances": [{"style": "calm", "text": "你好。回来啦。",
+                                                        "say": "こんにちは。おかえり。"}]})
+        display = bridge.accept_stream_event({"type": "speech_segment", "index": 0, "text": "你好。",
+                                              "speech_protocol": "speech_units_v1"})
+        self.assertEqual(display.status, "ignored")
+        for event in voice_segments(payload["utterances"]):
+            self.assertTrue(bridge.accept_stream_event(event).accepted)
+        self.assertEqual(len(self.text_artifacts.records), 2)
+        bridge.accept_stream_event({"type": "speech_mode", "speech_protocol": "speech_units_v1"})
+        for event in voice_segments(payload["utterances"]):
+            self.assertEqual(bridge.accept_stream_event(event).status, "duplicate")
+        self.assertTrue(bridge.accept_stream_event({"type": "final", "payload": payload}).accepted)
+        self.assertEqual(len(self.text_artifacts.records), 2)
+        for artifact in self.text_artifacts.records.values():
+            self.assertEqual(artifact["media_type"], MEDIA_TYPE)
+            self.assertEqual(json.loads(artifact["text"])["text"], "你好。回来啦。")
+        self.assertEqual(self.host.snapshot.responses["response-1"].full_text, "你好。回来啦。")
+
+    def test_recovery_final_keeps_both_stages_without_replaying_audio(self) -> None:
+        from companion_v01.speech_units import voice_segments
+        from tests.test_reply_voice_recovery import recovered_reply, UNITS, TAIL_UNITS
+        bridge = self._start_fake_response()
+        _llm, events, payload = recovered_reply()
+        for event in events:
+            if event["type"] in {"speech_mode", "voice_segment"}:
+                result = bridge.accept_stream_event(event)
+                self.assertIn(result.status, {"accepted", "ignored", "duplicate"})
+        count = len(voice_segments([UNITS[0], *TAIL_UNITS]))
+        self.assertEqual(len(self.text_artifacts.records), count)
+        self.assertTrue(bridge.accept_stream_event({"type": "final", "payload": payload}).accepted)
+        self.assertEqual(len(self.text_artifacts.records), count)
+        self.assertEqual(self.host.snapshot.responses["response-1"].full_text, payload["speech"])
+
     def test_fake_audio_chain_reaches_real_delivery_and_memory_projection(self) -> None:
         bridge = self._start_fake_response()
         segment = bridge.accept_stream_event(

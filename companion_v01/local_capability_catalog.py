@@ -97,6 +97,15 @@ KNOWN_LOCAL_SERVICE_PROBES = (
         port=9880,
     ),
     LocalServiceProbe(
+        id="provider.tts.irodori.local",
+        name="本地 Irodori-TTS",
+        type="tts_provider",
+        adapter="irodori",
+        endpoint="http://127.0.0.1:9890",
+        host="127.0.0.1",
+        port=9890,
+    ),
+    LocalServiceProbe(
         id="provider.voice_conversion.rvc.local",
         name="本地 RVC WebUI",
         type="voice_conversion_provider",
@@ -142,7 +151,8 @@ def build_local_capability_catalog(
     except Exception:
         tts_service = {}
     for entry in entries:
-        if entry.get("type") != "tts_provider":
+        # Local text fallback remains available when the synthesis service is not.
+        if entry.get("type") != "tts_provider" or entry.get("fallbackOnly"):
             continue
         entry.update(source="plugin_service", executionMode="plugin",
             serviceProviderId=tts_service.get("selected_provider") or "",

@@ -80,6 +80,15 @@ class HostSubagentJobRuntimeTests(unittest.TestCase):
             self.assertIn("verification still needs", job.result_summary)
             self.assertEqual(job.artifacts[0]["handle"], "gen_partial")
             self.assertEqual(job.last_error, "test_runner_missing")
+            from companion_v01.host_tool_job_runtime.results import completion_result
+            from companion_v01.bot_runtime_components.completion import _host_job_completion_request
+            result = completion_result(job)
+            self.assertIn("agent_id=" + started["agent_id"], result.followup_context)
+            self.assertIn("gen_partial", result.followup_context)
+            self.assertEqual(result.followup_context.count(job.result_summary), 1)
+            notice = _host_job_completion_request(job)
+            self.assertEqual(notice.data["agent_id"], started["agent_id"])
+            self.assertIn("gen_partial", notice.message)
 
     def _submit(self, runtime: HostSubagentJobRuntime, *, key: str = "call-1") -> dict:
         return runtime.submit(

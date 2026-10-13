@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from tests.desktop_pet_source import read_pet_runtime_source
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from unittest.mock import patch
@@ -60,7 +61,8 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
                  "duration_seconds": 180, "source_kind": "system_media", "captured_at": 1789000000},
                 _desktop_context(), profile_user_id="master", session_id="desktop_pet_test")
             self.assertIn("采样时进度：01:20", prompt)
-            self.assertIn("拖动", prompt)
+            self.assertIn("跳转、倍速、暂停后以新快照为准", build_desktop_pet_system_prompt())
+            self.assertNotIn("回复送达", prompt)
             self.assertNotIn("【当前桌宠活动】", prompt)
             self.assertNotIn("当前歌词：", prompt)
 
@@ -73,7 +75,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
                 }
             )
         )
-        source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
+        source = read_pet_runtime_source()
         self.assertIn("刚才发生的互动：我投喂了你「${itemName}」。", source)
         self.assertNotIn("刚才发生的互动：用户投喂了你${itemName}。", source)
         self.assertFalse(
@@ -112,13 +114,14 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
 
         self.assertIn("【care.state｜宿主当前值】", prompt)
         self.assertIn("scope: desktop_pet", prompt)
-        self.assertIn("hunger=9/100, hunger_level=critical", prompt)
-        self.assertIn("energy=18/100, energy_level=low", prompt)
-        self.assertIn("affection: 62/100 (affection_tier=warm)", prompt)
-        self.assertIn("time_phase:", prompt)
+        self.assertIn("hunger: 9/100 (critical)", prompt)
+        self.assertIn("energy: 18/100 (low)", prompt)
+        self.assertIn("affection: 62/100 (warm)", prompt)
+        self.assertNotIn("time_phase:", prompt)
+        self.assertNotIn("state=", prompt)
         self.assertNotIn("历史聊天、历史投喂、历史道具效果", prompt)
         self.assertIn("可信当前状态，覆盖较早的聊天、记忆、投喂和台词", system_prompt)
-        self.assertIn("hunger_level=critical", system_prompt)
+        self.assertIn("括号给出宿主判定的档位", system_prompt)
         self.assertIn("饥饿可讨食或请求投喂", system_prompt)
         self.assertIn("warm 可柔软、打趣或主动", system_prompt)
         self.assertIn("不复述数值", system_prompt)
@@ -139,18 +142,33 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
 
         system_prompt = build_desktop_pet_system_prompt()
 
-        self.assertIn("深夜", prompt)
-        self.assertIn("state=又饿又困——两项都到临界线", prompt)
-        self.assertIn("hunger=5/100, hunger_level=critical", prompt)
-        self.assertIn("energy=4/100, energy_level=critical", prompt)
-        self.assertIn("affection_tier=stranger", prompt)
+        self.assertNotIn("适合", prompt)
+        self.assertIn("hunger: 5/100 (critical)", prompt)
+        self.assertIn("energy: 4/100 (critical)", prompt)
+        self.assertIn("affection: 8/100 (stranger)", prompt)
         self.assertIn("两项同时 critical 时同时体现", system_prompt)
         self.assertIn("饥饿可讨食或请求投喂", system_prompt)
         self.assertIn("疲惫可话少或想休息", system_prompt)
         self.assertIn("stranger 礼貌有距离", system_prompt)
 
+    def test_care_custom_thresholds_events_and_work_status_remain_current_facts(self) -> None:
+        from companion_v01.desktop_context_engine import build_desktop_care_prompt
+
+        state = {"hunger": 36, "energy": 40, "affection": 42, "work_task_active": True,
+                 "thresholds": {"hunger_low": 60, "hunger_critical": 45,
+                                "energy_low": 50, "energy_critical": 30, "affection_warm": 35},
+                 "pending_tier_event": {"from_tier": "familiar", "to_tier": "warm", "direction": "up"}}
+        desktop = build_desktop_care_prompt(state, _desktop_context())
+        self.assertIn("hunger: 36/100 (critical); energy: 40/100 (low)", desktop)
+        self.assertIn("affection: 42/100 (warm)", desktop)
+        self.assertIn("pending_tier_event: familiar -> warm (up)", desktop)
+        self.assertIn("work_task=active", desktop)
+        self.assertNotIn("要承认", desktop)
+        self.assertNotIn("work_task=active", build_desktop_care_prompt(state, _qq_context()))
+        self.assertEqual(build_desktop_care_prompt({**state, "enabled": False}, _desktop_context()), "")
+
     def test_desktop_pet_frontend_consumes_authoritative_care_snapshot(self) -> None:
-        source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
+        source = read_pet_runtime_source()
 
         self.assertIn("function applyPayloadCareSnapshot", source)
         self.assertIn("payload?.care_state", source)
@@ -159,7 +177,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertNotIn("care.affection + affinityDelta", source)
 
     def test_desktop_pet_shop_has_allowance_safety_valve(self) -> None:
-        main_source = Path("desktop_pet_next/src/main.js").read_text(encoding="utf-8")
+        main_source = read_pet_runtime_source()
         shop_source = Path("desktop_pet_next/src/shop.js").read_text(encoding="utf-8")
         shop_html = Path("desktop_pet_next/shop.html").read_text(encoding="utf-8")
         template = Path("desktop_pet_creator_kit/templates/character_pack/character.json").read_text(
@@ -196,12 +214,12 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         system_prompt = build_qq_text_system_prompt()
 
         self.assertIn("【care.state｜宿主当前值】", prompt)
-        self.assertIn("scope: qq_text（饥饿/精力与桌宠共享；affection 为 QQ 独立好感）", prompt)
-        self.assertIn("hunger=18/100, hunger_level=low", prompt)
-        self.assertIn("energy=23/100, energy_level=low", prompt)
-        self.assertIn("affection: 14/100 (affection_tier=stranger)", prompt)
-        self.assertIn("scope=qq_text", system_prompt)
-        self.assertIn("使用 QQ 独立好感", system_prompt)
+        self.assertIn("scope: qq_text", prompt)
+        self.assertIn("hunger: 18/100 (low)", prompt)
+        self.assertIn("energy: 23/100 (low)", prompt)
+        self.assertIn("affection: 14/100 (stranger)", prompt)
+        self.assertIn("状态属于当前会话", system_prompt)
+        self.assertNotIn("QQ 独立好感", system_prompt)
 
     def test_audio_playback_prompt_does_not_imply_interruption(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(
@@ -220,7 +238,8 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("类型：普通音频播放", prompt)
         self.assertIn("雨夜的小歌.mp3", prompt)
         self.assertIn("进度 00:37 / 03:42", prompt)
-        self.assertIn("普通音频不会因为本轮消息自动暂停", prompt)
+        self.assertIn("状态：正在播放", prompt)
+        self.assertIn("control_tool: local_music_control", prompt)
         self.assertNotIn("主人发消息时表演已暂停", prompt)
 
     def test_audio_playback_prompt_includes_current_lyric_without_backend_terms(self) -> None:
@@ -242,12 +261,10 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("下一句歌词：我就轻轻唱下去", prompt)
         self.assert_no_music_backend_terms(prompt)
 
-    def test_desktop_audio_capability_uses_lightweight_activity_requests(self) -> None:
+    def test_desktop_prompt_does_not_define_model_activity(self) -> None:
         prompt = build_desktop_pet_system_prompt()
+        self.assertNotIn("activity", prompt)
 
-        self.assertIn("activity 是给桌宠执行的请求，不是完成回执", prompt)
-        self.assertIn("不要在 speech 里假装动作已经播放、暂停或继续", prompt)
-        self.assertIn("播放、暂停、继续、停止和切歌属于轻量桌宠控制", prompt)
 
     def test_vocal_performance_interrupted_prompt_requires_activity_action(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(
@@ -265,8 +282,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("类型：角色表演/唱歌", prompt)
         self.assertIn("状态：因主人发来消息已暂停", prompt)
         self.assertIn("进度 01:17 / 03:25", prompt)
-        self.assertIn("如果你想继续表演，需要输出 activity action", prompt)
-        self.assertIn('"action":"play|pause|resume|stop|previous|next"', prompt)
+        self.assertIn("control_tool: local_music_control", prompt)
 
     def test_activity_prompt_frames_action_as_request_not_success_receipt(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(
@@ -279,13 +295,13 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
             },
             _desktop_context(),
         )
+        self.assertIn("local_music_control", prompt)
+        self.assertIn("工具回执", build_desktop_pet_system_prompt())
+        self.assertIn("状态：已暂停", prompt)
+        self.assertNotIn("工具回执", prompt)
+        self.assertNotIn("activity.action", prompt)
 
-        self.assertIn("activity 是给桌宠执行的请求，不是执行成功回执", prompt)
-        self.assertIn("speech 里不要说已经播放、已经暂停或已经继续", prompt)
-        self.assertIn("切换到某个具体音频时，play 应尽量带 source_id", prompt)
-        self.assertIn("只继续当前音频时，用 resume + target=current", prompt)
-
-    def test_audio_recommendations_prompt_exposes_playable_catalog_without_current_track(self) -> None:
+    def test_audio_catalog_without_playback_does_not_create_activity_context(self) -> None:
         prompt = self.engine._build_desktop_activity_prompt(
             {
                 "type": "audio_recommendations",
@@ -308,23 +324,38 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
             _desktop_context(),
         )
 
-        self.assertIn("类型：可播放音乐推荐", prompt)
-        self.assertIn("当前 Akane 音乐推荐", prompt)
-        self.assertIn("Starry Days", prompt)
-        self.assertIn("workspace:attachment:audio_001", prompt)
-        self.assertIn("当前可播放音乐", prompt)
+        self.assertEqual(prompt, "")
 
-    def test_desktop_prompt_profile_keeps_activity_as_execution_request(self) -> None:
+    def test_playback_prompt_ignores_catalog_but_retains_current_music_facts(self) -> None:
+        prompt = self.engine._build_desktop_activity_prompt(
+            {"type": "audio_playback", "status": "running", "title": "当前歌曲",
+             "source_id": "track:current", "progress_seconds": 37, "duration_seconds": 222,
+             "queue_count": 3, "queue_index": 1, "next_title": "下一首歌",
+             "queue_titles": ["当前歌曲", "未播放甲", "未播放乙"],
+             "lyric_current": "此刻的歌词",
+             "recommendations": [{"title": "同名歌", "source_id": "track:one", "reason": "轻快"}],
+             "catalog": [{"title": "同名歌", "source_id": "track:one"},
+                         {"title": "同名歌", "source_id": "track:two"}]},
+            _desktop_context(),
+        )
+        self.assertIn("当前歌曲（track:current）", prompt)
+        self.assertIn("进度 00:37 / 03:42", prompt)
+        self.assertIn("队列：第 1 首 / 共 3 首", prompt)
+        self.assertIn("下一首：下一首歌", prompt)
+        self.assertIn("当前歌词：此刻的歌词", prompt)
+        self.assertIn("control_tool: local_music_control", prompt)
+        for omitted in ("当前可播放音乐", "推荐：", "同名歌", "track:one", "track:two", "轻快", "未播放甲", "未播放乙"):
+            self.assertNotIn(omitted, prompt)
+
+    def test_desktop_prompt_profile_uses_tools_for_side_effects(self) -> None:
         profile = self.engine._get_prompt_profile_registry().get(ClientMode.DESKTOP_PET)
         prompts = [
             profile.system_prompt_override,
             profile.mode_prompt_override(debug_enabled=False),
             profile.mode_prompt_override(debug_enabled=True),
         ]
+        self.assertTrue(all("activity" not in prompt for prompt in prompts))
 
-        self.assertTrue(any("桌宠需要播放、暂停、继续、停止" in prompt for prompt in prompts))
-        self.assertTrue(any("activity 是给桌宠执行的请求" in prompt for prompt in prompts))
-        self.assertTrue(any("不要在 speech 里假装动作已经播放、暂停或继续" in prompt for prompt in prompts))
 
     def test_activity_prompt_is_desktop_audio_capability_only(self) -> None:
         activity = {
@@ -374,7 +405,8 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
 
         self.assertIn("【当前音乐位置】", prompt)
         self.assertIn("歌词线索还没准备好", prompt)
-        self.assertIn("不要编造歌词内容", prompt)
+        self.assertIn("歌词未就绪或匹配不可信时不补写", build_desktop_pet_system_prompt())
+        self.assertNotIn("不要编造歌词", prompt)
         self.assert_no_music_backend_terms(prompt)
 
     def test_ready_timeline_prompt_injects_nearby_segments_only(self) -> None:
@@ -424,7 +456,9 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("你说今晚也想有人陪你", prompt)
         self.assertNotIn("很早的前奏旁白", prompt)
         self.assertNotIn("很后面的歌词", prompt)
-        self.assertIn("不保证逐字完全准确", prompt)
+        self.assertIn("不保证逐字完全准确", build_desktop_pet_system_prompt())
+        self.assertNotIn("不保证逐字完全准确", prompt)
+        self.assertEqual(prompt.count("雨夜的小歌.mp3"), 1)
         self.assertNotIn("受伴奏影响", prompt)
         self.assert_no_music_backend_terms(prompt)
 
@@ -468,7 +502,7 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         )
 
         self.assertIn("人潮里忽然想起你", prompt)
-        self.assertIn("不保证逐字完全准确", prompt)
+        self.assertIn("不保证逐字完全准确", build_desktop_pet_system_prompt())
         self.assertIn("受伴奏影响", prompt)
         self.assert_no_music_backend_terms(prompt)
 
@@ -634,12 +668,28 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
         self.assertIn("晴天 - 周杰伦", prompt)
         self.assertIn("进度 02:15", prompt)
         self.assertIn("歌词线索还没准备好", prompt)
-        self.assertIn("系统媒体来自 Windows 当前媒体会话", prompt)
-        self.assertIn("系统媒体控制请求，不是执行成功回执", prompt)
-        self.assertIn('"action":"play|pause|resume|stop|previous|next"', prompt)
-        self.assertIn('"source_id":"system_media:qqmusic-qingtian"', prompt)
+        self.assertIn("来源：系统播放器", prompt)
+        self.assertIn("control_tool: system_media_control", prompt)
+        self.assertEqual(prompt.count("晴天 - 周杰伦"), 1)
+        self.assertEqual(prompt.count("02:15"), 1)
         self.assertNotIn("切换到某个具体音频", prompt)
         self.assert_no_music_backend_terms(prompt)
+
+    def test_music_rules_remain_desktop_only_and_lyrics_keep_a_bounded_tail(self) -> None:
+        system = build_desktop_pet_system_prompt()
+        self.assertIn("proactive_controls 表示主人允许的主动控制", system)
+        self.assertNotIn("proactive_controls", build_qq_text_system_prompt())
+        prompt = self.engine._build_desktop_activity_prompt(
+            {"type": "audio_playback", "status": "running", "title": "测试歌",
+             "lyric_previous": "前" * 500, "lyric_current": "今" * 500, "lyric_next": "后" * 500,
+             "lyrics": "不应该注入的整首歌词" * 1000},
+            _desktop_context(),
+        )
+        self.assertIn("当前歌词：" + "今" * 120, prompt)
+        self.assertIn("上一句歌词：" + "前" * 100, prompt)
+        self.assertIn("下一句歌词：" + "后" * 100, prompt)
+        self.assertNotIn("整首歌词", prompt)
+        self.assertLess(len(prompt), 550)
 
     def test_ready_audio_does_not_start_timeline_prepare(self) -> None:
         class PrepareAwareTimelineService:
@@ -709,17 +759,6 @@ class DesktopActivityRuntimeContractTests(unittest.TestCase):
             },
         )
         self.assertIsNone(self.engine._normalize_activity_action({"action": "continue"}))
-
-    def test_desktop_runtime_only_interrupts_vocal_performance(self) -> None:
-        runtime_path = Path("desktop_pet/renderer/services/ActivityRuntime.js")
-        source = runtime_path.read_text(encoding="utf-8")
-
-        self.assertIn('interruptForUserMessage()', source)
-        self.assertIn('this._current?.type === "vocal_performance"', source)
-        self.assertIn('this._current.status === "running"', source)
-        self.assertIn('nextStatus: "interrupted"', source)
-        self.assertNotIn('this._current?.type === "audio_playback" && this._current.status === "running"', source)
-
 
 if __name__ == "__main__":
     unittest.main()

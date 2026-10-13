@@ -114,10 +114,10 @@ class CapabilityDiscoveryTests(unittest.TestCase):
         )
         loaded = catalog.load(["demo.alpha"])
         self.assertEqual(loaded["status"], "ok")
-        self.assertTrue(loaded["capabilities"][0]["contract_ref"])
+        self.assertNotIn("contract_ref", loaded["capabilities"][0])
+        self.assertNotIn("native_schema", loaded["capabilities"][0])
         self.assertNotIn("loaded_capability_ids", loaded)
         self.assertEqual(loaded["capabilities"][0]["input_schema"]["required"], ["text"])
-        self.assertIn("native_schema", loaded["capabilities"][0])
 
         alias = catalog.load(["demo_alpha"])
         self.assertEqual(alias["reason"], "capability_not_available")

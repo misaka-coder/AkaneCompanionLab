@@ -7,6 +7,69 @@ from companion_v01.turn_coordination import SessionWorkQueue, TurnCoordinator
 
 
 class TurnCoordinatorTests(unittest.TestCase):
+    def test_implicit_group_steering_requires_actual_tool_activity(self) -> None:
+        async def exercise():
+            coordinator = TurnCoordinator()
+            async with coordinator.hold("shared", "group", actor_id="qq:1", channel="qq") as token:
+                for actor in ("qq:1", "qq:owner"):
+                    result = coordinator.offer_steer(
+                        profile_user_id="shared", session_id="group", actor_id=actor,
+                        content="独立问题", channel="qq", allow_other_actor=True,
+                        require_tool_activity=True,
+                    )
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["status"], "busy_chat")
+                self.assertEqual(coordinator.drain(token)["steers"], [])
+                self.assertTrue(coordinator.mark_tool_activity(token))
+                self.assertTrue(coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:owner",
+                    content="别跑全量测试", channel="qq", allow_other_actor=True,
+                    require_tool_activity=True,
+                )["ok"])
+                self.assertEqual(coordinator.drain(token)["steers"][0].actor_id, "qq:owner")
+                self.assertFalse(coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:other",
+                    content="另一个问题", channel="qq", require_tool_activity=True,
+                )["ok"])
+                # The marker survives draining and remains available between tool batches.
+                self.assertTrue(coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:1",
+                    content="继续处理", channel="qq", require_tool_activity=True,
+                )["ok"])
+                coordinator.drain(token)
+                self.assertEqual(coordinator.begin_finalization(token)["status"], "finalizing")
+                self.assertFalse(coordinator.mark_tool_activity(token))
+                self.assertEqual(coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:1",
+                    content="下个问题", require_tool_activity=True,
+                )["status"], "finalizing")
+            async with coordinator.hold("shared", "group", actor_id="qq:1"):
+                self.assertFalse(coordinator.mark_tool_activity(token))
+                self.assertEqual(coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:1",
+                    content="新一轮的问题", require_tool_activity=True,
+                )["status"], "busy_chat")
+
+        asyncio.run(exercise())
+
+    def test_maintenance_cannot_accept_steering_without_a_model_consumer(self) -> None:
+        async def exercise():
+            coordinator = TurnCoordinator()
+            async with coordinator.hold("shared", "group", turn_kind="passive_memory", accepts_steering=False) as token:
+                result = coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:owner",
+                    content="现在回答我", allow_other_actor=True,
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["status"], "busy_maintenance")
+                self.assertEqual(coordinator.drain(token)["steers"], [])
+            async with coordinator.hold("shared", "group", actor_id="qq:owner") as token:
+                self.assertTrue(coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:owner", content="继续开发",
+                )["ok"])
+                self.assertEqual(len(coordinator.drain(token)["steers"]), 1)
+        asyncio.run(exercise())
+
     def test_addressed_input_preempts_optional_attention_instead_of_becoming_steer(self) -> None:
         async def run() -> None:
             coordinator = TurnCoordinator()
@@ -121,6 +184,31 @@ class TurnCoordinatorTests(unittest.TestCase):
                 )
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["status"], "busy_other_actor")
+
+        asyncio.run(exercise())
+
+    def test_host_operator_can_steer_another_actor_task_with_their_own_identity(self) -> None:
+        async def exercise() -> None:
+            coordinator = TurnCoordinator()
+            async with coordinator.hold("shared", "group", actor_id="qq:1", channel="qq") as token:
+                result = coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:2",
+                    actor_display_name="主人", channel="qq", content="别跑全量测试",
+                    allow_other_actor=True,
+                )
+                self.assertTrue(result["ok"])
+                steer = coordinator.drain(token)["steers"][0]
+                self.assertEqual(steer.actor_id, "qq:2")
+                self.assertEqual(steer.actor_display_name, "主人")
+                self.assertEqual(steer.content, "别跑全量测试")
+                self.assertTrue(coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:1",
+                    content="继续处理", channel="qq",
+                )["ok"])
+                self.assertFalse(coordinator.offer_steer(
+                    profile_user_id="shared", session_id="group", actor_id="qq:3",
+                    content="另一位群友的要求", channel="qq",
+                )["ok"])
 
         asyncio.run(exercise())
 

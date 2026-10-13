@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import re
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
@@ -11,6 +12,7 @@ SUBAGENT_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 SUBAGENT_CONTEXT_FIELDS = frozenset({
     "client_mode", "actor_stable_id", "actor_profile_user_id", "authorization_profile_user_id",
     "character_pack_id", "model_role", "route_fingerprint", "thinking_mode",
+    "route_mode", "max_output_tokens", "request_timeout",
 })
 _CHILD_SESSION_ID_RE = re.compile(r"^subagent_[a-f0-9]{32}$")
 _MAX_TASK_CHARS = 24_000
@@ -37,6 +39,7 @@ class SubagentStartRequest:
     model: str = ""
     reasoning_effort: str = ""
     execution_context: Mapping[str, str] = field(default_factory=dict)
+    run_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +49,8 @@ class SubagentRunResult:
     summary: str = ""
     artifacts: tuple[dict[str, str], ...] = ()
     reason: str = ""
+    model: str = ""
+    usage: Mapping[str, int | float] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -171,6 +176,8 @@ def validate_subagent_request(
         for key, value in request.execution_context.items()
     ):
         return "subagent_execution_context_invalid"
+    if not isinstance(request.run_id, str) or len(request.run_id) > 200 or "\x00" in request.run_id:
+        return "subagent_run_id_invalid"
     return ""
 
 
@@ -194,12 +201,19 @@ def normalize_subagent_result(
         return None
     if status != "succeeded" and not reason:
         return None
+    if not isinstance(value.usage, Mapping):
+        return None
     return SubagentRunResult(
         status=status,
         child_session_id=child_session_id,
         summary=summary,
         artifacts=artifacts,
         reason=reason,
+        model=str(value.model or "")[:200],
+        usage={key: number for key, number in value.usage.items()
+               if key in {"input_tokens", "output_tokens", "cache_read_tokens", "requests", "recoveries"}
+               and isinstance(number, (int, float)) and not isinstance(number, bool)
+               and (isinstance(number, int) or math.isfinite(number)) and number >= 0},
     )
 
 

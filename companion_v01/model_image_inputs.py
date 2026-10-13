@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
+import re
 from io import BytesIO
 from typing import Any
 
@@ -11,6 +13,56 @@ from PIL import Image, UnidentifiedImageError
 
 MAX_GIF_BYTES = 8 * 1024 * 1024
 MAX_GIF_PIXELS = 16 * 1024 * 1024
+
+
+def image_source_metadata(image: dict[str, Any]) -> dict[str, str]:
+    """Keep only bounded original-source fields, never the requesting actor."""
+    fields: dict[str, str] = {}
+    for key, limit in (
+        ("source_sender_id", 120),
+        ("source_sender_label", 80),
+        ("source_message_id", 120),
+    ):
+        value = image.get(key)
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            continue
+        text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value)).strip()[:limit]
+        if text:
+            fields[key] = text
+    return fields
+
+
+def attachment_image_source_metadata(item: dict[str, Any]) -> dict[str, str]:
+    detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+    return image_source_metadata(
+        {
+            "source_sender_id": (
+                detail.get("qq_sender_id") or detail.get("source_sender_id") or detail.get("sender_id")
+            ),
+            "source_sender_label": (
+                detail.get("qq_sender_label") or detail.get("source_sender_label") or detail.get("sender_label")
+            ),
+            "source_message_id": item.get("source_message_id"),
+        }
+    )
+
+
+def model_image_source_label(image: dict[str, Any]) -> str:
+    """Put each material handle and its original sender next to its pixels."""
+    handle = str(image.get("attachment_handle") or "").strip()[:120]
+    source = image_source_metadata(image)
+    if not handle and not source:
+        return ""
+    fields = {"handle": handle} if handle else {}
+    if source.get("source_sender_label"):
+        fields["original_sender"] = source["source_sender_label"]
+    if source.get("source_sender_id"):
+        fields["sender_id"] = source["source_sender_id"]
+    if source.get("source_message_id"):
+        fields["source_message_id"] = source["source_message_id"]
+    return "【图片来源】" + " ".join(
+        key + "=" + json.dumps(value, ensure_ascii=False) for key, value in fields.items()
+    )
 
 
 def model_image_blocks(block: dict[str, Any]) -> list[dict[str, Any]]:

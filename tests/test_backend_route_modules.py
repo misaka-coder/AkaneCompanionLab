@@ -307,6 +307,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         response = TestClient(app).get("/health")
 
         self.assertEqual(response.status_code, 200)
+        self.assertNotIn("/app-config", app.openapi()["paths"])
         self.assertEqual(
             response.json(),
             {"status": "ok", "instance_id": "finance-prod", "root_binding": "valid"},
@@ -936,6 +937,71 @@ class BackendRouteModuleTests(unittest.TestCase):
             self.assertEqual(len(processed), 2)
             self.assertTrue(all(str(item.get("memory_idempotency_key") or "").startswith("session-inbox:") for item in processed))
 
+    def test_desktop_stream_renews_its_foreground_claim_and_cleans_up_on_disconnect(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            now = [100.0]
+            store = SessionInboxStore(database_path, clock=lambda: now[0])
+            scheduled = []
+
+            def hold_schedule(coroutine):
+                coroutine.close()
+                scheduled.append(True)
+                return SimpleNamespace(done=lambda: False)
+
+            queue = DurableSessionWorkQueue(store, lease_seconds=1, schedule_task=hold_schedule)
+            guard = FakeGuard()
+            closed = []
+
+            class Engine:
+                @staticmethod
+                def process_turn_stream(_payload):
+                    try:
+                        yield {"type": "assistant_working"}
+                        yield {"type": "final", "payload": {"speech": "完成"}}
+                    finally:
+                        closed.append(True)
+
+            router = build_think_router(
+                engine=Engine(), public_guard=guard, runtime_metrics=FakeRuntimeMetrics(),
+                log_event=lambda *_args, **_kwargs: None, session_work_queue=queue,
+            )
+            endpoint = next(route.endpoint for route in router.routes if getattr(route, "path", "") == "/think")
+            body = json.dumps({
+                "user_id": "desktop-session", "real_user_id": "owner",
+                "source_message_id": "long-desktop-turn", "message": "长任务",
+            }).encode()
+
+            async def receive():
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            response = await endpoint(Request({"type": "http", "method": "POST", "path": "/think", "headers": []}, receive))
+            await response.body_iterator.__anext__()  # Receipt also starts lease renewal.
+            await response.body_iterator.__anext__()  # Tool work is still in progress.
+            duplicate = store.enqueue(
+                session_key="owner\0desktop-session", profile_user_id="owner", session_id="desktop-session",
+                kind="turn", source="desktop_pet", source_event_id="long-desktop-turn",
+                payload={"turn_payload": json.loads(body)},
+            )
+            self.assertEqual(duplicate["status"], "duplicate")
+            item = store.get(duplicate["item_id"])
+            now[0] = 100.8
+            deadline = asyncio.get_running_loop().time() + 2
+            while store.get(item.item_id).lease_until <= 101:
+                self.assertLess(asyncio.get_running_loop().time(), deadline)
+                await asyncio.sleep(0.01)
+            now[0] = 101.2
+            self.assertFalse(store.claim_next("owner\0desktop-session", worker_id="other-worker")["ok"])
+            self.assertEqual(store.get(item.item_id).attempts, 1)
+            await response.body_iterator.aclose()
+            self.assertEqual(closed, [True])
+            self.assertEqual(guard.released, 1)
+            self.assertEqual(store.get(item.item_id).status, "queued")
+            self.assertEqual(store.get(item.item_id).last_error, "client_disconnected")
+            self.assertEqual(scheduled, [True])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "inbox.db"))
+
     def test_desktop_stream_disconnect_requeues_claimed_message(self) -> None:
         async def exercise(database_path: Path) -> None:
             store = SessionInboxStore(database_path)
@@ -1083,7 +1149,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "route-character-switch-1",
-                    "raw_message": "切换角色 reimu",
+                    "raw_message": "/角色 reimu",
                 },
             )
 
@@ -1141,7 +1207,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "route-care-disabled-1",
-                    "raw_message": "状态",
+                    "raw_message": "/养成",
                 },
             )
 
@@ -1213,7 +1279,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "route-thinking-mode-1",
-                    "raw_message": "思考模式 开",
+                    "raw_message": "/思考 开",
                 },
             )
 
@@ -1907,7 +1973,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         app.include_router(
             build_qq_router(
                 engine=FakeEngine(),
-                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True),
+                config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_GROUP_PASSIVE_MEMORY_MODE="off"),
                 qq_gateway=gateway,
                 runtime_metrics=runtime,
                 logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
@@ -1971,12 +2037,21 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)):
-            stopped = client.post(
+            bare_stop = client.post(
                 "/api/qq/napcat/event",
                 json={**event, "message_id": "owner-stop-other-actor", "message": [
-                    {"type": "text", "data": {"text": "先别做了。"}},
+                    {"type": "text", "data": {"text": "/停止"}},
                 ]},
             )
+            stopped = client.post(
+                "/api/qq/napcat/event",
+                json={**event, "message_id": "owner-targeted-stop-other-actor", "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": "/停止"}},
+                ]},
+            )
+        self.assertEqual(bare_stop.status_code, 200)
+        self.assertEqual(bare_stop.json()["reason"], "group_command_requires_explicit_mention")
         self.assertEqual(stopped.status_code, 200)
         self.assertEqual(stopped.json()["sent_count"], 1)
         self.assertEqual(stop_calls[-1]["actor_id"], "")
@@ -2201,7 +2276,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "workspace-list-1",
-                    "message": "工作台",
+                    "message": "/材料",
                 },
             )
             clear_response = TestClient(app).post(
@@ -2212,7 +2287,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "workspace-clear-1",
-                    "message": "彻底清理工作台",
+                    "message": "/材料 删除原文件",
                 },
             )
             soft_delete_response = TestClient(app).post(
@@ -2226,7 +2301,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "message_id": "workspace-soft-delete-1",
                     "message": [
                         {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
-                        {"type": "text", "data": {"text": " 删除工作台"}},
+                        {"type": "text", "data": {"text": " /材料 清理"}},
                     ],
                 },
             )
@@ -2324,7 +2399,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(response.json()["reason"], "private", response.json())
         self.assertEqual(len(process_calls), 1)
         self.assertEqual(process_calls[0]["message"], "现在工作台还有东西吗")
-        self.assertIn("qq.reply_delivery: auto", process_calls[0]["extra_context"])
+        self.assertIn("qq.reply_delivery: text", process_calls[0]["extra_context"])
         self.assertIn("qq.master_qq:", process_calls[0]["extra_context"])
         self.assertNotIn("工作台真实状态", process_calls[0]["extra_context"])
         mocked_post.assert_called_once()
@@ -2571,7 +2646,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     "sender": {"role": "admin", "nickname": "群管理员"},
                     "message": [
                         {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
-                        {"type": "text", "data": {"text": "/识图关"}},
+                        {"type": "text", "data": {"text": "/识图 关"}},
                     ],
                 },
             )
@@ -3340,127 +3415,13 @@ class BackendRouteModuleTests(unittest.TestCase):
         sent_payload = mocked_post.call_args.kwargs["json"]
         self.assertEqual(_onebot_message_text(sent_payload).rstrip("。"), "别戳了")
 
-    # ---------- control center action contract ----------
-
-    def test_control_center_action_returns_not_implemented(self) -> None:
+    def test_retired_control_center_action_routes_are_not_exposed(self) -> None:
         app = FastAPI()
         app.include_router(build_control_center_router())
-
-        response = TestClient(app).post("/control-center/actions/music.next", json={})
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["ok"], False)
-        self.assertEqual(payload["status"], "not-implemented")
-        self.assertEqual(payload["actionId"], "music.next")
-        self.assertEqual(payload["refresh"], False)
-
-    def test_control_center_action_catalog_describes_contract(self) -> None:
-        app = FastAPI()
-        app.include_router(build_control_center_router())
-
-        response = TestClient(app).get("/control-center/actions")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["cache-control"], "no-store")
-        payload = response.json()
-        self.assertEqual(payload["ok"], True)
-        self.assertEqual(payload["status"], "available")
-        self.assertEqual(payload["contractVersion"], 1)
-        self.assertEqual(payload["actionsEndpoint"], "/control-center/actions/{actionId}")
-        self.assertEqual(payload["execution"], "not-implemented")
-        self.assertEqual(payload["defaultResult"]["status"], "not-implemented")
-        self.assertEqual(payload["defaultResult"]["refresh"], False)
-
-    def test_control_center_action_window_close_is_not_implemented(self) -> None:
-        app = FastAPI()
-        app.include_router(build_control_center_router())
-
-        response = TestClient(app).post("/control-center/actions/window.close", json={})
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["status"], "not-implemented")
-        self.assertEqual(payload["actionId"], "window.close")
-
-    def test_control_center_unknown_action_not_404(self) -> None:
-        app = FastAPI()
-        app.include_router(build_control_center_router())
-
-        response = TestClient(app).post("/control-center/actions/unknown.action", json={})
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["status"], "not-implemented")
-        self.assertEqual(payload["actionId"], "unknown.action")
-
-    def test_control_center_non_object_payload_does_not_500(self) -> None:
-        app = FastAPI()
-        app.include_router(build_control_center_router())
-
-        response = TestClient(app).post("/control-center/actions/music.next", json="not an object")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "not-implemented")
-
-    def test_control_center_empty_body_does_not_500(self) -> None:
-        app = FastAPI()
-        app.include_router(build_control_center_router())
-
-        response = TestClient(app).post(
-            "/control-center/actions/music.next", content=b"", headers={"Content-Type": "application/json"}
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "not-implemented")
-
-    def test_control_center_runtime_metrics_does_not_block_response(self) -> None:
-        runtime = FakeRuntimeMetrics()
-        app = FastAPI()
-        app.include_router(build_control_center_router(runtime_metrics=runtime))
-
-        response = TestClient(app).post("/control-center/actions/music.next", json={})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "not-implemented")
-
-    def test_control_center_log_event_receives_contract_event(self) -> None:
-        events: list[tuple[str, dict[str, Any]]] = []
-
-        def log_event(event: str, **fields: Any) -> None:
-            events.append((event, fields))
-
-        app = FastAPI()
-        app.include_router(build_control_center_router(log_event=log_event))
-
-        response = TestClient(app).post("/control-center/actions/music.next", json={"value": True})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(events[0][0], "control_center_action")
-        self.assertEqual(events[0][1]["action_id"], "music.next")
-        self.assertEqual(events[0][1]["status"], "not-implemented")
-        self.assertEqual(events[0][1]["payload_keys"], ["value"])
-
-    def test_control_center_metrics_and_log_errors_do_not_block_response(self) -> None:
-        class BrokenRuntimeMetrics:
-            def observe_request(self, *_args: Any, **_kwargs: Any) -> None:
-                raise RuntimeError("metrics failed")
-
-        def log_event(*_args: Any, **_kwargs: Any) -> None:
-            raise RuntimeError("log failed")
-
-        app = FastAPI()
-        app.include_router(
-            build_control_center_router(
-                runtime_metrics=BrokenRuntimeMetrics(),
-                log_event=log_event,
-            )
-        )
-
-        response = TestClient(app).post("/control-center/actions/music.next", json={})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "not-implemented")
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/control-center/actions").status_code, 404)
+            for action in ("music.next", "window.close", "unknown.action"):
+                self.assertEqual(client.post(f"/control-center/actions/{action}", json={}).status_code, 404)
 
     # ---------- control center snapshot contract ----------
 
@@ -3655,16 +3616,14 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
 
-    def test_control_center_snapshot_does_not_break_action_contract(self) -> None:
+    def test_control_center_snapshot_remains_available_without_action_stub(self) -> None:
         app = FastAPI()
         app.include_router(build_control_center_router())
 
         snapshot = TestClient(app).get("/control-center/snapshot").json()
         self.assertEqual(snapshot["ok"], True)
 
-        action = TestClient(app).post("/control-center/actions/music.next", json={}).json()
-        self.assertEqual(action["status"], "not-implemented")
-        self.assertEqual(action["actionId"], "music.next")
+        self.assertEqual(TestClient(app).post("/control-center/actions/music.next", json={}).status_code, 404)
 
     def test_control_center_snapshot_cached_no_store(self) -> None:
         app = FastAPI()
@@ -3961,24 +3920,6 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertIn("akane_vector_entries", runtime["metrics"])
         self.assertIn("akane_tracemalloc", runtime["metrics"])
         self.assertIn("akane_llm_requests_total", runtime["metrics"])
-
-    def test_control_center_action_inert_refresh_only(self) -> None:
-        """Verify that ALL backend action endpoints only return not-implemented,
-        never execute desktop operations."""
-        app = FastAPI()
-        app.include_router(build_control_center_router())
-
-        client = TestClient(app)
-
-        # Multiple action types: desktop-related, window, music, unknown
-        for action_id in ("window.close", "music.next", "unknown.action", "character.importZip"):
-            response = client.post(f"/control-center/actions/{action_id}", json={})
-            self.assertEqual(response.status_code, 200)
-            payload = response.json()
-            self.assertEqual(payload["ok"], False, f"{action_id} should be ok:false")
-            self.assertEqual(payload["status"], "not-implemented", f"{action_id} should be not-implemented")
-            self.assertEqual(payload["actionId"], action_id, f"{action_id} should echo actionId")
-            self.assertEqual(payload["refresh"], False, f"{action_id} should have refresh:false")
 
     def test_capabilities_catalog_exposes_readonly_existing_tools_and_providers(self) -> None:
         runtime = FakeRuntimeMetrics()
@@ -5097,7 +5038,9 @@ for line in sys.stdin:
             self.assertEqual(first_payload["status"], "ready")
             self.assertFalse(first_payload["cached"])
             self.assertEqual(first_payload["lineCount"], 3)
-            self.assertEqual(first_payload["segments"][0], {"start": 1.0, "end": 4.2, "text": "第一句"})
+            self.assertEqual(first_payload["segments"][0], {
+                "start": 1.0, "end": 4.2, "text": "第一句", "time_seconds": 1.0,
+            })
             self.assertTrue(second_payload["cached"])
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][0], "晴天 周杰伦")
@@ -5814,6 +5757,23 @@ for line in sys.stdin:
             self.assertFalse(missing_file_workflow["executionReady"])
 
             write_valid_cutout_workflow(temp_dir)
+            inert_app = FastAPI()
+            inert_app.include_router(build_capabilities_router(
+                engine=SimpleNamespace(tool_handlers={}), config_module=SimpleNamespace(DATA_DIR=temp_dir),
+                resolve_identity_from_query=resolve_query, workflow_runner=runner, background_tasks=background,
+            ))
+            inert_client = TestClient(inert_app)
+            for path, key in (("/capabilities/workflows", "workflows"), ("/capabilities", "capabilities")):
+                with self.subTest(path=path, scheduler="unbound"):
+                    catalog = inert_client.get(path + "?user_id=desktop&real_user_id=master").json()
+                    workflow = next(item for item in catalog[key] if item["id"] == "workflow.workshop.portrait.cutout")
+                    self.assertFalse(workflow["executionReady"])
+            inert_preflight = inert_client.post(
+                "/capabilities/workflows/workflow.workshop.portrait.cutout/preflight?user_id=desktop&real_user_id=master",
+                json={"inputImageHandle": "portrait_source", "outputImageHandle": "portrait_cutout"},
+            ).json()
+            self.assertEqual(inert_preflight["reason"], "workflow_scheduler_not_bound")
+            self.assertFalse(inert_preflight["canRun"])
             ready_catalog = client.get("/capabilities/workflows?user_id=desktop&real_user_id=master").json()
             ready_workflow = {item["id"]: item for item in ready_catalog["workflows"]}[
                 "workflow.workshop.portrait.cutout"
@@ -6174,7 +6134,7 @@ for line in sys.stdin:
             )
             client = TestClient(app)
 
-            with patch("companion_v01.routes.capabilities.synthesize_tts_service", side_effect=public_service):
+            with patch("companion_v01.routes.capabilities_runtime.tts_probe.synthesize_tts_service", side_effect=public_service):
                 response = client.post(
                     "/capabilities/providers/provider.tts.gpt_sovits.local/tts-test?user_id=desktop&real_user_id=master",
                     json={

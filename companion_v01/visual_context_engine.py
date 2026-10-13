@@ -66,9 +66,24 @@ def build_current_visual_context(
         return "当前没有额外的演出状态参考。"
     effective_runtime_projection = runtime_projection or get_user_runtime_projection(engine, profile_user_id)
     if character_only:
-        return manifest_service.describe_character_visual_state(
+        # The complete outfit/emotion catalog is already in the stable prompt.
+        # This request-scoped tail needs only the selected, normalized state;
+        # repeating descriptions here makes the whole catalog uncached again.
+        bundle = manifest_service.resolve_visual_bundle(
             effective_visual_payload,
             extra_character_outfits=list(effective_runtime_projection.get("extra_character_outfits") or []),
+        )
+        normalized = bundle["normalized"]
+
+        def state_label(entry: Any, entry_id: str) -> str:
+            name = str(entry.get("name") or "").strip() if isinstance(entry, dict) else ""
+            return f"{entry_id} ({name})" if name and name != entry_id else entry_id
+
+        return "；".join(
+            (
+                f"服装: {state_label(bundle.get('outfit'), normalized['character']['outfit'])}",
+                f"表情: {state_label(bundle.get('emotion'), normalized['emotion'])}",
+            )
         )
     return manifest_service.describe_visual_state(
         effective_visual_payload,

@@ -148,18 +148,21 @@ class _RuntimeMetrics:
 class _DesktopContractEngine:
     def __init__(self) -> None:
         self.care_profiles: list[str] = []
+        self.care_sessions: list[str] = []
         self.workspace_calls: list[dict[str, str]] = []
 
     def build_desktop_care_snapshot(
         self,
         *,
         profile_user_id: str,
+        session_id: str,
         character_pack_id: str,
         legacy_state: Any,
         now_ms: int,
     ) -> dict[str, Any]:
         del character_pack_id, legacy_state, now_ms
         self.care_profiles.append(profile_user_id)
+        self.care_sessions.append(session_id)
         return {"ok": True, "status": "ready"}
 
     def manage_desktop_pet_workspace_panel(self, **kwargs: Any) -> dict[str, Any]:
@@ -353,6 +356,7 @@ class DesktopDefaultBotMemoryContractTests(unittest.TestCase):
         self.assertEqual(care_response.status_code, 200)
         self.assertEqual(workspace_response.status_code, 200)
         self.assertEqual(engine.care_profiles, [qq_profile_user_id])
+        self.assertEqual(engine.care_sessions, [desktop_session_id])
         self.assertEqual(
             engine.workspace_calls,
             [{"profile_user_id": qq_profile_user_id, "session_id": desktop_session_id}],

@@ -116,17 +116,14 @@ if __name__ == "__main__":
 
     host, port = _preflight()
 
-    main_url = f"http://127.0.0.1:{port}/"
-    resource_preview_url = f"http://127.0.0.1:{port}/resource-preview"
+    health_url = f"http://127.0.0.1:{port}/health"
 
     logger.info("AkaneCompanionLab starting: host=%s port=%s", host, port)
     logger.info("Python: %s", sys.executable)
     logger.info("yt-dlp: %s", "available" if importlib.util.find_spec("yt_dlp") is not None else "missing")
-    logger.info("Local: %s", main_url)
-    logger.info("Resource preview: %s", resource_preview_url)
+    logger.info("Backend health: %s", health_url)
     if host == "0.0.0.0":
         for ip in _collect_ipv4_candidates():
-            logger.info("Mobile: http://%s:%s/", ip, port)
-        logger.info("Ensure phone and computer are on the same Wi-Fi.")
+            logger.info("LAN backend health: http://%s:%s/health", ip, port)
 
     uvicorn.run("companion_v01.app:app", host=host, port=port, reload=False)

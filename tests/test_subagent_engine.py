@@ -18,7 +18,7 @@ from companion_v01.host_subagent_jobs import HostSubagentJobRuntime
 from companion_v01.host_tool_jobs import HostToolJobRuntime
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.background_tasks import BackgroundTaskRunner
-from companion_v01.bot_runtime import _host_job_completion_request
+from companion_v01.bot_runtime_components.completion import _host_job_completion_request
 from companion_v01.project_workspace import ProjectWorkspaceService
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
 from companion_v01.execution_local import TrustedLocalExecutor
@@ -70,6 +70,9 @@ class SubagentEngineTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        mode = patch("config.MEMCORE_COMPACTION_REQUEST_MODE", "independent")
+        mode.start()
+        self.addCleanup(mode.stop)
         configuration = patch("config.DATA_DIR", self.temp.name)
         configuration.start()
         self.addCleanup(configuration.stop)
@@ -161,7 +164,7 @@ class SubagentEngineTests(unittest.TestCase):
             contract = json.loads(result.split("\n",1)[1])["capabilities"][0]
             self.assertEqual(contract["capability_id"], "mcp.demo.echo")
             return response({NATIVE_TOOL_CALL_FIELD:{"type":"capability_invoke",
-                "capability_id":"mcp.demo.echo", "contract_ref":contract["contract_ref"], "arguments":{"text":"child"},
+                "capability_id":"mcp.demo.echo", "arguments":{"text":"child"},
                 TOOL_SOURCE_FIELD:NATIVE_OPENAI, TOOL_INVOCATION_ID_FIELD:"invoke"}})
         self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD:{"type":"capability_load",
             "capability_ids":["mcp.demo.echo"],TOOL_SOURCE_FIELD:NATIVE_OPENAI, TOOL_INVOCATION_ID_FIELD:"load"}}),
@@ -175,8 +178,9 @@ class SubagentEngineTests(unittest.TestCase):
         self.assertEqual(result.status,"succeeded",result)
         self.assertEqual(observed,[("echo",{"text":"child"})])
         first,loaded,later = self.engine.llm.requests
-        self.assertIn("mcp.demo.echo",first["user_prompt"])
-        self.assertNotIn("web_search",first["user_prompt"])
+        self.assertIn("mcp.demo.echo",first["system_prompt"])
+        self.assertNotIn("web_search",first["system_prompt"])
+        self.assertEqual(first["user_prompt"], request.task)
         self.assertNotIn("mcp_demo_echo",str(first["native_tools"]))
         self.assertEqual(first["native_tools"],loaded["native_tools"])
         self.assertEqual(first["native_tools"],later["native_tools"])
@@ -211,8 +215,12 @@ class SubagentEngineTests(unittest.TestCase):
             return ToolExecutionResult(tool_type="web_search", followup_context="finished:" + call["query"])
         handler.execute = execute
         self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD: {
-            "type": "web_search", "query": word, TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            "type": "web_search", "query": word, "background": word == "slow", TOOL_SOURCE_FIELD: NATIVE_OPENAI,
             TOOL_INVOCATION_ID_FIELD: word}}) for word in ("slow", "independent")]
+        def final_after_completion(_kwargs):
+            self.assertTrue(background.wait_idle(lane="host-jobs", timeout=2))
+            return response({"status": "succeeded", "summary": "Both verified."})
+        self.engine.llm.responses.append(final_after_completion)
         self.engine.llm.responses.extend([response({"status": "succeeded", "summary": "Both verified."}) for _ in range(4)])
         result = self.driver(self.request, cancelled=lambda: False)
         self.assertEqual(result.status, "succeeded", result)
@@ -224,6 +232,34 @@ class SubagentEngineTests(unittest.TestCase):
         self.assertEqual(store.pending_completions(), [])
         self.assertEqual(self.engine.llm.requests[0]["system_prompt"], self.engine.llm.requests[-1]["system_prompt"])
         self.assertEqual(self.engine.llm.requests[0]["native_tools"], self.engine.llm.requests[-1]["native_tools"])
+
+    def test_early_child_final_does_not_implicitly_wait_for_unfinished_work(self):
+        import threading
+        import time
+        release = threading.Event()
+        background = BackgroundTaskRunner({"host-jobs": 1})
+        self.addCleanup(background.close)
+        self.addCleanup(release.set)
+        store = HostJobStore(self.root / "unfinished-jobs.db")
+        delivered = []
+        self.engine.host_tool_jobs = HostToolJobRuntime(engine=self.engine, store=store, background_tasks=background,
+            conversation_ref_issuer=lambda ctx: "parent-ref", terminal_callback=lambda job: delivered.append(job) or True)
+        handler = self.engine.tool_handlers["web_search"]
+        def execute(**_kwargs):
+            release.wait(4)
+            return ToolExecutionResult(tool_type="web_search", followup_context="Actual late result")
+        handler.execute = execute
+        self.engine.llm.responses = [response({NATIVE_TOOL_CALL_FIELD: {
+            "type": "web_search", "query": "slow", "background": True, TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            TOOL_INVOCATION_ID_FIELD: "unfinished"}}), response({"status": "succeeded", "summary": "Not actually verified."})]
+        started = time.monotonic()
+        result = self.driver(self.request, cancelled=lambda: False)
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(result.status, "failed")
+        self.assertIn(result.reason, {"subagent_unfinished_work", "task_work_cancellation_unconfirmed"})
+        release.set()
+        self.assertTrue(background.wait_idle(lane="host-jobs", timeout=3))
+        self.assertEqual(delivered, [])
 
     def test_child_parallel_reads_use_shared_scheduler_and_paired_history(self):
         import threading

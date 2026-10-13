@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from tests.desktop_pet_source import read_workshop_source, read_control_center_bridge_source
+from tests.tauri_source import read_tauri_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,11 +132,9 @@ class DesktopPetInstanceIsolationTests(unittest.TestCase):
             self.assertFalse((named_root / "instances" / "instance-a" / "instance.toml").exists())
 
     def test_tauri_mutable_artifacts_and_admin_secret_stay_instance_bound(self) -> None:
-        tauri_source = (ROOT / "desktop_pet_next" / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
-        control_center_source = (ROOT / "desktop_pet_next" / "src" / "control-center-v2" / "bridge.js").read_text(
-            encoding="utf-8"
-        )
-        workshop_source = (ROOT / "desktop_pet_next" / "src" / "workshop.js").read_text(encoding="utf-8")
+        tauri_source = read_tauri_source()
+        control_center_source = read_control_center_bridge_source()
+        workshop_source = read_workshop_source()
 
         self.assertNotIn("app_cache_dir()", tauri_source)
         self.assertIn("instance_id: String", tauri_source)

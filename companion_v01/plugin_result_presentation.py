@@ -87,11 +87,12 @@ This function does not execute the capability again or request file delivery.
             producer_bounded=True, complete=False, diagnostics=diagnostics,
         )
     handle = reference["generated_handle"]
+    material_kind = " JSON " if stored_material is None else "结果"
     diagnostics["result_handle"] = handle
     return ToolFollowupEnvelope(
         content=(
             f"{preview}\n\n【结果展示不完整】本页展示 {len(preview)} 字，共 {len(rendered)} 字。"
-            f"同次执行的完整 JSON 已保存为 {handle}，未自动发送。"
+            f"同次执行的完整{material_kind}已保存为 {handle}，未自动发送。"
             f'需要完整数据时调用 inspect_generated_file(target="{handle}", section="content")；'
             "结果仍长时沿该读取工具返回的 cursor 继续，无需重新执行原工具。"
         ),

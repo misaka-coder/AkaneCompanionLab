@@ -1,8 +1,6 @@
 import { escapeHtml } from "../dom.js";
 import { actionPhase, renderActionButton } from "./action-button.js";
 
-const SPEEDS = ["0.85x", "1.00x", "1.15x", "1.30x"];
-const SENSITIVITIES = ["低", "中等", "高"];
 
 export function renderVoice(state) {
   const vm = state.viewModel;
@@ -46,26 +44,15 @@ export function renderVoice(state) {
               <span><strong>播放音量</strong><small data-voice-range-value="volume">${voice.tts.volume}%</small></span>
               <input type="range" min="0" max="100" step="1" value="${voice.tts.volume}" data-voice-range="volume" ${controlsDisabled ? "disabled" : ""}>
             </label>
-            <div class="voice-choice-row">
-              <span><strong>语速</strong><small>保存后应用于下一段语音</small></span>
-              <div class="voice-segments" role="group" aria-label="语速">${SPEEDS.map((speed) => renderChoiceButton("voice.setSpeed", speed, speed === voice.tts.speed, controlsDisabled)).join("")}</div>
-            </div>
           </section>
 
           <section class="voice-listen-card glass-panel">
             <div class="voice-console-head">
-              <div><p class="eyebrow">SPEECH INPUT</p><h3>语音输入与唤醒</h3></div>
+              <div><p class="eyebrow">SPEECH INPUT</p><h3>语音输入</h3></div>
               ${renderVoiceToggle(state, vm, "voice.setAsrEnabled", voice.asr.enabled, "ASR")}
             </div>
             <div class="voice-provider-inline ${voice.asr.provider.ready ? "is-ready" : ""}"><i></i><span><strong>${escapeHtml(voice.asr.provider.name)}</strong><small>${escapeHtml(voice.asr.provider.reason || voice.asr.provider.statusLabel)}</small></span><em>${escapeHtml(inputStateLabel(voice.inputState))}</em></div>
-            <form class="wake-word-form" data-wake-word-form>
-              <label><span>唤醒词</span><input type="text" maxlength="32" value="${escapeHtml(voice.wakeWord)}" data-wake-word-input ${controlsDisabled ? "disabled" : ""}></label>
-              <button class="action-button" type="submit" ${controlsDisabled ? "disabled" : ""}><span>✓</span><b>保存唤醒词</b></button>
-            </form>
-            <div class="voice-choice-row">
-              <span><strong>唤醒灵敏度</strong><small>环境嘈杂时建议使用中等或低</small></span>
-              <div class="voice-segments" role="group" aria-label="唤醒灵敏度">${SENSITIVITIES.map((value) => renderChoiceButton("voice.setWakeSensitivity", value, value === voice.wakeSensitivity, controlsDisabled)).join("")}</div>
-            </div>
+            <p class="voice-input-help">点击桌宠麦克风开始或结束语音输入。</p>
           </section>
         </div>
 
@@ -104,7 +91,7 @@ function renderVoiceProfileCenter(state, vm) {
   const binding = vm.character.voice;
   const boundProfile = profiles.find((item) => item.voiceProfileId === binding.profileId);
   const suggestion = state.voiceProfileSuggestion || {};
-  const activeProvider = providers.find((item) => item.id === suggestion.providerId) || providers[0];
+  const activeProvider = providers.find((item) => item.id === suggestion.providerId) || boundProfile?.provider || providers[0];
   const currentLabel = binding.profileId ? (boundProfile?.name || binding.profileId) : "跟随默认语音";
   return `
     <section class="voice-profile-center" id="voice-profile-center" aria-labelledby="voice-profile-title">
@@ -112,6 +99,8 @@ function renderVoiceProfileCenter(state, vm) {
         <div><p class="eyebrow">CHARACTER VOICE</p><h3 id="voice-profile-title">角色声线</h3><p>先确认服务和声线真的可用，再绑定给当前角色。保存、试听、绑定是三个独立状态。</p></div>
         <span class="mini-chip">${escapeHtml(profiles.length ? `${profiles.length} 个档案` : "等待配置")}</span>
       </div>
+
+      ${providers.length > 1 ? `<label class="voice-provider-picker"><span>配置声线服务 </span><select data-voice-provider-select>${providers.map(provider => `<option value="${escapeHtml(provider.id)}"${provider.id === activeProvider?.id ? " selected" : ""}>${escapeHtml(provider.title)}</option>`).join("")}</select></label>` : ""}
 
       <div class="voice-profile-overview">
         <article class="voice-current-binding glass-panel">
@@ -139,7 +128,7 @@ function renderVoiceProfileCenter(state, vm) {
 
 function renderVoiceProfileCard(state, vm, item, boundProfileId) {
   const bound = item.voiceProfileId === boundProfileId;
-  const meta = [item.referenceAudioName, item.emotionSampleCount ? `${item.emotionSampleCount} 个情绪样本` : "", item.textLang && `${item.textLang}/${item.promptLang}`, item.mediaType.toUpperCase()].filter(Boolean);
+  const meta = [item.irodoriVoiceId ? `日语 · ${item.irodoriVoiceId}` : item.referenceAudioName, item.emotionSampleCount ? `${item.emotionSampleCount} 个情绪样本` : "", !item.irodoriVoiceId && item.textLang && `${item.textLang}/${item.promptLang}`, item.mediaType.toUpperCase()].filter(Boolean);
   return `<article class="voice-profile-card glass-panel${bound ? " is-bound" : ""}">
     <div class="voice-profile-card-head"><span><small>${escapeHtml(item.provider.title)}</small><strong>${escapeHtml(item.name)}</strong></span><em class="is-${escapeHtml(item.statusTone)}">${escapeHtml(bound ? "当前绑定" : item.statusLabel)}</em></div>
     <p>${escapeHtml(meta.join(" · ") || item.reason || "声线资料等待同步")}</p>
@@ -152,6 +141,7 @@ function renderVoiceProfileCard(state, vm, item, boundProfileId) {
 }
 
 function renderVoiceProfileEditor(state, vm, provider, draft) {
+  if (provider.adapter === "irodori") return renderIrodoriProfileEditor(state, vm, provider, draft);
   const selectedId = String(draft.voiceProfileId || "").trim();
   const existing = provider.voiceProfiles.find((item) => item.voiceProfileId === selectedId);
   const enabled = draft.enabled ?? existing?.enabled ?? true;
@@ -203,6 +193,24 @@ function renderVoiceProfileEditor(state, vm, provider, draft) {
         ${renderProfileSubmitButton(state, vm, "abilities.provider.voiceProfile.save", "保存档案", "✓", "primary")}
         <small>保存只证明配置已写入；请再试听，确认服务和音频链路真实可用后再绑定。</small>
       </div>
+    </form>
+  </details>`;
+}
+
+function renderIrodoriProfileEditor(state, vm, provider, draft) {
+  const selectedId = String(draft.voiceProfileId || "").trim();
+  const existing = provider.voiceProfiles.find(item => item.voiceProfileId === selectedId);
+  return `<details class="voice-profile-editor glass-panel" data-capability-key="voice-profile:editor"${state.voiceProfileEditorOpen ? " open" : ""}>
+    <summary><span><small>Irodori-TTS</small><strong>${escapeHtml(selectedId ? `调整 ${draft.displayName || existing?.name || selectedId}` : "添加声线档案")}</strong></span><em>展开配置⌄</em></summary>
+    <form data-capability-form="voice-profile" data-provider-id="${escapeHtml(provider.id)}">
+      <div class="voice-profile-form-grid">
+        <label><span>档案 ID</span><input name="voiceProfileId" value="${escapeHtml(selectedId)}" maxlength="80" required placeholder="cecilia_irodori_calm"></label>
+        <label><span>显示名称</span><input name="displayName" value="${escapeHtml(draft.displayName || existing?.name || "")}" maxlength="80" placeholder="塞西莉亚 · Irodori"></label>
+        <label class="is-wide"><span>服务中的声线 ID</span><input name="irodoriVoiceId" value="${escapeHtml(draft.irodoriVoiceId || existing?.irodoriVoiceId || "")}" maxlength="80" pattern="(?:[A-Za-z0-9_]|-)+" required placeholder="cecilia"><small>填写 Irodori 服务已注册的声线名称。保存后请试听确认。</small></label>
+        <label class="voice-enabled-field"><span>启用档案</span><input type="checkbox" name="voiceProfileEnabled"${(draft.enabled ?? existing?.enabled ?? true) ? " checked" : ""}></label>
+      </div>
+      <p>当前生成使用已验证的日语配音设置。模型仍可自由表达语气，输出和聊天历史保留原有表达；声音对语气描述的控制尚待试听验证。</p>
+      <div class="voice-profile-editor-actions">${renderProfileSubmitButton(state, vm, "abilities.provider.voiceProfile.save", "保存档案", "✓", "primary")}<small>保存、试听和绑定角色是独立步骤。</small></div>
     </form>
   </details>`;
 }
@@ -271,10 +279,6 @@ function renderVoiceToggle(state, vm, actionId, enabled, label) {
   const pending = ["pressed", "pending"].includes(actionPhase(state, actionId));
   const available = vm.actions[actionId]?.available;
   return `<button class="voice-toggle${enabled ? " is-on" : ""}${pending ? " is-pending" : ""}" type="button" data-action="${escapeHtml(actionId)}" data-action-value="${enabled ? "false" : "true"}" data-action-value-type="boolean" aria-pressed="${enabled ? "true" : "false"}" ${available && !pending ? "" : "disabled"}><i></i><span>${escapeHtml(label)} ${pending ? "保存中" : enabled ? "已开启" : "已关闭"}</span></button>`;
-}
-
-function renderChoiceButton(actionId, value, selected, disabled) {
-  return `<button type="button" class="${selected ? "is-selected" : ""}" data-action="${escapeHtml(actionId)}" data-action-value="${escapeHtml(value)}" aria-pressed="${selected ? "true" : "false"}" ${selected || disabled ? "disabled" : ""}>${escapeHtml(value)}</button>`;
 }
 
 function renderProvider(label, provider) {

@@ -55,6 +55,8 @@ class ImageMaterialTests(unittest.TestCase):
             origin_name="reference.png",
             mime_type="image/png",
             storage_relpath="user/session/reference.png",
+            source_message_id="message-a",
+            detail={"qq_sender_id": "404", "qq_sender_label": "原作者"},
             timestamp=100,
         )
         return (
@@ -64,6 +66,7 @@ class ImageMaterialTests(unittest.TestCase):
                 attachment_id=item["attachment_id"],
                 summary_title="参考图",
                 short_hint="合成测试图片",
+                detail=item["detail"],
                 timestamp=101,
             )
             or item
@@ -75,7 +78,10 @@ class ImageMaterialTests(unittest.TestCase):
             _store, attachment_service, generated_service, resolver = self._services(root)
             attachment = self._add_attachment(root, attachment_service)
             handler = LoadMaterialToolHandler(image_material_resolver=resolver)
-            context = ToolExecutionContext(profile_user_id="user", session_id="session", now_ts=200, visual_payload={})
+            context = ToolExecutionContext(
+                profile_user_id="user", session_id="session", now_ts=200, visual_payload={},
+                request_context={"actor_stable_id": "qq:202", "actor_display_name": "评论者"},
+            )
 
             result = handler.execute(
                 call={"type": "load_material", "targets": [attachment["attachment_handle"]]},
@@ -91,6 +97,9 @@ class ImageMaterialTests(unittest.TestCase):
             self.assertEqual(result.stream_events[0]["handles"], ["img_001"])
             self.assertEqual(len(result.model_image_inputs), 1)
             self.assertTrue(result.model_image_inputs[0]["data_url"].startswith("data:image/png;base64,"))
+            self.assertEqual(result.model_image_inputs[0]["source_sender_id"], "404")
+            self.assertEqual(result.model_image_inputs[0]["source_sender_label"], "原作者")
+            self.assertEqual(result.model_image_inputs[0]["source_message_id"], "message-a")
             self.assertNotIn("base64", result.followup_context)
             self.assertNotIn(str(root), result.followup_context)
             self.assertNotIn("data_url", str(result.stream_events))

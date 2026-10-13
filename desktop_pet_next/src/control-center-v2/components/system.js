@@ -3,6 +3,7 @@ import { actionPhase, renderActionButton } from "./action-button.js";
 import { renderQqSetup } from "./qq-setup.js";
 import { renderPerception } from "./perception.js";
 import { renderComputerUse } from "./computer-use.js";
+import { renderMemorySettings } from "./memory-settings.js";
 
 export function renderSystem(state) {
   const vm = state.viewModel;
@@ -10,6 +11,7 @@ export function renderSystem(state) {
   if (!system?.available) {
     return `
       ${renderQqSetup(state)}
+      ${renderMemorySettings(state)}
       ${renderPerception(state)}
       ${renderComputerUse(state)}
       <section class="empty-state glass-panel">
@@ -28,6 +30,7 @@ export function renderSystem(state) {
       </div>
 
       ${renderQqSetup(state)}
+      ${renderMemorySettings(state)}
       <section class="system-health-hero glass-panel is-${escapeHtml(system.overallTone)}">
         <div class="system-health-mark"><span>${system.overallTone === "good" ? "✓" : system.overallTone === "warning" ? "!" : "×"}</span></div>
         <div><p class="eyebrow">CURRENT HEALTH</p><h3>${escapeHtml(system.overallLabel)}</h3><p>${escapeHtml(system.overallDetail)}</p></div>

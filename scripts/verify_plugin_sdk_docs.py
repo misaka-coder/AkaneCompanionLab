@@ -34,7 +34,7 @@ _DOCUMENTED_NAMES_PATTERN = re.compile(r"`([A-Z][A-Za-z0-9]+)`")
 _DOCUMENTED_SDK_TYPES = re.compile(r"\b([A-Z][A-Za-z0-9]*(?:Receipt|Context|Input|Event|Binding|Error|Spec|Payload|Subscription|Delivery))\b")
 _DOCUMENTED_TYPE_ALLOWLIST = frozenset({"EventReceipt", "TurnReceipt", "ObservationReceipt"})
 _SDK_VERSION_CLAIM_PATTERN = re.compile(r"SDK([^\n`]{0,24}?)([0-9]+\.[0-9]+\.[0-9]+)")
-_MINIMUM_SDK_CLAIM_PATTERN = re.compile(r"`akane-plugin>=([0-9.]+),<([0-9.]+)`")
+_MINIMUM_SDK_CLAIM_PATTERN = re.compile(r"akane-plugin\s*>=\s*([0-9.]+)\s*,\s*<\s*([0-9.]+)")
 _NOT_SDK_NAMES = frozenset({
     "Any", "False", "Literal", "None", "PYTHONPATH", "True", "CancelledError", "ValueError", "TimeoutError",
 })
@@ -90,7 +90,23 @@ def check_version_consistency() -> tuple[str, ...]:
         problems.append(f"akane_plugin/README.md heading does not name SDK {version}")
     if f"akane_plugin-{version}-py3-none-any.whl" not in SDK_README.read_text(encoding="utf-8"):
         problems.append(f"akane_plugin/README.md install example does not name SDK {version}")
+    problems.extend(check_dependency_claims(SDK_README.read_text(encoding="utf-8"), SDK_README.name))
     return tuple(problems)
+
+
+def check_dependency_claims(text: str, source: str) -> tuple[str, ...]:
+    """Check literal requirements in prose and code fences, including TOML examples."""
+
+    def release(value: str) -> tuple[int, ...]:
+        parts = tuple(int(part) for part in value.split("."))
+        return parts + (0,) * max(0, 3 - len(parts))
+
+    version = akane_plugin.__version__
+    return tuple(
+        f"{source} pins akane-plugin>={minimum},<{maximum}, which excludes SDK {version}"
+        for minimum, maximum in _MINIMUM_SDK_CLAIM_PATTERN.findall(text)
+        if not release(minimum) <= release(version) < release(maximum)
+    )
 
 
 def check_documented_api() -> tuple[str, ...]:
@@ -126,7 +142,6 @@ def check_release_claims() -> tuple[str, ...]:
 
     problems: list[str] = []
     version = akane_plugin.__version__
-    major, minor, _ = version.split(".")
     for document in (EXAMPLES_README, SKILL):
         text = document.read_text(encoding="utf-8")
         for between, claimed in _SDK_VERSION_CLAIM_PATTERN.findall(text):
@@ -135,11 +150,7 @@ def check_release_claims() -> tuple[str, ...]:
                 continue
             if claimed != version:
                 problems.append(f"{document.name} claims SDK {claimed}; the package is {version}")
-        for minimum, maximum in _MINIMUM_SDK_CLAIM_PATTERN.findall(text):
-            if not (minimum.startswith(f"{major}.{minor}") and maximum.startswith(f"{major}.{int(minor) + 1}")):
-                problems.append(
-                    f"{document.name} claims akane-plugin>={minimum},<{maximum}, which excludes {version}"
-                )
+        problems.extend(check_dependency_claims(text, document.name))
     return tuple(problems)
 
 
@@ -153,8 +164,6 @@ def check_example_release_compatibility() -> tuple[str, ...]:
     """
 
     problems: list[str] = []
-    version = akane_plugin.__version__
-    major, minor, _ = version.split(".")
     manifests = [
         *sorted((ROOT / "examples" / "plugins").glob("*/pyproject.toml")),
         *sorted((ROOT / "plugins").glob("*/pyproject.toml")),
@@ -164,11 +173,7 @@ def check_example_release_compatibility() -> tuple[str, ...]:
         for requirement in data.get("project", {}).get("dependencies", ()):
             if not requirement.startswith("akane-plugin"):
                 continue
-            for minimum, maximum in _MINIMUM_SDK_CLAIM_PATTERN.findall(f"`{requirement}`"):
-                if not (minimum.startswith(f"{major}.{minor}") and maximum.startswith(f"{major}.{int(minor) + 1}")):
-                    problems.append(
-                        f"{manifest.parent.name} pins {requirement}, which excludes the packaged SDK {version}"
-                    )
+            problems.extend(check_dependency_claims(requirement, manifest.parent.name))
             break
     return tuple(problems)
 

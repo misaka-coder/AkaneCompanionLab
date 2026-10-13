@@ -11,7 +11,7 @@ from companion_v01.engine import AkaneMemoryEngine
 
 
 class CareRuntimeStoreTests(unittest.TestCase):
-    def test_qq_shares_vitals_but_keeps_affection_separate(self) -> None:
+    def test_qq_conversation_vitals_are_independent_of_desktop(self) -> None:
         with TemporaryDirectory() as tmp:
             store = CareRuntimeStore(Path(tmp) / "care_runtime.json")
 
@@ -38,8 +38,8 @@ class CareRuntimeStoreTests(unittest.TestCase):
 
             self.assertEqual(desktop_snapshot["affection"], 42)
             self.assertEqual(desktop_snapshot["affection_scope"], "desktop_pet")
-            self.assertEqual(qq_snapshot["hunger"], 38)
-            self.assertEqual(qq_snapshot["energy"], 64)
+            self.assertEqual(qq_snapshot["hunger"], 55)
+            self.assertEqual(qq_snapshot["energy"], 70)
             self.assertEqual(qq_snapshot["coins"], 0)  # QQ user starts with 0 personal coins
             self.assertEqual(qq_snapshot["affection"], 10)
             self.assertEqual(qq_snapshot["affection_scope"], "qq_text")
@@ -71,8 +71,8 @@ class CareRuntimeStoreTests(unittest.TestCase):
                 relation_user_id="qq:222",
                 now_ms=1716192010000,
             )
-            self.assertEqual(other_group_member["hunger"], 38)
-            self.assertEqual(other_group_member["energy"], 64)
+            self.assertEqual(other_group_member["hunger"], 55)
+            self.assertEqual(other_group_member["energy"], 70)
             self.assertEqual(other_group_member["affection"], 10)
             self.assertEqual(
                 store.snapshot_for_client(
@@ -123,8 +123,8 @@ class CareRuntimeStoreTests(unittest.TestCase):
                 now_ts=1716192000,
             )
 
-            self.assertEqual(first_payload["desktop_care"]["hunger"], 44)
-            self.assertEqual(first_payload["desktop_care"]["energy"], 66)
+            self.assertEqual(first_payload["desktop_care"]["hunger"], 55)
+            self.assertEqual(first_payload["desktop_care"]["energy"], 70)
             self.assertEqual(first_payload["desktop_care"]["affection"], 10)
 
             final_output = {"state_request": {"affinity": 2}}
@@ -153,7 +153,7 @@ class CareRuntimeStoreTests(unittest.TestCase):
                 character_pack_id="reimu_demo",
                 now_ts=1716192002,
             )
-            self.assertEqual(second_payload["desktop_care"]["hunger"], 44)
+            self.assertEqual(second_payload["desktop_care"]["hunger"], 55)
             self.assertEqual(second_payload["desktop_care"]["affection"], 10)
 
 
@@ -1191,8 +1191,8 @@ class CareRuntimeGameplayTests(unittest.TestCase):
             self.assertEqual(r["streak"], 1)
             self.assertEqual(r["days_absent"], 1)
 
-    def test_affinity_tier_event_fires_once_and_clears(self) -> None:
-        """好感跨档：pending_tier_event 首次 snapshot 可见，第二次已清除。"""
+    def test_affinity_tier_event_is_consumed_by_completed_turn(self) -> None:
+        """好感跨档提醒在状态查询中保留，由看过它的完成回合消费。"""
         with TemporaryDirectory() as tmp:
             store = self._store(tmp)
             # Default QQ affection = 10 (陌生). Push to 15, then cross 20 (→ 熟悉).
@@ -1231,7 +1231,13 @@ class CareRuntimeGameplayTests(unittest.TestCase):
                 relation_user_id=self._REL,
                 now_ms=2002,
             )
-            self.assertNotIn("pending_tier_event", snap2)
+            self.assertEqual(snap1["pending_tier_event"], snap2["pending_tier_event"])
+            store.settle_turn(profile_user_id=self._PROFILE, character_pack_id=self._CHAR,
+                              relation_user_id=self._REL, client_mode="qq_text", energy_cost=0,
+                              consumed_tier_event=snap1["pending_tier_event"], event_id="completed", now_ms=2003)
+            snap3 = store.snapshot_for_client(profile_user_id=self._PROFILE, character_pack_id=self._CHAR,
+                                             relation_user_id=self._REL, client_mode="qq_text", now_ms=2004)
+            self.assertNotIn("pending_tier_event", snap3)
 
 
 if __name__ == "__main__":

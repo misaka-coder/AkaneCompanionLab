@@ -66,11 +66,15 @@ class BatchStoreTests(unittest.TestCase):
                 result = store.claim_next("profile\0session", worker_id="test", batch_key=batch_key)
                 self.assertEqual([i.source_event_id for i in result["items"]], ["a"])
 
-    def test_retry_waiting_head_cannot_be_overtaken_including_steer(self):
+    def test_retry_waiting_head_blocks_ordinary_work_but_not_reserved_steer(self):
         first = self.store.enqueue(**fields("a"), available_at=110)
         second = self.store.enqueue(**fields("b"))
         self.assertEqual(self.claim()["status"], "deferred")
-        self.assertEqual(self.claim(expected_item_id=second["item_id"])["status"], "deferred")
+        steer = self.claim(expected_item_id=second["item_id"])
+        self.assertEqual(steer["status"], "claimed")
+        self.assertEqual(steer["item"].item_id, second["item_id"])
+        self.assertTrue(self.store.settle_claims(steer["items"], status="committed")["ok"])
+        self.assertEqual(self.claim()["status"], "deferred")
         self.now = 110
         self.assertEqual(self.claim()["item"].item_id, first["item_id"])
 

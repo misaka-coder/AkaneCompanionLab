@@ -375,6 +375,37 @@ function Wait-AkaneDesktopReady {
         [int]$TimeoutSeconds = 120
     )
 
+    $ownedProcess = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $ownedProcess) {
+        throw "Desktop process exited before reporting ui_ready."
+    }
+    $originalStartTime = $ownedProcess.StartTime.Ticks
+    try {
+        return Wait-AkaneDesktopReadyState @PSBoundParameters
+    } catch {
+        $startupFailure = $_
+        # A failed WebView must not leave an invisible, always-on-top window.
+        # Keep the backend/device alive and never stop a reused process ID.
+        try {
+            $failedProcess = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+            if ($null -ne $failedProcess -and $failedProcess.StartTime.Ticks -eq $originalStartTime) {
+                Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+            }
+        } catch {
+            Write-Warning "The unready desktop process could not be stopped."
+        }
+        throw $startupFailure
+    }
+}
+
+function Wait-AkaneDesktopReadyState {
+    param(
+        [string]$DataRoot,
+        [string]$ExpectedInstanceId,
+        [int]$ProcessId,
+        [int]$TimeoutSeconds = 120
+    )
+
     $statePath = Join-Path $DataRoot "run\desktop-ui-state.json"
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
@@ -886,6 +917,9 @@ if (-not $SkipDesktop -or $DeviceOnly) {
     $externalDeviceConfigured = -not [string]::IsNullOrWhiteSpace([string]$env:AKANE_DESKTOP_SATELLITE_TOKEN)
 
     if ($null -ne $existingDesktop -and -not $Rebuild -and -not $DeviceOnly) {
+        # A live process can still contain an uninitialized, blank WebView.
+        # Verify the same instance/PID before treating activation as success.
+        Wait-AkaneDesktopReady -DataRoot $dataRoot -ExpectedInstanceId $expectedInstanceId -ProcessId $existingDesktop.Id | Out-Null
         # A desktop started by this launcher owns a separate headless executor.
         # If its process disappeared, the next activation repairs that executor;
         # an older UI without the state marker keeps its original in-process

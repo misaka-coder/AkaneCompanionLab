@@ -140,6 +140,8 @@ class PluginGenerationCandidateBuilder:
                     plugin_storage_data_root=self.plugin_storage_data_root,
                     plugin_storage_instance_id=self.plugin_storage_instance_id,
                 )
+                if source.digest:
+                    process.implementation_revision = source.digest
                 if source.approved_permissions is not None:
                     bind_approval = getattr(process, "bind_approved_permissions", None)
                     if not callable(bind_approval):

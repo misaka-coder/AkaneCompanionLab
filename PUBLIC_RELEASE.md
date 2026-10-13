@@ -11,16 +11,20 @@ From the repository root on Windows:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\export_public_alpha.ps1 `
+  -SourceRef HEAD `
   -InitializeGit
 ```
 
 The exporter:
 
-- copies tracked and intentional untracked source files from the working tree
+- copies the selected commit when `-SourceRef` is supplied; uncommitted changes
+  and untracked files stay local
+- without `-SourceRef`, copies tracked files from the working tree only
 - does not copy `.git` history
 - excludes `.env`, databases, logs, caches, local research, and build output
 - excludes audio, Live2D runtime/sample files, and unverified media
-- excludes local imported character packs such as `reimu`
+- excludes all character packs except the documented `akane_v1` starter pack,
+  and excludes deployment scripts/records specific to the author's accounts
 - generates neutral placeholder PNG files required by current imports
 - normalizes private absolute Markdown links in the exported copy
 - runs the public-release audit
@@ -52,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\bootstrap_akane_windows.ps1 `
-  -CheckOnly -Mode Web
+  -CheckOnly -Mode Backend
 
 python -m unittest discover tests
 npm --prefix desktop_pet_next ci
@@ -63,16 +67,34 @@ git diff --check
 
 ## Before Publishing
 
+### Updating the existing public repository
+
+The development repository and the public repository have separate Git
+histories. Export a committed source version, audit that output, then apply it
+to a checkout of the public repository as one new commit. Preserve the public
+repository's existing history; do not push the development branch or force-push.
+
+Release dependencies must match `requirements-packages.txt`. The public source
+does not bundle external voice models, audio, user settings, or memories. Attach
+a validated wheelhouse to the GitHub release when pinned internal packages are
+not available on the public package index. State its Python/platform coverage;
+do not describe a Windows/Python-specific wheelhouse as a universal package.
+
+MemCore releases use their own version, tag, wheel and source distribution.
+Akane's `akane-plugin` package version is independent of the desktop Alpha
+version.
+
 - Review `git status --short`.
 - Confirm the repository has no commits inherited from the private project.
 - Review every file staged for the initial public commit.
 - Configure a new remote only for the exported directory.
 - Do not copy files back from local asset or user-data directories.
-- Mark the release as `v0.1.0-alpha.1`, experimental, and Windows-first.
+- Mark the release as an experimental, Windows-first Alpha with a new version
+  matching the desktop package and Tauri manifests.
 - Confirm `启动_Akane.bat` reaches first-time configuration or launches the
-  Web/desktop client on a clean Windows test account.
+  desktop client on a clean Windows test account.
 - Do not describe the source archive as a desktop installer. A source checkout
-  can fall back to Web when Node.js/Rust are unavailable.
+  requires desktop build tools or a prepared executable; backend-only mode has no UI.
 - Do not publish the current Tauri exe as a portable binary. Tauri and Python
   now share one per-user data root, but the desktop release still needs a
   managed backend runtime, a redistributable starter-character flow, and a

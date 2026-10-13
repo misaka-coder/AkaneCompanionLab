@@ -802,6 +802,30 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                 )
                 hidden = manager._store.get_record_by_source_id(str(opened["source_id"]))
+                from tests.test_turn_mainline_contract import _Harness, _speech_output
+
+                harness = _Harness([_speech_output("我也看到了。")])
+                harness.engine._resolve_payload_character_pack_id = lambda payload: "char"
+                harness.engine._resolve_turn_actor = lambda payload: ("qq:member", "成员")
+                harness.engine._memcore_manager_if_enabled = lambda: manager
+                harness.engine._begin_memcore_hidden_host_turn = lambda **kwargs: opened
+                staged_results = []
+                del harness.engine._stage_memcore_turn_metadata
+                stage_metadata = harness.engine._stage_memcore_turn_metadata
+
+                def stage_real_metadata(**kwargs):
+                    staged = stage_metadata(**kwargs)
+                    staged_results.append(staged)
+                    return staged
+
+                harness.engine._stage_memcore_turn_metadata = stage_real_metadata
+                result = harness.run_sync(harness.payload(
+                    user_id="group", real_user_id="group", turn_kind="qq_attention",
+                    transient_user_message=True, memory_attention_reference_source_ids=["ambient-source"],
+                ))
+                self.assertEqual(result["speech"], "我也看到了。")
+                self.assertEqual(len(staged_results), 1)
+                self.assertTrue(staged_results[0]["ok"], staged_results[0])
                 after = manager._store.get_record_by_source_id("ambient-source")
             finally:
                 manager.close()
@@ -1090,6 +1114,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
     def test_compaction_token_difference_policy_is_host_configurable(self) -> None:
         manager = MemcoreManager.__new__(MemcoreManager)
         manager.visible_scope = "user"
+        manager._retrieval_mode = "hybrid"
         manager.enable_flavor = True
         fake_memcore = SimpleNamespace(
             DEFAULT_CATEGORIES=("tool_trace",),
@@ -1151,7 +1176,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 manager.close()
 
     def test_process_runtime_uses_configured_compaction_workers(self) -> None:
-        from companion_v01.memcore_integration import manager as manager_module
+        from companion_v01.memcore_integration import lifecycle as lifecycle_module
 
         created: list[int] = []
 
@@ -1165,15 +1190,15 @@ class MemcoreIntegrationTests(unittest.TestCase):
         fake_memcore = SimpleNamespace(MemCoreRuntime=_Runtime)
         with (
             patch.object(config, "MEMCORE_COMPACTION_WORKERS", 3, create=True),
-            patch.object(manager_module, "_PROCESS_RUNTIME", None),
-            patch.object(manager_module, "_PROCESS_RUNTIME_LEASES", 0),
+            patch.object(lifecycle_module, "_PROCESS_RUNTIME", None),
+            patch.object(lifecycle_module, "_PROCESS_RUNTIME_LEASES", 0),
         ):
-            runtime = manager_module._acquire_process_runtime(fake_memcore)
-            manager_module._release_process_runtime(runtime)
+            runtime = lifecycle_module._acquire_process_runtime(fake_memcore)
+            lifecycle_module._release_process_runtime(runtime)
         self.assertEqual(created, [3])
 
     def test_begin_input_turn_recovers_stale_open_turn_before_opening_next(self) -> None:
-        from companion_v01.memcore_integration import manager as manager_module
+        from companion_v01.memcore_integration import turns as turns_module
 
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemcoreManager(
@@ -1186,14 +1211,14 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 embedding_provider=_FakeEmbeddingProvider(),
             )
             try:
-                with patch.object(manager_module.time, "time", return_value=1000):
+                with patch.object(turns_module.time, "time", return_value=1000):
                     stale = manager.begin_input_turn(
                         {"source_id": "stale-source", "content": "旧请求", "timestamp": 10},
                         profile_user_id="u1",
                         session_id="s1",
                         character_pack_id="char",
                     )
-                with patch.object(manager_module.time, "time", return_value=2801):
+                with patch.object(turns_module.time, "time", return_value=2801):
                     fresh = manager.begin_input_turn(
                         {"source_id": "fresh-source", "content": "新请求", "timestamp": 20},
                         profile_user_id="u1",
@@ -1636,7 +1661,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     session_id="binding-session",
                     character_pack_id="char",
                 )
-                material = manager.import_legacy_message(
+                material = manager.append_standalone_message(
                     {"source_id": "binding-material", "content": "独立材料正文", "timestamp": 101},
                     role="user",
                     profile_user_id="u1",
@@ -1648,7 +1673,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     memcore_manager=manager,
                     llm=SimpleNamespace(chat_provider_protocol=lambda **_kwargs: "responses"),
                 )
-                with patch.object(response_builder, "_memory_backend", return_value="memcore"):
+                with patch("config.MEMORY_BACKEND", "memcore"):
                     projection_read = response_builder._build_memcore_provider_history(
                         engine,
                         profile_user_id="u1",
@@ -2172,6 +2197,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(len(abort_calls), 1)
         self.assertEqual(len(compact_calls), 1)
         self.assertEqual(compact_calls[0]["provider_profile"], "responses")
+        self.assertEqual(compact_calls[0]["chat_model_override"], "finance-model")
         self.assertEqual(result["compaction"]["status"], "scheduled")
 
     def test_legacy_anthropic_tool_result_is_normalized_to_neutral_user_history(self) -> None:
@@ -2683,6 +2709,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                             "attachment_id": "attachment-1",
                             "attachment_handle": "img_001",
                             "mime_type": "image/png",
+                            "source_sender_id": "404",
+                            "source_sender_label": "原作者",
+                            "source_message_id": "606",
                             "data_url": "data:image/png;base64,MUST_NOT_BE_STORED",
                         }
                     ],
@@ -2694,6 +2723,11 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     character_pack_id="char",
                 )
                 self.assertTrue(media["ok"], media)
+                stored_media = manager._store.get_record_by_source_id(media["source_id"])
+                self.assertEqual(stored_media["payload"]["items"][0]["source_sender_label"], "原作者")
+                self.assertEqual(stored_media["payload"]["items"][0]["source_sender_id"], "404")
+                self.assertEqual(stored_media["payload"]["items"][0]["source_message_id"], "606")
+                self.assertNotIn("MUST_NOT_BE_STORED", str(stored_media))
                 current_projection = manager.build_context_projection(
                     provider_profile="responses",
                     profile_user_id="u1",
@@ -2722,6 +2756,9 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     "attachment_id": "attachment-1",
                     "attachment_handle": "img_001",
                     "mime_type": "image/png",
+                    "source_sender_id": "404",
+                    "source_sender_label": "原作者",
+                    "source_message_id": "606",
                     "data_url": "data:image/png;base64,AAAA",
                 }
                 projected = engine._append_tool_history_batch(
@@ -2761,6 +2798,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 self.assertEqual(image_evidence["role"], "user")
                 self.assertEqual(image_evidence["content"][0]["type"], "text")
                 self.assertIn("img_001", image_evidence["content"][0]["text"])
+                self.assertIn('original_sender="原作者"', image_evidence["content"][-2]["text"])
+                self.assertIn('source_message_id="606"', image_evidence["content"][-2]["text"])
                 self.assertEqual(
                     image_evidence["content"][-1]["image_url"]["url"],
                     image_input["data_url"],
@@ -2794,6 +2833,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         media_message = next(message for message in frozen_turn if media["source_id"] in message.get("source_ids", []))
         persisted = str(media_message["payload"])
         self.assertIn("omitted from persistent history", persisted)
+        self.assertIn('original_sender="原作者"', persisted)
+        self.assertIn('source_message_id="606"', persisted)
         self.assertNotIn("AAAA", persisted)
         self.assertNotIn("MUST_NOT_BE_STORED", persisted)
         self.assertTrue(second_context["memcore_request_projection"]["media_omitted"])
@@ -3676,7 +3717,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result["speech"], "恢复后完成。")
         self.assertEqual(result["_memcore_failure"]["reason"], "request_projection_record_failed")
         self.assertEqual(result["_memcore_failure"]["delivery_status"], "model_reply_preserved")
-        self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
+        self.assertEqual(
+            events,
+            [
+                {"type": "turn_start", "speaker": "Akane"},
+                {"type": "turn_progress", "phase": "retrying_model", "transport": "nonstream"},
+            ],
+        )
 
     def test_prompt_token_estimate_counts_structured_history(self) -> None:
         base = {
@@ -4178,6 +4225,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 "after_projected_tokens": 28_000,
                 "before_raw_projected_tokens": 24_100,
                 "after_raw_projected_tokens": 8_000,
+                "before_terminal_raw_projected_tokens": 18_000,
+                "after_terminal_raw_projected_tokens": 1_900,
                 "planned_source_tokens": 16_080,
                 "selected_projected_tokens": 16_100,
                 "compaction_generation": 2,
@@ -4201,6 +4250,8 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("after_tokens=28000", rendered)
         self.assertIn("raw_before_tokens=24100", rendered)
         self.assertIn("raw_after_tokens=8000", rendered)
+        self.assertIn("terminal_before_tokens=18000", rendered)
+        self.assertIn("terminal_after_tokens=1900", rendered)
         self.assertIn("planned_source_tokens=16080", rendered)
         self.assertIn("selected_source_tokens=16100", rendered)
         self.assertIn("namespace=abc123def456", rendered)
@@ -4531,11 +4582,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         engine.memcore_manager = memcore_manager
 
         with patch.object(config, "MEMORY_BACKEND", "memcore"):
-            engine._schedule_summary_cycle(
-                profile_user_id="u1",
-                session_id="s1",
-                character_pack_id="char",
-            )
             engine._run_summary_cycle(
                 profile_user_id="u1",
                 session_id="s1",
@@ -4555,30 +4601,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 }
             ],
         )
-
-    def test_engine_memcore_mode_keeps_legacy_compaction_fallback_when_unavailable(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        legacy_compaction = _LegacyCompactionRecorder()
-        memcore_manager = _CompactionMemcoreManager(available=False)
-        engine.compaction_service = legacy_compaction
-        engine.memcore_manager = memcore_manager
-
-        with patch.object(config, "MEMORY_BACKEND", "memcore"):
-            engine._schedule_summary_cycle(
-                profile_user_id="u1",
-                session_id="s1",
-                character_pack_id="char",
-            )
-            engine._run_summary_cycle(
-                profile_user_id="u1",
-                session_id="s1",
-                character_pack_id="char",
-            )
-
-        expected = {"profile_user_id": "u1", "session_id": "s1", "character_pack_id": "char"}
-        self.assertEqual(legacy_compaction.scheduled, [expected])
-        self.assertEqual(legacy_compaction.ran, [expected])
-        self.assertEqual(memcore_manager.sync_calls, [])
 
     def test_engine_memcore_mode_stops_legacy_raw_vector_writes_when_available(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -4646,20 +4668,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(engine._embedding_reindex_status["error"], "memcore_owns_legacy_vector_index")
         self.assertIsNone(engine._embedding_reindex_thread)
 
-    def test_engine_memcore_mode_skips_legacy_timeline_mirror_when_available(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        engine.memcore_manager = _CompactionMemcoreManager(available=True)
-
-        with patch.object(config, "MEMORY_BACKEND", "memcore"):
-            self.assertFalse(engine._should_init_legacy_memory_timeline())
-
-    def test_engine_memcore_unavailable_keeps_legacy_timeline_mirror_fallback(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        engine.memcore_manager = _CompactionMemcoreManager(available=False)
-
-        with patch.object(config, "MEMORY_BACKEND", "memcore"):
-            self.assertTrue(engine._should_init_legacy_memory_timeline())
-
     def test_engine_memcore_mode_uses_current_turn_as_visible_memory_boundary(self) -> None:
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         engine.store = _ExplodingVisibleMemoryStore()
@@ -4683,41 +4691,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(recent_raw, [user_record])
         self.assertEqual(episodic, [])
         self.assertEqual(semantic, [])
-
-    def test_engine_memcore_unavailable_keeps_legacy_visible_memory_fallback(self) -> None:
-        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
-        store = _VisibleMemoryStore()
-        engine.store = store
-        engine.memcore_manager = _CompactionMemcoreManager(available=False)
-        transient_record = {
-            "source_id": "current",
-            "role": "user",
-            "content": "临时问题",
-            "timestamp": 100,
-        }
-
-        with patch.object(config, "MEMORY_BACKEND", "memcore"):
-            recent_raw, episodic, semantic = engine._load_turn_visible_memory(
-                session_id="s1",
-                profile_user_id="u1",
-                character_pack_id="char",
-                user_record=transient_record,
-                include_transient_user_record=True,
-            )
-
-        self.assertEqual([row["source_id"] for row in recent_raw], ["legacy-raw", "current"])
-        self.assertEqual(episodic[0]["summary_id"], "legacy-episodic")
-        self.assertEqual(semantic[0]["semantic_id"], "legacy-semantic")
-        episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", 10)))
-        semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
-        self.assertEqual(
-            store.calls,
-            [
-                "raw:s1:char",
-                f"episodic:u1:char:{episodic_limit}",
-                f"semantic:u1:char:{semantic_limit}",
-            ],
-        )
 
     def test_memcore_pre_retrieval_skip_does_not_lazy_load_legacy_retrieval(self) -> None:
         class _Engine:
@@ -4747,272 +4720,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(result.router_output["time_hint"]["time_of_day"], "night")
         self.assertEqual(result.router_timing["mode"], "shortcut")
         self.assertIn("memcore 模式", result.router_output["reason"])
-
-    def test_import_legacy_raw_messages_is_idempotent_and_filtered(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = MemcoreManager(
-                backend="memcore",
-                storage_path=Path(temp_dir) / "memcore_v01.db",
-                visible_scope="user",
-                enable_flavor=True,
-                shadow_compare=False,
-                llm=_FakeLLM(),
-                embedding_provider=_FakeEmbeddingProvider(),
-            )
-            legacy_store = _LegacyRawStore(
-                [
-                    {
-                        "source_id": "old-user",
-                        "profile_user_id": "u1",
-                        "session_id": "old-session",
-                        "character_pack_id": "char",
-                        "role": "user",
-                        "content": "以前聊过冰可乐。",
-                        "timestamp": _ts(2026, 6, 1, 9, 0),
-                        "memory_metadata": {"keywords": ["可乐"], "categories": ["preference"], "importance": 0.8},
-                    },
-                    {
-                        "source_id": "old-assistant",
-                        "profile_user_id": "u1",
-                        "session_id": "old-session",
-                        "character_pack_id": "char",
-                        "role": "assistant",
-                        "content": "我会记住你喜欢冰可乐。",
-                        "timestamp": _ts(2026, 6, 1, 9, 1),
-                        "memory_metadata": {},
-                    },
-                    {
-                        "source_id": "other-profile",
-                        "profile_user_id": "u2",
-                        "session_id": "old-session",
-                        "character_pack_id": "char",
-                        "role": "user",
-                        "content": "别人的记忆不能导入 u1。",
-                        "timestamp": _ts(2026, 6, 1, 9, 2),
-                    },
-                    {
-                        "source_id": "tool-turn",
-                        "profile_user_id": "u1",
-                        "session_id": "old-session",
-                        "character_pack_id": "char",
-                        "role": "npc:旁白",
-                        "content": "工具或 NPC 原始行先不回填。",
-                        "timestamp": _ts(2026, 6, 1, 9, 3),
-                    },
-                ]
-            )
-
-            first = manager.import_legacy_raw_messages(
-                legacy_store=legacy_store,
-                profile_user_id="u1",
-                character_pack_id="char",
-                batch_size=2,
-            )
-            second = manager.import_legacy_raw_messages(
-                legacy_store=legacy_store,
-                profile_user_id="u1",
-                character_pack_id="char",
-                batch_size=2,
-            )
-
-            self.assertTrue(first["ok"], first)
-            self.assertEqual(first["scanned"], 4)
-            self.assertEqual(first["upserted"], 2)
-            self.assertEqual(first["filtered"], 1)
-            self.assertEqual(first["skipped"], 1)
-            self.assertEqual(first["failed"], 0)
-            self.assertTrue(second["ok"], second)
-            self.assertEqual(second["upserted"], 2)
-
-            system = manager._get_system(
-                profile_user_id="u1",
-                session_id="old-session",
-                character_pack_id="char",
-            )
-            records = manager._store.list_index_records(namespace=system.namespace, with_conversation=True)
-            source_ids = [record["source_id"] for record in records]
-            self.assertEqual(source_ids.count("old-user"), 1)
-            self.assertIsNotNone(manager._store.get_record_by_source_id("old-assistant"))
-            self.assertIsNone(manager._store.get_record_by_source_id("other-profile"))
-            self.assertIsNone(manager._store.get_record_by_source_id("tool-turn"))
-            found = manager.inspect_turn_source(
-                "old-user",
-                profile_user_id="u1",
-                session_id="old-session",
-                character_pack_id="char",
-            )
-            missing = manager.inspect_turn_source(
-                "not-present",
-                profile_user_id="u1",
-                session_id="old-session",
-                character_pack_id="char",
-            )
-            conflict = manager.inspect_turn_source(
-                "old-user",
-                profile_user_id="u2",
-                session_id="old-session",
-                character_pack_id="char",
-            )
-            self.assertEqual(found["status"], "found")
-            self.assertTrue(found["exists"])
-            self.assertNotIn("content", found)
-            self.assertEqual(missing["status"], "missing")
-            self.assertFalse(missing["exists"])
-            self.assertEqual(conflict["status"], "conflict")
-            self.assertFalse(conflict["ok"])
-            manager.close()
-
-    def test_import_legacy_long_term_memory_preserves_old_summary_layers(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = MemcoreManager(
-                backend="memcore",
-                storage_path=Path(temp_dir) / "memcore_v01.db",
-                visible_scope="user",
-                enable_flavor=True,
-                shadow_compare=False,
-                llm=_FakeLLM(),
-                embedding_provider=_FakeEmbeddingProvider(),
-            )
-            legacy_store = _LegacyLongTermStore(
-                summaries=[
-                    {
-                        "summary_id": "summary::anime-plan",
-                        "profile_user_id": "u1",
-                        "session_id": "old-session",
-                        "character_pack_id": "reimu",
-                        "timestamp": _ts(2026, 6, 20, 21, 0),
-                        "date_label": "2026-06-20",
-                        "time_of_day": "晚上",
-                        "period_label": "旧约定",
-                        "event_type": "preference",
-                        "importance": 0.9,
-                        "diary_summary": "用户和灵梦约好七月一起看新番。",
-                        "key_events": ["约好七月看新番"],
-                        "core_facts": ["用户喜欢聊动漫和新番"],
-                        "semantic_tags": ["新番", "动漫"],
-                        "memory_metadata": {"keywords": ["新番", "动漫"], "categories": ["preference"]},
-                        "is_semanticized": 1,
-                        "semantic_id": "semantic::anime-plan",
-                        "source_ids": ["old-user", "old-assistant"],
-                    },
-                    {
-                        "summary_id": "summary::other-profile",
-                        "profile_user_id": "u2",
-                        "session_id": "old-session",
-                        "character_pack_id": "reimu",
-                        "timestamp": _ts(2026, 6, 20, 21, 0),
-                        "diary_summary": "别人的摘要不能导入。",
-                    },
-                ],
-                semantic_summaries=[
-                    {
-                        "semantic_id": "semantic::anime-plan",
-                        "profile_user_id": "u1",
-                        "session_id": "old-session",
-                        "character_pack_id": "reimu",
-                        "timestamp": _ts(2026, 6, 20, 21, 0),
-                        "period_start_ts": _ts(2026, 6, 20, 21, 0),
-                        "period_end_ts": _ts(2026, 6, 20, 21, 5),
-                        "date_label": "2026-06-20",
-                        "time_of_day": "晚上",
-                        "importance": 0.95,
-                        "semantic_summary": "用户和灵梦有七月一起看新番的约定，用户也喜欢聊动漫偏好。",
-                        "stable_facts": ["用户喜欢动漫和新番"],
-                        "recurring_topics": ["七月新番"],
-                        "important_people": ["灵梦"],
-                        "open_loops": ["七月看新番"],
-                        "semantic_tags": ["新番", "动漫", "约定"],
-                        "memory_metadata": {"keywords": ["七月", "新番"], "categories": ["preference"]},
-                        "source_summary_ids": ["summary::anime-plan"],
-                        "reinforcement_count": 2,
-                        "last_reinforced_ts": _ts(2026, 6, 20, 21, 5),
-                    }
-                ],
-            )
-
-            first = manager.import_legacy_long_term_memory(
-                legacy_store=legacy_store,
-                profile_user_id="u1",
-                character_pack_id="reimu",
-                batch_size=1,
-            )
-            second = manager.import_legacy_long_term_memory(
-                legacy_store=legacy_store,
-                profile_user_id="u1",
-                character_pack_id="reimu",
-                batch_size=1,
-            )
-
-            self.assertTrue(first["ok"], first)
-            self.assertEqual(first["upserted"], 2)
-            self.assertEqual(first["filtered"], 1)
-            self.assertEqual(first["failed"], 0)
-            self.assertTrue(second["ok"], second)
-            self.assertEqual(second["upserted"], 0)
-            self.assertEqual(second["skipped"], 2)
-
-            summary = manager._store.get_record_by_source_id("summary::anime-plan")
-            semantic = manager._store.get_record_by_source_id("semantic::anime-plan")
-            self.assertEqual(summary["diary_summary"], "用户和灵梦约好七月一起看新番。")
-            self.assertEqual(summary["timestamp"], _ts(2026, 6, 20, 21, 0))
-            self.assertEqual(summary["is_semanticized"], 1)
-            self.assertEqual(summary["semantic_id"], "semantic::anime-plan")
-            self.assertEqual(summary["memory_metadata"]["memory_facets"], ["preference"])
-            self.assertEqual(summary["memory_metadata"]["topic_terms"], ["新番", "动漫"])
-            self.assertNotIn("source_system", summary["memory_metadata"])
-            self.assertIn("七月一起看新番", semantic["semantic_summary"])
-            manager.close()
-
-    def test_import_legacy_long_term_memory_reports_namespace_conflict_without_overwrite(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = MemcoreManager(
-                backend="memcore",
-                storage_path=Path(temp_dir) / "memcore_v01.db",
-                visible_scope="user",
-                enable_flavor=True,
-                shadow_compare=False,
-                llm=_FakeLLM(),
-                embedding_provider=_FakeEmbeddingProvider(),
-            )
-            other_system = manager._get_system(
-                profile_user_id="u1",
-                session_id="old-session",
-                character_pack_id="akane_v1",
-            )
-            manager._store.add_summary(
-                namespace=other_system.namespace,
-                record={
-                    "summary_id": "summary::shared-id",
-                    "timestamp": _ts(2026, 6, 1, 20, 0),
-                    "diary_summary": "这是 Akane 域已有的摘要，不能被灵梦域覆盖。",
-                },
-            )
-            legacy_store = _LegacyLongTermStore(
-                summaries=[
-                    {
-                        "summary_id": "summary::shared-id",
-                        "profile_user_id": "u1",
-                        "session_id": "old-session",
-                        "character_pack_id": "reimu",
-                        "timestamp": _ts(2026, 6, 2, 20, 0),
-                        "diary_summary": "这条如果强写就会跨角色域覆盖。",
-                    }
-                ]
-            )
-
-            result = manager.import_legacy_summaries(
-                legacy_store=legacy_store,
-                profile_user_id="u1",
-                character_pack_id="reimu",
-            )
-
-            self.assertFalse(result["ok"], result)
-            self.assertEqual(result["conflicted"], 1)
-            self.assertEqual(result["failed"], 1)
-            stored = manager._store.get_record_by_source_id("summary::shared-id")
-            self.assertEqual(stored["domain_id"], "akane_v1")
-            self.assertEqual(stored["diary_summary"], "这是 Akane 域已有的摘要，不能被灵梦域覆盖。")
-            manager.close()
 
     def test_dual_write_records_raw_and_updates_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5101,7 +4808,13 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored_user["memory_metadata"]["topic_terms"], ["饮料"])
             self.assertEqual(stored_user["memory_metadata"]["memory_facets"], ["preference"])
             self.assertEqual(stored_user["memory_metadata"]["mood_tags"], ["happy"])
-            manager.close()
+            # Let the scheduled job and its completion callback finish before
+            # TemporaryDirectory removes the SQLite files on Windows.
+            deadline = time.monotonic() + 3
+            while manager._background_futures and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(manager._background_futures)
+            self.assertTrue(manager.close())
 
     def test_v2_turn_keeps_parallel_tools_correlated_and_completes_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5560,44 +5273,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
             self.assertEqual(stored["payload"]["source"], "plugin.game")
             manager.close()
 
-    def test_manager_marks_explicit_legacy_message_imports(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = MemcoreManager(
-                backend="memcore",
-                storage_path=Path(temp_dir) / "memcore_v01.db",
-                visible_scope="user",
-                enable_flavor=True,
-                shadow_compare=False,
-                llm=_FakeLLM(),
-                embedding_provider=_FakeEmbeddingProvider(),
-            )
-
-            result = manager.import_legacy_message(
-                {
-                    "source_id": "legacy-assistant-1",
-                    "content": "历史分析结果。",
-                    "timestamp": 100,
-                    "memory_metadata": {
-                        "keywords": ["金融分析"],
-                        "categories": ["life_event"],
-                        "importance": 0.8,
-                    },
-                },
-                role="assistant",
-                profile_user_id="u1",
-                session_id="legacy-session",
-                character_pack_id="char",
-            )
-
-            self.assertTrue(result["ok"], result)
-            stored = manager._store.get_record_by_source_id("legacy-assistant-1")
-            self.assertEqual(stored["role"], "assistant")
-            self.assertEqual(stored["annotation_status"], "accepted_legacy")
-            self.assertEqual(stored["memory_metadata"]["memory_facets"], ["event"])
-            self.assertEqual(stored["memory_metadata"]["topic_terms"], ["金融分析"])
-            self.assertEqual(stored["relation_status"], "standalone")
-            manager.close()
-
     def test_engine_memcore_wrappers_forward_turn_actor(self) -> None:
         manager = _ActorCaptureMemcoreManager()
         engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
@@ -5751,6 +5426,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             "mime_type": "image/jpeg",
             "status": "ready",
             "summary_title": "晚餐图片",
+            "source_message_id": "meal-source-606",
             "storage_relpath": "C:/Users/ExampleUser/secret/meal.jpg",
             "detail": {
                 "character_pack_id": "akane_v1",
@@ -5797,6 +5473,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(stored_reference["payload"]["derived_status"], "ready")
         self.assertEqual(stored_reference["actor_id"], "qq:10001")
         self.assertEqual(stored_reference["actor_display_name"], "张三")
+        self.assertEqual(stored_reference["payload"]["source_message_id"], "meal-source-606")
         self.assertIn("reference:ready:100", stored_reference["source_id"])
         self.assertNotIn("storage_relpath", stored_reference["payload"])
         self.assertNotIn("C:/Users", str(stored_reference))
@@ -5806,6 +5483,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(stored_cleanup["turn_id"], "")
         projected_text = "\n".join(str(item.get("content") or "") for item in projection["payloads"])
         self.assertEqual(projected_text.count("file_id: img_001"), 2)
+        self.assertIn("source_message_id: meal-source-606", projected_text)
         self.assertNotIn("data:", projected_text)
         self.assertNotIn("mime_type:", projected_text)
 
@@ -6432,7 +6110,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 },
                 role="user",
                 profile_user_id="u1",
-                session_id="older-session",
+                session_id="archive-session",
                 character_pack_id="char",
             )
             current = {
@@ -6452,7 +6130,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             with patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
                 result = manager.shadow_retrieve_memory(
                     profile_user_id="u1",
-                    session_id="current-session",
+                    session_id="archive-session",
                     character_pack_id="char",
                     current_user_record=current,
                     query="可乐",
@@ -6460,6 +6138,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     topic_terms=["饮料"],
                     memory_facets=["preference"],
                     about_roles=["user"],
+                    external_target=True,
                 )
 
             self.assertTrue(result["ok"])
@@ -6497,7 +6176,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     },
                     role="user",
                     profile_user_id="u1",
-                    session_id=f"older-session-{index}",
+                    session_id="archive-session",
                     character_pack_id="char",
                 )
             current = {
@@ -6516,7 +6195,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
             result = manager.retrieve_memory(
                 profile_user_id="u1",
-                session_id="current-session",
+                session_id="archive-session",
                 character_pack_id="char",
                 current_user_record=current,
                 query="可乐",
@@ -6525,6 +6204,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 source_layers=["raw"],
                 memory_facets=["preference"],
                 about_roles=["user"],
+                external_target=True,
             )
 
             self.assertTrue(result["ok"], result)
@@ -6568,6 +6248,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         system = _CaptureSystem()
         manager = MemcoreManager.__new__(MemcoreManager)
         manager._memcore_module = None
+        manager._retrieval_mode = "hybrid"
         manager._reason = ""
         manager._get_system_or_none = lambda **_kwargs: system
 
@@ -6617,7 +6298,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     },
                     role="user",
                     profile_user_id="u1",
-                    session_id=f"archive:{source_id}",
+                    session_id="archive-session",
                     character_pack_id="char",
                 )
             current = {
@@ -6636,7 +6317,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
             result = manager.retrieve_memory(
                 profile_user_id="u1",
-                session_id="current-session",
+                session_id="archive-session",
                 character_pack_id="char",
                 current_user_record=current,
                 query="和 misaka 一起来玩的另一个人是谁",
@@ -6649,6 +6330,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                 source_layers=["raw"],
                 memory_facets=["relationship"],
                 about_roles=["third_party"],
+                external_target=True,
             )
 
             self.assertTrue(result["ok"], result)
@@ -6752,7 +6434,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
                 allowed = manager.retrieve_memory(
                     profile_user_id="u1",
-                    session_id="private:u1",
+                    session_id="private:archive",
                     character_pack_id="char",
                     current_user_record={
                         "source_id": "current-explicit-query",
@@ -6764,6 +6446,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
                     topic_terms=["政策方向"],
                     include_explicit=True,
                     kind_patterns=["event.finance.*"],
+                    external_target=True,
                 )
                 forbidden = manager.retrieve_memory(
                     profile_user_id="u1",
@@ -6795,84 +6478,6 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertFalse(invalid["ok"])
         self.assertEqual(invalid["status"], "invalid_request")
         self.assertEqual(invalid["reason"], "kind_patterns_require_include_explicit")
-
-    def test_retrieve_memory_tool_attaches_shadow_without_changing_followup(self) -> None:
-        class _FakeStore:
-            def get_message_by_source_id(self, source_id: str) -> dict[str, object]:
-                return {
-                    "source_id": str(source_id),
-                    "content": "用户问旧饮料偏好",
-                    "timestamp": 100,
-                }
-
-            def get_unsummarized_messages(self, session_id: str, *, character_pack_id: str = "") -> list[dict]:
-                return []
-
-            def get_visible_episodic_summaries(
-                self, profile_user_id: str, *, limit: int, character_pack_id: str = ""
-            ) -> list[dict]:
-                return []
-
-            def get_recent_semantic_summaries(
-                self, profile_user_id: str, *, limit: int, character_pack_id: str = ""
-            ) -> list[dict]:
-                return []
-
-        class _FakeRetrievalService:
-            def run_explicit(self, **kwargs) -> RetrievalPipelineResult:
-                return RetrievalPipelineResult(
-                    used_retrieval=True,
-                    confirmed_snippets=["legacy snippet about cola"],
-                    router_output={},
-                    router_timing={},
-                    retrieval_result={"fused_hits": [{"source_id": "legacy-1"}]},
-                    verifier_output={"match_result": "match"},
-                    verifier_timing={},
-                )
-
-        class _FakeShadowManager:
-            enabled = True
-            available = True
-
-            def shadow_retrieve_memory(self, **kwargs) -> dict[str, object]:
-                return {
-                    "operation": "shadow_retrieve_memory",
-                    "ok": True,
-                    "status": "ok",
-                    "snippet_count": 2,
-                    "snippet_hashes": ["abc123"],
-                    "latency_ms": 1,
-                }
-
-        class _FakeEngine:
-            store = _FakeStore()
-            memcore_manager = _FakeShadowManager()
-
-            def _get_retrieval_service(self) -> _FakeRetrievalService:
-                return _FakeRetrievalService()
-
-        context = ToolExecutionContext(
-            profile_user_id="u1",
-            session_id="s1",
-            now_ts=100,
-            visual_payload={},
-            character_pack_id="char",
-            current_user_source_id="current",
-        )
-        with patch.object(config, "MEMORY_BACKEND", "dual"), patch.object(config, "MEMCORE_SHADOW_COMPARE", True):
-            result = retrieval_engine.execute_retrieve_memory_tool(
-                _FakeEngine(),
-                call={"query": "可乐", "keywords": ["可乐"]},
-                context=context,
-            )
-
-        self.assertIn("legacy snippet about cola", result.followup_context)
-        self.assertNotIn("abc123", result.followup_context)
-        shadow = result.state_updates["memory_retrieval"]["memcore_shadow"]
-        self.assertEqual(shadow["status"], "ok")
-        self.assertEqual(shadow["snippet_count"], 2)
-        self.assertEqual(shadow["legacy_snippet_count"], 1)
-        self.assertEqual(shadow["snippet_hashes"], ["abc123"])
 
     def test_retrieve_memory_tool_uses_memcore_read_side_without_legacy_call(self) -> None:
         memcore_manager = _ToolFakeMemcoreManager(
@@ -6957,7 +6562,10 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertIn("time=2026-08-03T11:30:00+08:00", result.followup_context)
         self.assertIn("raw_effective=12", result.followup_context)
         self.assertIn("仅限 memory_id=episode-cola", result.followup_context)
-        self.assertIn("跨会话锚点不可用", result.followup_context)
+        self.assertNotIn("可按实际缺口任选下一步", result.followup_context)
+        from companion_v01.capability_registry import RETRIEVE_MEMORY_TOOL_SPEC
+        self.assertIn("If an anchor is unavailable", RETRIEVE_MEMORY_TOOL_SPEC.description)
+        self.assertIn("read_memory_timeline.time_range", RETRIEVE_MEMORY_TOOL_SPEC.description)
         self.assertEqual(retrieval_service.calls, [])
         self.assertEqual(len(memcore_manager.calls), 1)
         call = memcore_manager.calls[0]
@@ -7034,13 +6642,52 @@ class MemcoreIntegrationTests(unittest.TestCase):
             )
 
         self.assertIn("memory_id=episode-fable", result.followup_context)
-        self.assertIn("open_memory(view=content)", result.followup_context)
-        self.assertIn("open_memory(view=sources)", result.followup_context)
-        self.assertIn("within_memory_id=<memory_id>", result.followup_context)
-        self.assertIn('source_layers=["raw"]', result.followup_context)
-        self.assertIn("不要只换同义词反复检索", result.followup_context)
-        self.assertIn("read_memory_timeline 兜底核对", result.followup_context)
-        self.assertIn("用户点名了具体日期", result.followup_context)
+        self.assertIn("Fable 相关阶段摘要", result.followup_context)
+        self.assertNotIn("可按实际缺口任选下一步", result.followup_context)
+        from companion_v01.capability_registry import RETRIEVE_MEMORY_TOOL_SPEC
+        instruction = RETRIEVE_MEMORY_TOOL_SPEC.description
+        self.assertIn("open_memory(content)", instruction)
+        self.assertIn("open_memory(sources)", instruction)
+        self.assertIn("within_memory_id", instruction)
+        self.assertIn("source_layers=[raw]", instruction)
+        self.assertIn("synonymous queries", instruction)
+        self.assertIn("read_memory_timeline", instruction)
+
+    def test_retrieval_summary_navigation_deduplicates_only_the_generated_id_line(self) -> None:
+        from memcore.rendering import render_semantic_snippet, render_summary_snippet
+
+        for layer, renderer, field, body_field in (
+            ("summary", render_summary_snippet, "summary_id", "diary_summary"),
+            ("semantic_summary", render_semantic_snippet, "semantic_id", "semantic_summary"),
+        ):
+            with self.subTest(layer=layer):
+                memory_id = '记忆-"已选"'
+                narrative = "完整叙述含 ID 字样，不应删掉：memory_id: 另一个地址。"
+                snippet = renderer({field: memory_id, body_field: narrative}, tz="Asia/Shanghai")
+                payload = {
+                    "ok": True, "retrieval_status": "found", "conversation": "group:200",
+                    "navigation": [{"match_index": 1, "layer": layer, "memory_id": memory_id}],
+                }
+                result = retrieval_engine._build_retrieve_memory_tool_result(
+                    query="叙述", entity_anchors=[], topic_terms=[], time_hint=None, source_layers=[layer],
+                    memory_facets=[], about_roles=[], within_memory_id="", snippets=[snippet],
+                    retrieval_result={}, retrieval_backend="memcore", memcore_read=payload,
+                )
+                metadata = json.loads(result.followup_context.splitlines()[1])
+                self.assertEqual(metadata["navigation"][0]["memory_id"], memory_id)
+                self.assertIn(narrative, result.followup_context)
+                self.assertNotIn("\nmemory_id: ", result.followup_context)
+                self.assertEqual(result.state_updates["memory_retrieval"]["confirmed_snippets"], [snippet])
+
+        raw_text = '【摘要回忆】用户引用的原文\nmemory_id: "raw-quote"'
+        result = retrieval_engine._build_retrieve_memory_tool_result(
+            query="原文", entity_anchors=[], topic_terms=[], time_hint=None, source_layers=["raw"],
+            memory_facets=[], about_roles=[], within_memory_id="", snippets=[raw_text], retrieval_result={},
+            retrieval_backend="memcore", memcore_read={"ok": True, "navigation": [
+                {"match_index": 1, "layer": "raw", "source_id": "raw-quote"},
+            ]},
+        )
+        self.assertIn(raw_text, result.followup_context)
 
     def test_long_memcore_retrieval_result_reaches_model_without_host_8000_char_cut(self) -> None:
         evidence = "完整原始证据" * 2200
@@ -7343,7 +6990,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
             response_builder.prepare_context(
                 engine,
                 session_id="qq_group:427674145",
-                profile_user_id="qq:1906243651",
+                profile_user_id="qq:987654321",
                 user_message="刚才发生的互动：Cvelomy9.在 QQ 里戳了戳你的头像。",
                 recent_raw=[],
                 recent_episodic_summaries=[],
@@ -8741,7 +8388,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
         self.assertEqual(memcore_manager.calls[0]["session_id"], "s1")
         self.assertEqual(memcore_manager.calls[0]["character_pack_id"], "char")
         self.assertEqual(memcore_manager.calls[0]["time_periods"], ["上午"])
-        self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
+        self.assertFalse(memcore_manager.calls[0]["cross_conversation"])
         self.assertEqual(result.state_updates["memory_timeline"]["status"], "partial")
         self.assertEqual(result.state_updates["memory_timeline"]["message_count"], 1)
         self.assertFalse(result.state_updates["memory_timeline"]["coverage"]["complete"])
@@ -8805,7 +8452,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
         self.assertEqual(memcore_manager.calls[0]["session_id"], "group:42")
         self.assertEqual(memcore_manager.calls[0]["memory_id"], "tool-result-1")
-        self.assertTrue(memcore_manager.calls[0]["cross_conversation"])
+        self.assertFalse(memcore_manager.calls[0]["cross_conversation"])
         self.assertIn("完整工具正文", result.followup_context)
         self.assertIsNotNone(result.followup_envelope)
         self.assertTrue(result.followup_envelope.producer_bounded)
@@ -8833,7 +8480,7 @@ class MemcoreIntegrationTests(unittest.TestCase):
 
         forwarded = memcore_manager.calls[0]
         self.assertEqual(forwarded["session_id"], "group:42")
-        self.assertTrue(forwarded["cross_conversation"])
+        self.assertFalse(forwarded["cross_conversation"])
         self.assertIn("episode-1", result.followup_context)
         self.assertIn("早茶与同行者", result.followup_context)
         self.assertIn("live_source_count", result.followup_context)
@@ -9574,8 +9221,10 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
                     self.assertIn("time: ", content)
                     self.assertIn("tool: exec_run", content)
                     self.assertIn("status: success", content)
-                    self.assertIn("call_id: call-exec-long", content)
-                    self.assertIn("reload: open_memory(memory_id=", content)
+                    self.assertEqual(tool_payloads[0].get("tool_call_id"), "call-exec-long")
+                    self.assertIn("source_id:", content)
+                    for redundant_field in ("call_id:", "stored_utf8_bytes:", "result_hash:", "reload:"):
+                        self.assertNotIn(redundant_field, content)
                     self.assertNotIn(long_output, content)
                     self.assertNotIn("BEGIN|", content)
                 finally:
@@ -9750,7 +9399,7 @@ class MemcoreExecClosedLoopTests(unittest.TestCase):
                     card = str(tool_payloads[0].get("content") or "")
                     self.assertIn("[compact_reloadable]", card)
                     self.assertIn(f"source_id: {observation_sid}", card)
-                    self.assertIn(f"call_id: call-exec-res", card)
+                    self.assertEqual(tool_payloads[0].get("tool_call_id"), "call-exec-res")
                     # The full content (run_id + gen_*) is preserved on the
                     # observation and reachable through the card's reload key.
                     system = manager._get_system(

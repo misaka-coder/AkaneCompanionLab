@@ -11,7 +11,12 @@ from fastapi.testclient import TestClient
 
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.qq_tool_delivery import QQToolDeliveryPort
-from companion_v01.routes.qq import _qq_quoted_message_reference, _qq_structured_forward_references, build_qq_router
+from companion_v01.routes.qq import (
+    _build_qq_unavailable_forward_context,
+    _qq_quoted_message_reference,
+    _qq_structured_forward_references,
+    build_qq_router,
+)
 
 
 class QQForwardSourceBindingTests(unittest.TestCase):
@@ -26,6 +31,7 @@ class QQForwardSourceBindingTests(unittest.TestCase):
         self.calls = []
         self.quote_group = 20001
         self.forward_fails = False
+        self.forward_empty = False
         self.gateway._onebot_transport.call = self._call
 
     def _call(self, action, params, *, timeout):
@@ -54,6 +60,8 @@ class QQForwardSourceBindingTests(unittest.TestCase):
                     }
                 ]
             }
+            if self.forward_empty:
+                data["messages"] = []
         ok = not (action == "get_forward_msg" and self.forward_fails)
         return OutboundActionResult(
             ok,
@@ -90,6 +98,45 @@ class QQForwardSourceBindingTests(unittest.TestCase):
         self.assertEqual(result["forwards"][0]["source_message_id"], "quoted")
         self.assertEqual(result["attachments"][0]["forward_id"], "forward-quoted")
         self.assertEqual(result["quoted_message"]["attachment_count"], 1)
+
+    def test_received_inline_forward_nodes_are_read_before_action_lookup(self) -> None:
+        self.forward_empty = True
+        event = self._event(quote=False)
+        event["message"][0]["data"]["content"] = [
+            {
+                "message_id": "inline-node-1",
+                "user_id": 10005,
+                "sender": {"nickname": "Carol"},
+                "message": [
+                    {"type": "text", "data": {"text": "刚收到的正文"}},
+                    {"type": "image", "data": {"file": "inline.png"}},
+                ],
+            }
+        ]
+        result = self.gateway.resolve_forward_message_evidence(
+            event, context=self.gateway.build_message_context(event),
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["resolved_count"], 1)
+        self.assertEqual(result["forwards"][0]["resolution_source"], "event_inline")
+        self.assertEqual(result["forwards"][0]["nodes"][0]["text"], "刚收到的正文 [图片]")
+        self.assertEqual(result["attachments"][0]["forward_id"], "forward-direct")
+        self.assertEqual(self.calls, [])
+
+    def test_outer_event_inline_nodes_cannot_replace_a_quoted_forward(self) -> None:
+        event = self._event()
+        event["message"].append({
+            "type": "forward",
+            "data": {"id": "forward-quoted", "content": [
+                {"user_id": 10006, "message": [{"type": "text", "data": {"text": "wrong"}}]},
+            ]},
+        })
+        result = self.gateway.resolve_quoted_message_evidence(
+            event, context=self.gateway.build_message_context(event),
+        )
+        self.assertEqual([action for action, _params in self.calls], ["get_msg", "get_forward_msg"])
+        self.assertEqual(result["forwards"][0]["resolution_source"], "onebot_action")
+        self.assertEqual(result["forwards"][0]["nodes"][0]["text"], "节点真实正文 [图片]")
 
     def test_cross_group_quote_never_expands_forward(self) -> None:
         self.quote_group = 20002
@@ -182,6 +229,22 @@ class QQForwardSourceBindingTests(unittest.TestCase):
         self.assertEqual(forward["nodes"], [])
         self.assertEqual(forward["status"], "lookup_rejected")
         self.assertEqual(result["attachments"], [])
+
+    def test_empty_success_is_unavailable_evidence(self) -> None:
+        self.forward_empty = True
+        event = self._event(quote=False)
+        result = self.gateway.resolve_forward_message_evidence(
+            event, context=self.gateway.build_message_context(event),
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["resolved_count"], 0)
+        self.assertEqual(result["forwards"][0]["status"], "empty")
+        self.assertFalse(result["forwards"][0]["ok"])
+        self.assertEqual(result["forwards"][0]["reason"], "forward_nodes_empty")
+        self.assertIn("不要猜测", _build_qq_unavailable_forward_context(
+            _qq_structured_forward_references(result)
+        ))
 
     def test_quoted_forward_route_delivers_nodes_pixels_and_source_proof_to_turn(self) -> None:
         processed = []

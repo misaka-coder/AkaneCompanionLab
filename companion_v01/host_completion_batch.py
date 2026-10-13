@@ -32,6 +32,10 @@ def job_delivery_events(job):
 
 
 def _job_artifact_events(job):
+    stored = job.result.get("tool_result")
+    if isinstance(stored, dict):
+        return copy.deepcopy([event for event in stored.get("stream_events") or []
+            if isinstance(event.get("generated_file"), dict)])
     result = job.result.get("capability_result") or {}
     return plugin_artifact_events(SimpleNamespace(content=result.get("content"), is_error=result.get("is_error", True)),
         capability_id=job.capability_id, client_mode=job.channel)
@@ -39,13 +43,19 @@ def _job_artifact_events(job):
 
 def _completion_jobs(engine, items):
     store = getattr(engine, "job_store", None)
-    if store is None or not items or not all(completion_batch_key(item) for item in items):
+    if store is None or not items:
         return []
+    if not all(completion_batch_key(item) for item in items):
+        # Old Shell jobs without origin IDs are never guessed into a batch,
+        # but their genuine singleton envelope still shares the query receipt.
+        event = items[0].payload.get("turn_payload", {}).get("plugin_external_event", {})
+        if len(items) != 1 or event.get("source") != "host.jobs":
+            return []
     jobs = []
     for item in items:
         fields = item.payload["turn_payload"]["plugin_external_event"]["data"]
         job = store.get(fields["job_id"], owner=HostJobOwner(item.profile_user_id, item.session_id))
-        if job is None or job.completion_event_id != item.source_event_id or job.turn_id != fields["origin_turn_id"]:
+        if job is None or job.completion_event_id != item.source_event_id or job.turn_id != fields.get("origin_turn_id", ""):
             raise SessionWorkError("host_job_completion_identity_mismatch")
         jobs.append(job)
     return jobs
@@ -102,13 +112,31 @@ def prepare_completion_turn(engine, items):
     must not remain in an earlier prompt when another Job still needs a model.
     """
     jobs = _completion_jobs(engine, items)
-    model_items = [item for item, job in zip(items, jobs) if job_followup(job).requires_model]
+    model_items = [item for item, job in zip(items, jobs)
+                   if job_followup(job).requires_model and not job.model_consumed_by]
     payload = completion_turn_payload(model_items or items)
+    managed = [job for job in jobs if job.payload.get("managed_invocation")
+               and job_followup(job).requires_model and not job.model_consumed_by]
+    if managed:
+        from .host_tool_job_runtime.results import completion_result
+        from .host_completion_presentation import bound_completion_result
+        messages = []
+        for job in jobs:
+            if not job_followup(job).requires_model or job.model_consumed_by:
+                continue
+            result = completion_result(job)
+            if len(result.followup_context.encode("utf-8")) > 128 * 1024 and not (
+                result.followup_envelope and result.followup_envelope.producer_bounded):
+                result = bound_completion_result(job, result, engine=engine)
+            messages.append(result.followup_context)
+        payload.update(message="\n\n".join(messages), memory_message="\n\n".join(messages),
+            _host_completion_job_ids=[job.job_id for job in managed])
     prepared = None if not jobs or model_items else {
         "status": "ok", "speech": "", "speech_segments": [], "tool_events": [],
         "_deliberate_silence": True, "client_mode": jobs[0].channel}
     return CompletionTurn(payload, prepared, tuple(jobs),
-        frozenset(job.job_id for job in jobs if job_followup(job).requires_model), getattr(engine, "job_store", None))
+        frozenset(job.job_id for job in jobs if job_followup(job).requires_model and not job.model_consumed_by),
+        getattr(engine, "job_store", None))
 
 
 def _model_participated(job):
@@ -148,6 +176,10 @@ def record_completion_delivery(engine, items, *, ok, model_status, delivery_stat
             completion_event_id=job.completion_event_id, receipt=receipt)
         if not saved.get("ok"):
             raise SessionWorkError("host_job_delivery_receipt_not_saved")
+        if participated and model_status == "completed":
+            consumed = engine.job_store.consume_model_completion(job, consumed_by="idle:" + job.completion_event_id)
+            if not consumed.get("ok"):
+                raise SessionWorkError("host_job_model_receipt_not_saved")
 
 
 def record_completion_error(engine, items, exc):

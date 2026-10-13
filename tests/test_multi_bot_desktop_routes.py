@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from companion_v01.bot_http_routes import build_bot_runtime_routers
 from companion_v01.bot_registry import BotRegistry
+from companion_v01.care_runtime import CareModulePort
 from companion_v01.deployment_security import AdminWriteAuth
 from companion_v01.desktop_pet_character_resources import DesktopPetCharacterResourceService
 from companion_v01.model_service_config import ModelServiceConfigStore
@@ -65,6 +66,7 @@ class _Engine:
         self.executor_broker = None
         self.background_tasks = None
         self.calls: list[dict[str, Any]] = []
+        self.timeline_events: list[dict[str, Any]] = []
 
     def process_turn(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(dict(payload))
@@ -72,6 +74,13 @@ class _Engine:
 
     def care_feature_status(self) -> dict[str, Any]:
         return {"enabled": True}
+
+    def get_care_module(self) -> CareModulePort:
+        return CareModulePort.disabled()
+
+    def record_plugin_timeline_event(self, event: dict[str, Any]) -> dict[str, bool]:
+        self.timeline_events.append(dict(event))
+        return {"ok": True}
 
 
 class _Runtime:
@@ -97,7 +106,6 @@ class _Runtime:
         self.engine = _Engine(bot_id, self.desktop_pet_character_resources)
         self.config_module = SimpleNamespace(
             STREAMING_TTS_ENABLED=True,
-            WEB_IDENTITY_MODE="owner",
             WEB_OWNER_PROFILE_USER_ID="master",
         )
         self.runtime_metrics = _Metrics()
@@ -107,6 +115,7 @@ class _Runtime:
         self.plugin_conversation_refs = PluginConversationReferenceAuthority(root / "conversation.key", instance_id=bot_id)
         self.admin_write_auth = AdminWriteAuth.local_compatibility()
         self.tts_client = None
+        self.qq_gateway = None
         self.settings = BotSettingsView()
         self.model_service_config_store = ModelServiceConfigStore(users_data / "model-service.json")
         self.settings_override_store = SettingsOverrideStore(users_data / "settings-overrides.json")

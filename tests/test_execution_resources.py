@@ -576,7 +576,7 @@ class ExecRunResourceWiringTests(unittest.TestCase):
             context=_context(
                 profile_user_id=group_session,
                 session_id=group_session,
-                actor_stable_id="qq:1906243651",
+                actor_stable_id="qq:987654321",
             ),
         )
 

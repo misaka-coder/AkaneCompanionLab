@@ -1,36 +1,35 @@
-"""Read-only catalog of config.Settings switches (Settings Catalog · slice 1a).
+"""User-visible config.Settings switches and their editing metadata.
 
-Single source of truth for "what backend switches exist", paired with curated
+Catalogued switches are paired with curated
 metadata (category / scope / sensitivity) that **cannot** be auto-derived from
 the pydantic model — scope especially needs read-site analysis. Field name,
 type and default are read live from `config.Settings` / the config module so
 they never drift.
 
 A drift-guard test (tests/test_settings_catalog.py) asserts every Settings
-field is either declared here or explicitly excluded, so adding a new switch
-forces a catalog entry. That is how a new feature auto-surfaces in the control
-center instead of hiding in .env.
+field is either declared here or explicitly excluded. New switches need a
+catalog entry or a documented reason to remain environment configuration.
 
-READ-ONLY: this module never writes config. Editing is a later slice and must
-follow the model-service pattern (store + apply + reload + local-request gate +
-secret redaction); see companion_v01/routes/model_services.py.
+This module only describes settings. ``settings_overrides`` validates, saves
+and applies edits; ``routes/control_center`` exposes the authenticated API.
+Model-service settings have their own store and routes.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 import config
 
-# How a change to a setting takes effect — drives the (future) editing UX.
+# How a change to a setting takes effect in the editing UI.
 SCOPE_RUNTIME = "runtime"  # read per request/use -> takes effect live
 SCOPE_RESTART = "restart"  # only projected at startup -> needs restart/reload
 SCOPE_RESTART_CLIENT = "restart_client"  # read when a subsystem/client is built -> rebuild that
 
 VALID_SCOPES = frozenset({SCOPE_RUNTIME, SCOPE_RESTART, SCOPE_RESTART_CLIENT})
 
-# Another surface already edits this — don't double-expose it as editable later.
+# Another surface already edits this — the catalog links to that owner.
 MANAGED_MODEL_SERVICE = "model-service"
 MANAGED_CAPABILITIES = "capabilities"
 MANAGED_DEPLOYMENT = "deployment"
@@ -57,6 +56,27 @@ EXCLUDED_KEYS: frozenset[str] = frozenset(
         # different values and cannot be switched safely as a live UI setting.
         "BROWSER_PAGE_PRIVATE_NETWORK_ACCESS",
         "BROWSER_PAGE_HEADLESS",
+        # Existing environment-only host assembly and low-level tuning;
+        # these fields have no settings-catalog edit surface.
+        "RUNTIME_MEMORY_TRACING_ENABLED",
+        "AKANE_PLUGIN_MARKET_INDEX",
+        "AKANE_PLUGIN_DEPENDENCY_WHEELHOUSE",
+        "AKANE_PLUGIN_DEPENDENCY_INDEX_URL",
+        "AKANE_PLUGIN_RESULT_PREVIEW_CHARS",
+        "AKANE_EXECUTION_RESOURCE_POLICY",
+        "AKANE_EXECUTION_POLICIES",
+        "PUBLIC_URL_DNS_FALLBACK_ENABLED",
+        # Dedicated compaction transport and operation-evidence projection
+        # are configured through the environment and MemCore integration.
+        "MEMCORE_SUMMARY_API_KEY",
+        "MEMCORE_SUMMARY_BASE_URL",
+        "MEMCORE_SUMMARY_MODEL_NAME",
+        "MEMCORE_SUMMARY_API_PROTOCOL",
+        "MEMCORE_OPERATION_SETTLEMENT_MIN_SAVED_RATIO",
+        "MEMCORE_OPERATION_ARGUMENT_MIN_UTF8_BYTES",
+        "MEMCORE_OPERATION_ARGUMENT_PREVIEW_CHARS",
+        # Migration fallback; the abilities page owns exposure preferences.
+        "ENABLE_PROGRESSIVE_CAPABILITY_DISCOVERY",
     }
 )
 
@@ -89,18 +109,16 @@ _TOOL = "工具调用"
 _QQ = "QQ / NapCat 桥接"
 _BG = "后台 Worker"
 _RM = "远程媒体 (yt-dlp)"
-_WEB = "Web 身份模式"
+_OWNER = "主人身份"
 _SRV = "服务监听"
 
-# Display tiers. Everything stays catalogued (the drift guard still covers all
-# 119 fields); tier only sets the UI's default expand/collapse so the common
-# groups are seen first and the rarely-touched ones (multi-access/tuning/infra,
-# 1b feedback) fold away to cut comprehension cost.
+# Display tiers only control the UI's default expand/collapse. Common groups
+# come first; infrequently edited configuration folds into advanced groups.
 TIER_COMMON = "common"
 TIER_ADVANCED = "advanced"
 VALID_TIERS = frozenset({TIER_COMMON, TIER_ADVANCED})
 
-_ADVANCED_CATEGORIES = frozenset({_LLM, _EMB, _RET, _DBG, _MEM, _PUB, _BG, _RM, _WEB, _SRV})
+_ADVANCED_CATEGORIES = frozenset({_LLM, _EMB, _RET, _DBG, _MEM, _PUB, _BG, _RM, _OWNER, _SRV})
 
 _SPECS: tuple[SettingSpec, ...] = (
     # 运行模式 & 人设
@@ -115,6 +133,9 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("EMBEDDING_DIMENSION", _EMB, SCOPE_RESTART_CLIENT, "远程 Embedding 输出维度"),
     _s("EMBEDDING_TIMEOUT_SECONDS", _EMB, SCOPE_RESTART_CLIENT, "远程 Embedding 请求超时秒数"),
     _s("EMBEDDING_DEVICE", _EMB, SCOPE_RESTART_CLIENT, "设备：空=自动/cuda/cpu"),
+    _s("EMBEDDING_PRECISION", _EMB, SCOPE_RESTART_CLIENT, "本地推理精度：float32/float16/bfloat16；CPU 使用 float32"),
+    _s("EMBEDDING_BATCH_SIZE", _EMB, SCOPE_RESTART_CLIENT, "本地模型推理批量上限（不截断文本）"),
+    _s("EMBEDDING_IDLE_CACHE_SECONDS", _EMB, SCOPE_RESTART_CLIENT, "CUDA 空闲缓存回收秒数；0=禁用，模型权重保留"),
     _s("EMBEDDING_LOCAL_FILES_ONLY", _EMB, SCOPE_RESTART_CLIENT, "只用本地缓存/模型目录，避免启动联网下载"),
     _s("EMBEDDING_CACHE_FOLDER", _EMB, SCOPE_RESTART_CLIENT, "Embedding 缓存目录（留空=默认）"),
     _s("EMBEDDING_CACHE_SIZE", _EMB, SCOPE_RESTART_CLIENT, "Embedding 模型缓存大小"),
@@ -143,9 +164,15 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("SEMANTIC_VISIBLE_LIMIT", _MEM, SCOPE_RUNTIME, "可见语义记忆最大条数（过多=prompt 太长）"),
     _s("SEMANTIC_REINFORCEMENT_LOOKBACK", _MEM, SCOPE_RUNTIME, "语义强化回溯窗口（跨会话）"),
     _s("SEMANTIC_REINFORCEMENT_MIN_OVERLAP", _MEM, SCOPE_RUNTIME, "语义强化最小重叠次数"),
-    _s("MEMORY_BACKEND", _MEM, SCOPE_RESTART_CLIENT, "记忆后端：memcore/legacy/dual"),
     _s("MEMCORE_STORAGE_PATH", _MEM, SCOPE_RESTART_CLIENT, "memcore SQLite 路径（留空=默认）"),
+    _s("MEMCORE_RETRIEVAL_MODE", _MEM, SCOPE_RESTART_CLIENT, "记忆读取：navigation=目录与原文，无 Embedding；hybrid=混合检索；重启后端生效"),
     _s("MEMCORE_VISIBLE_SCOPE", _MEM, SCOPE_RESTART_CLIENT, "memcore 可见长期记忆作用域：conversation/user"),
+    _s("MEMORY_CROSS_CONVERSATION_ENABLED", _MEM, SCOPE_RUNTIME,
+       "允许 QQ 主人私聊与群记忆按指定 conversation 互读；默认仍只读当前会话"),
+    _s("OWNER_PRIVATE_SESSION_SHARED", _MEM, SCOPE_RESTART,
+       "桌宠与主人 QQ 私聊共用记忆和养成状态（接续 QQ 历史，需重启后端）"),
+    _s("OWNER_PRIVATE_GROUP_MEMORY_MIRROR", _MEM, SCOPE_RESTART,
+       "将新的主人私人交流写入开启接收的群；需启用桌宠与主人私聊共用记忆，不复制工具或文件（需重启后端）"),
     _s("MEMCORE_ENABLE_FLAVOR", _MEM, SCOPE_RESTART_CLIENT, "memcore 情绪/口吻温度层"),
     _s("MEMCORE_SHADOW_COMPARE", _MEM, SCOPE_RUNTIME, "memcore 影子检索对比（不改变回复）"),
     _s(
@@ -159,6 +186,18 @@ _SPECS: tuple[SettingSpec, ...] = (
         _MEM,
         SCOPE_RESTART_CLIENT,
         "memcore 触发后计划压缩的旧 raw token 比例",
+    ),
+    _s(
+        "MEMCORE_COMPACTION_REQUEST_MODE",
+        _MEM,
+        SCOPE_RESTART_CLIENT,
+        "memcore 压缩请求模式：independent=独立摘要请求；chat_prefix=复用聊天前缀；需重启后端",
+    ),
+    _s(
+        "MEMCORE_WORKING_TOKEN_TRIGGER",
+        _MEM,
+        SCOPE_RESTART_CLIENT,
+        "memcore 工具执行轮 token 压缩触发线（0=停用工具轮压缩；需重启后端）",
     ),
     _s(
         "MEMCORE_RETRIEVAL_RESULT_TOKEN_BUDGET",
@@ -339,7 +378,7 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("PUBLIC_DAILY_LIMIT_MESSAGE", _PUB, SCOPE_RESTART_CLIENT, "每日限额提示语（用户可见）"),
     # 工具调用
     _s("TOOL_ROUND_HARD_LIMIT", _TOOL, SCOPE_RUNTIME, "可选的单回合工具批次硬上限；0=不限制"),
-    _s("TOOL_MAX_PARALLEL", _TOOL, SCOPE_RESTART, "每批只读工具的实际并发数（1–64）；超额排队，执行器与模型提示共用；不是后台任务/子代理上限"),
+    _s("TOOL_MAX_PARALLEL", _TOOL, SCOPE_RESTART, "每批命令及只读工具的实际并发数（1–64）；超额排队，执行器与模型提示共用；不是后台任务/子代理上限"),
     _s("TOOL_ROUND_WARNING_REMAINING", _TOOL, SCOPE_RUNTIME, "有限工具轮接近上限时的一次性续作提醒阈值；0=关闭"),
     _s("ENABLE_NATIVE_TOOL_DECISION", _TOOL, SCOPE_RUNTIME, "native tool 通道总开关（默认开启；不支持的 provider 才回退兼容路径）"),
     _s("WEB_SEARCH_MCP_TIMEOUT_SECONDS", _TOOL, SCOPE_RESTART_CLIENT, "AnySearch MCP 单次调用超时（秒）"),
@@ -407,7 +446,7 @@ _SPECS: tuple[SettingSpec, ...] = (
         managed_in=MANAGED_DEPLOYMENT,
     ),
     _s("QQ_CHARACTER_PACK_ID", _QQ, SCOPE_RUNTIME, "QQ 文字聊天默认角色包 id"),
-    _s("QQ_REPLY_MODE", _QQ, SCOPE_RUNTIME, "QQ 回复投递模式：text/voice/both/auto"),
+    _s("QQ_REPLY_MODE", _QQ, SCOPE_RUNTIME, "QQ 回复投递模式：text/voice/both"),
     _s(
         "QQ_STREAM_IMMEDIATE_SEGMENTS",
         _QQ,
@@ -416,7 +455,6 @@ _SPECS: tuple[SettingSpec, ...] = (
     ),
     _s("QQ_TTS_PROFILE_USER_ID", _QQ, SCOPE_RUNTIME, "QQ 语音合成读取的本地能力 profile"),
     _s("QQ_WEB_SEARCH_PROFILE_USER_ID", _QQ, SCOPE_RUNTIME, "QQ 联网搜索读取的本地能力 profile"),
-    _s("QQ_VOICE_MAX_TEXT_CHARS", _QQ, SCOPE_RUNTIME, "QQ 语音最大合成文本长度（超过降级文字）"),
     _s("QQ_VOICE_MAX_SEGMENTS", _QQ, SCOPE_RUNTIME, "QQ 语音最多合成的 segment 数"),
     _s("QQ_GROUP_PLAINTEXT_ENABLED", _QQ, SCOPE_RUNTIME, "允许群聊明文（非 JSON 卡片）模式"),
     _s(
@@ -452,9 +490,8 @@ _SPECS: tuple[SettingSpec, ...] = (
     _s("REMOTE_MEDIA_YTDLP_USER_AGENT", _RM, SCOPE_RUNTIME, "自定义 User-Agent"),
     _s("REMOTE_MEDIA_YTDLP_REFERER", _RM, SCOPE_RUNTIME, "Referer 头"),
     # Web 身份模式
-    _s("WEB_IDENTITY_MODE", _WEB, SCOPE_RUNTIME, "Web 身份模式：owner/browser/invite"),
-    _s("WEB_OWNER_PROFILE_USER_ID", _WEB, SCOPE_RUNTIME, "owner 模式使用的 profile 标识"),
-    _s("MASTER_QQ", _WEB, SCOPE_RUNTIME, "主人 QQ 号（留空=私聊独立身份）"),
+    _s("WEB_OWNER_PROFILE_USER_ID", _OWNER, SCOPE_RUNTIME, "QQ 语音、搜索与能力权限共用的主人 profile"),
+    _s("MASTER_QQ", _OWNER, SCOPE_RUNTIME, "主人 QQ 号（留空=私聊独立身份）"),
     # 服务监听（启动脚本读取）
     _s(
         "AKANE_ADMIN_TOKEN",
@@ -498,6 +535,19 @@ def is_runtime_editable(key: str) -> bool:
     return bool(spec is not None and spec.scope == SCOPE_RUNTIME and not spec.sensitive and not spec.managed_in)
 
 
+MEMORY_RESTART_KEYS = frozenset({"OWNER_PRIVATE_SESSION_SHARED", "OWNER_PRIVATE_GROUP_MEMORY_MIRROR"})
+
+
+def is_restart_editable(key: str) -> bool:
+    spec = get_spec(key)
+    return bool(key in MEMORY_RESTART_KEYS and spec and spec.scope == SCOPE_RESTART
+                and not spec.sensitive and not spec.managed_in)
+
+
+def is_setting_editable(key: str) -> bool:
+    return is_runtime_editable(key) or is_restart_editable(key)
+
+
 def _type_label(field: Any) -> str:
     annotation = getattr(field, "annotation", None)
     simple = {bool: "bool", int: "int", float: "float", str: "str"}
@@ -511,7 +561,7 @@ def _type_label(field: Any) -> str:
     return getattr(annotation, "__name__", None) or text
 
 
-def build_settings_catalog(config_module: Any = config) -> dict[str, Any]:
+def build_settings_catalog(config_module: Any = config, *, saved_overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Build the read-only catalog. Current values are read live from
     `config_module`; sensitive fields never include their value (only whether
     they are set)."""
@@ -528,7 +578,7 @@ def build_settings_catalog(config_module: Any = config) -> dict[str, Any]:
             "managedIn": spec.managed_in,
             "description": spec.description,
             "type": _type_label(field) if field is not None else type(current).__name__,
-            "editable": is_runtime_editable(spec.key),
+            "editable": is_setting_editable(spec.key),
         }
         if spec.sensitive:
             # Never expose the value or default of a secret — only whether it is set.
@@ -536,6 +586,9 @@ def build_settings_catalog(config_module: Any = config) -> dict[str, Any]:
         else:
             entry["default"] = field.default if field is not None else None
             entry["current"] = current
+            if is_restart_editable(spec.key):
+                desired = (saved_overrides or {}).get(spec.key, current)
+                entry.update(desired=desired, pendingRestart=desired != current)
         if spec.category not in groups:
             groups[spec.category] = []
             order.append(spec.category)

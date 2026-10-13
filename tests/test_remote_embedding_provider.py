@@ -169,6 +169,8 @@ class RemoteEmbeddingProviderTests(unittest.TestCase):
 
         engine = object.__new__(AkaneMemoryEngine)
         with (
+            patch.object(config, "MEMORY_BACKEND", "memcore"),
+            patch.object(config, "MEMCORE_RETRIEVAL_MODE", "hybrid"),
             patch.object(config, "EMBEDDING_PROVIDER", "remote"),
             patch.object(config, "EMBEDDING_CACHE_SIZE", 0),
             patch.object(config, "EMBEDDING_MODEL_NAME", "BAAI/bge-m3"),
@@ -176,7 +178,7 @@ class RemoteEmbeddingProviderTests(unittest.TestCase):
             patch.object(config, "EMBEDDING_BASE_URL", "https://api.siliconflow.cn/v1"),
             patch.object(config, "EMBEDDING_DIMENSION", 1024),
             patch.object(config, "EMBEDDING_TIMEOUT_SECONDS", 20.0),
-            patch("companion_v01.engine.RemoteEmbeddingProvider", StubRemoteProvider),
+            patch("companion_v01.engine_services.service_factories.RemoteEmbeddingProvider", StubRemoteProvider),
         ):
             provider = engine._build_embedding_provider()
 

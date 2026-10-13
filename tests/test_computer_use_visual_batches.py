@@ -74,7 +74,7 @@ class VisualBatchContractTests(unittest.TestCase):
                 call = ToolInvocation(id="resume", name="computer_use", arguments={"action": "resume_steps"}, execution_receipt={})
                 with patch("companion_v01.capcore_runtime.approval_policy_for_capability", return_value=SimpleNamespace(default_mode="trusted_auto_allow")), \
                      patch("companion_v01.capcore_runtime.resolve_permission_for_profile", return_value=SimpleNamespace(allowed=True, mode="trusted_auto_allow")), \
-                     patch("companion_v01.tool_orchestration_engine._satellite_blocked_result", side_effect=lambda spec, call, reason: ("blocked", reason)):
+                     patch("companion_v01.tool_orchestration.permissions._satellite_blocked_result", side_effect=lambda spec, call, reason: ("blocked", reason)):
                     result, stopped = dispatch(SimpleNamespace(capability_config_base_dir=None), broker=SimpleNamespace(execute=execute),
                         spec=COMPUTER_USE_TOOL_SPEC, invocation=call, profile_user_id="master", session_id="s", client_context=None,
                         request_context={"_model_execution_target": SimpleNamespace(role="vision" if vision else "chat", reason="")})

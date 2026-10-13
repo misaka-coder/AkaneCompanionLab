@@ -75,6 +75,39 @@ class LocalCapabilityCatalogTests(unittest.TestCase):
         self.assertEqual(text_only["confirm"], "never")
         self.assertFalse(text_only["requiresConfirmation"])
         self.assertEqual(text_only["approvalMode"], "trusted_auto_allow")
+        self.assertTrue(text_only["enabled"])
+        self.assertEqual(text_only["status"], "ready")
+        self.assertEqual(text_only["source"], "builtin")
+
+    def test_text_fallback_remains_builtin_when_tts_plugin_availability_changes(self) -> None:
+        for status in ("available", "unavailable"):
+            with self.subTest(service_status=status):
+                service = {"version": 1, "status": status, "selected_provider": "example.tts"}
+                catalog = build_local_capability_catalog(
+                    engine=SimpleNamespace(
+                        tool_handlers={},
+                        plugin_capability_source=SimpleNamespace(list_services=lambda _kind: [service]),
+                    ),
+                    config_module=SimpleNamespace(),
+                    character_voice={"provider": "text_only"},
+                )
+                by_id = {item["id"]: item for item in catalog["capabilities"]}
+                text_only = by_id["provider.voice.text_only"]
+                self.assertTrue(text_only["enabled"])
+                self.assertEqual(text_only["status"], "ready")
+                self.assertEqual(text_only["approvalMode"], "trusted_auto_allow")
+                self.assertEqual(text_only["source"], "builtin")
+                self.assertEqual(text_only["executionMode"], "internal")
+                self.assertNotIn("serviceProviderId", text_only)
+                self.assertEqual(by_id["provider.tts.edge"]["source"], "plugin_service")
+                self.assertEqual(
+                    by_id["provider.tts.edge"]["status"],
+                    "ready" if status == "available" else "unavailable",
+                )
+                resolution = catalog["resolutions"]["voice.tts.character"]
+                self.assertEqual(resolution["status"], "disabled")
+                self.assertEqual(resolution["reason"], "text_only_requested")
+                self.assertEqual(resolution["activeProviderId"], "")
 
     def test_local_media_executor_becomes_authoritative_asr_and_rvc_provider(self) -> None:
         catalog = build_local_capability_catalog(

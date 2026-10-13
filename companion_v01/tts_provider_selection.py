@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 
 GPT_SOVITS_PROVIDER_ID = "provider.tts.gpt_sovits.local"
+IRODORI_PROVIDER_ID = "provider.tts.irodori.local"
 EDGE_TTS_PROVIDER_ID = "provider.tts.edge"
 TEXT_ONLY_PROVIDER_ID = "provider.voice.text_only"
 
@@ -28,10 +29,13 @@ def select_tts_provider(preference: Mapping[str, Any], *, allow_unknown: bool = 
         "gpt_sovits": GPT_SOVITS_PROVIDER_ID,
         "gpt-sovits": GPT_SOVITS_PROVIDER_ID,
         "gptsovits": GPT_SOVITS_PROVIDER_ID,
+        "irodori": IRODORI_PROVIDER_ID,
+        "irodori_tts": IRODORI_PROVIDER_ID,
+        "irodori-tts": IRODORI_PROVIDER_ID,
         "text": TEXT_ONLY_PROVIDER_ID,
         "text_only": TEXT_ONLY_PROVIDER_ID,
         "none": TEXT_ONLY_PROVIDER_ID,
-        **{value: value for value in (EDGE_TTS_PROVIDER_ID, GPT_SOVITS_PROVIDER_ID, TEXT_ONLY_PROVIDER_ID)},
+        **{value: value for value in (EDGE_TTS_PROVIDER_ID, GPT_SOVITS_PROVIDER_ID, IRODORI_PROVIDER_ID, TEXT_ONLY_PROVIDER_ID)},
     }
     if raw_provider and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,119}", raw_provider):
         return TTSProviderSelection("", profile_id, "requested_provider_invalid")
@@ -44,7 +48,7 @@ def select_tts_provider(preference: Mapping[str, Any], *, allow_unknown: bool = 
         return TTSProviderSelection(raw_provider, profile_id, "" if allow_unknown else "requested_provider_unknown")
     if provider == TEXT_ONLY_PROVIDER_ID:
         return TTSProviderSelection(provider, profile_id, "text_only_requested")
-    if provider == GPT_SOVITS_PROVIDER_ID and not profile_id:
+    if provider in (GPT_SOVITS_PROVIDER_ID, IRODORI_PROVIDER_ID) and not profile_id:
         return TTSProviderSelection(provider, "", "requested_voice_profile_missing")
     return TTSProviderSelection(provider, profile_id)
 

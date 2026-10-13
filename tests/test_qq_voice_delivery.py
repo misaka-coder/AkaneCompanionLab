@@ -12,6 +12,7 @@ from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import (
     _filter_unsent_reply_messages,
     _process_qq_turn_streaming,
+    _send_qq_delivery,
     _synthesize_qq_voice_file,
 )
 from companion_v01.runtime_settings import BotSettingsView
@@ -74,6 +75,35 @@ class FakeQQGateway:
 
 
 class QQVoiceDeliveryTests(unittest.TestCase):
+    def test_intentional_mface_skip_does_not_send_an_image_fallback(self) -> None:
+        class FakeEngine:
+            def process_turn_stream(self, _payload):
+                yield {
+                    "type": "final_ui", "payload": {
+                        "reply_medium": "text", "speech": "我在。", "emotion": "happy", "tool_events": [],
+                    },
+                }
+
+        context = SimpleNamespace(
+            session_id="qq_pri_1", profile_user_id="qq_1", reply_mode="text",
+            is_group=False, sender_label="伙伴",
+        )
+        for reason in ("dedupe_interval", "delivery_in_progress", "group_emotion_disabled", "artifact_delivery_turn"):
+            with self.subTest(reason=reason):
+                gateway = FakeQQGateway()
+                with (
+                    patch.object(gateway, "send_emotion_mface", return_value={"ok": True, "status": "skipped", "reason": reason}),
+                    patch("companion_v01.qq_turn_streaming._send_qq_emotion_image_fallback") as fallback,
+                ):
+                    result = _process_qq_turn_streaming(
+                        engine=FakeEngine(), qq_gateway=gateway, tts_client=FakeTTSClient(),
+                        context=context, turn_payload={"user_id": "qq_pri_1", "real_user_id": "qq_1", "message": "在吗"},
+                        config_module=SimpleNamespace(QQ_STREAM_REPLIES_ENABLED=False),
+                    )
+                self.assertTrue(result["send_result"]["ok"])
+                self.assertEqual(result["emotion_image_result"]["reason"], reason)
+                fallback.assert_not_called()
+
     def test_plugin_single_message_waits_for_final_and_applies_envelope_once(self) -> None:
         class FakeEngine:
             desktop_pet_character_resources = None
@@ -1225,6 +1255,133 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             self.assertFalse(denied["ok"], denied)
             self.assertEqual(len(fixture.calls), 1, "Owner configuration must not grant owner execution authority")
 
+    def test_cache_io_failures_preserve_previous_audio_and_clean_temporary_files(self) -> None:
+        from tests.tts_plugin_harness import configured_tts_fixture
+
+        for operation in ("mkdir", "write_bytes", "replace"):
+            with self.subTest(operation=operation), configured_tts_fixture() as fixture:
+                kwargs = dict(
+                    engine=fixture.engine,
+                    config_module=fixture.config,
+                    tts_client=FakeTTSClient(),
+                    text="缓存失败测试",
+                    context=SimpleNamespace(
+                        profile_user_id="qq_group_shared_123456", session_id="cache-session", character_pack_id="reimu",
+                    ),
+                )
+                first = _synthesize_qq_voice_file(**kwargs)
+                self.assertTrue(first["ok"], first)
+                path = Path(first["path"])
+                original = path.read_bytes()
+                children = set(path.parent.iterdir())
+                real_operation = getattr(Path, operation)
+
+                def fail_cache_io(target, *args, **options):
+                    is_cache = target.name == "qq_voice_cache" if operation == "mkdir" else target.parent.name == "qq_voice_cache"
+                    if is_cache:
+                        if operation == "write_bytes":
+                            real_operation(target, args[0][:8])
+                        raise OSError("private-cache-path-and-key")
+                    return real_operation(target, *args, **options)
+
+                with patch.object(Path, operation, autospec=True, side_effect=fail_cache_io):
+                    failed = _synthesize_qq_voice_file(**kwargs)
+                self.assertFalse(failed["ok"])
+                self.assertEqual(failed["reason"], "voice_cache_write_failed")
+                self.assertNotIn("path", failed)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(set(path.parent.iterdir()), children)
+
+    def test_unexpected_synthesis_error_has_safe_reason_and_delivers_text_once(self) -> None:
+        import json
+
+        for mode in ("voice", "both"):
+            with self.subTest(mode=mode), patch(
+                "companion_v01.qq_reply_delivery._synthesize_qq_voice_file",
+                side_effect=RuntimeError("provider-url?api_key=private-key-and-path"),
+            ):
+                gateway = FakeQQGateway()
+                result = _send_qq_delivery(
+                    engine=SimpleNamespace(),
+                    qq_gateway=gateway,
+                    context=SimpleNamespace(reply_mode=mode, session_id="safe-failure"),
+                    frame={},
+                    reply_messages=["保留这句文字"],
+                    unsent_reply_messages=["保留这句文字"],
+                    streamed_messages=[],
+                    config_module=SimpleNamespace(),
+                )
+                self.assertEqual(result["ok"], mode == "voice")
+                self.assertFalse(result["voice_result"]["ok"])
+                self.assertEqual(result["delivery"]["voice_reason"], "voice_synthesis_failed")
+                self.assertEqual(gateway.text_sends, [["保留这句文字"]])
+                self.assertEqual(gateway.voice_sends, [])
+                self.assertNotIn("private-key-and-path", json.dumps(result))
+
+    def test_bilingual_delivery_uses_say_styles_and_sends_one_complete_record(self) -> None:
+        import json
+        import io
+        import wave
+        from tests.tts_plugin_harness import configured_tts_fixture
+        with configured_tts_fixture() as fixture:
+            characters = fixture.root / "characters"
+            (characters / "cecilia").mkdir(parents=True)
+            (characters / "cecilia/character.json").write_text(json.dumps({"speech_output": {
+                "enabled": True, "language": "日语", "default_style": "calm", "styles": {
+                    "calm": {"profile_id": "dania"}, "happy": {"profile_id": "cecilia_happy"}}}}), encoding="utf-8")
+            fixture.engine.desktop_pet_character_resources.characters_dir = characters
+            save_voice_profile_config(base_dir=fixture.config.DATA_DIR / "users_data", profile_user_id="master",
+                voice_profile_id="cecilia_happy", payload={"enabled": True,
+                    "refAudioPath": str(fixture.root / "happy.wav"), "promptText": "別の参考です。",
+                    "textLang": "all_ja", "promptLang": "all_ja"})
+            fixture.config.QQ_VOICE_MAX_SEGMENTS = 3
+            units = [{"style": "calm", "text": "欢迎回来。今天辛苦了。先坐下吧。慢慢休息。",
+                      "say": "おかえりなさい。お疲れ様です。座ってください。ゆっくり休んでね。"},
+                     {"style": "happy", "text": "好开心呀。", "say": "嬉しいです。"}]
+            gateway = FakeQQGateway()
+            result = _send_qq_delivery(engine=fixture.engine, qq_gateway=gateway,
+                context=SimpleNamespace(profile_user_id="qq_group_shared_123456", session_id="qq-session",
+                    character_pack_id="cecilia", reply_mode="both"),
+                frame={"reply_medium": "both", "emotion": "开心", "utterances": units},
+                reply_messages=[u["text"] for u in units], unsent_reply_messages=[u["text"] for u in units],
+                streamed_messages=[], config_module=fixture.config)
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(gateway.text_sends, [[u["text"] for u in units]])
+            self.assertEqual([c["text"] for c in fixture.calls],
+                ["おかえりなさい。", "お疲れ様です。", "座ってください。", "ゆっくり休んでね。", "嬉しいです。"])
+            self.assertEqual([c["voice_profile_id"] for c in fixture.calls], ["dania"] * 4 + ["cecilia_happy"])
+            self.assertEqual(fixture.calls[0]["prompt_text"], "中性参考文本", "UI emotion must not override voice style")
+            self.assertEqual(len(gateway.voice_sends), 1)
+            with wave.open(gateway.voice_sends[0], "rb") as combined, wave.open(io.BytesIO(fixture.audio), "rb") as source:
+                self.assertEqual(combined.getnframes(), source.getnframes() * 5)
+
+    def test_enabled_bilingual_role_never_reads_legacy_attention_text_with_default_tts(self) -> None:
+        import json
+        from unittest.mock import AsyncMock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cecilia").mkdir()
+            (root / "cecilia/character.json").write_text(json.dumps({"speech_output": {
+                "enabled": True, "language": "日语", "default_style": "calm",
+                "styles": {"calm": {"profile_id": "cecilia_calm"}}}}), encoding="utf-8")
+            engine = SimpleNamespace(desktop_pet_character_resources=SimpleNamespace(characters_dir=root))
+            for mode in ("voice", "both"):
+                with self.subTest(mode=mode), patch("companion_v01.qq_voice_delivery.synthesize_tts_resolution",
+                    new_callable=AsyncMock) as synth:
+                    gateway = FakeQQGateway()
+                    result = _send_qq_delivery(engine=engine, qq_gateway=gateway,
+                        context=SimpleNamespace(profile_user_id="master", session_id="group",
+                            character_pack_id="cecilia", reply_mode=mode),
+                        frame={"speech": "主动搭话正文。", "reply_medium": "text"},
+                        reply_messages=["主动搭话正文。"], unsent_reply_messages=["主动搭话正文。"],
+                        streamed_messages=[], config_module=SimpleNamespace(DATA_DIR=root))
+                    synth.assert_not_awaited()
+                    self.assertEqual(result["ok"], mode == "voice", result)
+                    self.assertTrue(result["text_result"]["ok"])
+                    self.assertEqual(result["delivery"]["voice_reason"], "speech_units_required")
+                    self.assertEqual(gateway.voice_sends, [])
+                    self.assertEqual(gateway.text_sends, [["主动搭话正文。"]])
+
     def test_group_voice_reads_current_bot_config_and_emotion_into_distinct_artifacts(self) -> None:
         from tests.tts_plugin_harness import configured_tts_fixture
         with configured_tts_fixture() as fixture:
@@ -1246,7 +1403,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
     def test_group_voice_does_not_silently_replace_gpt_sovits_with_edge(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch(
-                "companion_v01.routes.qq._resolve_tts_runtime_provider",
+                "companion_v01.qq_voice_delivery._resolve_tts_runtime_provider",
                 return_value={
                     "status": "degraded",
                     "reason": "provider_endpoint_missing",
@@ -1271,7 +1428,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(result["requested_provider"], "provider.tts.gpt_sovits.local")
         self.assertEqual(result["provider"], "provider.tts.edge")
 
-    def test_auto_voice_hint_sends_record_without_streaming_text(self) -> None:
+    def test_legacy_auto_and_model_voice_hint_deliver_text(self) -> None:
         class FakeEngine:
             def process_turn_stream(self, payload: dict):
                 yield {"type": "delivery_hint", "medium": "voice"}
@@ -1291,7 +1448,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         from unittest.mock import AsyncMock
         result_audio = SynthesizedTTSResult(b"fixture", "audio/wav", "provider.tts.edge", "", "", "", "")
         with tempfile.TemporaryDirectory() as temp_dir, patch(
-            "companion_v01.routes.qq.synthesize_tts_resolution", new=AsyncMock(return_value=result_audio)):
+            "companion_v01.qq_voice_delivery.synthesize_tts_resolution", new=AsyncMock(return_value=result_audio)):
             gateway = FakeQQGateway()
             result = _process_qq_turn_streaming(
                 engine=FakeEngine(),
@@ -1314,13 +1471,13 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 tts_client=FakeTTSClient(),
             )
 
-        self.assertEqual(gateway.text_sends, [])
-        self.assertEqual(len(gateway.voice_sends), 1)
+        self.assertEqual(gateway.text_sends, [["第一句。"]])
+        self.assertEqual(gateway.voice_sends, [])
         self.assertTrue(result["send_result"]["ok"])
-        self.assertEqual(result["send_result"]["delivery"]["medium"], "voice")
-        self.assertTrue(result["send_result"]["delivery"]["voice_enabled"])
+        self.assertEqual(result["send_result"]["delivery"]["medium"], "text")
+        self.assertFalse(result["send_result"]["delivery"]["voice_enabled"])
 
-    def test_auto_voice_hint_downgrades_long_text_to_text(self) -> None:
+    def test_legacy_auto_ignores_model_voice_preference_for_long_text(self) -> None:
         long_text = "这是一段偏长的回复。" * 20
 
         class FakeEngine:
@@ -1362,10 +1519,10 @@ class QQVoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(gateway.text_sends, [[long_text]])
         self.assertEqual(gateway.voice_sends, [])
         self.assertTrue(result["send_result"]["ok"])
-        self.assertEqual(result["send_result"]["delivery"]["voice_reason"], "auto_voice_text_too_long")
+        self.assertEqual(result["send_result"]["delivery"]["voice_reason"], "")
         self.assertFalse(result["send_result"]["delivery"]["voice_enabled"])
 
-    def test_bot_settings_override_qq_voice_limit_without_mutating_config(self) -> None:
+    def test_legacy_auto_text_does_not_attempt_voice(self) -> None:
         long_text = "这是一段偏长的回复。" * 10
 
         class FakeEngine:
@@ -1400,13 +1557,13 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                     QQ_VOICE_MAX_SEGMENTS=3,
                     QQ_VOICE_MAX_TEXT_CHARS=280,
                 ),
-                settings=BotSettingsView(qq_voice_max_text_chars=40),
+                settings=BotSettingsView(),
                 tts_client=FakeTTSClient(),
             )
 
         self.assertEqual(gateway.text_sends, [[long_text]])
         self.assertEqual(gateway.voice_sends, [])
-        self.assertEqual(result["send_result"]["delivery"]["voice_reason"], "auto_voice_text_too_long")
+        self.assertEqual(result["send_result"]["delivery"]["voice_reason"], "")
 
     def test_failed_file_delivery_sends_truthful_feedback(self) -> None:
         class FailedGateway(FakeQQGateway):

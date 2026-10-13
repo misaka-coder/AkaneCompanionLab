@@ -625,18 +625,49 @@ function validateCarePreferences(prefs) {
     addError("care.care_preferences must be an object when provided.");
     return;
   }
-  for (const key of ["favorite_tags", "disliked_tags", "offering_tags", "default_affection_bonus_tags"]) {
+  for (const key of ["favorite_items", "disliked_items", "favorite_tags", "disliked_tags", "offering_tags", "default_affection_bonus_tags"]) {
     const val = prefs[key];
     if (val === undefined) continue;
     if (!Array.isArray(val)) {
       addError(`care.care_preferences.${key} must be an array when provided.`);
       continue;
     }
+    if (["favorite_items", "disliked_items"].includes(key) && val.length > 16) {
+      addError(`care.care_preferences.${key} supports at most 16 names.`);
+    }
     val.forEach((tag, ti) => {
       if (typeof tag !== "string" || !tag.trim()) {
         addError(`care.care_preferences.${key}[${ti}] must be a non-empty string.`);
       }
+      if (["favorite_items", "disliked_items"].includes(key) && typeof tag === "string" && [...tag.trim()].length > 40) {
+        addError(`care.care_preferences.${key}[${ti}] must be at most 40 characters.`);
+      }
     });
+  }
+}
+
+function validateDialogueServices(services) {
+  if (services === undefined) return;
+  if (!isObject(services) || Object.keys(services).length > 16) {
+    addError("dialogue_services must be an object with at most 16 entries.");
+    return;
+  }
+  for (const [id, config] of Object.entries(services)) {
+    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(id) || !isObject(config)) {
+      addError(`dialogue_services.${id} must customize a registered service ID with an object.`);
+      continue;
+    }
+    for (const key of Object.keys(config)) {
+      if (!["name", "persona"].includes(key)) {
+        addError(`dialogue_services.${id}.${key} is not customizable.`);
+        continue;
+      }
+      const value = config[key];
+      const limit = key === "name" ? 60 : 2000;
+      if (typeof value !== "string" || !value.trim() || [...value.trim()].length > limit) {
+        addError(`dialogue_services.${id}.${key} must contain 1–${limit} characters.`);
+      }
+    }
   }
 }
 
@@ -828,6 +859,7 @@ async function validatePack() {
   validateClickLines(dialogue, availableEmotions, aliasMap);
   validatePlayFeedback(character, availableEmotions, aliasMap);
   validateCare(character, availableEmotions, aliasMap);
+  validateDialogueServices(character.dialogue_services);
   validateQQDelivery(character, availableEmotions, aliasMap);
 
   return {

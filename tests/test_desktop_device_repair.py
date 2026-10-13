@@ -16,6 +16,7 @@ from companion_v01.tool_invocation import ToolInvocation
 from companion_v01.tool_orchestration_engine import execute_tool_invocation
 from companion_v01.tool_runtime import DesktopSatelliteToolHandler
 from tests.test_plugin_resources import services
+from tests.tauri_source import production_sources
 
 
 def picture():
@@ -81,12 +82,17 @@ class DesktopDeviceRepairTests(unittest.TestCase):
     def test_all_satellite_contracts_match_rust_wire_constants(self):
         import re
         from companion_v01.desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
-        source = (Path(__file__).resolve().parents[1] / "desktop_pet_next/src-tauri/src/main.rs").read_text(encoding="utf-8")
+        sources = production_sources()
         for spec in DESKTOP_SATELLITE_TOOL_SPECS:
             prefix = spec.capability_id.upper()
-            match = re.search(r"const " + prefix + r'_SCHEMA_HASH: &str =\s*"([^" ]+)"', source)
-            self.assertIsNotNone(match, prefix)
-            self.assertEqual(match.group(1), spec.schema_hash)
+            hashes = []
+            for _, source in sources:
+                match = re.search(r"const " + prefix + r'_SCHEMA_HASH: &str =\s*"([^" ]+)"', source)
+                if not match and re.search(r'const TOOL_ID: &str =\s*"' + re.escape(spec.capability_id) + r'"', source):
+                    match = re.search(r'const SCHEMA_HASH: &str =\s*"([^" ]+)"', source)
+                if match:
+                    hashes.append(match.group(1))
+            self.assertEqual(hashes, [spec.schema_hash], prefix)
 
 
 if __name__ == "__main__":

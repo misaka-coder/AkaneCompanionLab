@@ -185,7 +185,7 @@ class QQGroupIdentityTests(unittest.TestCase):
 
             def process_turn_stream(_self, payload):
                 extra = build_turn_extra_user_context(prompt_engine, payload, client)
-                with patch.object(response_builder, "_memory_backend", return_value="memcore"):
+                with patch("config.MEMORY_BACKEND", "memcore"):
                     prepared = response_builder.prepare_context(
                         prompt_engine, **scope, user_message=payload["message"],
                         recent_raw=[], recent_episodic_summaries=[], recent_semantic_summaries=[],

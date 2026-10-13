@@ -8,7 +8,7 @@ from .session import dispatch_control
 def dispatch(engine, *, broker, spec, invocation, profile_user_id, session_id, client_context, request_context,
              effect_actions=INPUT_ACTIONS, approval_spec=None):
     """Return (broker result, approval/block tuple). Scope is installed by the caller."""
-    from ..tool_orchestration_engine import _satellite_blocked_result, _satellite_ask_result, _create_satellite_approval_request
+    from ..tool_orchestration.permissions import _satellite_blocked_result, _satellite_ask_result, _create_satellite_approval_request
     from ..tool_handlers.core import ToolExecutionContext
     from ..capability_approval import build_approval_request_fingerprint
     from ..capcore_runtime import (authorization_profile_user_id, manual_permission_request,
@@ -17,7 +17,8 @@ def dispatch(engine, *, broker, spec, invocation, profile_user_id, session_id, c
                   ledger_scope=f"{profile_user_id}\x1f{session_id}",
                   policy_client_mode=getattr(getattr(client_context, "effective_mode", None), "value", ""))
     is_workflow = spec.capability_id == "computer_use" and invocation.arguments.get("action") in WORKFLOW_ACTIONS
-    if is_workflow:
+    if is_workflow or (spec.capability_id == "computer_use" and invocation.arguments.get("action") == "observe"
+                       and invocation.arguments.get("wait_ms", 0) > 0):
         kwargs["timeout_seconds"] = 30.0
     def execute(operation_id, phase):
         result = broker.execute(invocation_id=operation_id, **kwargs)

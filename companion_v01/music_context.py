@@ -743,9 +743,6 @@ def build_co_listen_memory_prompt(
         lines.append(
             f"- 这首歌你们已经一起听过 {context.co_listen_count} 次{suffix}。"
         )
-        lines.append(
-            "- 不要罗列次数；如果合适，可以自然地接一句\"又是这首啊\"或者带点共感。"
-        )
     elif context.co_listen_count == 1:
         if context.last_listened_together is not None:
             now = int(now_ts if now_ts is not None else time.time())
@@ -763,28 +760,15 @@ def build_co_listen_memory_prompt(
         snippets = [s for s in snippets if s and s != "某首歌"]
         if snippets:
             lines.append("- 最近也一起听过：" + " / ".join(snippets) + "。")
-            lines.append("- 上面这些只是底牌，不要每首都念出来；只在自然的时候用一首做钩子。")
 
     if context.source == MusicSource.EXTERNAL_UNKNOWN:
-        lines.append("- 当前播放器你看不清楚，不要在 speech 里说出来源名。")
+        lines.append("- 播放器：未知。")
 
     _all_known_controls = frozenset({
         MusicControl.PAUSE, MusicControl.NEXT,
         MusicControl.PREV, MusicControl.RECOMMEND,
     })
-    disabled = _all_known_controls - context.enabled_music_controls
-    if disabled:
-        lines.append("【她现在能做什么】")
-        if MusicControl.PAUSE in disabled:
-            lines.append("- 主人这会儿没让你主动暂停；想停的话先问一句，等他点了再动。")
-        if MusicControl.NEXT in disabled:
-            lines.append("- 主人这会儿没让你主动切下一首；想换的话先用气泡提议，等他同意再切。")
-        if MusicControl.PREV in disabled:
-            lines.append("- 主人这会儿没让你回到上一首；想回去的话先问一句。")
-        if MusicControl.RECOMMEND in disabled:
-            lines.append("- 主人这会儿没让你主动推歌；除非他先问，否则别甩推荐。")
-
-    if MusicControl.RECOMMEND in context.enabled_music_controls:
-        lines.append("如果你有想法，可以主动提议推荐或换歌。")
+    allowed = sorted(control.value for control in _all_known_controls & context.enabled_music_controls)
+    lines.append(f"- proactive_controls: {', '.join(allowed) if allowed else 'none'}")
 
     return "\n".join(lines)

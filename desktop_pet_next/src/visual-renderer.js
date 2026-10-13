@@ -1,3 +1,6 @@
+import { createPortraitIdleAnimation } from './portrait-idle-animation.js';
+import { createPortraitTransition } from './portrait-transition.js';
+
 const STATIC_RENDERER_MODE = "static_portrait";
 const LIVE2D_PENDING_MODE = "live2d_pending";
 const DEFAULT_MOTION = "idle";
@@ -16,13 +19,15 @@ const VALID_MOTIONS = new Set([
 const DEFAULT_BUBBLE_STYLE = "soft";
 const VALID_BUBBLE_STYLES = new Set([DEFAULT_BUBBLE_STYLE, "paper", "clear", "dark"]);
 
-export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
+export function createVisualRenderer({ stage, image, onImageLoadError, canIdle, onMotionUpdate, onIdleAnimationError } = {}) {
   let mode = STATIC_RENDERER_MODE;
   let characterLabel = "";
   let currentExpression = null;
   let pendingExpression = null;
   let expressionLoadToken = 0;
   let currentMotion = DEFAULT_MOTION;
+  const idleAnimation = createPortraitIdleAnimation({ stage, image, canIdle, onMotionUpdate, onError: onIdleAnimationError });
+  const portraitTransition = createPortraitTransition({ image });
 
   bindImageState();
   setRendererMode(STATIC_RENDERER_MODE);
@@ -55,10 +60,13 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
 
     const token = ++expressionLoadToken;
     pendingExpression = null;
+    idleAnimation.setExpression(null);
     if (!force && sameEntry(currentExpression) && image?.dataset.imageState === "ready") {
       if (stage) delete stage.dataset.expressionPending;
+      idleAnimation.setExpression(currentExpression.idleBlink, {width:image.naturalWidth,height:image.naturalHeight});
       return currentExpression;
     }
+    portraitTransition.finish();
     if (!image) {
       currentExpression = next;
       if (stage) {
@@ -76,11 +84,11 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
     setImageState(hasVisibleImage ? "ready" : "loading");
 
     preloadImage(next.url)
-      .then(() => {
+      .then((probe) => {
         if (token !== expressionLoadToken) return;
         pendingExpression = null;
         currentExpression = next;
-        image.src = next.url;
+        portraitTransition.setImage(next.url);
         image.dataset.emotion = next.id;
         image.alt = characterLabel || next.name || next.id;
         if (stage) {
@@ -88,6 +96,7 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
           delete stage.dataset.expressionPending;
         }
         setImageState("ready");
+        idleAnimation.setExpression(next.idleBlink, {width:probe.naturalWidth,height:probe.naturalHeight});
       })
       .catch((error) => {
         if (token !== expressionLoadToken) return;
@@ -96,6 +105,7 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
           delete stage.dataset.expressionPending;
         }
         setImageState(hasVisibleImage ? "ready" : "error");
+        if (hasVisibleImage) idleAnimation.setExpression(currentExpression?.idleBlink, {width:image.naturalWidth,height:image.naturalHeight});
         notifyImageLoadError(next, error);
       });
 
@@ -112,6 +122,7 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
     if (stage) {
       stage.dataset.motion = next;
     }
+    idleAnimation.sync();
     return currentMotion;
   }
 
@@ -122,11 +133,13 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
     image.addEventListener("error", handleImageError);
   }
 
-  function handleImageLoad() { setImageState("ready"); }
+  function handleImageLoad() { setImageState("ready"); idleAnimation.sync(); }
   function handleImageError() { setImageState("error"); }
 
   function clearExpression() {
     ++expressionLoadToken;
+    portraitTransition.finish();
+    idleAnimation.setExpression(null);
     currentExpression = null;
     pendingExpression = null;
     if (stage) {
@@ -139,6 +152,8 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
 
   function dispose() {
     ++expressionLoadToken;
+    portraitTransition.dispose();
+    idleAnimation.dispose();
     image?.removeEventListener("load", handleImageLoad);
     image?.removeEventListener("error", handleImageError);
   }
@@ -162,11 +177,13 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
 
   function setLayout(layout) {
     if (!stage) return;
+    portraitTransition.finish();
     if (!layout || typeof layout !== "object") {
       if (image) {
         image.style.transform = "";
         image.style.transformOrigin = "";
       }
+      idleAnimation.setLayout();
       resetBubbleLayout(stage);
       delete stage.dataset.layoutApplied;
       return;
@@ -182,6 +199,7 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
       image.style.transform = `translate(${offX}px, ${offY}px) scale(${scale})`;
       image.style.transformOrigin = normalizeTransformOrigin(portrait.anchor);
     }
+    idleAnimation.setLayout();
 
     applyBubbleLayout(stage, bubble);
     stage.dataset.layoutApplied = "true";
@@ -193,6 +211,8 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
       characterLabel,
       expression: currentExpression ? { ...currentExpression } : null,
       motion: currentMotion,
+      portraitTransition: portraitTransition.getStatus(),
+      idleAnimation: idleAnimation.getStatus(),
       live2dReady: false,
       capabilities: {
         expressionImages: true,
@@ -209,6 +229,8 @@ export function createVisualRenderer({ stage, image, onImageLoadError } = {}) {
     setCharacterLabel,
     setExpression,
     setMotion,
+    setMusicMotion: idleAnimation.setMusic,
+    syncIdleAnimation: idleAnimation.sync,
     setRendererMode,
     setLayout,
     clearExpression,
@@ -226,7 +248,7 @@ function normalizeExpressionEntry(entry) {
   const id = String(source.id || source.name || "").trim();
   const name = String(source.name || source.id || id).trim();
   const url = String(source.url || source.path || "").trim();
-  return { id, name, url };
+  return { id, name, url, idleBlink: source.idleBlink || null };
 }
 
 function preloadImage(url) {

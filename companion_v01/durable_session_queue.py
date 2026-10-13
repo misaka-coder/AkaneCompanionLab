@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 
 from .session_inbox import SessionInboxItem, SessionInboxStore
 
 logger = logging.getLogger(__name__)
+
+_SQLITE_LOCK_RETRY_DELAYS = (0.1, 0.25, 0.5)
+
+
+def _is_sqlite_lock_error(error: sqlite3.OperationalError) -> bool:
+    code = getattr(error, "sqlite_errorcode", None)
+    if isinstance(code, int) and (code & 0xFF) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+        return True
+    message = str(error).lower()
+    return "database is locked" in message or "database is busy" in message
 
 
 class SessionWorkError(RuntimeError):
@@ -55,6 +67,7 @@ class DurableSessionWorkQueue:
             Callable[[str, list[SessionInboxItem], BaseException], None],
         ] = {}
         self._batch_keys: dict[str, Callable[[SessionInboxItem], str]] = {}
+        self._retry_yield_policies: dict[str, Callable[[SessionInboxItem], bool]] = {}
         self._schedule_task = schedule_task or asyncio.create_task
         self._on_error = on_error
         self._worker_id = str(worker_id or "").strip() or f"inbox_worker_{uuid.uuid4().hex}"
@@ -62,22 +75,34 @@ class DurableSessionWorkQueue:
         self._max_batch_items = max(1, int(max_batch_items))
         self._max_batch_bytes = max(1, int(max_batch_bytes))
         self._workers: dict[str, Any] = {}
+        self._wake_events: dict[str, asyncio.Event] = {}
         self._closing = False
-        self._stop_requested = asyncio.Event()
         self._store_tasks: set[asyncio.Task[Any]] = set()
 
     def request_shutdown(self) -> None:
         """Fence admission and wake deferred workers without cancelling handlers."""
         self._closing = True
-        self._stop_requested.set()
+        for event in self._wake_events.values():
+            event.set()
+
+    def is_idle_for_restart(self) -> bool:
+        """Include work before/after its conversational hold, and pending DB threads."""
+        return not any(not worker.done() for worker in self._workers.values()) and not any(
+            not task.done() for task in self._store_tasks)
 
     async def _store_call(self, function, *args, **kwargs):
         # Cancelling an asyncio waiter does not stop its database thread. Keep
         # ownership until the thread has really finished, even during shutdown.
-        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-        self._store_tasks.add(task)
-        task.add_done_callback(self._store_done)
-        return await asyncio.shield(task)
+        for attempt in range(len(_SQLITE_LOCK_RETRY_DELAYS) + 1):
+            task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+            self._store_tasks.add(task)
+            task.add_done_callback(self._store_done)
+            try:
+                return await asyncio.shield(task)
+            except sqlite3.OperationalError as exc:
+                if not _is_sqlite_lock_error(exc) or attempt >= len(_SQLITE_LOCK_RETRY_DELAYS):
+                    raise
+                await asyncio.sleep(_SQLITE_LOCK_RETRY_DELAYS[attempt])
 
     def _store_done(self, task: asyncio.Task[Any]) -> None:
         self._store_tasks.discard(task)
@@ -122,6 +147,7 @@ class DurableSessionWorkQueue:
         *,
         on_error: Callable[[str, list[SessionInboxItem], BaseException], None] | None = None,
         batch_key: Callable[[SessionInboxItem], str] | None = None,
+        can_yield_retry: Callable[[SessionInboxItem], bool] | None = None,
     ) -> None:
         normalized = str(source or "").strip()
         if not normalized or not callable(handler):
@@ -131,6 +157,10 @@ class DurableSessionWorkQueue:
             self._batch_keys.pop(normalized, None)
         else:
             self._batch_keys[normalized] = batch_key
+        if can_yield_retry is None:
+            self._retry_yield_policies.pop(normalized, None)
+        else:
+            self._retry_yield_policies[normalized] = can_yield_retry
         if on_error is None:
             self._source_error_handlers.pop(normalized, None)
         else:
@@ -172,6 +202,10 @@ class DurableSessionWorkQueue:
         policy = self._batch_keys.get(item.source)
         return policy(item) if policy is not None else ""
 
+    def _can_yield_retry(self, item: SessionInboxItem) -> bool:
+        policy = self._retry_yield_policies.get(item.source)
+        return bool(policy and policy(item))
+
     async def begin_processing(self, items: list[SessionInboxItem]) -> None:
         result = await self._store_call(self._store.begin_processing, items)
         if not result.get("ok"):
@@ -188,7 +222,7 @@ class DurableSessionWorkQueue:
         return result
 
     async def claim_for_active_turn(self, session_key: Any, item_id: Any) -> dict[str, Any]:
-        """Claim one just-persisted head item before offering it as a steer."""
+        """Reserve a just-persisted steer without waiting behind ordinary turns."""
 
         if self._closing:
             return {"ok": False, "status": "stopping", "reason": "session_queue_stopping"}
@@ -232,6 +266,7 @@ class DurableSessionWorkQueue:
     def _ensure_worker(self, key: str) -> None:
         if not key or self._closing:
             return
+        self._wake_events.setdefault(key, asyncio.Event()).set()
         current = self._workers.get(key)
         if current is not None and not bool(getattr(current, "done", lambda: False)()):
             return
@@ -239,23 +274,29 @@ class DurableSessionWorkQueue:
 
     async def _drain(self, key: str) -> None:
         recheck_idle = False
+        wake = self._wake_events.setdefault(key, asyncio.Event())
         try:
             while not self._closing:
+                # Clear before the DB read so an enqueue racing that read is
+                # still observed when this worker reaches its deferred wait.
+                wake.clear()
                 claim = await self._store_call(
                     self._store.claim_next,
                     key,
                     worker_id=self._worker_id,
                     lease_seconds=self._lease_seconds,
                     batch_key=self._batch_key,
+                    can_yield_retry=self._can_yield_retry,
                     max_batch_items=self._max_batch_items,
                     max_batch_bytes=self._max_batch_bytes,
                 )
                 if not claim.get("ok"):
                     if claim.get("status") == "deferred":
-                        # A deferred head is an ordering barrier, not permission
-                        # for a newer completion to overtake the user's input.
+                        # Ordinary deferred input remains an ordering barrier.
+                        # New admission may make source-authorized retry work
+                        # yield; recheck immediately rather than sleeping through it.
                         try:
-                            await asyncio.wait_for(self._stop_requested.wait(), timeout=max(0.01, float(claim["retry_after"])))
+                            await asyncio.wait_for(wake.wait(), timeout=max(0.01, float(claim["retry_after"])))
                         except asyncio.TimeoutError:
                             pass
                         continue
@@ -313,21 +354,48 @@ class DurableSessionWorkQueue:
                     return
         finally:
             self._workers.pop(key, None)
+            self._wake_events.pop(key, None)
             # enqueue() can race the final empty DB check while this worker
             # still looks busy. Retire and recheck without an await in between.
             if not self._closing and recheck_idle and self._store.pending_count(key):
                 self._ensure_worker(key)
 
-    async def _handle_with_lease(self, handler, key: str, items: list[SessionInboxItem]) -> None:
-        async def renew() -> None:
-            while True:
-                await asyncio.sleep(self._lease_seconds / 3)
-                result = await self._store_call(self._store.renew_claims, items, lease_seconds=self._lease_seconds)
-                if not result.get("ok"):
-                    raise RuntimeError("session_claim_lease_lost")
+    async def _renew_claim_lease(self, items: list[SessionInboxItem]) -> None:
+        while True:
+            await asyncio.sleep(self._lease_seconds / 3)
+            result = await self._store_call(self._store.renew_claims, items, lease_seconds=self._lease_seconds)
+            if not result.get("ok"):
+                raise RuntimeError("session_claim_lease_lost")
 
-        work = asyncio.create_task(handler(key, items))
+    @asynccontextmanager
+    async def keep_claim_alive(self, items: list[SessionInboxItem]):
+        """Renew foreground claims, including time spent waiting for the turn lock."""
+        owner = asyncio.current_task()
+        renewal_error = None
+
+        async def renew() -> None:
+            nonlocal renewal_error
+            try:
+                await self._renew_claim_lease(items)
+            except Exception as exc:
+                renewal_error = exc
+                owner.cancel()
+
         heartbeat = asyncio.create_task(renew())
+        try:
+            yield
+        except asyncio.CancelledError:
+            if renewal_error is not None:
+                owner.uncancel()
+                raise renewal_error
+            raise
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _handle_with_lease(self, handler, key: str, items: list[SessionInboxItem]) -> None:
+        work = asyncio.create_task(handler(key, items))
+        heartbeat = asyncio.create_task(self._renew_claim_lease(items))
         try:
             done, _ = await asyncio.wait((work, heartbeat), return_when=asyncio.FIRST_COMPLETED)
             if heartbeat in done:

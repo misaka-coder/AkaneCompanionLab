@@ -11,7 +11,7 @@ import hashlib
 import json
 from typing import Any, Mapping
 
-from capcore import CapabilityToolSpec
+from capcore import CapabilityResult, CapabilityToolSpec
 
 from .tool_handlers.core import ToolExecutionAdmission, ToolExecutionResult
 
@@ -42,7 +42,8 @@ def contract_snapshot(handler: Any, *, scope: str) -> dict[str, Any] | None:
     reference_encoder = getattr(handler, "contract_reference", None)
     return {
         "capability_id": spec.capability_id,
-        "spec": deepcopy(public),
+        # asdict already detached every field from the live handler's spec.
+        "spec": public,
         "fingerprint": fingerprint,
         "native_policy_accepted": bool(getattr(handler, "policy_accepted_native_tool", False)),
         # This identifies the disclosed contract in this scope. It never grants
@@ -51,21 +52,22 @@ def contract_snapshot(handler: Any, *, scope: str) -> dict[str, Any] | None:
     }
 
 
-def contract_failure(capability_id: str, reason: str = "capability_contract_stale") -> ToolExecutionResult:
-    recovery = {
-        "load": {"tool": "capability_load", "capability_ids": [capability_id]},
-        "invoke": "Use capability_invoke with the newly returned contract_ref and arguments. Do not retry the old native declaration.",
-    }
+def contract_failure(capability_id: str, reason: str = "capability_not_available") -> ToolExecutionResult:
+    recovery = {"hint": "Check the current tool and its arguments."}
     if reason == "capability_not_available":
         recovery = {
             "list": {"tool": "capability_list"},
-            "hint": "This target is no longer visible in the current scope. This does not establish that the user revoked permission: an executor may be offline or its lease may have expired. Check the current directory; other capabilities remain usable. Reload only an available exact id. Do not report a permission change without explicit evidence.",
+            "hint": "This target is not available in the current scope. Check the current directory; do not infer a permission change from an unavailable executor.",
         }
     elif reason == "capability_target_invalid":
         recovery = {
-            "hint": "Use capability_invoke with a target capability_id, its loaded contract_ref, and an arguments object. Discovery entry points are called directly, not as invocation targets.",
+            "hint": "Use capability_invoke with a target capability_id and an arguments object. Call discovery tools directly.",
             "list": {"tool": "capability_list"},
         }
+    elif reason == "tool_not_declared":
+        recovery = {"hint": "Use capability_invoke with this exact capability_id and its arguments. capability_load provides the current usage if needed."}
+    elif reason == "executor_runtime_changed":
+        recovery = {"hint": "The executor restarted before dispatch; nothing ran. Retry against the current executor."}
     payload = {
         "status": "rejected", "reason": reason, "capability_id": capability_id,
         "executed": False,
@@ -73,6 +75,7 @@ def contract_failure(capability_id: str, reason: str = "capability_contract_stal
     }
     return ToolExecutionResult(
         tool_type=capability_id,
+        capability_result=CapabilityResult(is_error=True, status="rejected", reason=reason, content=payload),
         followup_context=canonical(payload),
         stream_events=[{"type": "capability_execution_result", **{k: payload[k] for k in ("status", "reason", "capability_id")}, "tool_type": capability_id, "executed": False}],
         state_updates={"capability_execution": payload},
@@ -80,16 +83,18 @@ def contract_failure(capability_id: str, reason: str = "capability_contract_stal
 
 
 class ContractBoundHandler:
-    """A per-request binding over an existing handler, with a live admission check.
+    """Frozen presentation, resolved once to a current implementation per call.
 
-    There is no dispatch registry here. The resolver reads the host's current
-    selection; invocation still uses the captured real handler and its broker.
+    Fingerprints describe the published view; they never grant or gate execution.
+    A bound copy uses the live spec for validation and policy, and pins its worker.
     """
 
-    def __init__(self, handler, snapshot: Mapping[str, Any], *, current_contract):
+    def __init__(self, handler, snapshot: Mapping[str, Any], *, current_handler, native_declared=True, execution_bound=False):
         self._handler = handler
         self.snapshot = deepcopy(dict(snapshot))
-        self._current_contract = current_contract
+        self._current_handler = current_handler
+        self.native_declared = native_declared
+        self._execution_bound = execution_bound
         self.tool_type = str(snapshot["capability_id"])
         self._spec = CapabilityToolSpec(**deepcopy(snapshot["spec"]))
         self.policy_accepted_native_tool = bool(snapshot.get("native_policy_accepted", False))
@@ -98,61 +103,72 @@ class ContractBoundHandler:
         return getattr(object.__getattribute__(self, "_handler"), name)
 
     def tool_spec(self):
-        return self._spec
+        return self._handler.tool_spec() if self._execution_bound else self._spec
 
-    def contract_error(self) -> str:
+    def bind_for_execution(self):
+        if not self.native_declared:
+            return None
+        if self._execution_bound:
+            return self
         try:
-            current = self._current_contract(self.tool_type)
+            handler = self._current_handler(self.tool_type)
+        except Exception:
+            handler = None
+        if handler is None:
+            return None
+        bound = copy(self)
+        bound._handler = handler
+        bound._execution_bound = True
+        bound.policy_accepted_native_tool = bool(getattr(handler, "policy_accepted_native_tool", False))
+        return bound
+
+    def availability_error(self):
+        grant = getattr(self._handler, "invocation_grant_active", None)
+        if callable(grant) and not grant():
+            return "capability_not_available"
+        try:
+            return "" if self._current_handler(self.tool_type) is not None else "capability_not_available"
         except Exception:
             return "capability_not_available"
-        if current is None:
-            return "capability_not_available"
-        if getattr(self, "_contract_retained", False):
-            # Admission pinned this exact implementation while its disclosed
-            # contract was current. Ordinary publication can replace a worker
-            # during a policy callback or queue wait; it does not rewrite that
-            # in-flight call. The provider's retained grant still detects real
-            # withdrawal, and the current directory above detects scope removal.
-            return "" if self._handler.invocation_grant_active() else "capability_not_available"
-        if current.get("contract_ref") != self.snapshot.get("contract_ref"):
-            return "capability_contract_stale"
-        return ""
 
     def normalize_call(self, value):
-        # Preserve a genuine stale call until it receives its paired error;
-        # never normalize old arguments using a newly activated contract.
-        if self._handler is None or self.contract_error():
+        # Preserve the raw input until admission resolves the live schema.
+        if not self._execution_bound:
             return dict(value) if isinstance(value, dict) else None
         return self._handler.normalize_call(value)
 
     def capability_status(self, **kwargs):
-        reason = self.contract_error()
-        if reason:
-            return {"enabled": False, "status": "unavailable", "reason": reason}
+        if self._handler is None:
+            return {"enabled": False, "status": "unavailable", "reason": "capability_not_available"}
         status = getattr(self._handler, "capability_status", None)
         return status(**kwargs) if callable(status) else {"enabled": True, "status": "ready"}
 
     def admit_execution(self, *, call, context):
-        reason = self.contract_error()
-        if reason:
-            return ToolExecutionAdmission.stop(contract_failure(self.tool_type, reason))
-        return self._handler.admit_execution(call=call, context=context)
+        bound = self.bind_for_execution()
+        if bound is None:
+            return ToolExecutionAdmission.stop(contract_failure(self.tool_type,
+                "tool_not_declared" if not self.native_declared else "capability_not_available"))
+        return bound._handler.admit_execution(call=call, context=context)
 
     def execute(self, *, call, context):
-        reason = self.contract_error()
-        return contract_failure(self.tool_type, reason) if reason else self._handler.execute(call=call, context=context)
+        bound = self.bind_for_execution()
+        reason = bound.availability_error() if bound is not None else (
+            "tool_not_declared" if not self.native_declared else "capability_not_available")
+        return contract_failure(self.tool_type, reason) if reason else bound._handler.execute(call=call, context=context)
 
     def execute_admitted(self, *, call, context):
-        reason = self.contract_error()
-        return contract_failure(self.tool_type, reason) if reason else self._handler.execute_admitted(call=call, context=context)
+        bound = self.bind_for_execution()
+        reason = bound.availability_error() if bound is not None else (
+            "tool_not_declared" if not self.native_declared else "capability_not_available")
+        return contract_failure(self.tool_type, reason) if reason else bound._handler.execute_admitted(call=call, context=context)
 
     def retain_invocation(self):
-        retained = copy(self)
-        retain = getattr(self._handler, "retain_invocation", None)
-        valid = not self.contract_error()
-        retained._handler = retain() if callable(retain) else self._handler
-        retained._contract_retained = valid and callable(retain) and callable(
-            getattr(retained._handler, "invocation_grant_active", None))
+        bound = self.bind_for_execution()
+        if bound is None:
+            return self
+        retained = copy(bound)
+        retain = getattr(bound._handler, "retain_invocation", None)
+        retained._handler = retain() if callable(retain) else bound._handler
         return retained
 
     def release_invocation(self):

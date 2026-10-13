@@ -58,6 +58,41 @@ class _Transport:
 
 
 class OneBotActionContractTests(unittest.TestCase):
+    def test_sent_text_receipt_is_bound_to_actual_conversation_and_not_repeated_to_model(self) -> None:
+        gateway = NapCatQQGateway()
+        gateway._onebot_transport = _Transport()
+        for is_group in (True, False):
+            context = QQMessageContext(should_respond=True, reason="mention", is_group=is_group,
+                target_id=20001 if is_group else 10001, user_id=10001,
+                group_id=20001 if is_group else 0, source_message_id="30001")
+            action = "send_group_msg" if is_group else "send_private_msg"
+            target_key = "group_id" if is_group else "user_id"
+            for message in (
+                "[CQ:reply,id=30001]第一句。\n第二句！",
+                [{"type": "reply", "data": {"id": "30001"}},
+                 {"type": "text", "data": {"text": "第一句。\n第二句！"}}],
+            ):
+                with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+                    sent = gateway.call_model_onebot_action(context, action=action, params={"message": message})
+                    other = gateway.call_model_onebot_action(context, action=action,
+                        params={target_key: 29999, "message": message})
+                self.assertEqual(sent["current_conversation_text"], "第一句。\n第二句！")
+                self.assertNotIn("current_conversation_text", other)
+                result = OneBotActionToolHandler(delivery_port=_Port(sent)).execute(
+                    call={"type": "onebot_action", "action": action, "params": {}}, context=_tool_context())
+                self.assertEqual(result.stream_events[0]["current_conversation_text"], "第一句。\n第二句！")
+                self.assertNotIn("current_conversation_text", result.followup_context)
+
+    def test_media_and_failed_sends_do_not_supply_plain_text_delivery(self) -> None:
+        gateway = NapCatQQGateway()
+        context = QQMessageContext(should_respond=True, reason="mention", is_group=True,
+            target_id=20001, user_id=10001, group_id=20001, source_message_id="30001")
+        for ok, message in ((False, "失败的文本。"), (True, "看这里[CQ:image,file=example.png]")):
+            with patch.object(gateway, "_call_and_track_outbound", return_value={
+                "ok": ok, "status": "success" if ok else "failed", "action": "send_group_msg"}):
+                result = gateway.call_model_onebot_action(context, action="send_group_msg", params={"message": message})
+            self.assertNotIn("current_conversation_text", result)
+
     def test_manifest_exposes_useful_actions_but_not_secrets_or_admin(self) -> None:
         manifest = model_onebot_capabilities()
         names = {item["action"] for item in manifest["actions"]}
@@ -108,7 +143,7 @@ class OneBotActionContractTests(unittest.TestCase):
         self.assertEqual(recall, (False, "owner_required", "owner_only"))
 
     def test_owner_can_recall_and_cross_conversation_through_gateway_without_credentials(self) -> None:
-        gateway = object.__new__(NapCatQQGateway)
+        gateway = NapCatQQGateway()
         gateway._onebot_transport = _Transport()
         context = QQMessageContext(
             should_respond=True,
@@ -133,7 +168,7 @@ class OneBotActionContractTests(unittest.TestCase):
         self.assertNotIn("token", json.dumps(result))
 
     def test_gateway_fills_unambiguous_current_group_and_sender_targets(self) -> None:
-        gateway = object.__new__(NapCatQQGateway)
+        gateway = NapCatQQGateway()
         gateway._onebot_transport = _Transport()
         context = QQMessageContext(
             should_respond=True,
@@ -157,7 +192,7 @@ class OneBotActionContractTests(unittest.TestCase):
         )
 
     def test_gateway_resolves_current_and_replied_message_selectors_to_real_ids(self) -> None:
-        gateway = object.__new__(NapCatQQGateway)
+        gateway = NapCatQQGateway()
         gateway._onebot_transport = _Transport()
         context = QQMessageContext(
             should_respond=True,

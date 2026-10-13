@@ -65,7 +65,6 @@ assert.equal(new Set(CONTROL_CENTER_BRIDGED_ACTION_IDS).size, CONTROL_CENTER_BRI
 
 const settingsCases = [
   [CONTROL_CENTER_ACTIONS.settingsSelectBot, "setBoundBot", { value: "personal" }],
-  [CONTROL_CENTER_ACTIONS.chatNew, "newSession", {}],
   [CONTROL_CENTER_ACTIONS.chatSend, "sendChatMessage", { text: "hello" }],
   [CONTROL_CENTER_ACTIONS.chatStop, "stopReply", {}],
   [CONTROL_CENTER_ACTIONS.voiceTest, "testTts", {}],
@@ -74,9 +73,6 @@ const settingsCases = [
   [CONTROL_CENTER_ACTIONS.voiceSetAsrEnabled, "setVoiceInputEnabled", { value: true }],
   [CONTROL_CENTER_ACTIONS.voiceSetVolume, "setVoiceVolume", { value: 80 }],
   [CONTROL_CENTER_ACTIONS.voicePreviewPlay, "previewTts", { text: "试听" }],
-  [CONTROL_CENTER_ACTIONS.voiceSetSpeed, "setVoiceSpeed", { value: 1.1 }],
-  [CONTROL_CENTER_ACTIONS.voiceSetWakeWord, "setWakeWord", { value: "Akane" }],
-  [CONTROL_CENTER_ACTIONS.voiceSetWakeSensitivity, "setWakeSensitivity", { value: "medium" }],
   [CONTROL_CENTER_ACTIONS.characterRefresh, "reloadResources", {}],
   [CONTROL_CENTER_ACTIONS.characterPreviewEmotion, "previewEmotion", { value: "happy" }],
   [CONTROL_CENTER_ACTIONS.characterSelectPack, "setCharacterPack", { value: "akane_default" }],

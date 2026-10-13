@@ -249,7 +249,7 @@ class VoicePlaybackContextTests(unittest.TestCase):
                 context_engine = memory_tests._PromptContextEngine(memcore_manager=manager)
                 context_engine._get_prompt_profile_registry = PromptProfileRegistry
                 context_engine._build_current_visual_context = lambda **_kwargs: ""
-                with patch.object(response_builder, "_memory_backend", return_value="legacy"):
+                with patch("config.MEMORY_BACKEND", "legacy"):
                     response_builder.prepare_context(
                         context_engine,
                         session_id="s1",

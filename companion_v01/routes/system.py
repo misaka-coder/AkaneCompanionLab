@@ -28,7 +28,11 @@ def build_system_router(
     async def metrics() -> Response:
         current_bytes, peak_bytes = tracemalloc.get_traced_memory()
         llm_metrics = engine.llm.snapshot_metrics()
-        vector_entries = engine.vector_store.count_entries()
+        vector_entries = (
+            engine.vector_store.count_entries()
+            if getattr(engine, "vector_store", None) is not None
+            else 0
+        )
         reindex_metrics = engine.snapshot_embedding_reindex_status()
         counters = runtime_metrics.snapshot()
         guard_metrics = public_guard.snapshot()
@@ -51,6 +55,20 @@ def build_system_router(
             lines.append(f"akane_{key} {value}")
         for key, value in sorted(llm_metrics.items()):
             lines.append(f"akane_llm_{key} {int(value)}")
+        embedding_snapshot = getattr(engine, "snapshot_embedding_runtime", None)
+        if callable(embedding_snapshot):
+            embedding = embedding_snapshot()
+            lines.append(f"akane_embedding_model_ready {int(embedding.get('status') in {'ready', 'busy'})}")
+            lines.append(f"akane_embedding_precision_bits {dict(float32=32, float16=16, bfloat16=16).get(embedding.get('precision'), 0)}")
+            for key in (
+                "model_weight_bytes", "batch_size", "effective_batch_size", "active_calls", "calls",
+                "failed_calls", "oom_retries", "cached_entries", "cache_max_entries", "cache_cleanup_count",
+                "cuda_metrics_available", "cuda_allocated_bytes", "cuda_reserved_bytes",
+                "cuda_peak_allocated_bytes", "cuda_peak_reserved_bytes",
+            ):
+                value = embedding.get(key)
+                if isinstance(value, (bool, int)):
+                    lines.append(f"akane_embedding_{key} {int(value)}")
         return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     @router.post("/reset")
@@ -69,7 +87,7 @@ def build_system_router(
         batch_size: int = 64,
         limit: int | None = None,
     ) -> Any:
-        """将 legacy SQLite 中的历史记忆导入 memcore（幂等，已存在的不重复导入）。"""
+        """Legacy memory migration is retired; MemCore is the authoritative engine."""
         authorization = management_auth.authorize(request)
         if not authorization.ok:
             return JSONResponse(
@@ -82,15 +100,14 @@ def build_system_router(
                 headers={"Cache-Control": "no-store"},
             )
         started_at = time.perf_counter()
-        result = engine.backfill_memcore_from_legacy_memory(
-            profile_user_id=profile_user_id,
-            character_pack_id=character_pack_id,
-            batch_size=max(1, batch_size),
-            limit=limit,
-        )
+        result = {
+            "ok": True,
+            "status": "retired",
+            "message": "legacy memory migration is retired and unnecessary; memcore is the sole authority",
+        }
         duration_ms = (time.perf_counter() - started_at) * 1000
-        runtime_metrics.observe_request("backfill_memcore", duration_ms=duration_ms, ok=bool(result.get("ok")))
-        log_event("backfill_memcore_complete", ok=result.get("ok"), duration_ms=round(duration_ms, 1))
+        runtime_metrics.observe_request("backfill_memcore", duration_ms=duration_ms, ok=True)
+        log_event("backfill_memcore_complete", ok=True, duration_ms=round(duration_ms, 1))
         return dict(result, duration_ms=round(duration_ms, 1))
 
     return router

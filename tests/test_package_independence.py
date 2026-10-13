@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import tomllib
+import importlib.metadata
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from scripts import check_packaged_dependencies
+from scripts.package_supply import exact_pins
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +32,7 @@ PYTHON_PACKAGES = (
     "capcore-host-utils",
 )
 
-RUNTIME_PACKAGES = tuple(name for name in PYTHON_PACKAGES if name != "capcore-host-utils")
+RUNTIME_PACKAGES = tuple(spec.distribution for spec in check_packaged_dependencies.PACKAGES)
 
 PETDESK_PACKAGES = (
     "petcore-protocol",
@@ -44,11 +45,11 @@ PETDESK_PACKAGES = (
 class PackageIndependenceContractTests(unittest.TestCase):
     def test_packaged_dependency_audit_rejects_missing_runtime_contract(self) -> None:
         spec = check_packaged_dependencies.PackageSpec(
-            "memcore",
+            "memcore-kernel",
             "memcore",
             ("memory_metadata_has_signal",),
         )
-        artifact = SimpleNamespace(version=VERSION, ok=True, reason="")
+        artifact = SimpleNamespace(version=check_packaged_dependencies.expected_package_version("memcore-kernel"), ok=True, reason="")
         with (
             mock.patch.object(check_packaged_dependencies, "PACKAGES", (spec,)),
             mock.patch.object(
@@ -69,16 +70,16 @@ class PackageIndependenceContractTests(unittest.TestCase):
         ):
             installed, errors = check_packaged_dependencies.audit_installed_packages()
 
-        self.assertEqual([entry["distribution"] for entry in installed], ["memcore"])
-        self.assertEqual(errors, ["memcore:runtime_contract_missing:memory_metadata_has_signal"])
+        self.assertEqual([entry["distribution"] for entry in installed], ["memcore-kernel"])
+        self.assertEqual(errors, ["memcore-kernel:runtime_contract_missing:memory_metadata_has_signal"])
 
     def test_packaged_dependency_audit_rejects_missing_nested_runtime_contract(self) -> None:
         spec = check_packaged_dependencies.PackageSpec(
-            "memcore",
+            "memcore-kernel",
             "memcore",
             ("MemorySystem.build_context_surface",),
         )
-        artifact = SimpleNamespace(version=VERSION, ok=True, reason="")
+        artifact = SimpleNamespace(version=check_packaged_dependencies.expected_package_version("memcore-kernel"), ok=True, reason="")
         legacy_memory_system = type("LegacyMemorySystem", (), {})
         with (
             mock.patch.object(check_packaged_dependencies, "PACKAGES", (spec,)),
@@ -100,8 +101,8 @@ class PackageIndependenceContractTests(unittest.TestCase):
         ):
             installed, errors = check_packaged_dependencies.audit_installed_packages()
 
-        self.assertEqual([entry["distribution"] for entry in installed], ["memcore"])
-        self.assertEqual(errors, ["memcore:runtime_contract_missing:MemorySystem.build_context_surface"])
+        self.assertEqual([entry["distribution"] for entry in installed], ["memcore-kernel"])
+        self.assertEqual(errors, ["memcore-kernel:runtime_contract_missing:MemorySystem.build_context_surface"])
 
     def test_packaged_speech_audit_rejects_pre_call_scoped_adapter(self) -> None:
         spec = check_packaged_dependencies.PackageSpec(
@@ -146,26 +147,21 @@ class PackageIndependenceContractTests(unittest.TestCase):
         )
 
     def test_python_package_manifests_have_no_sibling_source_overrides(self) -> None:
-        for name in PYTHON_PACKAGES:
-            root = AKANE_PARENT / name
-            pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
-            normalized = pyproject.replace("\\", "/").lower()
-            self.assertNotIn("[tool.uv.sources]", normalized, name)
-            self.assertNotIn('path = "../', normalized, name)
-            self.assertNotIn("editable = true", normalized, name)
-            lock = root / "uv.lock"
-            if lock.is_file():
-                normalized_lock = lock.read_text(encoding="utf-8").replace("\\", "/").lower()
-                self.assertNotIn('editable = "../', normalized_lock, name)
-                self.assertNotIn('directory = "../', normalized_lock, name)
+        # Consumer CI must audit installed artifacts, not require the author's
+        # private sibling repositories. Source audits remain maintainer gates.
+        installed, errors = check_packaged_dependencies.audit_installed_packages()
+        self.assertEqual(errors, [])
+        self.assertEqual({p["distribution"] for p in installed}, set(RUNTIME_PACKAGES))
 
     def test_capcore_extensions_depend_on_bounded_release_versions(self) -> None:
-        extensions = tuple(name for name in PYTHON_PACKAGES if name.startswith("capcore-") and name != "capcore")
+        extensions = tuple(name for name in RUNTIME_PACKAGES if name.startswith("capcore-"))
         for name in extensions:
-            with (AKANE_PARENT / name / "pyproject.toml").open("rb") as handle:
-                project = tomllib.load(handle)["project"]
-            dependencies = tuple(str(item) for item in project.get("dependencies", ()))
-            self.assertTrue(any(item == "capcore>=0.1.0,<0.2.0" for item in dependencies), name)
+            declared = importlib.metadata.distribution(name).requires or []
+            capcore = next(item.replace(" ", "") for item in declared
+                           if item.replace(" ", "").startswith("capcore<")
+                           or item.replace(" ", "").startswith("capcore>"))
+            self.assertIn(">=0.1.0", capcore, name)
+            self.assertIn("<0.2.0", capcore, name)
 
     def test_akane_uses_exact_package_release_set(self) -> None:
         aggregate = (ROOT / "requirements.txt").read_text(encoding="utf-8")
@@ -173,8 +169,10 @@ class PackageIndependenceContractTests(unittest.TestCase):
         normalized = f"{aggregate}\n{package_requirements}".replace("\\", "/").lower()
         self.assertIn("-r requirements-packages.txt", aggregate)
         self.assertNotIn("-e ../", normalized)
+        pins = exact_pins(ROOT / "requirements-packages.txt")
+        self.assertEqual(set(pins), set(RUNTIME_PACKAGES))
         for name in RUNTIME_PACKAGES:
-            self.assertIn(f"{name}=={VERSION}", package_requirements)
+            self.assertIn(f"{name}=={check_packaged_dependencies.expected_package_version(name)}", package_requirements)
 
         bootstrap = (ROOT / "scripts" / "bootstrap_akane_windows.ps1").read_text(encoding="utf-8")
         self.assertIn("--force-reinstall --no-deps", bootstrap)
@@ -190,32 +188,24 @@ class PackageIndependenceContractTests(unittest.TestCase):
         self.assertNotIn('parent / "memcore"', manager_source)
         self.assertNotIn("sys.path.insert", manager_source)
 
-        capcore_smoke = (AKANE_PARENT / "capcore" / "examples" / "ecosystem_native_tool_smoke.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("sys.path.insert", capcore_smoke)
-        self.assertNotIn("AKANE_ROOT", capcore_smoke)
 
     def test_petdesk_dependencies_are_versioned_not_file_linked(self) -> None:
-        for name in PETDESK_PACKAGES:
-            package_json_path = AKANE_PARENT / name / "package.json"
+        for name in ("desktop_pet_next", "desktop_pet_creator_kit"):
+            package_json_path = ROOT / name / "package.json"
             payload = json.loads(package_json_path.read_text(encoding="utf-8"))
             normalized = package_json_path.read_text(encoding="utf-8").replace("\\", "/").lower()
             self.assertNotIn("file:../", normalized, name)
-            if name != "petcore-protocol":
-                self.assertEqual(payload["dependencies"]["petcore-protocol"], VERSION, name)
-            lock = AKANE_PARENT / name / "pnpm-lock.yaml"
+            for dependency in (payload.get("dependencies") or {}).values():
+                self.assertFalse(str(dependency).startswith(("file:", "link:")), name)
+            lock = ROOT / name / "package-lock.json"
             if lock.is_file():
                 normalized_lock = lock.read_text(encoding="utf-8").replace("\\", "/").lower()
                 self.assertNotIn("file:../", normalized_lock, name)
 
     def test_petdesk_runtime_starter_requires_explicit_character_host(self) -> None:
-        source = (AKANE_PARENT / "petdesk-runtime" / "examples" / "runtime-bridge-process.ts").read_text(
-            encoding="utf-8"
-        )
+        source = (ROOT / "scripts" / "build_petdesk_package_artifacts.py").read_text(encoding="utf-8")
+        self.assertIn('"--source-root"', source)
         self.assertNotIn("../../petdesk-character-host", source.replace("\\", "/"))
-        self.assertIn("PETDESK_CHARACTER_HOST_DIR", source)
-        self.assertIn("character_host_dir_required", source)
 
     def test_akane_petdesk_scripts_require_explicit_runtime_root(self) -> None:
         scripts = (
@@ -232,30 +222,16 @@ class PackageIndependenceContractTests(unittest.TestCase):
             self.assertIn("petdesk_runtime_dir_required", source, name)
 
     def test_release_sources_do_not_pin_workspace_machine_paths(self) -> None:
-        roots = tuple(AKANE_PARENT / name for name in (*PYTHON_PACKAGES, *PETDESK_PACKAGES))
         suffixes = {".md", ".py", ".ts", ".js", ".toml", ".json", ".yaml", ".yml", ".txt"}
-        ignored = {
-            ".git",
-            ".venv",
-            ".claude",
-            ".agents",
-            ".vscode",
-            "node_modules",
-            "build",
-            "dist",
-            "target",
-            "__pycache__",
-        }
-        for root in roots:
-            for path in root.rglob("*"):
-                if not path.is_file() or path.suffix.lower() not in suffixes:
+        for spec in check_packaged_dependencies.PACKAGES:
+            distribution = importlib.metadata.distribution(spec.distribution)
+            for relative in distribution.files or ():
+                if relative.parts[0] != spec.import_name or Path(relative).suffix.lower() not in suffixes:
                     continue
-                relative = path.relative_to(root)
-                if any(part in ignored for part in relative.parts):
-                    continue
+                path = Path(distribution.locate_file(relative))
                 source = path.read_text(encoding="utf-8", errors="ignore").lower().replace("\\\\", "\\")
                 for forbidden in ("f:/akane", "f:\\akane", "f:/cache", "f:\\cache"):
-                    self.assertNotIn(forbidden, source, f"{root.name}/{relative}")
+                    self.assertNotIn(forbidden, source, f"{spec.distribution}/{relative}")
 
 
 if __name__ == "__main__":

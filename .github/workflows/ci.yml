@@ -3,11 +3,50 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  core-backend:
+    name: Core backend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install from the public source-consumer entry
+        run: python scripts/install_dependencies.py --profile backend
+      - name: Verify package supply, offline boundaries and bootstrap contracts
+        run: >-
+          python -m unittest tests.test_public_package_supply
+          tests.test_core_backend_dependencies tests.test_package_release_versions
+          tests.test_package_independence tests.test_windows_bootstrap -v
+      - name: Exercise HTTP chat, MemCore continuity and platform Shell
+        run: python scripts/smoke_core_backend.py
+      - name: Build native Linux offline dependency closure from public sources
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install "build>=1.2"
+          python scripts/build_public_backend_wheelhouse.py --output-dir dist/backend-wheelhouse
+          python scripts/verify_extracted_package_independence.py --profile backend --wheelhouse dist/backend-wheelhouse
+      - name: Upload verified Linux Python 3.11 backend wheelhouse
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: akane-backend-linux-x86_64-py311
+          path: dist/backend-wheelhouse/
+          retention-days: 30
+          if-no-files-found: error
+
   windows-alpha:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -25,7 +64,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python scripts/install_dependencies.py --profile full
           python -m pip install ruff
 
       - name: Set up Node.js

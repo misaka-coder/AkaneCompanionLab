@@ -55,7 +55,7 @@ PACKAGES: tuple[PackageSpec, ...] = (
         ("build_anthropic_messages_tool_set",),
     ),
     PackageSpec(
-        "memcore",
+        "memcore-kernel",
         "memcore",
         (
             "build_native_memory_tool_specs",
@@ -64,6 +64,9 @@ PACKAGES: tuple[PackageSpec, ...] = (
             "CONTEXT_SURFACE_VERSION",
             "CONTEXT_SURFACE_MESSAGE_METADATA_VERSION",
             "MemorySystem.build_context_surface",
+            "MemorySystem.import_completed_turn",
+            "MemorySystem.get_turn",
+            "MemorySystem.get_turn_entries",
         ),
     ),
     PackageSpec(

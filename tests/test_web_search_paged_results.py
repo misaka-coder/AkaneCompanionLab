@@ -8,6 +8,7 @@ import unittest
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.web_browser import WebSearchToolHandler
 from companion_v01.local_capability_config import save_mcp_server_config
+from companion_v01.mcp_stdio_discoverer import McpStdioDiscoveryError
 
 
 class FakeSearchRestClient:
@@ -41,6 +42,26 @@ def _context(profile_user_id: str = "p1", session_id: str = "s1") -> ToolExecuti
 
 
 class WebSearchPagedTests(unittest.TestCase):
+    def test_oversized_mcp_response_remains_an_explicit_transport_failure(self) -> None:
+        class OversizedMcpCaller:
+            async def __call__(self, **_kwargs):
+                raise McpStdioDiscoveryError("mcp_response_too_large")
+
+        with tempfile.TemporaryDirectory() as directory:
+            save_mcp_server_config(base_dir=directory, profile_user_id="p1", server_id="anysearch", payload={
+                "enabled": True, "command": "configured-anysearch", "args": [], "cwd": directory,
+            })
+            rest = FakeSearchRestClient({})
+            handler = WebSearchToolHandler(config_base_dir=directory, mcp_tool_caller=OversizedMcpCaller(),
+                anysearch_rest_client=rest, readiness_probe_in_background=False)
+            result = handler.execute(call={"type": "web_search", "action": "extract", "url": "https://example.test/paper"}, context=_context())
+
+        self.assertEqual(result.state_updates["web_search_reason"], "mcp_response_too_large")
+        self.assertIn("mcp_response_too_large", result.followup_context)
+        self.assertNotIn("连接正常", result.followup_context)
+        self.assertNotIn("mcp_call_failed", result.followup_context)
+        self.assertEqual(rest.calls, [])
+
     def _handler(self, client: FakeSearchRestClient) -> WebSearchToolHandler:
         temp_dir = tempfile.mkdtemp(prefix="akane_ws_search_")
         return WebSearchToolHandler(

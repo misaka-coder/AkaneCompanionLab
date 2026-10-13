@@ -62,6 +62,8 @@ def build_openai_native_tool_from_spec(spec: CapabilityToolSpec) -> dict[str, An
     """Project one canonical ToolSpec without introducing a handler authority."""
     if not isinstance(spec, CapabilityToolSpec):
         raise TypeError("canonical_tool_spec_required")
+    from .tool_scheduling import scheduled_tool_spec
+    spec = scheduled_tool_spec(spec)
     # Akane's canonical memory descriptions can exceed the provider package's
     # conservative 900-character default. They are already part of the stable
     # ToolSpec contract, so do not silently truncate their semantics on the

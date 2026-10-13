@@ -463,6 +463,11 @@ class ExecHandlerPermissionTests(unittest.TestCase):
         )
         self.assertEqual(normalized["timeout_seconds"], 30)
         self.assertEqual(normalized["initial_wait_seconds"], 3)
+        for timeout in (0, 7200):
+            normalized = handler.normalize_call({"type": "exec_run", "command": "echo hi", "timeout_seconds": timeout})
+            self.assertEqual(normalized["timeout_seconds"], timeout)
+        for timeout in (-1, -0.5, True, "invalid", float("inf")):
+            self.assertIsNone(handler.normalize_call({"type": "exec_run", "command": "echo hi", "timeout_seconds": timeout}))
 
     def test_exec_prompt_does_not_confuse_cwd_contract_with_shell_file_access(self) -> None:
         instruction = self._handler().build_prompt_instruction()
@@ -813,7 +818,7 @@ class ExecDispatchEnvelopeTests(unittest.TestCase):
         self.assertEqual(result.stream_events[0]["status"], "running")
         continuation = envelope.data["followup"]["continuation"]
         self.assertEqual(continuation["type"], "exec_status")
-        self.assertEqual(continuation["wait_seconds"], 30)
+        self.assertEqual(continuation["wait_seconds"], 60)
 
     def test_envelope_error_for_failed_command(self) -> None:
         result, envelope = self._dispatch(self._invocation("exec_run", {"command": "exit 2", "initial_wait_seconds": 3}))

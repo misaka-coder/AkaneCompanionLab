@@ -49,7 +49,6 @@ class _FakeLLM:
             error=self.stream_error,
             latest_emotion="",
             latest_speech="",
-            latest_reply_medium="",
             native_preface_text="",
         )
 
@@ -125,7 +124,10 @@ class StreamFinalNonstreamFallbackTests(unittest.TestCase):
 
         events, result = self._run(engine)
 
-        self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
+        self.assertEqual(events, [
+            {"type": "turn_start", "speaker": "Akane"},
+            {"type": "turn_progress", "phase": "retrying_model", "transport": "nonstream"},
+        ])
         self.assertEqual(result["speech"], "这是非流式恢复后的正常答复。")
         self.assertEqual(len(llm.stream_calls), 1)
         self.assertEqual(len(llm.nonstream_calls), 1)
@@ -182,7 +184,11 @@ class StreamFinalNonstreamFallbackTests(unittest.TestCase):
 
         events, result = self._run(engine)
 
-        self.assertEqual(events, [{"type": "turn_start", "speaker": "Akane"}])
+        self.assertEqual(events, [
+            {"type": "turn_start", "speaker": "Akane"},
+            {"type": "turn_progress", "phase": "retrying_model", "transport": "nonstream"},
+            {"type": "turn_progress", "phase": "retrying_model", "transport": "nonstream_uncached"},
+        ])
         self.assertEqual(result["speech"], "去掉故障缓存桶后恢复的正常答复。")
         self.assertEqual(len(llm.nonstream_calls), 2)
         self.assertNotEqual(llm.nonstream_calls[0]["prompt_cache_key"], "")

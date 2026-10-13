@@ -18,7 +18,7 @@ Missing/disabled targets, wrong query output and document failures preserve
 their structured errors; they do not produce a success report.
 
 Permissions: `capability.prompt.invoke`, `capability.invoke`, `resource.read`,
-`artifact.write`. The project imports only `akane_plugin`, requires SDK 0.14.0 and
+`artifact.write`. The project imports only `akane_plugin`, requires SDK 0.14.2 and
 CapCore 0.1.3, and declares its file output/effect using the existing contracts.
 
 Repository verification:

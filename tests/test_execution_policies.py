@@ -684,8 +684,10 @@ class PublicPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelope.status, "error")
         self.assertFalse(any(event["type"] == "browser_open_requested" for event in blocked.stream_events))
         self.select('[{"policy_id":"example.guard"}]')
-        allowed, _ = await music("native-allowed")
-        self.assertTrue(any(event["type"] == "browser_open_requested" for event in allowed.stream_events))
+        allowed, envelope = await music("native-allowed")
+        self.assertEqual(envelope.status, "error")
+        self.assertEqual(allowed.state_updates["capability_execution"]["reason"], "missing_execution_receipt")
+        self.assertFalse(any(event["type"] == "browser_open_requested" for event in allowed.stream_events))
         def remote():
             service = DesktopSatelliteService(instance_id="instance-a", token="test-device")
             broker = ExecutorBroker(service, execution_policies=self.select('[{"policy_id":"example.guard","options":{"deny":true}}]'))
@@ -906,8 +908,7 @@ class InstalledPolicyTests(unittest.IsolatedAsyncioTestCase):
                         target = "example.batch.measure"
                         contract = selection.capability_catalog.load([target])["capabilities"][0]
                         call, selection = route_invocation({"type": "capability_invoke",
-                            "capability_id": target, "contract_ref": contract["contract_ref"],
-                            "arguments": {"text": text}}, selection)
+                            "capability_id": target, "arguments": {"text": text}}, selection)
                         invocation = normalize_tool_invocation(engine, call, capability_selection=selection)
                         invocation = replace(invocation, id=identifier)
                         return await asyncio.to_thread(execute_tool_invocation, engine,

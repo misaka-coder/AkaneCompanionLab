@@ -129,7 +129,7 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
                 both_started.wait(timeout=3)
                 return {"tools": [{"name": "echo", "inputSchema": {"type": "object", "properties": {}}}]}
             engine.mcp_liveness_probe = probe
-            handlers = build_mcp_adapter_tool_handlers(engine, profile_user_id="alice")
+            handlers = build_mcp_adapter_tool_handlers(engine, profile_user_id="alice", refresh_mcp_tools=True)
             self.assertEqual(list(handlers), ["mcp.demo.echo", "mcp.second.echo"])
 
     def test_invoke_mcp_reuses_exact_history_contract_without_loading_server_schema(self) -> None:
@@ -146,7 +146,6 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
             wrapper = {
                 "server_id": "demo",
                 "tool_name": "echo",
-                "contract_ref": selection.capability_catalog.load(["mcp.demo.echo"])["capabilities"][0]["contract_ref"],
                 "arguments": {"text": "hello"},
             }
             _final_output, calls, rejections = engine._prepare_tool_round_decisions(
@@ -242,7 +241,6 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
                         "type": "invoke_mcp",
                         "server_id": "demo",
                         "tool_name": "echo",
-                        "contract_ref": selection.capability_catalog.load(["mcp.demo.echo"])["capabilities"][0]["contract_ref"],
                         "arguments": {"text": "hello"},
                         TOOL_SOURCE_FIELD: NATIVE_OPENAI,
                         TOOL_INVOCATION_ID_FIELD: "call_approval",
@@ -392,7 +390,7 @@ class CapabilityAdapterMcpOrchestrationTests(unittest.TestCase):
             self.assertEqual(call["type"], "mcp.demo.echo")
             self.assertEqual(call["text"], "hello")
             binding = call[TOOL_CAPABILITY_SELECTION_FIELD].resolved_handlers[call["type"]]
-            self.assertEqual(binding.contract_error(), "capability_contract_stale")
+            self.assertFalse(binding.native_declared)
             result = binding.execute(call=call, context=ToolExecutionContext(
                 profile_user_id="alice", session_id="s1", now_ts=1, visual_payload={}))
             self.assertIn('"executed":false', result.followup_context)

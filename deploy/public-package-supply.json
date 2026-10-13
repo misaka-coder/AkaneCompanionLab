@@ -1,0 +1,27 @@
+{
+  "schema": "akane.public-package-supply.v1",
+  "release_tag": "deps-2026.10.13",
+  "package_versions": {
+    "capcore": "0.1.3",
+    "capcore-adapter-mcp": "0.1.1",
+    "capcore-adapter-python": "0.1.0",
+    "capcore-adapter-speech": "0.1.0",
+    "capcore-adapter-comfyui": "0.1.0",
+    "charpack-core": "0.1.0",
+    "channelcore-onebot": "0.1.1",
+    "promptpack-core": "0.1.0",
+    "capcore-provider-native-tools": "0.1.0",
+    "capcore-provider-openai": "0.1.0",
+    "capcore-provider-anthropic": "0.1.0",
+    "memcore-kernel": "0.1.7",
+    "voicecore": "0.1.1"
+  },
+  "internal_wheel_bundle": {
+    "url": "https://github.com/misaka-coder/AkaneCompanionLab/releases/download/deps-2026.10.13/akane-internal-packages-py3-any.zip",
+    "sha256": "3ee97d71209aac669bcc992a41ea39afc3f3a8eb7b0c5596368e6aaeb9f02ed2"
+  },
+  "source_bundle": {
+    "url": "https://github.com/misaka-coder/AkaneCompanionLab/releases/download/deps-2026.10.13/akane-package-sources.zip",
+    "sha256": "486a8bdcebb0e0ca172ee97345748c171e4159c1a97baa9cefd05a4ec1b82c36"
+  }
+}

@@ -1,6 +1,6 @@
 # Minimal SDK function plugin
 
-Install the matching Akane Plugin SDK 0.14.0 and CapCore 0.1.3 release wheels,
+Install the matching Akane Plugin SDK 0.14.2 and CapCore 0.1.3 release wheels,
 then `pip install .` in a clean virtual environment. Run
 `python -m unittest discover -s tests -v`. The project imports no Akane host code.
 

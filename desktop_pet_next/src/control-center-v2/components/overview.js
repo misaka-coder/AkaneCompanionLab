@@ -29,7 +29,6 @@ export function renderOverview(state) {
           </div>
           ${renderBotSelector(state, vm)}
           <div class="quick-actions">
-            ${renderActionButton(state, vm, "chat.new", "＋", "新对话", "primary")}
             ${renderActionButton(state, vm, "workspace.open", "▱", "打开手边")}
             ${renderActionButton(state, vm, "character.openWorkshop", "◇", "角色工坊")}
             ${renderActionButton(state, vm, "character.openPackFolder", "⌁", "角色文件夹")}

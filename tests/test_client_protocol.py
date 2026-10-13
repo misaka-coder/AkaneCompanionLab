@@ -160,19 +160,21 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertIn("speech 是发送到 QQ 的消息正文", profile.system_prompt_override)
         self.assertEqual(profile.system_prompt_override.count("不抄写上下文中的字段名、时间戳或 Assistant:"), 1)
         self.assertIn("发送者、目标、@ 和引用判断话题归属", profile.system_prompt_override)
-        self.assertIn("群聊观察回合提供一次自然参与机会", profile.system_prompt_override)
+        self.assertIn("event.group_attention_* 是主动观察机会", profile.system_prompt_override)
+        self.assertIn("决定参与或静默", profile.system_prompt_override)
         self.assertIn("根据语境选择文字、QQ 可见动作或静默", profile.system_prompt_override)
         self.assertNotIn("delegate_task", profile.system_prompt_override)
         self.assertIn("qq_text", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn("常规回复", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn("字段含义", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn(
-            '"reply_medium":"text","speech":"主人，我在哦。"',
+            '"emotion":"normal","speech":"主人，我在哦。"',
             profile.mode_prompt_override(debug_enabled=False),
         )
         self.assertIn('{"speech":""}', profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn("整条响应只输出 JSON 对象", profile.mode_prompt_override(debug_enabled=False))
-        self.assertIn("不要直接输出裸文本", profile.mode_prompt_override(debug_enabled=False))
+        self.assertIn("json_object_only", profile.system_block_ids)
+        self.assertIn("只输出一个合法 JSON 对象", profile.system_prompt_override)
+        self.assertIn("不能输出任何额外解释、前后缀", profile.system_prompt_override)
         self.assertIn("有真实作用时", profile.mode_prompt_override(debug_enabled=False))
         self.assertIn("发送给用户的完整消息正文", profile.mode_prompt_override(debug_enabled=False))
         self.assertNotIn("内部协议", profile.mode_prompt_override(debug_enabled=False))
@@ -193,10 +195,11 @@ class ClientProtocolTests(unittest.TestCase):
             self.assertNotIn("event.qq_optional_reply_review", mode_prompt)
             self.assertEqual(mode_prompt, profile.mode_prompt_override(debug_enabled=False))
 
-    def test_common_field_order_places_optional_reply_medium_before_speech(self) -> None:
+    def test_common_field_order_has_no_model_delivery_field(self) -> None:
         text = PromptBlockRegistry().require("field_order").text
 
-        self.assertLess(text.index("reply_medium"), text.index("speech"))
+        self.assertNotIn("reply_medium", text)
+        self.assertLess(text.index("emotion"), text.index("speech"))
         self.assertLess(text.index("speech"), text.index("tool_call"))
 
     def test_desktop_prompt_profile_excludes_scene_observations_but_keeps_pet_context(self) -> None:
@@ -209,13 +212,14 @@ class ClientProtocolTests(unittest.TestCase):
         self.assertTrue(profile.includes(PromptModule.TOOLS))
         self.assertFalse(profile.includes(PromptModule.SCENE_OBSERVATION))
         self.assertIn("desktop_pet_visual", profile.system_block_ids)
-        self.assertIn("desktop_pet_activity", profile.system_block_ids)
+        self.assertIn("desktop_pet_media", profile.system_block_ids)
         self.assertIn("tool_execution_intent", profile.system_block_ids)
         self.assertNotIn("scene_visual_resources", profile.system_block_ids)
         self.assertNotIn("qq_text_mode", profile.system_block_ids)
         self.assertIn("desktop_pet 桌宠模式", profile.system_prompt_override)
         self.assertIn("[CURRENT ASSISTANT STATE - EMBODY THIS]", profile.system_prompt_override)
-        self.assertIn("activity 是给桌宠执行的请求", profile.system_prompt_override)
+        self.assertIn("播放控制使用本轮 control_tool", profile.system_prompt_override)
+        self.assertNotIn("activity 是给桌宠执行的请求", profile.system_prompt_override)
         self.assertNotIn("scene.major 表示场景大类", profile.system_prompt_override)
         self.assertNotIn("像 galgame 选项", profile.system_prompt_override)
         self.assertNotIn("背景变体", profile.system_prompt_override)

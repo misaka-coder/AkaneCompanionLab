@@ -81,6 +81,28 @@ def _snapshot() -> dict[str, Any]:
 
 
 class VoiceRuntimeTTSExecutorTests(unittest.TestCase):
+    def test_bilingual_artifact_passes_spoken_text_and_style_to_contextual_client(self):
+        from companion_v01.voice_runtime.speech_artifact import encode_speech_artifact, MEDIA_TYPE
+        from unittest.mock import AsyncMock
+        with tempfile.TemporaryDirectory() as temp_dir:
+            text_artifacts, audio_artifacts = self._ports(Path(temp_dir))
+            stored = text_artifacts.put_text(artifact_key="bilingual",
+                text=encode_speech_artifact({"text": "おかえり。", "display_text": "（微笑）回来啦。", "style": "calm"}),
+                media_type=MEDIA_TYPE)
+            command = _command()
+            command["payload"]["text_artifact_ref"] = stored.artifact_ref
+            client = _TTSClient()
+            client.synthesize_command = AsyncMock(return_value=SimpleNamespace(audio=b"ID3-audio", media_type="audio/mpeg"))
+            executor = AkaneVoiceTTSCommandExecutor(tts_client=client, text_artifacts=text_artifacts,
+                audio_artifacts=audio_artifacts, conversation_id="conversation-1", conversation_generation=1)
+            result = executor.execute(command, _snapshot())
+            self.assertEqual(result.status, "succeeded", result)
+            self.assertEqual(client.synthesize_command.call_args.args, ("おかえり。",))
+            self.assertEqual(client.synthesize_command.call_args.kwargs["voice_style"], "calm")
+            self.assertEqual(client.synthesize_command.call_args.kwargs["speech_protocol"], "speech_units_v1")
+            self.assertEqual(executor.recover(command, _snapshot()).status, "succeeded")
+            self.assertEqual(client.synthesize_command.call_count, 1)
+
     def _ports(
         self,
         root: Path,

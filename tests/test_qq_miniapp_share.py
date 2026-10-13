@@ -90,7 +90,7 @@ class MiniappWorkflowTests(unittest.TestCase):
             require_webhook_auth=False,
             require_self_id=True,
         )
-        self.gateway = object.__new__(NapCatQQGateway)
+        self.gateway = NapCatQQGateway(channel_config=channel)
         self.gateway._onebot_transport = OneBotActionTransport(channel, session=self.session)
         self.handler = OneBotActionToolHandler(delivery_port=QQToolDeliveryPort(self.gateway))
         self.context = ToolExecutionContext(

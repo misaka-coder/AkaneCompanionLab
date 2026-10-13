@@ -304,5 +304,26 @@
     },
     "accepted": false,
     "error_path": "observation_id"
+  },
+  {
+    "id": "context-observe-wait",
+    "arguments": {
+      "action": "observe",
+      "context_ref": "ctx-test",
+      "wait_ms": 15000
+    },
+    "accepted": true
+  },
+  {
+    "id": "context-click-no-wait",
+    "arguments": {
+      "action": "click",
+      "context_ref": "ctx-test",
+      "x": 1,
+      "y": 2,
+      "wait_ms": 0
+    },
+    "accepted": false,
+    "error_path": "wait_ms"
   }
 ]

@@ -1,10 +1,47 @@
 /* Placement stays on the image; motion composes on this independent layer. */
 .portrait-motion {
+  position: relative;
   width: 100%;
   height: 100%;
   transform-origin: bottom center;
   animation: pet-idle-breathe 4.8s ease-in-out infinite;
   pointer-events: none;
+}
+
+.portrait-motion.is-portrait-transitioning { isolation: isolate; }
+
+/* Add complementary alpha instead of making transparent portraits dim mid-fade. */
+.pet-hitbox img.portrait-transition-layer {
+  mix-blend-mode: plus-lighter;
+  transition: none;
+}
+
+.pet-hitbox img.portrait-transition-frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pet-hitbox img.portrait-blink-frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 40ms ease;
+  pointer-events: none;
+  mask-repeat: no-repeat;
+}
+
+.stage[data-blink="closed"] .pet-hitbox img.portrait-blink-frame { opacity: 1; }
+
+.stage[data-motion="idle"][data-passive-motion="music"] .portrait-motion {
+  animation: pet-music-sway 5.8s ease-in-out infinite;
+}
+
+@keyframes pet-music-sway {
+  0%, 100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+  25% { transform: translate(-2px, -1px) rotate(-0.25deg) scale(1.003); }
+  75% { transform: translate(2px, -1px) rotate(0.25deg) scale(1.003); }
 }
 
 .stage[data-motion="thinking"] .portrait-motion {
@@ -183,7 +220,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .stage[data-blink] .pet-hitbox img.portrait-blink-frame { opacity: 0; transition: none; }
   .stage[data-motion] .pet-hitbox,
+  .stage[data-motion][data-passive-motion] .portrait-motion,
   .stage .pet-hitbox .portrait-motion {
     animation: none;
   }

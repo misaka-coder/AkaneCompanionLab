@@ -137,8 +137,12 @@ class QQPokeReactorTests(unittest.TestCase):
                     relation_user_id="qq:7001",
                     now_ms=3001,
                 )["hunger"],
-                80,
+                55,
             )
+            private = runtime.snapshot_for_client(profile_user_id=context.profile_user_id,
+                conversation_id=context.session_id, character_pack_id="reimu_demo", client_mode="qq_text",
+                relation_user_id="qq:7001", now_ms=3001)
+            self.assertEqual(private["hunger"], 95)
 
     def test_group_stateful_pokes_are_rate_limited_after_success(self) -> None:
         with TemporaryDirectory() as tmp:

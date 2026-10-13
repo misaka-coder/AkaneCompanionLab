@@ -22,7 +22,7 @@ class PersonalBrowserBackend:
             return False
 
     def execute(self, *, call, context):
-        from .tool_orchestration_engine import _satellite_channel_rejection
+        from .tool_orchestration.permissions import _satellite_channel_rejection
         from .computer_use.dispatch import dispatch
         from .capability_registry import BROWSER_PAGE_TOOL_SPEC
         normalized = normalize_personal_call(call)

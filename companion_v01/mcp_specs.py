@@ -9,9 +9,9 @@ LOAD_MCP_TOOL_SPEC = CapabilityToolSpec(
     capability_id="load_mcp",
     display_name="Load MCP tools",
     description=(
-        "Compatibility loader by server_ids. Return full contracts and contract_ref for currently "
-        "visible tools in the tool result. Use capability_invoke with an exact capability_id and "
-        "contract_ref to execute. Loading does not change native tools or grant permission."
+        "Load current usage and input schemas for visible tools by server_ids. "
+        "Use capability_invoke with an exact capability_id and business arguments. "
+        "Loading does not change native tools or grant permission."
     ),
     input_schema={
         "type": "object",
@@ -42,10 +42,9 @@ INVOKE_MCP_TOOL_SPEC = CapabilityToolSpec(
     capability_id="invoke_mcp",
     display_name="Invoke a known MCP tool",
     description=(
-        "Compatibility entry for an exact server_id and tool_name. Supply contract_ref from "
-        "capability_load or load_mcp and the disclosed arguments. This translates to capability_invoke "
-        "and uses the target's validation, permissions, approval and execution chain. "
-        "Missing or stale contracts are rejected without executing."
+        "Compatibility entry for an exact server_id, tool_name and business arguments. "
+        "This translates to capability_invoke and uses the target's current validation, "
+        "permissions, approval and execution chain."
     ),
     input_schema={
         "type": "object",
@@ -53,10 +52,9 @@ INVOKE_MCP_TOOL_SPEC = CapabilityToolSpec(
         "properties": {
             "server_id": {"type": "string", "minLength": 1, "maxLength": 80},
             "tool_name": {"type": "string", "minLength": 1, "maxLength": 160},
-            "contract_ref": {"type": "string", "minLength": 1},
             "arguments": {"type": "object", "additionalProperties": True},
         },
-        "required": ["server_id", "tool_name", "contract_ref", "arguments"],
+        "required": ["server_id", "tool_name", "arguments"],
     },
     risk="medium",
     confirm="never",

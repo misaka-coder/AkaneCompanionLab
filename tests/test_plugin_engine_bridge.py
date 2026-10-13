@@ -144,6 +144,7 @@ class ReadPlugin:
 class EngineFacade:
     _build_execution_host_context = staticmethod(AkaneMemoryEngine._build_execution_host_context)
     _build_loadable_capability_catalog = AkaneMemoryEngine._build_loadable_capability_catalog
+    _build_loadable_capability_catalog_projection = AkaneMemoryEngine._build_loadable_capability_catalog_projection
 
     def __init__(self, source: PluginCapabilityToolBridge) -> None:
         self.tool_handlers: dict[str, Any] = {}
@@ -224,7 +225,10 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(result.followup_context.split("：\n", 1)[1]), payload)
         instruction = handler.build_prompt_instruction()
         self.assertIn("tool_call.arguments", instruction)
-        self.assertEqual(json.loads(instruction.split("业务参数完整 JSON Schema：", 1)[1]), descriptor.input_schema)
+        from companion_v01.tool_scheduling import BACKGROUND_PARAMETER
+        advertised = json.loads(instruction.split("业务参数完整 JSON Schema：", 1)[1])
+        self.assertEqual(advertised["properties"].pop("background"), BACKGROUND_PARAMETER)
+        self.assertEqual(advertised, descriptor.input_schema)
         prompt = AkaneMemoryEngine._build_tool_prompt_context(
             self.engine, allow_tool_call=True, profile_user_id="owner", session_id="session",
         )
@@ -300,7 +304,7 @@ class PluginEngineBridgeTests(unittest.IsolatedAsyncioTestCase):
         selected = engine._resolve_capability_selection(profile_user_id="user-42", session_id="session-7")
         contract = selected.capability_catalog.load([CAPABILITY_ID])["capabilities"][0]
         call, selected = route_invocation({"type": "capability_invoke", "capability_id": CAPABILITY_ID,
-            "contract_ref": contract["contract_ref"], "arguments": {"query": "large"}}, selected)
+            "arguments": {"query": "large"}}, selected)
         invocation = normalize_tool_invocation(engine, call, capability_selection=selected,
             profile_user_id="user-42", session_id="session-7")
         result, _ = await asyncio.to_thread(execute_tool_invocation, engine, invocation=invocation,

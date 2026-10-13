@@ -10,7 +10,7 @@ import time
 
 import config
 from companion_v01.background_tasks import BackgroundTaskRunner
-from companion_v01.bot_runtime import _host_job_completion_request
+from companion_v01.bot_runtime_components.completion import _host_job_completion_request
 from companion_v01.execution_local import TrustedLocalExecutor
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_subagent_jobs import HostSubagentJobRuntime

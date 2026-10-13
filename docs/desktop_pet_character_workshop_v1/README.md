@@ -13,14 +13,13 @@ This directory is the handoff entry for the next desktop pet mainline work.
 
 ## Project Direction
 
-- Treat `desktop_pet_next` as the new desktop pet mainline.
-- Keep the old Electron `desktop_pet` frozen unless a task explicitly says otherwise.
+- `desktop_pet_next` is the sole desktop pet implementation. The Electron client and old Web chat/preview have been removed; see [frontend cleanup preparation](../frontend_cleanup_preparation_v1.md).
 - The V1 goal is a creator-facing character workshop: create/import characters, configure persona fields, upload and calibrate portraits, switch characters quickly, and keep memory isolated by default.
 - Akane is the demo character, not a hard product constraint.
 
 ## Implementation Status
 
-Updated: 2026-06-05
+The following entries describe the original V1 implementation (2026-06-05). For current frontend retirement and redesign scope, use [frontend cleanup preparation](../frontend_cleanup_preparation_v1.md).
 
 - Implemented the first Phase 1 skeleton in `desktop_pet_next`: per-character runtime state map, active `character_pack_id` request contract, v0.2 character-pack parsing/validation, and a minimal standalone workshop window.
 - `desktop_pet_creator_kit` now creates v0.2 draft packs with `persona_form`, `layout`, `voice`, and extended identity fields while keeping v0.1 packs valid.

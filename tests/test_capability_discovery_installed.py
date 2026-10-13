@@ -277,7 +277,7 @@ class CapabilityDiscoveryInstalledPluginTests(unittest.TestCase):
                         {"type": "capability_load", "capability_ids": [CAPABILITY_ID]})
                     contract = json.loads(loaded.followup_context.split("\n", 1)[1])["capabilities"][0]
                     call = {"type": "capability_invoke", "capability_id": CAPABILITY_ID,
-                            "contract_ref": contract["contract_ref"], "arguments": {"value": 41, "step": 1}}
+                            "arguments": {"value": 41, "step": 1}}
                     result = await asyncio.to_thread(execute, initial, call)
                     self.assertFalse(result.capability_result.is_error, result)
                     self.assertEqual(result.capability_result.value["value"], 42)
@@ -297,7 +297,7 @@ class CapabilityDiscoveryInstalledPluginTests(unittest.TestCase):
                     try:
                         job_contract = initial.capability_catalog.load([PLUGIN_ID+".job.v1"])["capabilities"][0]
                         accepted = await asyncio.to_thread(execute,initial,{"type":"capability_invoke",
-                            "capability_id":PLUGIN_ID+".job.v1","contract_ref":job_contract["contract_ref"],"arguments":{"value":9}})
+                            "capability_id":PLUGIN_ID+".job.v1","arguments":{"value":9},"background":True})
                         self.assertTrue(any(event["type"] == "background_job_accepted" for event in accepted.stream_events), accepted)
                         event = next(event for event in accepted.stream_events if event["type"]=="background_job_accepted")
                         self.assertTrue(await asyncio.to_thread(runner.wait_idle,lane="host-jobs",timeout=5))
@@ -307,18 +307,19 @@ class CapabilityDiscoveryInstalledPluginTests(unittest.TestCase):
                         self.assertEqual(completed.result["capability_result"]["value"],{"value":9,"calls":1})
                     finally:
                         await asyncio.to_thread(runner.close)
+                        engine.host_tool_jobs = None
                     baseline = published_contracts(initial)
                     await publish()  # Same schema, separately observable provider generation.
                     frozen = apply_published_contracts(select(), baseline)
-                    rejected = await asyncio.to_thread(execute, frozen, {"type": echo_id, "arguments": {"value": 10}})
-                    self.assertFalse(json.loads(rejected.followup_context)["executed"])
-                    self.assertIn("capability_contract_stale", rejected.followup_context)
-                    # A load from before the upgrade is also stale at execution time.
-                    rejected = await asyncio.to_thread(execute, frozen, call)
-                    self.assertIn("capability_contract_stale", rejected.followup_context)
+                    direct = await asyncio.to_thread(execute, frozen, {"type": echo_id, "arguments": {"value": 10}})
+                    self.assertIsNotNone(direct.capability_result, direct.followup_context)
+                    self.assertEqual(direct.capability_result.value["value"], 10)
+                    # The old usage remains executable when current inputs are compatible.
+                    invoked = await asyncio.to_thread(execute, frozen, call)
+                    self.assertEqual(invoked.capability_result.value["value"], 42)
                     current = frozen.capability_catalog.current().load([echo_id])["capabilities"][0]
                     recovered = await asyncio.to_thread(execute, frozen, {"type": "capability_invoke",
-                        "capability_id": echo_id, "contract_ref": current["contract_ref"], "arguments": {"value": 10}})
+                        "capability_id": echo_id, "arguments": {"value": 10}})
                     self.assertEqual(recovered.capability_result.value["value"], 10)
                     self.assertEqual(schemas, _model_visible_tools(frozen))
                     changed_site = root / "schema-upgrade-site"
@@ -331,16 +332,18 @@ class CapabilityDiscoveryInstalledPluginTests(unittest.TestCase):
                     changed_module.write_text(changed_source,encoding="utf-8")
                     await publish(changed_site)
                     rejected = await asyncio.to_thread(execute,frozen,{"type":echo_id,"arguments":{"value":10}})
-                    self.assertIn("capability_contract_stale",rejected.followup_context)
+                    self.assertIn("amount", rejected.followup_context)
+                    self.assertEqual(rejected.capability_result.status, "validation_error")
+                    self.assertFalse(rejected.capability_result.content["executed"])
                     current = frozen.capability_catalog.current().load([echo_id])["capabilities"][0]
                     self.assertEqual(current["input_schema"]["required"],["amount"])
                     recovered = await asyncio.to_thread(execute,frozen,{"type":"capability_invoke","capability_id":echo_id,
-                        "contract_ref":current["contract_ref"],"arguments":{"amount":10}})
+                        "arguments":{"amount":10}})
                     self.assertFalse(recovered.capability_result.is_error,recovered)
                     self.assertEqual(recovered.capability_result.value["calls"],1)
                     await active.publish(PluginGenerationSnapshot((), ()))
                     withdrawn = await asyncio.to_thread(execute, frozen, {"type": "capability_invoke",
-                        "capability_id": echo_id, "contract_ref": current["contract_ref"], "arguments": {"value": 10}})
+                        "capability_id": echo_id, "arguments": {"value": 10}})
                     self.assertIn("capability_not_available", withdrawn.followup_context)
                 finally:
                     await active.stop()

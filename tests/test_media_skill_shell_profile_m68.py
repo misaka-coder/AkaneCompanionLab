@@ -595,7 +595,7 @@ class MediaSkillMemcoreTraceTests(unittest.TestCase):
                     card_text = "\n".join(str(m.get("content") or "") for m in tool_payloads)
                     self.assertIn("[compact_reloadable]", card_text)
                     self.assertIn("tool: exec_run", card_text)
-                    self.assertIn("reload: open_memory(memory_id=", card_text)
+                    self.assertTrue(any(f"source_id: {sid}" in card_text for sid in observation_sids))
                     self.assertIn("status: success", card_text)
                     self.assertNotIn("aud_001", card_text)
                     self.assertNotIn("run_id=execrun_media", card_text)

@@ -1,0 +1,3 @@
+# CPU-only text chat and MemCore; no Chroma, browser binaries or local ML.
+-r requirements-packages.txt
+-r requirements-backend-runtime.txt

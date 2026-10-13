@@ -20,7 +20,7 @@ def project_selection(engine, selection, handlers, *, profile_user_id, session_i
                       domain_profile_id=domain_profile_id, character_pack_id=character_pack_id,
                       authorization_profile_user_id=authorization_profile_user_id)
 
-    def refresh(mcp_server_ids=None, capability_ids=None):
+    def resolve_current(mcp_server_ids=None):
         from .plugin_invocation_scope import use_generation_scopes
         # Model discovery is always current. Already-admitted program calls
         # keep their existing plugin invocation scopes and cleanup semantics.
@@ -30,9 +30,13 @@ def project_selection(engine, selection, handlers, *, profile_user_id, session_i
                 session_id=session_id, domain_profile_id=domain_profile_id,
                 character_pack_id=character_pack_id,
                 authorization_profile_user_id=authorization_profile_user_id, _raw_selection=True,
-                refresh_mcp_tools=True,
+                refresh_mcp_tools=False,
                 mcp_server_ids=mcp_server_ids,
             )
+        return current
+
+    def refresh(mcp_server_ids=None, capability_ids=None):
+        current = resolve_current(mcp_server_ids)
         _, catalog = build_capability_discovery_handlers(
             {name: current.resolved_handlers[name] for name in current.tool_names
              if name in current.resolved_handlers and (capability_ids is None or name in capability_ids)}, **scope_args)
@@ -52,19 +56,24 @@ def project_selection(engine, selection, handlers, *, profile_user_id, session_i
                 return refresh(capability_ids=capability_ids)
         return refresh(frozenset(servers), capability_ids=capability_ids)
 
+    def resolve_handler(name):
+        handler = candidates.get(name)
+        server = getattr(getattr(handler, "adapter", None), "server_id", None)
+        servers = frozenset((str(server),)) if server else (None if str(name).startswith("mcp.") else frozenset())
+        current = resolve_current(servers)
+        return current.resolved_handlers.get(name) if name in current.tool_names else None
+
     candidates = {name: handlers[name] for name in selection.tool_names if name in handlers and name not in CAPABILITY_DISCOVERY_TOOL_IDS}
     entries, catalog = build_capability_discovery_handlers(candidates, refresh=refresh, refresh_targets=refresh_targets,
+        resolve_handler=resolve_handler,
         search_enabled=preferences["searchEnabled"], **scope_args)
     modes = {name: exposure_mode(name, handler, preferences) for name, handler in candidates.items()}
     resident = tuple(sorted(name for name, mode in modes.items() if mode == "resident"))
     resolved = dict(candidates)
     for name in catalog.capability_ids:
         binding = catalog.snapshot(name)
-        if modes.get(name) != "resident":
-            # A deferred target is eligible for routing, but no native contract
-            # was published. Only invoke(ref) may bind its disclosed version.
-            binding["contract_ref"] = ""
-        resolved[name] = ContractBoundHandler(candidates[name], binding, current_contract=catalog.current_snapshot)
+        resolved[name] = ContractBoundHandler(candidates[name], binding, current_handler=catalog.current_handler,
+                                              native_declared=modes.get(name) == "resident")
     resolved.update(entries)
     return replace(selection,
         tool_names=tuple(sorted(resolved)),
@@ -81,7 +90,9 @@ def published_contracts(selection):
     from .capability_contracts import contract_snapshot
     catalog = selection.capability_catalog
     return {
-        name: contract_snapshot(selection.resolved_handlers[name], scope=catalog.scope)
+        name: (deepcopy(selection.resolved_handlers[name].snapshot)
+               if isinstance(selection.resolved_handlers[name], ContractBoundHandler)
+               else contract_snapshot(selection.resolved_handlers[name], scope=catalog.scope))
         for name in selection.schema_tool_names
         if name in selection.resolved_handlers
     }
@@ -99,7 +110,7 @@ def apply_published_contracts(selection, snapshots):
                 resolved[name] = fixed[name]
             continue
         current_handler = catalog.handler(name)
-        resolved[name] = ContractBoundHandler(current_handler, snapshot, current_contract=catalog.current_snapshot)
+        resolved[name] = ContractBoundHandler(current_handler, snapshot, current_handler=catalog.current_handler)
     return replace(selection, schema_tool_names=tuple(sorted(snapshots)),
                    tool_names=tuple(sorted(resolved)), resolved_handlers=MappingProxyType(resolved),
                    published_contracts=deepcopy(snapshots))
@@ -107,7 +118,7 @@ def apply_published_contracts(selection, snapshots):
 
 def directory_text(selection):
     catalog = selection.capability_catalog
-    lines = ["【可按需使用的工具】", "按精确 ID 调用 capability_load 获取完整契约，再用 capability_invoke 执行。搜索可选；capability_list 可分页浏览。"]
+    lines = ["【可按需使用的工具】", "按精确 ID 用 capability_invoke 执行；需要用法时用 capability_load 加载。搜索可选，capability_list 可分页浏览。"]
     for item in catalog.short_entries():
         if selection.exposure_modes.get(item["capability_id"]) == "on_demand":
             lines.append(f"- {item['capability_id']}：{item['description']}")
@@ -116,13 +127,18 @@ def directory_text(selection):
     return "\n".join(lines)
 
 
-def catalog_state(selection, plugin_blocks=()):
+def catalog_state(selection, plugin_blocks=(), *, skills=None):
     from .capability_contracts import digest
-    catalog = selection.capability_catalog
-    return {"tools": {name: {"fingerprint": catalog.snapshot(name)["fingerprint"],
-                             "mode": selection.exposure_modes.get(name, "resident")}
-                       for name in catalog.capability_ids},
-            "plugin_blocks": digest(list(plugin_blocks))}
+    catalog = getattr(selection, "capability_catalog", None)
+    descriptions = {item["capability_id"]: item["description"] for item in catalog.short_entries()} if catalog else {}
+    state = {"version": 2, "tools": {name: {"fingerprint": catalog.snapshot(name)["fingerprint"],
+                             "mode": selection.exposure_modes.get(name, "resident"),
+                             "description": descriptions[name]}
+                       for name in catalog.capability_ids} if catalog else {},
+             "plugin_blocks": digest(list(plugin_blocks))}
+    if skills is not None:
+        state["skills"] = deepcopy(skills)
+    return state
 
 
 def native_exposure_scope(catalog_scope, preferences):
@@ -158,18 +174,29 @@ def freeze_for_projection(engine, selection, projection, *, plugin_blocks, profi
     revoked = len(safe_blocks) != len(baseline["plugin_blocks"])
     projected = None
     pending = list(plugin_blocks) != baseline["plugin_blocks"]
+    memory_revoked = False
     if selection is not None:
         native = {"contracts": published_contracts(selection), "plugin_blocks": []}
         result = resolver(snapshot=native,
             scope=native_exposure_scope(scope, selection.exposure_preferences), **context)
         if not result.get("ok"):
             return selection, safe_blocks, result
-        projected = apply_published_contracts(selection, result["snapshot"]["contracts"])
-        pending = pending or digest(native) != digest(result["snapshot"])
+        contracts = deepcopy(result["snapshot"]["contracts"])
+        if getattr(manager, "retrieval_mode", "hybrid") == "navigation":
+            # An explicit startup capability change must also revoke durable
+            # declarations from older hybrid turns. Other tools keep their
+            # compaction-bound publication policy.
+            memory_revoked = contracts.pop("retrieve_memory", None) is not None
+            for name in ("browse_memory", "open_memory", "read_memory_timeline", "list_memory_conversations"):
+                if name in contracts and name in native["contracts"]:
+                    contracts[name] = native["contracts"][name]
+        projected = apply_published_contracts(selection, contracts)
+        pending = pending or digest(native) != digest({"contracts": contracts, "plugin_blocks": []})
     return projected, safe_blocks, {"ok": True, "status": result["status"],
         "compaction_generation": result["compaction_generation"],
         "preferences_revision": selection.exposure_preferences["revision"] if selection is not None else None,
-        "pending": pending, "system_revocation_exception": revoked}
+        "pending": pending, "system_revocation_exception": revoked,
+        "memory_mode_revocation_exception": memory_revoked}
 
 
 def route_invocation(raw_call, selection):
@@ -194,24 +221,29 @@ def _route_target(raw_call, selection):
         arguments = {key: value for key, value in raw_call.items() if key != "type" and not key.startswith("_tool_")}
     target = arguments.get("capability_id")
     values = arguments.get("arguments")
-    reference = arguments.get("contract_ref")
     if not isinstance(target, str) or not target or not isinstance(values, dict):
         return raw_call, selection
     if target in CAPABILITY_DISCOVERY_TOOL_IDS:
         return raw_call, selection
-    current = catalog.current_for((target,))
-    snapshot = current.snapshot(target)
-    if snapshot is None:
+    handler = catalog.current_handler(target)
+    if handler is None:
         # Preserve the exact attempted target so the normal executor produces
         # a paired unavailable result, without inventing a ready handler.
         routed_selection = selection
     else:
-        snapshot["contract_ref"] = str(reference or "")
+        from .capability_contracts import contract_snapshot
+        snapshot = catalog.snapshot(target) or contract_snapshot(handler, scope=catalog.scope)
         resolved = dict(selection.resolved_handlers)
-        resolved[target] = ContractBoundHandler(current.handler(target), snapshot, current_contract=catalog.current_snapshot)
+        resolved[target] = ContractBoundHandler(handler, snapshot, current_handler=catalog.current_handler,
+                                                execution_bound=True)
         routed_selection = replace(selection, resolved_handlers=MappingProxyType(resolved),
                                    tool_names=tuple(dict.fromkeys((*selection.tool_names, target))))
     transport = {key: value for key, value in raw_call.items() if key.startswith("_tool_")}
+    if "background" in arguments:
+        if isinstance(arguments["background"], bool):
+            transport["_tool_background"] = arguments["background"]
+        else:
+            transport["_tool_scheduling_error"] = "background_must_be_boolean"
     # The generic carrier has no device receipt of its own. Bind the routed
     # target to the host's frozen receipt, never to model-supplied metadata.
     from .tool_invocation import TOOL_EXECUTION_RECEIPT_FIELD
@@ -221,7 +253,6 @@ def _route_target(raw_call, selection):
         transport[TOOL_EXECUTION_RECEIPT_FIELD] = dict(receipt)
     # Native host tools historically use flat arguments; adapters retain their
     # opaque business object. The provider carrier always retains the outer call.
-    handler = current.handler(target)
     from .tool_handlers.adapters import AdapterCapabilityToolHandler
     payload = {"arguments": deepcopy(values)} if isinstance(handler, AdapterCapabilityToolHandler) else deepcopy(values)
     return {**payload, "type": target, **transport,
@@ -246,7 +277,7 @@ def route_mcp_invocation(raw_call, selection):
                 and adapter.tool_name_for_capability(name) == arguments.get("tool_name")):
             converted = {**raw_call, "type": "capability_invoke", TOOL_MODEL_ARGUMENTS_FIELD: {
                 "capability_id": name, "arguments": arguments.get("arguments"),
-                "contract_ref": arguments.get("contract_ref", "")}}
+                **({"background": arguments["background"]} if "background" in arguments else {})}}
             routed, selected = _route_target(converted, selection)
             routed[TOOL_MODEL_NAME_FIELD] = "invoke_mcp"
             routed[TOOL_MODEL_ARGUMENTS_FIELD] = deepcopy(arguments)

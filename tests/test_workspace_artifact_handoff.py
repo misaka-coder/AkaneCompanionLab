@@ -38,7 +38,7 @@ class WorkspaceArtifactHandoffTests(unittest.TestCase):
         self.assertEqual(Path(generated["absolute_path"]).read_bytes(), data)
         self.assertEqual((self.project / "report.md").read_bytes(), data)
         self.assertNotIn(str(self.h.managed), result.followup_context)
-        from companion_v01.host_tool_jobs import _artifact_references
+        from companion_v01.host_tool_job_runtime.contracts import _artifact_references
         from companion_v01.subagent_runtime import _normalize_artifacts
         self.assertEqual(_normalize_artifacts(_artifact_references(result))[0]["sha256"], receipt["sha256"])
         self.assertIsNone(self.h.generated_service.resolve_generated_artifact(profile_user_id="bob", session_id="s1", target=receipt["handle"]))
@@ -115,7 +115,7 @@ class WorkspaceArtifactHandoffTests(unittest.TestCase):
                                      project_workspace_service=self.service)
         work = TaskWork()
         context = replace(self.context, execution_scope=TaskExecutionScope(str(self.project), "child-a", work))
-        with patch("companion_v01.tool_handlers.execution.resolve_permission_for_profile",
+        with patch("companion_v01.tool_handlers.execution_runtime.approvals.resolve_permission_for_profile",
                    return_value=PermissionDecision(allowed=True, requires_user_decision=False,
                                                    mode="trusted_auto_allow", reason="test")):
             result = handler.execute(call={"type": "exec_run", "initial_wait_seconds": 0,

@@ -601,7 +601,7 @@ class VoiceRealtimeRouteTests(unittest.TestCase):
         logs: list[dict[str, Any]] = []
 
         with patch(
-            "companion_v01.voice_runtime.realtime_transport.VOICE_REALTIME_FINALIZE_TIMEOUT_SECONDS",
+            "companion_v01.voice_runtime.realtime_turn_input.VOICE_REALTIME_FINALIZE_TIMEOUT_SECONDS",
             0.05,
         ):
             with TestClient(self._app(factory=factory, metrics=metrics, logs=logs)) as client:

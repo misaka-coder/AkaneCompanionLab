@@ -4,7 +4,7 @@
 
 这篇文档用于在上下文压缩或换模型后继续接上 Akane → memcore 的迁移工作。它记录当前 Akane 记忆链路、memcore 对应能力、推荐切片顺序、要改的文件和验证口径。
 
-结论先写前面：Akane 的对话记忆主路已经切到版本化 `memcore` 包。后续不要再把旧 retrieval/router/compaction 当成主线扩展；旧链路只保留为显式 `MEMORY_BACKEND=legacy|dual` 的兼容、迁移和对比工具，后续按切片清理。
+当前宿主的对话记忆由版本化 `memcore` 包管理。2026-10-13 已移除没有实际选择效果的 `MEMORY_BACKEND` 设置、旧摘要空调度与无人使用的宿主摘要队列。下面是历史迁移记录，里面的 `MEMORY_BACKEND=legacy|dual` 环境配置不再是现行启动方法；代码中的程序化兼容适配与历史数据读取暂时保留。当前清理范围、保留理由和后续切片见 [兼容逻辑与架构清理审查](architecture_compatibility_cleanup_audit_v1.md)。
 
 ## 当前状态
 

@@ -24,7 +24,7 @@ import config
 from companion_v01.mode_profiles import ModeProfileRegistry
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.background_tasks import BackgroundTaskRunner
-from companion_v01.bot_runtime import _host_job_completion_request
+from companion_v01.bot_runtime_components.completion import _host_job_completion_request
 from companion_v01.capability_registry import ExecutorBroker
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_tool_jobs import HostToolJobRuntime
@@ -35,6 +35,7 @@ from companion_v01.tool_handlers.generated_media import SendFileToolHandler
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.legacy_tool_prompt import render_legacy_json_tool_instruction
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
+from companion_v01.tool_scheduling import scheduled_tool_spec
 from companion_v01.extension_management import ExtensionManagementService, PluginSelectionStore
 from companion_v01.plugin_generation_candidate import PluginGenerationCandidateBuilder
 from companion_v01.plugin_generation_runtime import PluginGenerationRuntime
@@ -201,7 +202,7 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(success.status, "succeeded", success)
             self.assertEqual(len(success.artifacts), 1)
             request = _host_job_completion_request(success)
-            self.assertEqual(dict(request.event.fields)["artifact_delivery_status"], "available_not_delivered")
+            self.assertEqual(dict(request.data)["artifact_delivery_status"], "available_not_delivered")
             self.assertIn(success.artifacts[0]["handle"], request.message)
             self.assertNotIn(str(root), request.message)
             again = job_runtime.submit(
@@ -265,8 +266,8 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([job.job_id for job in completed], [success.job_id, job_id])
             self.assertEqual(job_runtime.recover(), 0)
             request = _host_job_completion_request(cancelled)
-            self.assertEqual(request.event.event_type, "job.cancelled")
-            self.assertNotIn("artifact_handles", dict(request.event.fields))
+            self.assertEqual(request.event_type, "job.cancelled")
+            self.assertNotIn("artifact_handles", dict(request.data))
             bad = job_runtime.submit(
                 capability_id=CAPABILITY_ID,
                 invocation_id="missing-source-job",
@@ -305,7 +306,7 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                 spec = handler.tool_spec()
                 self.assertEqual(spec.execution_class, "long_task")
                 self.assertEqual(handler.background_job_policy(), ("agent", "timeline"))
-                self.assertEqual(native[0]["function"]["parameters"], spec.input_schema)
+                self.assertEqual(native[0]["function"]["parameters"], scheduled_tool_spec(spec).input_schema)
                 self.assertEqual(handler.build_prompt_instruction(), render_legacy_json_tool_instruction(spec, argument_envelope=True))
                 args = {"source_id": "audio_001", "output_format": "mp3", "speed_ratio": 1.25}
                 self.assertEqual(
@@ -458,10 +459,28 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(list((root / "copies").iterdir()), [])
                 self.assertEqual(hashlib.sha256(audio.read_bytes()).hexdigest(), before)
                 # A bad dependency in a new candidate must not replace the live one.
+                # Staging validates declarations; health runs during activation.
+                project = source_project / "pyproject.toml"
+                project.write_text(project.read_text(encoding="utf-8").replace('version = "0.1.0"', 'version = "0.1.1"'), encoding="utf-8")
+                module = source_project / "src/akane_media_convert/__init__.py"
+                module.write_text(module.read_text(encoding="utf-8").replace('VERSION = "0.1.0"', 'VERSION = "0.1.1"'), encoding="utf-8")
+                live_generation = runtime.status_snapshot()["generation"]
+                live_selections = selections.load()
                 with patch.dict(os.environ, {"AKANE_MEDIA_FFMPEG": "akane-missing-ffmpeg"}):
-                    failed = await service.stage_source(source_path=str(source_project))
+                    candidate = await service.stage_source(source_path=str(source_project))
+                    self.assertTrue(candidate["ok"], candidate)
+                    self.assertEqual(candidate["status"], "staged")
+                    failed = await service.install_stage(
+                        stage_id=candidate["stage_id"], approved_permissions=candidate["permissions"],
+                    )
                 self.assertFalse(failed["ok"], failed)
+                self.assertEqual(failed["status"], "activation_failed")
                 self.assertEqual(failed["reason"], "ffmpeg_not_found")
+                self.assertEqual(runtime.status_snapshot()["generation"], live_generation)
+                self.assertEqual(selections.load(), live_selections)
+                restored = next(item for item in artifacts.snapshot()["plugins"] if item["plugin_id"] == PLUGIN_ID)
+                self.assertEqual(restored["digest"], installed["digest"])
+                self.assertFalse(restored["pending_activation"])
                 good = await service.invoke_capability(
                     CAPABILITY_ID, dict(source_id=item["attachment_id"], output_format="flac"), context=context
                 )

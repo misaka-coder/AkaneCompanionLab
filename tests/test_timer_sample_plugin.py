@@ -146,7 +146,7 @@ class InstalledTimerSampleTests(unittest.IsolatedAsyncioTestCase):
                 command = await generation.dispatch_qq_command(
                     command="/timer",
                     args="create 1 提醒我喝水",
-                    qq_number=1906243651,
+                    qq_number=987654321,
                     group_id=0,
                     is_group=False,
                     idempotency_key="timer-command-1",

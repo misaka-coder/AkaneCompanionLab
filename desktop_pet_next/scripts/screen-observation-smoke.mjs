@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
+import vm, { petRuntimeSource, petFunctionSource, petFunctions, petListenerSource } from "./pet-production-functions.mjs";
 import { ScreenObservationBuffer, packScreenObservation, normalizeScreenObservationSettings, SCREEN_OBSERVATION_COMMANDS, proactiveWakeDelay, ScreenObservationPreparation, observationConfigurationIssue } from "../src/screen-observation.js";
 import { createControlCenterViewModel, isObservedActionConfirmation } from "../src/control-center-v2/view-model.js";
 import { renderPerception } from "../src/control-center-v2/components/perception.js";
@@ -51,26 +50,22 @@ const offline = { viewModel: createControlCenterViewModel({}), actionStates: {} 
 assert.match(renderPerception(offline), /等待桌宠实时连接/);
 assert.match(renderPerception(offline), /disabled/);
 
-const centerSource = fs.readFileSync(new URL("../src/control-center-v2/index.js", import.meta.url), "utf8");
-const guardSource = centerSource.slice(centerSource.indexOf("function perceptionRenderScope("), centerSource.indexOf("  captureCapabilityUiState();", centerSource.indexOf("function render(state)")));
-const guardContext = { document: { activeElement: { matches: () => true } }, renderedPerceptionScope: "" };
-vm.createContext(guardContext);
-vm.runInContext(guardSource + '\nthrow Error("render continued");\n}', guardContext);
+const { perceptionRenderScope, renderDecision } = await import("../src/control-center-v2/app/render-policy.js");
 const editState = { activePage: "system", viewModel: { shell: { connected: true, instanceLabel: "test" }, bots: { activeId: "bot-1" }, character: { packId: "alice" }, chat: { sessionId: "session-1" }, perception: { available: true } } };
-guardContext.renderedPerceptionScope = guardContext.perceptionRenderScope(editState);
-assert.doesNotThrow(() => guardContext.render(editState));
-assert.throws(() => guardContext.render({ ...editState, viewModel: { ...editState.viewModel, character: { packId: "bob" } } }), /render continued/);
-guardContext.renderedPerceptionScope = guardContext.perceptionRenderScope(editState);
-assert.throws(() => guardContext.render({ ...editState, viewModel: { ...editState.viewModel, shell: { connected: false } } }), /render continued/);
+const previousRender = { page: "system", scope: perceptionRenderScope(editState) };
+const openSelect = { matches: selector => selector.includes("[data-perception-choice]") };
+assert.equal(renderDecision(editState, previousRender, openSelect, false), "defer");
+assert.equal(renderDecision({ ...editState, viewModel: { ...editState.viewModel, character: { packId: "bob" } } }, previousRender, openSelect, false), "render");
+assert.equal(renderDecision({ ...editState, viewModel: { ...editState.viewModel, shell: { connected: false } } }, previousRender, openSelect, false), "render");
 
 // Run production stream/render functions, replacing only UI effects with spies.
-const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
+const source = petRuntimeSource();
 const commands = { proactiveWakeRunning: true, sending: true, lastSettingsCommandResult: null,
   pendingAttachments: { importing: () => false },
   scheduleSettingsSnapshot() {}, messages: [], sendMessage: (text) => commands.messages.push(text),
   interruptReply: () => { commands.proactiveWakeRunning = false; commands.sending = false; } };
 vm.createContext(commands);
-vm.runInContext(source.slice(source.indexOf("async function handleSettingsCommand("), source.indexOf("function reportSettingsCommandFailure(")), commands);
+vm.runInContext(petFunctionSource("handleSettingsCommand"), commands);
 await commands.handleSettingsCommand({ command: "sendChatMessage", value: "先回答我", operationId: "user-1" });
 assert.equal(commands.lastSettingsCommandResult.status, "accepted");
 assert.equal(commands.proactiveWakeRunning, false);
@@ -79,9 +74,7 @@ const observingVm = createControlCenterViewModel({ sourceKind: "backend", contro
   { state: { instanceId: "test" }, active: { sending: true, proactiveWakeRunning: true } });
 assert.equal(observingVm.actions["chat.send"].available, true);
 assert.equal(observingVm.activity.phase, "observing");
-const streamFunction = source.slice(source.indexOf("async function processThinkStream("), source.indexOf("function renderPayload("));
-const renderStart = source.indexOf("function renderPayload(");
-const renderEnd = source.indexOf("\nfunction ", renderStart + 10);
+const streamFunction = petFunctionSource("processThinkStream");
 const effects = [];
 const context = {
   bubbleKind: "none", streamedReplyTexts: [],
@@ -91,7 +84,7 @@ const context = {
   applyPayloadFileDeliveries() {}, applyPayloadBrowserEvents() {},
   queueStreamedReplySegment: (text) => { if (!text) return false; effects.push("bubble:" + text); return true; },
   queueStreamedTtsSegment: (text) => { if (text) effects.push("tts:" + text); },
-  flushStreamingTtsPending() {}, splitSpeechText: (text) => [text], normalizeSegments: (items) => items || [],
+  flushStreamingTtsPending() {}, flushSpeechUnitAudio() {}, splitSpeechText: (text) => [text], normalizeSegments: (items) => items || [],
   missingFinalReplySegments: (items) => items,
   SpeechStageReplay,
   lastTurnSignature: "", lastTurnTextKey: "", buildSpeechTextKey: (s) => s,
@@ -99,7 +92,7 @@ const context = {
   showSpeechSegments: () => effects.push("speech"), setRuntimeStatus() {}, queueLiveTtsPayloadItems() {}
 };
 vm.createContext(context);
-vm.runInContext(streamFunction + source.slice(renderStart, renderEnd), context);
+vm.runInContext(streamFunction + petFunctionSource("renderPayload"), context);
 async function* silent() {
   yield { type: "turn_start" };
   yield { type: "ui", emotion: "happy" };
@@ -121,7 +114,7 @@ assert.ok(effects.includes("emotion"));
 assert.ok(!effects.includes("thinking"));
 
 // Late permission grants after disabling are stopped, never adopted.
-const captureFunction = source.slice(source.indexOf("async function ensureScreenVisionCapture("), source.indexOf("async function latestDesktopScreenFramesForThink("));
+const captureFunction = petFunctions(["ensureScreenVisionCapture", "showScreenCaptureActivationPrompt", "captureScreenVisionFrame"]);
 let resolveGrant;
 let stopped = 0, prompts = 0;
 const capture = {
@@ -159,7 +152,7 @@ const clickOrder = [];
 const clickContext = { state: { screenVisionEnabled: false }, els: { screenShare: { addEventListener: (_name, callback) => { clickContext.onClick = callback; } } },
   setScreenVisionEnabled: () => { clickOrder.push("capture"); return Promise.resolve(); }, closeMenu: () => clickOrder.push("close") };
 vm.createContext(clickContext);
-vm.runInContext(source.slice(source.indexOf('  els.screenShare.addEventListener("click"'), source.indexOf('  els.openWorkshop.addEventListener("click"')), clickContext);
+vm.runInContext(petListenerSource("screenShare", "click"), clickContext);
 clickContext.onClick();
 assert.deepEqual(clickOrder, ["capture", "close"]);
 console.log("screen observation smoke: temporal packing, scope isolation, command acknowledgements, silent/speaking UI+TTS paths, permission races passed");

@@ -14,6 +14,8 @@ def render_legacy_json_tool_instruction(
     capability_id = str(spec.capability_id or "").strip()
     if not capability_id:
         raise ValueError("canonical_tool_spec_id_required")
+    from .tool_scheduling import scheduled_tool_spec
+    spec = scheduled_tool_spec(spec)
     selector = json.dumps({"type": capability_id}, ensure_ascii=False, separators=(",", ":"))
     placement = (
         "在 tool_call.arguments 对象中填写业务参数；外层 type 仅用于选择工具。"

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from .mcp_stdio_discoverer import McpToolDiscoverer
 from .routes.capabilities import build_capabilities_router
 from .routes.control_center import build_control_center_router, build_control_center_snapshot_runtime_providers
+from .routes.memory_settings import build_memory_settings_router
 from .routes.core import build_core_router
 from .routes.desktop_pet import build_desktop_pet_router
 from .routes.gifts import build_gifts_router
@@ -21,6 +22,7 @@ from .routes.think import build_think_router
 from .routes.voice import build_voice_router
 from .routes.scene import build_scene_router
 from .scene.composition import compose_room
+from .desktop_conversation_auth import DesktopConversationAuth, build_desktop_conversation_auth_router
 
 
 def build_bot_runtime_routers(
@@ -37,6 +39,7 @@ def build_bot_runtime_routers(
     config_module = runtime.config_module
     runtime_metrics = runtime.runtime_metrics
     layout = runtime.runtime_layout
+    desktop_auth = DesktopConversationAuth(runtime.admin_write_auth, route_prefix=route_prefix)
     satellite_service = getattr(runtime, "desktop_satellite_service", None)
     agent_event_router = getattr(runtime, "plugin_agent_event_router", None)
     workflow_job_runtime = getattr(runtime, "host_workflow_jobs", None)
@@ -60,6 +63,7 @@ def build_bot_runtime_routers(
         )
 
     return (
+        build_desktop_conversation_auth_router(desktop_auth),
         build_scene_router(service=compose_room(runtime, route_prefix), admin_auth=runtime.admin_write_auth),
         build_core_router(
             engine=engine,
@@ -79,6 +83,7 @@ def build_bot_runtime_routers(
         ),
         build_think_router(
             engine=engine,
+            admin_auth=desktop_auth,
             public_guard=runtime.public_guard,
             runtime_metrics=runtime_metrics,
             log_event=log_event,
@@ -94,6 +99,7 @@ def build_bot_runtime_routers(
             plugin_turn_router=agent_event_router,
             plugin_conversation_ref_issuer=runtime.plugin_conversation_refs.issue_desktop,
             desktop_agent_frame_delivery=desktop_delivery,
+            desktop_agent_event_delivery=desktop_delivery,
             desktop_agent_event_available=(
                 desktop_agent_event_available
                 if desktop_delivery is not None
@@ -107,7 +113,7 @@ def build_bot_runtime_routers(
             log_event=log_event,
             resolve_identity_from_query=resolve_identity_from_query,
             resolve_identity_from_payload=resolve_identity_from_payload,
-            admin_auth=runtime.admin_write_auth,
+            admin_auth=desktop_auth,
         ),
         build_petdesk_router(
             engine=engine,
@@ -137,6 +143,7 @@ def build_bot_runtime_routers(
         ),
         build_voice_router(
             engine=engine,
+            admin_auth=desktop_auth,
             config_module=config_module,
             tts_client=runtime.tts_client,
             settings=runtime.settings,
@@ -154,6 +161,7 @@ def build_bot_runtime_routers(
                 else None
             ),
         ),
+        build_memory_settings_router(runtime=runtime),
         build_control_center_router(
             runtime_metrics=runtime_metrics,
             log_event=log_event,
@@ -196,6 +204,8 @@ def build_bot_runtime_routers(
             admin_auth=runtime.admin_write_auth,
             job_store=getattr(runtime, "job_store", None),
             job_control=getattr(runtime, "control_job", None),
+            engine=engine,
+            resolve_identity_from_query=resolve_identity_from_query,
         ),
     )
 

@@ -536,7 +536,6 @@ def instance_env(spec: InstanceSpec, plugin_root: Path) -> dict[str, str]:
             "CHAT_API_PROTOCOL": "openai",
             "EMBEDDING_PROVIDER": "hashed",
             "VISION_ENABLED": "false",
-            "MEMORY_BACKEND": "legacy",
             "ENABLE_SEMANTIC_MEMORY": "false",
             "PRE_RETRIEVAL_DEFAULT_ENABLED": "false",
             "SUMMARY_TRIGGER_COUNT": "1000",

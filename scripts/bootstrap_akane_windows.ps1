@@ -2,7 +2,7 @@
 param(
     [ValidateSet("Start", "Status", "Stop", "Restart", "Doctor")]
     [string]$Action = "Start",
-    [ValidateSet("Auto", "Desktop", "Web")]
+    [ValidateSet("Auto", "Desktop", "Backend")]
     [string]$Mode = "Auto",
     [string]$InstanceId = "",
     [string]$DataRoot = "",
@@ -177,7 +177,11 @@ function Test-PythonImports {
             $oldNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
             $PSNativeCommandUseErrorActionPreference = $false
         }
-        & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, capcore_provider_anthropic, charpack_core, promptpack_core, memcore, voicecore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+        if ($Mode -eq "Backend") {
+            & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, capcore_provider_anthropic, charpack_core, promptpack_core, memcore, voicecore, fastapi, uvicorn, openai, requests, pydantic_settings" 2>$null
+        } else {
+            & $PythonPath @PrefixArgs -c "import capcore, capcore_adapter_mcp, capcore_adapter_python, capcore_adapter_speech, capcore_adapter_comfyui, capcore_provider_native_tools, capcore_provider_openai, capcore_provider_anthropic, charpack_core, promptpack_core, memcore, voicecore, fastapi, uvicorn, chromadb, openai, requests, pydantic_settings, edge_tts" 2>$null
+        }
         $coreImportsReady = $LASTEXITCODE -eq 0
         & $PythonPath @PrefixArgs -c "import channelcore_onebot" 2>$null
         return $coreImportsReady -and $LASTEXITCODE -eq 0
@@ -224,6 +228,9 @@ function Assert-PackageWheelhouse {
     }
     if ($manifest.runtime_dependencies_downloaded -ne $true) {
         throw "akane_package_wheelhouse_invalid: runtime_dependency_closure_missing"
+    }
+    if ($Mode -ne "Backend" -and $manifest.PSObject.Properties['profile'] -and $manifest.profile -eq "backend") {
+        throw "akane_package_wheelhouse_invalid: full_profile_required"
     }
 
     $entries = @($manifest.internal_packages)
@@ -280,7 +287,12 @@ function Resolve-PackageInstallSource {
     if ($configuredIndex) {
         return [pscustomobject]@{ Kind = "index"; Value = $configuredIndex }
     }
-    return $null
+    if (([string]$PackageWheelhouse).Trim() -or ([string]$env:AKANE_PACKAGE_WHEELHOUSE).Trim()) {
+        return $null
+    }
+    # A public source clone does not contain ignored package_wheels. Download
+    # the exact official artifacts through the shared, checksum-verified installer.
+    return [pscustomobject]@{ Kind = "public"; Value = "" }
 }
 
 function Get-FileSha256 {
@@ -304,9 +316,10 @@ function Ensure-PythonEnvironment {
     )
 
     $venvPython = Join-Path $Root ".venv\Scripts\python.exe"
-    $requirementsPath = Join-Path $Root "requirements.txt"
+    $dependencyProfile = if ($Mode -eq "Backend") { "backend" } else { "full" }
+    $requirementsPath = Join-Path $Root $(if ($dependencyProfile -eq "backend") { "requirements-backend.txt" } else { "requirements.txt" })
     $packageRequirementsPath = Join-Path $Root "requirements-packages.txt"
-    $runtimeRequirementsPath = Join-Path $Root "requirements-runtime.txt"
+    $runtimeRequirementsPath = Join-Path $Root $(if ($dependencyProfile -eq "backend") { "requirements-backend-runtime.txt" } else { "requirements-runtime.txt" })
     $stampPath = Join-Path $Root ".venv\.akane-requirements.sha256"
     $requirementsHash = @(
         Get-FileSha256 -Path $requirementsPath
@@ -374,12 +387,14 @@ function Ensure-PythonEnvironment {
                 throw "packaged_core_install_failed"
             }
             & $venvPython -m pip install --disable-pip-version-check --no-index --find-links $packageSource.Value -r $requirementsPath
-        } else {
+        } elseif ($packageSource.Kind -eq "index") {
             & $venvPython -m pip install --disable-pip-version-check --force-reinstall --no-deps --index-url $packageSource.Value -r $packageRequirementsPath
             if ($LASTEXITCODE -ne 0) {
                 throw "packaged_core_install_failed"
             }
             & $venvPython -m pip install --disable-pip-version-check --index-url $packageSource.Value -r $requirementsPath
+        } else {
+            & $venvPython (Join-Path $Root "scripts\install_dependencies.py") --profile $dependencyProfile
         }
         if ($LASTEXITCODE -ne 0) {
             throw "python_dependency_install_failed"
@@ -495,7 +510,7 @@ function Ensure-EnvironmentFile {
     if ($configured) {
         Write-AkaneStep "OK" "LLM connection appears configured."
     } else {
-        Write-AkaneStep "WARN" "No model service is configured yet. Akane will open the visible model settings after launch."
+        Write-AkaneStep "WARN" "No model service is configured yet. Configure it in desktop model settings or the instance environment."
     }
     return [pscustomobject]@{ Path = $envPath; Created = $created; LlmConfigured = $configured }
 }
@@ -532,7 +547,7 @@ function Resolve-LaunchMode {
     }
     # Auto is the ordinary desktop contract. A missing toolchain is a clear
     # preparation failure, not permission to silently switch the user's client
-    # and its visible state to Web. Web remains an explicit -Mode Web choice.
+    # into a backend-only launch. Backend remains an explicit -Mode Backend choice.
     Write-AkaneStep "WARN" ("Desktop build tools are incomplete ({0}); desktop launch will report the missing prerequisites." -f ($toolchain.Missing -join ", "))
     return "Desktop"
 }
@@ -559,14 +574,13 @@ function Wait-BackendReady {
     return $false
 }
 
-function Start-WebMode {
+function Start-BackendMode {
     param(
         [string]$Root,
         [int]$Port,
         [string]$InstanceId,
         [string]$DataRoot,
         [string]$EnvFile,
-        [switch]$OpenModelSettings,
         [switch]$RestartBackend
     )
 
@@ -593,13 +607,7 @@ function Start-WebMode {
         }
         throw "Backend did not become healthy. See error output above or check: $errLog"
     }
-    $url = if ($OpenModelSettings) {
-        "http://127.0.0.1:{0}/?configure=model" -f $Port
-    } else {
-        "http://127.0.0.1:{0}/" -f $Port
-    }
-    Start-Process $url
-    Write-AkaneStep "OK" ("Web client opened: {0}" -f $url)
+    Write-AkaneStep "OK" ("Backend ready: http://127.0.0.1:{0}/health" -f $Port)
 }
 
 function Start-DesktopMode {
@@ -703,7 +711,7 @@ if ($CloudSatellite) {
     if ([string]::IsNullOrWhiteSpace([string]$env:AKANE_DESKTOP_SATELLITE_TOKEN)) {
         throw "cloud_satellite_token_required"
     }
-    if ($Mode -eq "Web") { throw "cloud_satellite_requires_desktop_mode" }
+    if ($Mode -eq "Backend") { throw "cloud_satellite_requires_desktop_mode" }
 }
 Write-Host ""
 Write-Host "AkaneCompanionLab Windows Bootstrap" -ForegroundColor Magenta
@@ -762,7 +770,7 @@ try {
     if ($CloudSatellite -and $launchMode -ne "Desktop") {
         throw "cloud_satellite_requires_desktop_mode"
     }
-    Write-AkaneStep "INFO" ("Selected client: {0}" -f $launchMode)
+    Write-AkaneStep "INFO" ("Selected launch mode: {0}" -f $launchMode)
 
     if ($CheckOnly) {
         if ($launchMode -eq "Desktop") {
@@ -780,7 +788,7 @@ try {
     } elseif ($launchMode -eq "Desktop") {
         Start-DesktopMode -Root $projectRoot -Port $BackendPort -InstanceId $resolvedInstanceId -DataRoot $dataStatus.Root -EnvFile $resolvedEnvFile -CloudSatellite:$CloudSatellite -BackendUrl $BackendUrl -OpenModelSettings:(-not $envStatus.LlmConfigured) -RestartBackend:$RestartBackend
     } else {
-        Start-WebMode -Root $projectRoot -Port $BackendPort -InstanceId $resolvedInstanceId -DataRoot $dataStatus.Root -EnvFile $resolvedEnvFile -OpenModelSettings:(-not $envStatus.LlmConfigured) -RestartBackend:$RestartBackend
+        Start-BackendMode -Root $projectRoot -Port $BackendPort -InstanceId $resolvedInstanceId -DataRoot $dataStatus.Root -EnvFile $resolvedEnvFile -RestartBackend:$RestartBackend
     }
 
 } catch {

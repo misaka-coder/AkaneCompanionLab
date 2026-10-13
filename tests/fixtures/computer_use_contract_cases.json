@@ -1293,6 +1293,81 @@
       "arguments": {},
       "accepted": false,
       "error_path": "action"
+    },
+    {
+      "id": "observe-wait-0",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "c",
+        "device_epoch": "e",
+        "wait_ms": 0
+      },
+      "accepted": true
+    },
+    {
+      "id": "observe-wait-15000",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "c",
+        "device_epoch": "e",
+        "wait_ms": 15000
+      },
+      "accepted": true
+    },
+    {
+      "id": "observe-wait-invalid-0",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "c",
+        "device_epoch": "e",
+        "wait_ms": -1
+      },
+      "accepted": false,
+      "error_path": "wait_ms"
+    },
+    {
+      "id": "observe-wait-invalid-1",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "c",
+        "device_epoch": "e",
+        "wait_ms": 15001
+      },
+      "accepted": false,
+      "error_path": "wait_ms"
+    },
+    {
+      "id": "observe-wait-invalid-2",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "c",
+        "device_epoch": "e",
+        "wait_ms": true
+      },
+      "accepted": false,
+      "error_path": "wait_ms"
+    },
+    {
+      "id": "observe-wait-invalid-3",
+      "arguments": {
+        "action": "observe",
+        "control_session_id": "c",
+        "device_epoch": "e",
+        "wait_ms": 0.5
+      },
+      "accepted": false,
+      "error_path": "wait_ms"
+    },
+    {
+      "id": "wait-only-observe",
+      "arguments": {
+        "action": "select_window",
+        "window_id": "w",
+        "device_epoch": "e",
+        "wait_ms": 0
+      },
+      "accepted": false,
+      "error_path": "wait_ms"
     }
   ]
 }

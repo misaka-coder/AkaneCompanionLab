@@ -43,7 +43,7 @@ class LegacyToolPromptTests(unittest.TestCase):
                 self.assertIn(spec.description, legacy)
                 self.assertEqual(native["description"], spec.description)
                 self.assertIn(f'"type":"{spec.capability_id}"', legacy)
-                self.assertEqual(json.loads(legacy.split("业务参数完整 JSON Schema：", 1)[1]), spec.input_schema)
+                self.assertEqual(json.loads(legacy.split("业务参数完整 JSON Schema：", 1)[1]), native["parameters"])
 
     def test_legacy_schema_preserves_every_field_and_constraint(self) -> None:
         for handler in self._handlers():
@@ -51,6 +51,10 @@ class LegacyToolPromptTests(unittest.TestCase):
                 spec = handler.tool_spec()
                 instruction = handler.build_prompt_instruction()
                 projected = json.loads(instruction.split("业务参数完整 JSON Schema：", 1)[1])
+                from companion_v01.tool_scheduling import scheduling_parameter, BACKGROUND_PARAMETER
+                parameter = scheduling_parameter(spec)
+                if parameter:
+                    self.assertEqual(projected["properties"].pop(parameter), BACKGROUND_PARAMETER)
                 self.assertEqual(projected, spec.input_schema)
                 self.assertEqual(list(projected["properties"]), list(spec.input_schema["properties"]))
                 self.assertEqual(instruction, handler.build_prompt_instruction())
@@ -59,8 +63,10 @@ class LegacyToolPromptTests(unittest.TestCase):
         instruction = OneBotActionToolHandler().build_prompt_instruction()
 
         projected = json.loads(instruction.split("业务参数完整 JSON Schema：", 1)[1])
+        from companion_v01.tool_scheduling import BACKGROUND_PARAMETER
+        self.assertEqual(projected["properties"].pop("background"), BACKGROUND_PARAMETER)
         self.assertEqual(projected, OneBotActionToolHandler().tool_spec().input_schema)
-        self.assertIn("Use capabilities", instruction)
+        self.assertIn("capabilities", instruction)
         self.assertIn("get_recent_contact", instruction)
 
     def test_web_search_cursor_only_continuation_is_not_blocked_by_schema(self) -> None:

@@ -24,10 +24,11 @@ class PackageSpec:
     name: str
     import_name: str
     runtime_dependency: bool = False
+    source_name: str = ""
 
 
 PACKAGES: tuple[PackageSpec, ...] = (
-    PackageSpec("memcore", "memcore", runtime_dependency=True),
+    PackageSpec("memcore-kernel", "memcore", runtime_dependency=True, source_name="memcore"),
     PackageSpec("voicecore", "voicecore", runtime_dependency=True),
     PackageSpec("promptpack-core", "promptpack_core", runtime_dependency=True),
     PackageSpec("charpack-core", "charpack_core", runtime_dependency=True),
@@ -106,7 +107,7 @@ def _normalized_requirements_lines(path: Path) -> set[str]:
 
 def _audit_package(spec: PackageSpec, *, allow_dirty: bool) -> list[str]:
     errors: list[str] = []
-    package_root = AKANE_PARENT / spec.name
+    package_root = AKANE_PARENT / (spec.source_name or spec.name)
 
     if not package_root.is_dir():
         return [f"{spec.name}:missing_package_dir:{package_root}"]

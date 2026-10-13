@@ -119,6 +119,9 @@ class ExecutionKillRetryTests(unittest.TestCase):
         self.assertEqual(again.status, "cancel_failed")
         self.assertEqual(again.reason, "termination_unconfirmed")
 
+        # A terminal result can precede the watcher's output-drain cleanup.
+        self._wait_for(lambda: run_id not in self.executor._logs and run_id not in self.executor._procs)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,13 +21,15 @@ MCP tool schema in every request.
    disable a shared server without disabling it for another profile.
 3. **Published model context** — unified per-tool exposure separates eligible
    execution targets from native declarations. `capability_load` returns the
-   current exact contract at the message tail; `capability_invoke` uses its
-   scoped reference through the existing target execution chain. `load_mcp`
+   current exact usage and one input schema at the message tail;
+   `capability_invoke` passes the exact capability id and arguments through
+   the existing target execution chain, without a public version reference. `load_mcp`
    is a historical server-name adapter to the same contract loader and does
    not inject schemas. `invoke_mcp` translates server/tool coordinates and a
-   contract reference to the same router; historical names grant no authority.
-   On an authoritative MemCore path, native preferences merge only at successful
-   compaction; new sessions establish a new baseline. Other memory backends use
+   arguments to the same router; historical names grant no authority.
+   Explicit native preferences take effect on the next model request. Other
+   catalog updates merge at successful compaction; new sessions establish a
+   new baseline. Other memory backends use
    immediate presentation with no compaction-stability claim.
 
 Secrets are not copied from one QQ profile to another. MCP configuration only
@@ -56,11 +58,12 @@ remain on-demand. This preserves per-tool preferences independently of enablemen
 model visibility and approval. An explicit `modelVisible=false` is restrictive;
 the historical `promptExposed` injection flag does not become a new permission.
 
-The catalog uses actual `tools/list` metadata and refreshes at contract loading
-and execution checks. It includes observable tool metadata and host connection
-lifecycle revisions in contract identity, so a declared semantic change can
-invalidate an old binding even when JSON Schema is unchanged. Manager-side
-revision checks prevent an already queued call from reviving a stopped runtime.
+The catalog uses confirmed `tools/list` metadata without a network probe for
+ordinary reads. Calls connect on demand; a pre-dispatch declaration change is
+checked against current inputs and safety hints. Cosmetic changes do not block
+compatible calls. Internal fingerprints serve presentation and audit, while
+manager-side lifecycle checks prevent an already queued call from reviving a
+stopped runtime.
 Unannounced behavior changes at an external service cannot be inferred reliably.
 
 See [migration and rollback](tool_exposure_memcore_implementation_20260910.md).

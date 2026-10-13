@@ -37,8 +37,10 @@ def render_unsettled_playback_context(
                 result = text_artifacts.read_text(str(unit.text_artifact_ref or ""))
                 if not result.ok:
                     raise ValueError("text_unavailable")
-                item["text"] = result.text[:1600]
-                if len(result.text) > 1600:
+                from .speech_artifact import decode_speech_artifact
+                spoken = decode_speech_artifact(result)
+                item["text"] = spoken["say"][:1600]
+                if len(spoken["say"]) > 1600:
                     item["text_truncated"] = True
             except Exception:
                 item.update(status="unavailable", reason="voice_text_artifact_unavailable")

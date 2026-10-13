@@ -63,7 +63,7 @@ description: Use when diagnosing services, ports, processes, logs, or deployment
 
 ```text
 【可按需加载的 Skills（目录版本 ...）】
-Skill 是任务操作手册，不会增加权限或自动执行代码……
+按需用 load_skill(name=下列名称) 读取 Skill 手册；capability_load 只加载工具 ID 的契约。Skill 不增加权限或自动执行代码。
 - skill-creator：Use when ...
 ```
 
@@ -137,6 +137,10 @@ Akane 不需要长期文件监听线程。每个模型请求构建上下文时�
    暂时忽略；诊断会明确显示；
 5. `load_skill` 实际返回的正文进入普通工具轨迹，所以之后即使 Skill 又更新，MemCore 仍保存模型
    当时真正读到的版本，而不是用新文件改写历史。
+
+每次发现仍实际读取 `SKILL.md`、校验路径并检查包内文件。只有手册字节内容完全相同时才复用
+解析结果，不以时间戳或文件大小判断未更新；正文与 revision 来自同一次读取。缓存不保存权限
+或执行挂载，目录删除和插件代次切换仍在下一次发现生效。
 
 插件 Skill 由 `PluginRegistrar.add_skill(skill_root)` 在插件启动事务中注册。宿主先复用同一套
 Skill 包校验，再把本代活动根交给现有 `SkillRegistry`；插件禁用、重启或升级时，根随插件代次

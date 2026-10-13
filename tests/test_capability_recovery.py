@@ -63,7 +63,7 @@ class CapabilityRecoveryTests(unittest.TestCase):
         self.assertFalse(self.tool.calls)
         contract = payload["capabilities"][0]
         value = self.execute({"type": "capability_invoke", "capability_id": "demo.alpha",
-                              "contract_ref": contract["contract_ref"], "arguments": {"text": "recovered"}})
+                              "arguments": {"text": "recovered"}})
         self.assertEqual(value.followup_context, "recovered")
         self.assertEqual(len(self.tool.calls), 1)
         self.assertNotIn("demo.alpha", self.selection.schema_tool_names)
@@ -107,7 +107,7 @@ class CapabilityRecoveryTests(unittest.TestCase):
         self.assertFalse(payload["executed"])
         self.assertNotIn("load", payload["recovery"])
         self.assertEqual(payload["recovery"]["list"]["tool"], "capability_list")
-        self.assertIn("does not establish that the user revoked permission", payload["recovery"]["hint"])
+        self.assertIn("do not infer a permission change", payload["recovery"]["hint"])
 
     def test_adapter_schema_failure_supplies_actual_contract_then_valid_call_succeeds(self):
         handler = build_python_handler("python.akane.normalize_text", config_base_dir=self.root)
@@ -132,23 +132,23 @@ class CapabilityRecoveryTests(unittest.TestCase):
         current = resolve_capability_selection(self.engine, profile_user_id="alice", session_id="s")
         contract = current.capability_catalog.load(["demo.alpha"])["capabilities"][0]
         _, routed = route_invocation({"type": "capability_invoke", "capability_id": "demo.alpha",
-            "contract_ref": contract["contract_ref"], "arguments": {"text": "old"}}, current)
+            "arguments": {"text": "old"}}, current)
         binding = routed.resolved_handlers["demo.alpha"]
         retained = binding.retain_invocation()
         updated = RetainableTool("demo.alpha", revision="2")
         self.engine.tool_handlers["demo.alpha"] = updated
-        self.assertEqual(binding.contract_error(), "capability_contract_stale")
+        self.assertEqual(binding.availability_error(), "")
         result = retained.execute(call={"type": "demo.alpha", "text": "old"}, context=execution_context())
         self.assertEqual(result.followup_context, "old")
         self.assertEqual(len(original.calls), 1)
         self.assertFalse(updated.calls)
-        # Retaining an already stale declaration does not make it valid.
+        # Retaining an admitted call again keeps its captured implementation.
         too_late = binding.retain_invocation()
-        self.assertEqual(too_late.contract_error(), "capability_contract_stale")
+        self.assertEqual(too_late.availability_error(), "")
         too_late.release_invocation()
         # Real provider grant withdrawal remains effective during admission.
         original.grant["active"] = False
-        self.assertEqual(retained.contract_error(), "capability_not_available")
+        self.assertEqual(retained.availability_error(), "capability_not_available")
         retained.release_invocation()
         self.assertEqual(original.grant["released"], 2)
 
@@ -158,10 +158,10 @@ class CapabilityRecoveryTests(unittest.TestCase):
         current = resolve_capability_selection(self.engine, profile_user_id="alice", session_id="s")
         contract = current.capability_catalog.load(["demo.alpha"])["capabilities"][0]
         _, routed = route_invocation({"type": "capability_invoke", "capability_id": "demo.alpha",
-            "contract_ref": contract["contract_ref"], "arguments": {"text": "old"}}, current)
+            "arguments": {"text": "old"}}, current)
         retained = routed.resolved_handlers["demo.alpha"].retain_invocation()
         self.engine.tool_handlers.clear()
-        self.assertEqual(retained.contract_error(), "capability_not_available")
+        self.assertEqual(retained.availability_error(), "capability_not_available")
         self.assertFalse(original.calls)
         retained.release_invocation()
 

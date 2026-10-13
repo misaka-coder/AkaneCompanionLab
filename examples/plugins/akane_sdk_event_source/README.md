@@ -2,7 +2,7 @@
 
 Install this normal Python project and `../akane_sdk_event_calculator` through
 Akane's source staging/install path, granting their declared permissions.
-Both depend on the independently installable `akane-plugin` SDK 0.14.0.
+Both depend on the independently installable `akane-plugin` SDK 0.14.2.
 
 Call `example.event-source.publish_numbers` with `{"a": 2, "b": 40}`. The result
 contains `dispatch_id`, `status`, `complete`, and per-subscriber deliveries.

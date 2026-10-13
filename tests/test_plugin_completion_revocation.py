@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from companion_v01.bot_runtime import _dispatch_host_job_completion
+from companion_v01.bot_runtime_components.completion import _dispatch_host_job_completion
 from tests import test_plugin_background_followup as helpers
 
 
@@ -79,10 +79,15 @@ class QQCompletionRevocationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.coordinator.begin_finalization(token)["status"], "finalizing")
             self.jobs.revoke_job_capability(job.job_id, owner=job.owner)
             return SimpleNamespace(outbound_decorations=())
-        with patch.object(self.gateway, "_plugin_hook_observes", lambda kind: kind == BEFORE_OUTBOUND_PLAN_HOOK), \
-             patch.object(self.gateway, "_dispatch_plugin_hook", revoke):
+        self.gateway.bind_plugin_hook_broker(SimpleNamespace(
+            observes=lambda kind: kind == BEFORE_OUTBOUND_PLAN_HOOK,
+            dispatch_from_consumer=revoke,
+        ))
+        try:
             self.assertTrue((await _dispatch_host_job_completion(self.engine, self.turns, job)).ok)
             terminal = await self.wait_receipt(job)
+        finally:
+            self.gateway.bind_plugin_hook_broker(None)
         self.network.assert_not_called()
         self.assertEqual(terminal.delivery_receipt["model_status"], "completed")
         self.assertEqual(terminal.delivery_receipt["status"], "failed")

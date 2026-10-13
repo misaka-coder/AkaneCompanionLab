@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .owner_private_session import private_asset_scope
+
 import hashlib
 import mimetypes
 import os
@@ -67,6 +69,7 @@ class GeneratedFileService:
             "provider": "ffprobe" if ffprobe_path else "",
         }
 
+    @private_asset_scope
     def inspect_media_info(
         self,
         *,
@@ -83,6 +86,7 @@ class GeneratedFileService:
             timestamp=timestamp,
         )
 
+    @private_asset_scope
     def build_prompt_context(
         self,
         *,
@@ -118,6 +122,7 @@ class GeneratedFileService:
                 return candidate
         return fallback
 
+    @private_asset_scope
     def allocate_output_path(
         self,
         *,
@@ -142,6 +147,7 @@ class GeneratedFileService:
             timestamp=int(timestamp or time.time()),
         )
 
+    @private_asset_scope
     def register_workspace_artifact(
         self, *, source: Path, root: Path, profile_user_id: str, session_id: str,
         created_by_tool: str, timestamp: int, source_ids=None, max_bytes: int = 256 * 1024 * 1024,
@@ -192,6 +198,7 @@ class GeneratedFileService:
                 target.unlink(missing_ok=True)
             raise
 
+    @private_asset_scope
     def register_generated_artifact(
         self,
         *,
@@ -209,6 +216,7 @@ class GeneratedFileService:
         timestamp: int | None = None,
         allow_generic_format: bool = False,
         revision_of: str = "",
+        generated_id: str = "",
     ) -> dict[str, Any]:
         """Register a non-empty artifact already rendered into managed output storage."""
         target = Path(output_path)
@@ -255,10 +263,12 @@ class GeneratedFileService:
             version_no=int(parent.get("version_no") or 1) + 1 if parent else 1,
             delivery_status="pending" if send_to_user else "not_requested",
             timestamp=timestamp,
+            generated_id=generated_id,
         )
         generated["absolute_path"] = str(self.absolute_path(generated))
         return generated
 
+    @private_asset_scope
     def resolve_generated_artifact(
         self,
         *,
@@ -313,6 +323,7 @@ class GeneratedFileService:
                 continue
         return False
 
+    @private_asset_scope
     def mark_delivery_status(
         self,
         *,
@@ -330,6 +341,7 @@ class GeneratedFileService:
             updated_at=timestamp,
         )
 
+    @private_asset_scope
     def send_file(
         self,
         *,
@@ -349,6 +361,7 @@ class GeneratedFileService:
             timestamp=timestamp,
         )
 
+    @private_asset_scope
     def inspect_generated_file(
         self,
         *,
@@ -368,6 +381,7 @@ class GeneratedFileService:
             max_chars=max_chars,
         )
 
+    @private_asset_scope
     def manage_generated_files(
         self,
         *,
@@ -456,6 +470,7 @@ class GeneratedFileService:
             timestamp=timestamp,
         )
 
+    @private_asset_scope
     def resolve_input_resource(
         self,
         *,

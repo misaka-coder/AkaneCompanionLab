@@ -108,6 +108,9 @@ class OneBotActionToolHandler(BaseToolHandler):
                 and model_onebot_action_is_user_visible(action))
 
     def _result(self, payload: dict[str, Any]) -> ToolExecutionResult:
+        payload = dict(payload)
+        # Host-only delivery bookkeeping; do not repeat the full body in model context.
+        delivered_text = payload.pop("current_conversation_text", None)
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         content = serialized if bool(payload.get("ok")) else f"<tool_use_error>{serialized}</tool_use_error>"
         action = str(payload.get("action") or "unknown")
@@ -123,6 +126,8 @@ class OneBotActionToolHandler(BaseToolHandler):
             data = payload.get("data")
             if isinstance(data, dict) and data.get("message_id") not in (None, ""):
                 receipt["message_id"] = data.get("message_id")
+            if status == "success" and isinstance(delivered_text, str) and delivered_text.strip():
+                receipt["current_conversation_text"] = delivered_text
             visible_receipts.append(receipt)
         return ToolExecutionResult(
             tool_type=self.tool_type,

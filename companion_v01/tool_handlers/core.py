@@ -35,6 +35,7 @@ class ToolExecutionContext:
     execution_scope: TaskExecutionScope | None = None
     invocation_id: str = ""
     capability_selection: Any = None
+    dialogue_target: Any = field(default=None, compare=False, repr=False)
     # Invocation-local host control; never persisted or sent in plugin arguments.
     cancel_requested: Callable[[], bool] | None = field(default=None, compare=False, repr=False)
     # Chosen by the host caller, never supplied as a tool argument.

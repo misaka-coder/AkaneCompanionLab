@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import vm from "node:vm";
+import vm, { petRuntimeSource, petFunctionSource, petFunctions } from "./pet-production-functions.mjs";
 import { mediaKind, mediaPosition } from "../src/media-awareness.js";
 import { resolveActiveMediaControl, MEDIA_CONTROL_TARGETS } from "../src/media-control.js";
 
@@ -13,11 +13,10 @@ assert.equal(mediaPosition({ positionSeconds: 10, capturedAt: 1000, isPlaying: t
 assert.equal(mediaPosition({ positionSeconds: 80, capturedAt: 1000, isPlaying: false }, 9000), 80);
 assert.equal(mediaPosition({ positionSeconds: 5, capturedAt: 9000, isPlaying: true }, 9000), 5);
 
-const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
+const source = petRuntimeSource();
 const ctx = {
   systemMedia: {}, musicTrack: null, musicPlaying: false, musicPaused: false,
   mediaKind, mediaPosition, MEDIA_CONTROL_TARGETS,
-  buildMusicRecommendationsSnapshot: () => [], buildPlayableMusicCatalog: () => [],
   isFreshSystemMedia: (media) => Boolean(media.ok), simpleHash: () => "hash",
   safePositiveSeconds: (value) => Number(value || 0),
   buildSystemMediaLyricSnapshot: () => { throw Error("video must not request lyrics"); },
@@ -27,8 +26,7 @@ ctx.buildActiveMediaControlSnapshot = () => resolveActiveMediaControl({
   systemMedia: ctx.systemMedia, systemControllable: Boolean(ctx.systemMedia.ok)
 });
 vm.createContext(ctx);
-vm.runInContext(source.slice(source.indexOf("function buildDesktopMusicActivity("), source.indexOf("function buildPlayableMusicCatalog(")), ctx);
-vm.runInContext(source.slice(source.indexOf("function isMusicEmotionSourceActive("), source.indexOf("function summarizeSystemMedia(")), ctx);
+vm.runInContext(petFunctions(["buildDesktopMusicActivity", "shouldUseSystemMediaActivity", "buildSystemMediaActivity", "isMusicEmotionSourceActive"]), ctx);
 ctx.musicTrack = { sourceId: "local-paused" }; ctx.musicPaused = true;
 ctx.systemMedia = { ok: true, sourceApp: "chrome.exe", mediaType: "music", title: "Bilibili video", isPlaying: true, positionSeconds: 80, capturedAt: Date.now() };
 let result = ctx.buildDesktopMusicActivity({ excludePaused: true });
@@ -56,9 +54,9 @@ Object.assign(ctx, {
   normalizeSystemMediaSnapshot: (value) => value,
   applySystemMediaLyricsForTrack: () => {}, recentTracksHistory: [],
   emitPanelEvent: () => {}, emptySystemMediaLyricsSnapshot: () => ({}),
-  setMusicEmotion: () => {}, scheduleMusicSnapshot: () => {}, schedulePanelStateSync: () => {},
+  setMusicEmotion: () => {}, scheduleMusicSnapshot: () => {}, schedulePanelStateSync: () => {}, scheduleSettingsSnapshot: () => {},
 });
-vm.runInContext(source.slice(source.indexOf("async function readAndApplySystemMediaSnapshot("), source.indexOf("function emptySystemMediaSnapshot(")), ctx);
+vm.runInContext(petFunctionSource("readAndApplySystemMediaSnapshot"), ctx);
 ctx.systemMedia = { ok: true, sourceApp: "chrome.exe", trackKey: "video", positionSeconds: 10, capturedAt: Date.now(), isPlaying: true, playbackRate: 2 };
 ctx.tauriCall = async () => ({ ...ctx.systemMedia, positionSeconds: 80, capturedAt: Date.now() });
 await ctx.readAndApplySystemMediaSnapshot();

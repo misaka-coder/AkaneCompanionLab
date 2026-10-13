@@ -2,6 +2,8 @@ import {
   getInstanceStorageItem,
   setInstanceStorageItem
 } from "./instance-storage.js";
+import { normalizeRestingEmotions } from "./resting-expression.js";
+import { normalizeIdleBlink } from "./portrait-idle-animation.js";
 
 const characterProfileModules = import.meta.glob(
   "../../desktop_pet_creator_kit/characters/*/character.json",
@@ -157,25 +159,15 @@ const staticCharacterPacks = buildCharacterPackRegistry();
 let characterPacks = [...staticCharacterPacks];
 let activeCharacterPackId = resolveCharacterPack("").packId;
 
-export const CHARACTER_PROFILE_SOURCE = getActiveCharacterPack().source;
-export const CHARACTER_PROFILE = getActiveCharacterProfile();
-export const CHARACTER_ID = CHARACTER_PROFILE.identity.id;
+const CHARACTER_PROFILE = getActiveCharacterProfile();
 export const CHARACTER_NAME = CHARACTER_PROFILE.identity.name;
 export const APP_DISPLAY_NAME = CHARACTER_PROFILE.identity.appName;
-export const USER_TITLE = CHARACTER_PROFILE.identity.userTitle;
 export const DEFAULT_OUTFIT = CHARACTER_PROFILE.appearance.defaultOutfit;
 export const DEFAULT_EMOTION = CHARACTER_PROFILE.appearance.defaultEmotion;
 export const MUSIC_EMOTION = CHARACTER_PROFILE.appearance.musicEmotion;
-export const REQUIRED_EMOTIONS = CHARACTER_PROFILE.appearance.requiredEmotions;
 export const RECOMMENDED_EMOTIONS = CHARACTER_PROFILE.appearance.recommendedEmotions;
 export const COMMON_EMOTION_CANDIDATES = CHARACTER_PROFILE.emotionAliases;
 export const LOCAL_CLICK_LINES = CHARACTER_PROFILE.dialogue.localClickLines;
-export const PROACTIVE_WAKE_PROMPT = CHARACTER_PROFILE.dialogue.proactiveWakePrompt;
-export const INPUT_PLACEHOLDER = CHARACTER_PROFILE.dialogue.inputPlaceholder;
-export const SESSION_DISPLAY_TITLE = CHARACTER_PROFILE.dialogue.sessionDisplayTitle;
-export const TTS_TEST_TEXT = CHARACTER_PROFILE.dialogue.ttsTestText;
-export const CHARACTER_ASSET_ROOT = CHARACTER_PROFILE.assets.assetRoot;
-export const CHARACTER_PORTRAIT_GLOB = CHARACTER_PROFILE.assets.portraitGlob;
 
 export function getActiveCharacterPack() {
   return resolveCharacterPack(activeCharacterPackId);
@@ -189,28 +181,8 @@ export function getActiveCharacterProfile() {
   return getActiveCharacterPack().profile;
 }
 
-export function getActiveCharacterIdentity() {
-  return getActiveCharacterProfile().identity;
-}
-
-export function getActiveCharacterAppearance() {
-  return getActiveCharacterProfile().appearance;
-}
-
-export function getActiveCharacterDialogue() {
-  return getActiveCharacterProfile().dialogue;
-}
-
-export function getActiveCharacterAssets() {
-  return getActiveCharacterProfile().assets;
-}
-
 export function getActiveCharacterText(key, fallback = "") {
   return String(getActiveCharacterProfile()?.dialogue?.[key] || fallback || "").trim();
-}
-
-export function getActiveCharacterAppearanceValue(key, fallback = "") {
-  return String(getActiveCharacterProfile()?.appearance?.[key] || fallback || "").trim();
 }
 
 export function selectCharacterPack(value, { persist = true } = {}) {
@@ -414,6 +386,8 @@ function normalizeCharacterProfile(value) {
       defaultOutfit,
       defaultEmotion,
       musicEmotion: cleanText(appearance.music_emotion, fallback.appearance.music_emotion),
+      restingEmotions: normalizeRestingEmotions(appearance.resting_emotions),
+      idleBlink: normalizeIdleBlink(appearance.idle_blink),
       requiredEmotions: cleanStringArray(appearance.required_emotions, [defaultEmotion]),
       recommendedEmotions: cleanStringArray(
         appearance.recommended_emotions,

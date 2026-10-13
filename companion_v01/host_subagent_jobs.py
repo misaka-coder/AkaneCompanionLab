@@ -1,4 +1,4 @@
-"""Durable one-shot subagent jobs using the shared Host Job authority."""
+"""Durable child executions using the shared Host Job authority."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import logging
 import threading
 import uuid
+import re
 from typing import Any, Callable
 
 from .host_jobs import HostJob, HostJobOwner, HostJobStore
@@ -22,7 +23,7 @@ logger = logging.getLogger("akane.host_subagent_jobs")
 
 
 class HostSubagentJobRuntime:
-    """Persist and execute one-shot children without another task state machine."""
+    """Persist child runs and reuse their history without another state machine."""
 
     def __init__(
         self,
@@ -33,6 +34,8 @@ class HostSubagentJobRuntime:
         background_tasks: Any,
         completion_publisher: Callable[[HostJob], Any] | None = None,
         task_controller: Callable[[str, str], dict[str, Any]] | None = None,
+        completion_work: Any = None,
+        memory_deleter: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.store = store
         self.providers = providers
@@ -40,6 +43,8 @@ class HostSubagentJobRuntime:
         self.background_tasks = background_tasks
         self.completion_publisher = completion_publisher
         self.task_controller = task_controller
+        self.completion_work = completion_work
+        self.memory_deleter = memory_deleter
         self._scheduled: set[str] = set()
         self._lock = threading.RLock()
         self._shutdown = threading.Event()
@@ -64,9 +69,41 @@ class HostSubagentJobRuntime:
         turn_id: str = "",
         tool_call_id: str = "",
         idempotency_key: str = "",
+        agent_id: str = "",
     ) -> dict[str, Any]:
         stable_key = str(idempotency_key or tool_call_id or f"subagent:{uuid.uuid4().hex}")
-        child_session_id = _child_session_id(owner, stable_key)
+        if not isinstance(task, str) or not task.strip() or len(task) > 24000 or "\x00" in task:
+            return {"ok": False, "reason": "subagent_task_invalid"}
+        child_session_id = str(agent_id or _child_session_id(owner, stable_key))
+        if agent_id:
+            if not re.fullmatch(r"subagent_[a-f0-9]{32}", agent_id):
+                return {"ok": False, "reason": "subagent_id_invalid"}
+            prior = self.store.subagent_record(agent_id, owner=owner, character_pack_id=character_pack_id,
+                channel=channel, actor_id=(execution_context or {}).get("actor_stable_id", ""))
+            if not prior:
+                return {"ok": False, "reason": "subagent_not_found"}
+            if prior["deleted"] or prior["deleting"]:
+                return {"ok": False, "reason": "subagent_deleted"}
+            previous = prior["job"]
+            receipt = self.store.subagent_input_receipt(agent_id, stable_key, owner=owner)
+            if receipt:
+                if receipt["task"] != task:
+                    return {"ok": False, "reason": "subagent_input_idempotency_collision"}
+                return {"ok": True, "status": "steered", "duplicate": True, "job_id": receipt["job_id"],
+                        "child_session_id": agent_id, "agent_id": agent_id, "job_status": previous.status,
+                        "control_state": previous.control_state}
+            if previous.status in {"queued", "running", "paused"}:
+                if previous.payload.get("working_directory") != working_directory:
+                    return {"ok": False, "reason": "subagent_workspace_changed"}
+                admitted = self.store.append_subagent_input(previous.job_id, owner=owner,
+                    source_id=stable_key, task=task)
+                if admitted.get("ok"):
+                    return {**admitted, "status": "steered", "job_id": previous.job_id,
+                            "agent_id": agent_id, "child_session_id": agent_id, "job_status": previous.status,
+                            "control_state": previous.control_state}
+                # It may have closed between the read and mailbox admission.
+                if admitted.get("reason") != "subagent_execution_finished":
+                    return admitted
         request = SubagentStartRequest(
             task=str(task or ""),
             child_session_id=child_session_id,
@@ -109,6 +146,11 @@ class HostSubagentJobRuntime:
                 "reason": str(created.get("reason") or "subagent_job_create_failed"),
             }
         job_id = str(created.get("job_id") or "")
+        if self.completion_work is not None and self.completion_work.current(owner=owner,
+            character_pack_id=character_pack_id, channel=channel, turn_id=turn_id) is not None:
+            admitted = self.store.get(job_id, owner=owner)
+            if admitted is not None:
+                self.completion_work.track(admitted, wait=False)
         existing = created.get("job") if isinstance(created.get("job"), HostJob) else None
         existing_status = str(getattr(existing, "status", "") or "")
         if created.get("status") != "duplicate" or existing_status == "queued":
@@ -130,6 +172,7 @@ class HostSubagentJobRuntime:
             "job_status": existing_status or "queued",
             "control_state": str(getattr(existing, "control_state", "") or ("paused" if existing_status == "paused" else "running")).strip().lower(),
             "child_session_id": str((existing.payload if existing else payload).get("child_session_id") or ""),
+            "agent_id": child_session_id,
             "duplicate": created.get("status") == "duplicate",
         }
 
@@ -139,6 +182,26 @@ class HostSubagentJobRuntime:
             if self._schedule(job_id):
                 scheduled += 1
         return scheduled
+
+    def delete(self, agent_id: str, *, owner: HostJobOwner, character_pack_id: str = "",
+               channel: str = "", actor_id: str = "") -> dict[str, Any]:
+        if self.memory_deleter is None:
+            return {"ok": False, "reason": "subagent_memory_delete_unavailable"}
+        started = self.store.begin_subagent_deletion(agent_id, owner=owner, character_pack_id=character_pack_id,
+                                                     channel=channel, actor_id=actor_id)
+        if not started.get("ok") or started.get("status") == "deleted":
+            return started
+        ids = self.store.subagent_delete_ids(agent_id, owner=owner)
+        try:
+            deleted = self.memory_deleter(agent_id, retry_source_ids=ids)
+        except Exception:
+            return {"ok": False, "status": "partial", "reason": "subagent_memory_delete_failed"}
+        if deleted.get("retry_source_ids"):
+            self.store.subagent_delete_ids(agent_id, owner=owner, source_ids=deleted["retry_source_ids"])
+        if deleted.get("ok"):
+            self.store.finish_subagent_deletion(agent_id, owner=owner)
+            self.store.subagent_delete_ids(agent_id, owner=owner, source_ids=[])
+        return {key: value for key, value in deleted.items() if key != "retry_source_ids"}
 
     def control(self, job_id: str, *, owner: HostJobOwner, action: str) -> dict[str, Any]:
         """Control a child through its live TaskWork and durable job record."""
@@ -196,13 +259,15 @@ class HostSubagentJobRuntime:
     def _run(self, job_id: str) -> None:
         claim_token = ""
         job: HostJob | None = None
+        heartbeat_stop = threading.Event()
+        heartbeat = None
         try:
             if self._shutdown.is_set():
                 return
             claim = self.store.claim(
                 job_id,
                 worker_id=f"subagent:{threading.get_ident()}",
-                lease_seconds=3600,
+                lease_seconds=300,
             )
             if not claim.get("ok"):
                 return
@@ -211,6 +276,15 @@ class HostSubagentJobRuntime:
             if job is None or job.capability_source != HOST_SUBAGENT_JOB_SOURCE:
                 raise RuntimeError("subagent_job_record_invalid")
             request = _request_from_job(job)
+            def renew():
+                while not heartbeat_stop.wait(30):
+                    try:
+                        if not self.store.renew_claim(job_id, claim_token=claim_token):
+                            break
+                    except Exception:
+                        logger.warning("subagent lease renewal failed: %s", job_id)
+            heartbeat = threading.Thread(target=renew, name="subagent-lease", daemon=True)
+            heartbeat.start()
             result = self.providers.execute(
                 self.provider_name,
                 request,
@@ -235,20 +309,25 @@ class HostSubagentJobRuntime:
                         self._publish(terminal)
             logger.exception("host subagent job failed: %s", job_id)
         finally:
+            heartbeat_stop.set()
+            if heartbeat is not None:
+                heartbeat.join(timeout=1)
             with self._lock:
                 self._scheduled.discard(job_id)
 
     def _settle(self, job: HostJob, *, claim_token: str, result: SubagentRunResult) -> bool:
+        facts = {"agent_id": result.child_session_id, "model": result.model, "usage": dict(result.usage)}
         if result.status == "succeeded":
             settled = self.store.succeed(
                 job.job_id,
                 claim_token=claim_token,
                 result_summary=result.summary,
                 artifacts=result.artifacts,
+                result=facts,
             )
         elif result.status == "cancelled":
             settled = self.store.confirm_cancelled(job.job_id, claim_token=claim_token,
-                                                   result_summary=result.summary, artifacts=result.artifacts)
+                                                   result_summary=result.summary, artifacts=result.artifacts, result=facts)
         else:
             settled = self.store.fail(
                 job.job_id,
@@ -257,6 +336,7 @@ class HostSubagentJobRuntime:
                 retryable=False,
                 result_summary=result.summary,
                 artifacts=result.artifacts,
+                result=facts,
             )
         return bool(settled.get("ok"))
 
@@ -321,6 +401,7 @@ def _request_from_job(job: HostJob) -> SubagentStartRequest:
         model=str(payload.get("model") or ""),
         reasoning_effort=str(payload.get("reasoning_effort") or ""),
         execution_context=dict(payload.get("execution_context") or {}),
+        run_id=job.job_id,
     )
 
 

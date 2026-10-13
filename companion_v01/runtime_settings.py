@@ -74,6 +74,7 @@ class BotSettingsView:
     llm_aux_reasoning_effort: str = ""
     llm_chat_reasoning_effort: str = ""
     llm_chat_max_output_tokens: int = 0
+    subagent: Any = field(default=None, repr=False)
 
     # Voice/runtime settings.  These belong to a BotRuntime rather than the
     # process-wide config module so multiple Bots can use different voices and
@@ -111,7 +112,6 @@ class BotSettingsView:
     fun_asr_max_sentence_silence: int = 800
     fun_asr_vocabulary_id: str = ""
     qq_tts_profile_user_id: str = "master"
-    qq_voice_max_text_chars: int = 280
     qq_voice_max_segments: int = 3
 
     @classmethod
@@ -245,7 +245,6 @@ class BotSettingsView:
                 getattr(config_module, "QQ_TTS_PROFILE_USER_ID", "")
                 or getattr(config_module, "WEB_OWNER_PROFILE_USER_ID", "master")
             ),
-            qq_voice_max_text_chars=max(20, min(1200, int(getattr(config_module, "QQ_VOICE_MAX_TEXT_CHARS", 280) or 280))),
             qq_voice_max_segments=max(1, min(10, int(getattr(config_module, "QQ_VOICE_MAX_SEGMENTS", 3) or 3))),
         )
 
@@ -325,7 +324,6 @@ class BotSettingsView:
             "fun_asr_max_sentence_silence",
             "fun_asr_vocabulary_id",
             "qq_tts_profile_user_id",
-            "qq_voice_max_text_chars",
             "qq_voice_max_segments",
         }
         unknown = sorted(str(key) for key in overrides if key not in allowed)
@@ -354,19 +352,17 @@ class BotSettingsView:
         image_generation_api_key = _text(getattr(model_settings, "image_generation_api_key", ""))
         image_generation_base_url = _text(getattr(model_settings, "image_generation_base_url", ""))
         image_generation_model = _text(getattr(model_settings, "image_generation_model", "")) or "gpt-image-2"
-        vision_model = _text(getattr(model_settings, "vision_model", "")) or model
+        vision_model = _text(getattr(model_settings, "vision_model", ""))
         # 独立视觉 provider：当 chat 与 vision 走不同服务商时（例如聊天用
         # DeepSeek、看图用 Gemini），视觉路由使用自己的 key/base_url/protocol，
-        # 不再复用 chat 的 provider。仅当三项 + 模型都填齐时才视为独立配置。
+        # 不再复用 chat 的 provider。新配置遵循显式开关；旧配置从完整路由推断。
         vision_api_key = _text(getattr(model_settings, "vision_api_key", ""))
         vision_base_url = _text(getattr(model_settings, "vision_base_url", ""))
         vision_api_protocol = _text(getattr(model_settings, "vision_api_protocol", ""))
-        standalone_vision = bool(
-            use_for_vision
-            and vision_api_key
-            and vision_base_url
-            and vision_model
-        )
+        standalone_vision = use_for_vision and bool(getattr(
+            model_settings, "uses_standalone_vision",
+            vision_base_url and vision_model and (vision_api_key or vision_api_protocol == "ollama"),
+        ))
         chat_reasoning_effort = normalize_reasoning_effort(
             getattr(model_settings, "chat_reasoning_effort", "")
         )
@@ -376,6 +372,7 @@ class BotSettingsView:
         )
         return replace(
             self,
+            subagent=getattr(model_settings, "subagent", None),
             text_api_key=api_key,
             text_base_url=base_url,
             text_model_name=model,
@@ -390,13 +387,15 @@ class BotSettingsView:
             chat_api_protocol=protocol,
             vision_api_key=vision_api_key if standalone_vision else (api_key if use_for_vision else ""),
             vision_base_url=vision_base_url if standalone_vision else (base_url if use_for_vision else ""),
-            vision_model_name=vision_model if use_for_vision else "",
+            vision_model_name=(vision_model if standalone_vision else (vision_model or model)) if use_for_vision else "",
             vision_api_protocol=(vision_api_protocol or protocol) if standalone_vision else protocol,
+            vision_enabled=use_for_vision,
             image_generation_enabled=use_for_image_generation,
             image_generation_api_key=image_generation_api_key,
             image_generation_base_url=image_generation_base_url,
             image_generation_model=image_generation_model,
             llm_chat_reasoning_effort=chat_reasoning_effort,
+            llm_thinking_mode=normalize_thinking_mode(getattr(model_settings, "chat_thinking_mode", "")) or self.llm_thinking_mode,
             llm_chat_max_output_tokens=chat_max_output_tokens,
         )
 
@@ -503,7 +502,6 @@ class BotSettingsView:
             },
             "qq_voice": {
                 "profile_user_id": self.qq_tts_profile_user_id,
-                "max_text_chars": self.qq_voice_max_text_chars,
                 "max_segments": self.qq_voice_max_segments,
             },
         }
@@ -552,7 +550,6 @@ def _overlay_value(key: str, value: Any) -> Any:
         "llm_context_window",
         "llm_auto_compact_token_limit",
         "llm_chat_max_output_tokens",
-        "qq_voice_max_text_chars",
         "qq_voice_max_segments",
         "gpt_sovits_batch_size",
         "fun_asr_sample_rate",
@@ -563,8 +560,6 @@ def _overlay_value(key: str, value: Any) -> Any:
         parsed = int(value)
         if key == "vision_max_image_bytes":
             return max(128 * 1024, parsed)
-        if key == "qq_voice_max_text_chars":
-            return max(20, min(1200, parsed))
         if key == "qq_voice_max_segments":
             return max(1, min(10, parsed))
         if key == "fun_asr_sample_rate":

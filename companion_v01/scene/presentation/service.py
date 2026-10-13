@@ -92,6 +92,7 @@ class PresentationService:
                 care = snapshot.care
                 feed_pack = format_care_feed_prompt(
                     item_name=item_name,
+                    item_description=item.description if item else "",
                     hunger_delta=effects.get("hunger", 0),
                     energy_delta=effects.get("energy", 0),
                     affection_delta=effects.get("affection", 0),

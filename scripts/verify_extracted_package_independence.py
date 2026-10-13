@@ -21,7 +21,7 @@ def _venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def verify(wheelhouse: Path) -> None:
+def verify(wheelhouse: Path, *, profile: str = "full") -> None:
     wheelhouse = wheelhouse.resolve()
     manifest_path = wheelhouse / "akane-package-wheelhouse.json"
     if not manifest_path.is_file():
@@ -29,6 +29,8 @@ def verify(wheelhouse: Path) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not bool(manifest.get("runtime_dependencies_downloaded")):
         raise RuntimeError("wheelhouse_runtime_dependency_closure_missing")
+    if profile == "full" and manifest.get("profile", "full") != "full":
+        raise RuntimeError("wheelhouse_full_profile_required")
 
     clean_env = dict(os.environ)
     clean_env.pop("PYTHONPATH", None)
@@ -50,7 +52,7 @@ def verify(wheelhouse: Path) -> None:
                 "--find-links",
                 str(wheelhouse),
                 "-r",
-                str(ROOT / "requirements.txt"),
+                str(ROOT / ("requirements-backend.txt" if profile == "backend" else "requirements.txt")),
             ],
             cwd=temp_root,
             env=clean_env,
@@ -68,9 +70,10 @@ def main() -> int:
         description="Install Akane-owned wheels into a source-blind empty venv and run composition smokes.",
     )
     parser.add_argument("--wheelhouse", type=Path, default=ROOT / "package_wheels")
+    parser.add_argument("--profile", choices=("full", "backend"), default="full")
     args = parser.parse_args()
     try:
-        verify(args.wheelhouse)
+        verify(args.wheelhouse, profile=args.profile)
     except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         print(f"AKANE_PACKAGE_INDEPENDENCE_FAILED:{exc}")
         return 1

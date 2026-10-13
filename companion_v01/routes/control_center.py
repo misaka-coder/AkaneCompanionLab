@@ -42,68 +42,6 @@ def build_control_center_router(
     runtime_providers = dict(snapshot_runtime_providers or {})
     write_auth = admin_auth or AdminWriteAuth.local_compatibility()
 
-    @router.get("/control-center/actions")
-    async def describe_control_center_actions() -> JSONResponse:
-        return JSONResponse(
-            {
-                "ok": True,
-                "status": "available",
-                "contractVersion": 1,
-                "actionsEndpoint": "/control-center/actions/{actionId}",
-                "execution": "not-implemented",
-                "defaultResult": {
-                    "ok": False,
-                    "status": "not-implemented",
-                    "refresh": False,
-                },
-            },
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @router.post("/control-center/actions/{action_id}")
-    async def run_control_center_action(action_id: str, request: Request) -> JSONResponse:
-        authorization = write_auth.authorize(request)
-        if not authorization.ok:
-            return JSONResponse(
-                {"ok": False, "status": "forbidden", "reason": authorization.reason},
-                status_code=authorization.status_code,
-                headers={"Cache-Control": "no-store"},
-            )
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
-
-        if not isinstance(payload, dict):
-            payload = {}
-
-        if runtime_metrics is not None:
-            try:
-                runtime_metrics.observe_request(f"control_center.action.{action_id}", duration_ms=0, ok=False)
-            except Exception:
-                pass
-
-        if log_event is not None:
-            try:
-                log_event(
-                    "control_center_action",
-                    action_id=action_id,
-                    status="not-implemented",
-                    payload_keys=sorted(str(key) for key in payload.keys()),
-                )
-            except Exception:
-                pass
-
-        return JSONResponse(
-            {
-                "ok": False,
-                "status": "not-implemented",
-                "actionId": action_id,
-                "refresh": False,
-            },
-            headers={"Cache-Control": "no-store"},
-        )
-
     @router.get("/control-center/snapshot")
     async def read_control_center_snapshot(request: Request) -> JSONResponse:
         started_at = time.perf_counter()
@@ -148,7 +86,10 @@ def build_control_center_router(
             )
         from ..settings_catalog import build_settings_catalog
 
-        catalog = build_settings_catalog()
+        from ..settings_overrides import load_saved_overrides
+        saved = load_saved_overrides(settings_override_store) if settings_override_store is not None else None
+        catalog = (build_settings_catalog(saved_overrides=saved) if config_module is None
+                   else build_settings_catalog(config_module, saved_overrides=saved))
         _observe_request(runtime_metrics, "control_center.settings_catalog", started_at, True)
         _log_best_effort(
             log_event,
@@ -210,8 +151,12 @@ def build_control_center_router(
             )
         _observe_request(runtime_metrics, "control_center.settings_update", started_at, True)
         _log_best_effort(log_event, "control_center_settings_update", key=key)
+        from ..settings_catalog import is_restart_editable
+        restart = is_restart_editable(key)
+        current = getattr(config_module, key, None)
         return JSONResponse(
-            {"ok": True, "status": "applied", "key": key, "value": applied},
+            {"ok": True, "status": "saved" if restart else "applied", "key": key, "value": applied,
+             "current": current, "desired": applied, "pendingRestart": restart and current != applied},
             headers={"Cache-Control": "no-store"},
         )
 

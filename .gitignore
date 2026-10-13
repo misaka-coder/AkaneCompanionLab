@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.backend.example
 /bots.toml
 /secrets/
 
@@ -30,6 +31,9 @@ package_artifacts/
 /dist/
 /examples/plugins/akane_sdk_*/build/
 /plugins/*/build/
+
+# Package-manager dependencies, including retired local clients
+node_modules/
 
 # Runtime data, memories, generated files, and local user assets
 users_data/
@@ -104,6 +108,8 @@ tmp_*.wav
 .claude/settings.local.json
 models/
 downloads/
+local_tools/
+tools/
 
 # Local diagnostic/recovery archives
 qq-tool-fix-*.tar
@@ -125,3 +131,14 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+.vite/
+
+# Local temporary tasks / scratch
+build_docx.py
+inspect_docx.py
+inspect_order.py
+ocr_footer.py
+ocr_verify.py
+qqimg_*
+out/
+output/

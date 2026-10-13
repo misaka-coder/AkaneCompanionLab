@@ -2,13 +2,10 @@
 // Native OS opening is a transport double; this does not claim audible playback.
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import vm from "node:vm";
+import vm, { petRuntimeSource, petFunctionSource, petFunctions } from "./pet-production-functions.mjs";
 
 const event = JSON.parse(fs.readFileSync(0, "utf8"));
-const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-const start = source.indexOf("async function handleDesktopFileDeliveryEvent(event)");
-const end = source.indexOf("function normalizeSegments(value)", start);
-assert(start >= 0 && end > start);
+const source = petRuntimeSource();
 const calls = [], statuses = [], bubbles = [];
 let refreshes = 0, nativeResult = {};
 const scope = vm.createContext({
@@ -20,7 +17,7 @@ const scope = vm.createContext({
   setRuntimeStatus: (...args) => statuses.push(args),
   showBubbleText: (...args) => bubbles.push(args),
 });
-vm.runInContext(source.slice(start, end), scope);
+vm.runInContext(petFunctionSource("handleDesktopFileDeliveryEvent"), scope);
 await scope.handleDesktopFileDeliveryEvent({ ...event, send_to_user: false });
 assert.equal(refreshes, 0);
 assert.equal(calls.length, 0);

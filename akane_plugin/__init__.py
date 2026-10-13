@@ -15,7 +15,7 @@ from .tasks import TaskContext, TaskHandle, TaskReceipt
 from .events import Event, EventInput, EventSubscription, EventDelivery, EventReceipt, EventBinding, Events, EventContext
 from .timeline import TimelineContext, TimelineReceipt
 
-__version__ = "0.14.0"
+__version__ = "0.14.2"
 
 __all__ = [
     *_contracts_all,

@@ -335,11 +335,16 @@ class AkaneVoiceSemanticPulseCommandExecutor:
             text_result = self.text_artifacts.read_text(str(raw_unit.get("text_artifact_ref") or ""))
             if not bool(getattr(text_result, "ok", False)):
                 return {"ok": False, "reason": "voice_semantic_text_artifact_unavailable"}
+            try:
+                from .speech_artifact import decode_speech_artifact
+                spoken_text = decode_speech_artifact(text_result)["say"]
+            except (ValueError, TypeError):
+                return {"ok": False, "reason": "voice_semantic_text_artifact_invalid"}
             rendered_units.append(
                 {
                     "ordinal": int(raw_unit.get("ordinal") or 0),
                     "state": state,
-                    "text": str(getattr(text_result, "text", "") or ""),
+                    "text": spoken_text,
                     "played_ms": int(raw_unit.get("played_ms") or 0),
                     "current": str(unit_id) == job.speech_unit_id,
                 }

@@ -1,17 +1,13 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import vm from "node:vm";
+import vm, { petRuntimeSource, petFunctionSource, petFunctions } from "./pet-production-functions.mjs";
 import { normalizeScreenObservationSettings } from "../src/screen-observation.js";
 import { CONTROL_CENTER_ACTIONS } from "../src/control-center/action-router.js";
 import { createControlCenterViewModel } from "../src/control-center-v2/view-model.js";
 import { renderPerception } from "../src/control-center-v2/components/perception.js";
 
-const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-function production(name) {
-  const match = source.match(new RegExp(`^(?:async )?function\\*? ${name}\\([^]*?^}`, "m"));
-  assert.ok(match, `production function ${name} exists`);
-  return match[0];
-}
+const source = petRuntimeSource();
+const production = petFunctionSource;
 
 // Real state migration and save payload: old preferences cannot return on restart.
 const context = {
@@ -64,6 +60,7 @@ const frames = [{ captured_at: 123, data_url: "data:image/jpeg;base64,synthetic"
 Object.assign(context, {
   AbortController, window: { setTimeout: () => 1, clearTimeout() {} }, THINK_TIMEOUT_MS: 1000,
   thinkController: null, markTurnLatency() {}, hydrateSystemMediaLyricsForTurn: async () => ({}),
+  refreshSystemMediaSnapshot: async () => ({}),
   shouldWaitForSystemMediaLyricsForTurn: () => false, isTurnActive: () => true,
   screenObservationScope: () => "test-scope", screenObservation: { revision: 1, snapshot: () => frames },
   packScreenObservation: async value => value,

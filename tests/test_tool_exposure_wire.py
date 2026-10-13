@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from contextlib import ExitStack
+from types import SimpleNamespace
 import json
 import hashlib
 import os
@@ -21,6 +22,7 @@ import requests
 
 import config
 from companion_v01.client_protocol import ClientProtocolContext, ClientMode, default_capabilities_for_mode
+from companion_v01.desktop_context_engine import build_desktop_care_prompt
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.engine_services import response_builder
 from companion_v01.engine_services.tool_rounds import resolve_capability_selection
@@ -33,7 +35,7 @@ from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD
 from services.llm_client import AnthropicCompatClient
 from tests.test_capability_exposure import CountingTool
-from tests.test_memcore_integration import _FakeLLM, _FakeEmbeddingProvider, _PromptContextEngine
+from tests.test_memcore_integration import _FakeEmbeddingProvider, _PromptContextEngine
 
 
 class WireEngine(_PromptContextEngine, AkaneMemoryEngine):
@@ -173,12 +175,12 @@ class ToolExposureWireTests(unittest.TestCase):
         self.turn = opened["turn_id"]
         self.state = {"current_user_source_id": self.source}
 
-    def request(self, action=None, stream=False):
+    def request(self, action=None, stream=False, extra_context=""):
         prepared = response_builder.prepare_context(self.engine, **self.scope,
             user_message=self.text, current_user_source_id=self.source, recent_raw=[],
             recent_episodic_summaries=[], recent_semantic_summaries=[], confirmed_snippets=[],
             now_ts=100, client_context=self.client_context, enable_native_tools=True,
-            request_projection_state=self.state)
+            request_projection_state=self.state, extra_user_context=extra_context)
         self.assertNotIn("memcore_projection_failure", prepared, prepared)
         observer = self.engine._build_memcore_request_observer(generation_context=prepared,
             request_projection_state=self.state, **self.scope)
@@ -322,6 +324,71 @@ class ToolExposureWireTests(unittest.TestCase):
                 else '{"speech":"Done"}')}, **self.scope)
         self.assertTrue(finished["ok"], finished)
 
+    def _execution_context_prefix(self, protocol, stream):
+        host = {"platform": "windows", "command_shell": "pwsh", "preferred_script_shell": "pwsh",
+                "host_access": {"filesystem": "host_user_permissions", "absolute_cwd": "supported",
+                                "credential_env_refs": {"GITHUB_TOKEN": "missing"}}}
+        coordinates = {"working_directory": "F:/Projects/first", "project": "First", "workspace_id": "proj_first"}
+        handler = CountingTool("exec_run")
+        handler.execution_provider = SimpleNamespace(prompt_environment=lambda: host)
+        handler.working_directory_context = lambda **_kwargs: coordinates
+        self.engine.tool_handlers["exec_run"] = handler
+        self.provider(protocol)
+        self.begin(1)
+        first_care = build_desktop_care_prompt({"hunger": 9, "energy": 18, "affection": 62}, self.client_context)
+        first_context, first = self.request(stream=stream, extra_context=first_care)
+        self.finish()
+        self.begin(2)
+        coordinates.update(working_directory="F:/Projects/second", project="Second", workspace_id="proj_second")
+        host["host_access"]["credential_env_refs"]["GITHUB_TOKEN"] = "configured"
+        second_care = build_desktop_care_prompt({"hunger": 75, "energy": 81, "affection": 72}, self.client_context)
+        second_context, second = self.request(stream=stream, extra_context=second_care)
+        self.assertEqual(first["tools"], second["tools"])
+        self.assertEqual(self.partitions(first)[1], self.partitions(second)[1])
+        # The first tail is not persisted. Its current user and every earlier
+        # provider message survive unchanged before the new answer and input.
+        prefix = first["messages"][:-1]
+        self.assertEqual(prefix, second["messages"][:len(prefix)])
+        for context, path, vitals, credential in (
+            (first_context, "F:/Projects/first", first_care, "GITHUB_TOKEN=missing"),
+            (second_context, "F:/Projects/second", second_care, "GITHUB_TOKEN=configured"),
+        ):
+            tail = "\n".join(turn["content"] for turn in context["ephemeral_turns"])
+            stable = "\n".join(context["system_extra_blocks"])
+            self.assertIn("platform: windows", stable)
+            self.assertIn("shell: pwsh", stable)
+            self.assertNotIn("F:/Projects/", stable)
+            self.assertNotIn("GITHUB_TOKEN", stable)
+            self.assertIn(path, tail)
+            self.assertIn(vitals, tail)
+            self.assertIn(credential, tail)
+            self.assertNotIn("platform:", tail)
+            self.assertNotIn("shell:", tail)
+            self.assertNotIn("exec_cancel(run_id)", tail)
+            self.assertNotIn("【本轮直接工具入口】", str(context["history_turns"]))
+        self.assertNotIn("F:/Projects/first", str(second["messages"]))
+        self.assertNotIn(first_care, str(second["messages"]))
+        # A rare real host change takes effect immediately, rather than being
+        # hidden behind a snapshot that waits for conversation compaction.
+        host["command_shell"] = "powershell.exe"
+        host["preferred_script_shell"] = "powershell.exe"
+        _, changed_host = self.request(stream=stream, extra_context=second_care)
+        self.assertNotEqual(self.partitions(second)[1], self.partitions(changed_host)[1])
+        self.assertIn("shell: powershell.exe", str(self.partitions(changed_host)[1]))
+        self.assertEqual(second["tools"], changed_host["tools"])
+
+    def test_openai_execution_coordinates_and_care_preserve_prefix(self):
+        self._execution_context_prefix("openai", False)
+
+    def test_openai_stream_execution_coordinates_and_care_preserve_prefix(self):
+        self._execution_context_prefix("openai", True)
+
+    def test_anthropic_execution_coordinates_and_care_preserve_prefix(self):
+        self._execution_context_prefix("anthropic", False)
+
+    def test_anthropic_stream_execution_coordinates_and_care_preserve_prefix(self):
+        self._execution_context_prefix("anthropic", True)
+
     def test_openai_updates_and_tool_pairs_stay_in_published_order(self):
         self.provider("openai")
         self.begin(1)
@@ -338,8 +405,9 @@ class ToolExposureWireTests(unittest.TestCase):
         self.assertEqual(first["tools"], removed["tools"])
         updates = [m for m in removed["messages"] if "【能力目录更新】" in str(m.get("content", ""))]
         self.assertEqual(len(updates), 2)
-        self.assertIn("当前可加载", updates[0]["content"])
-        self.assertIn("当前不可用", updates[1]["content"])
+        self.assertIn("demo.beta：新增", updates[0]["content"])
+        self.assertIn("demo.beta：已退出", updates[1]["content"])
+        self.assertNotIn("demo.alpha", str(updates))
         for left, right in zip((first, loaded, changed, after), (loaded, changed, after, removed)):
             self.assertEqual(left["messages"], right["messages"][:len(left["messages"])])
         self.finish()
@@ -447,6 +515,58 @@ class ToolExposureWireTests(unittest.TestCase):
     def test_openai_real_compaction_without_changes_preserves_tools_system(self):
         self.boundary("unchanged", "openai")
 
+    def _assert_native_deactivation_during_compaction(self, *, provider_unsupported, failed_compaction=False):
+        self.provider("openai")
+        supports_native = {"value": True}
+        original_summary = self.summary.call_memcore_json
+
+        def deactivate(**kwargs):
+            if provider_unsupported:
+                supports_native["value"] = False
+            else:
+                self.stack.enter_context(patch.object(config, "ENABLE_NATIVE_TOOL_DECISION", False))
+            if failed_compaction:
+                raise RuntimeError("controlled_summary_failure")
+            return original_summary(**kwargs)
+
+        with patch.object(self.engine.llm, "chat_supports_native_tools",
+                          side_effect=lambda **_kwargs: supports_native["value"]):
+            self.begin(1, "Completed material for compaction. " * 1300)
+            initial, before = self.request()
+            self.assertTrue(initial["native_tools"])
+            self.assertTrue(before["tools"])
+            generation = initial["tool_exposure_lifecycle"]["compaction_generation"]
+            self.finish()
+            self.begin(2)
+            with patch.object(self.summary, "call_memcore_json", side_effect=deactivate), \
+                    patch.object(config, "LLM_AUTO_COMPACT_TOKEN_LIMIT", 100), \
+                    patch.object(self.engine, "_build_tool_prompt_context_sections",
+                                 wraps=self.engine._build_tool_prompt_context_sections) as sections:
+                final, after = self.request()
+
+        self.assertTrue(final["prompt_budget"]["compact_attempted"])
+        if failed_compaction:
+            self.assertEqual(final["tool_exposure_lifecycle"]["compaction_generation"], generation)
+        else:
+            self.assertGreater(final["tool_exposure_lifecycle"]["compaction_generation"], generation)
+        self.assertEqual(final["native_tools"], [])
+        self.assertEqual(final["native_tool_choice"], "")
+        self.assertEqual(after.get("tools", []), [])
+        selection = final[TOOL_CAPABILITY_SELECTION_FIELD]
+        self.assertEqual(selection.native_tool_names, ())
+        self.assertEqual(selection.native_tool_aliases, {})
+        self.assertEqual(sections.call_args.kwargs["exclude_tool_types"], set())
+        self.assertTrue(sections.call_args.kwargs["include_capability_status"])
+
+    def test_compaction_provider_downgrade_removes_old_native_schema(self):
+        self._assert_native_deactivation_during_compaction(provider_unsupported=True)
+
+    def test_compaction_native_decision_disable_removes_old_native_schema(self):
+        self._assert_native_deactivation_during_compaction(provider_unsupported=False)
+
+    def test_failed_compaction_native_disable_refreshes_prompt_fallback(self):
+        self._assert_native_deactivation_during_compaction(provider_unsupported=False, failed_compaction=True)
+
     def test_openai_real_compaction_merges_pending_final_state(self):
         self.boundary("pending", "openai")
 
@@ -501,7 +621,7 @@ class ToolExposureWireTests(unittest.TestCase):
         self.compare("in-era",f"{stream}-install",after_load,installed,history_prefix=True)
         loaded, _ = self.execute_response()
         contract = json.loads(loaded.followup_context.split("\n",1)[1])["capabilities"][0]
-        self.request(action=("capability_invoke",{"capability_id":"demo.beta","contract_ref":contract["contract_ref"],
+        self.request(action=("capability_invoke",{"capability_id":"demo.beta",
                                                "arguments":{"text":"new tool"}}),stream=stream)
         called,_ = self.execute_response()
         self.assertEqual(called.followup_context,"new tool")
@@ -529,24 +649,24 @@ class ToolExposureWireTests(unittest.TestCase):
         self.assertEqual(old.tool_spec(),updated.tool_spec())
         self.engine.tool_handlers["demo.alpha"] = updated
         _, stale_request = self.request(action=("demo.alpha",{"text":"10"}),stream=stream)
-        rejected,_ = self.execute_response()
-        self.assertFalse(json.loads(rejected.followup_context)["executed"])
-        self.assertEqual(updated.calls,[])
+        accepted,_ = self.execute_response()
+        self.assertEqual(accepted.followup_context, "10")
+        self.assertEqual(len(updated.calls),1)
         _, rejection_result = self.request(action=("capability_load",{"capability_ids":["demo.alpha"]}),stream=stream)
         self.compare("in-era",f"{stream}-stale-native",stale_request,rejection_result,history_prefix=True)
         loaded,_ = self.execute_response()
         current = json.loads(loaded.followup_context.split("\n",1)[1])["capabilities"][0]
-        self.request(action=("capability_invoke",{"capability_id":"demo.alpha","contract_ref":current["contract_ref"],
+        self.request(action=("capability_invoke",{"capability_id":"demo.alpha",
                                                "arguments":{"text":"10"}}),stream=stream)
         result,_ = self.execute_response()
         self.assertEqual(result.followup_context,"10")
-        self.assertEqual(len(updated.calls),1)
+        self.assertEqual(len(updated.calls),2)
         _, recovered = self.request()
         self.compare("in-era",f"{stream}-recover",rejection_result,recovered,history_prefix=True)
         self.request(action=("demo.alpha",{"text":"10"}),stream=stream)
-        rejected,_ = self.execute_response()
-        self.assertFalse(json.loads(rejected.followup_context)["executed"])
-        self.assertEqual(len(updated.calls),1)
+        accepted,_ = self.execute_response()
+        self.assertEqual(accepted.followup_context, "10")
+        self.assertEqual(len(updated.calls),3)
         # An explicit exposure change republishes the current native contracts.
         saved = save_preferences(base_dir=self.root,profile_user_id=self.scope["profile_user_id"],payload={
             "revision":saved["preferences"]["revision"],"searchEnabled":False})
@@ -559,11 +679,10 @@ class ToolExposureWireTests(unittest.TestCase):
         self.assertNotIn("capability_search",final[TOOL_CAPABILITY_SELECTION_FIELD].schema_tool_names)
         result,_ = self.execute_response()
         self.assertEqual(result.followup_context,"10")
-        self.assertEqual(len(updated.calls),2)
+        self.assertEqual(len(updated.calls),4)
         self.compare("preference",f"{stream}-contract-recovery",recovered,wire,tools_equal=False,history_prefix=True)
 
     def plugin_rules(self, protocol, text_only):
-        from dataclasses import replace
         from companion_v01.client_protocol import ClientCapability
         self.provider(protocol)
         if text_only:

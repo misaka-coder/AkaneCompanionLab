@@ -23,6 +23,8 @@ EXPECTED_VERSION = "0.1.0"
 @dataclass(frozen=True)
 class PackageSpec:
     name: str
+    source_name: str = ""
+    import_name: str = ""
 
     @property
     def wheel_prefix(self) -> str:
@@ -31,7 +33,7 @@ class PackageSpec:
 
 PACKAGES: tuple[PackageSpec, ...] = (
     PackageSpec("capcore"),
-    PackageSpec("memcore"),
+    PackageSpec("memcore-kernel", source_name="memcore", import_name="memcore"),
     PackageSpec("voicecore"),
     PackageSpec("promptpack-core"),
     PackageSpec("charpack-core"),
@@ -63,7 +65,7 @@ def _load_project(path: Path) -> dict[str, object]:
 
 
 def _assert_source_manifest(spec: PackageSpec, source_root: Path, *, local_runtime: bool = False) -> Path:
-    package_root = source_root / spec.name
+    package_root = source_root / (spec.source_name or spec.name)
     pyproject = package_root / "pyproject.toml"
     if not pyproject.is_file():
         raise RuntimeError(f"{spec.name}:missing_pyproject")
@@ -89,7 +91,7 @@ def _assert_source_manifest(spec: PackageSpec, source_root: Path, *, local_runti
         # Local launch installs wheels, not source distributions or development examples.
         # Retain complete source-tree checks for the normal release build.
         if local_runtime and path.relative_to(package_root).parts[0] not in {
-            spec.wheel_prefix, "pyproject.toml", "README.md", "LICENSE", "MANIFEST.in"
+            spec.import_name or spec.wheel_prefix, "pyproject.toml", "README.md", "LICENSE", "MANIFEST.in"
         }:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore").lower().replace("\\\\", "\\")
@@ -150,7 +152,11 @@ def _sha256(path: Path) -> str:
 def build_wheelhouse(
     *, source_root: Path, output_dir: Path, download_runtime: bool, reuse_internal: bool = False,
     local_runtime: bool = False,
+    profile: str = "full",
+    no_build_isolation: bool = False,
 ) -> dict[str, object]:
+    if profile not in {"full", "backend"}:
+        raise ValueError("wheelhouse_profile_invalid")
     source_root = source_root.resolve()
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -164,8 +170,7 @@ def build_wheelhouse(
     for spec in PACKAGES:
         package_root = _assert_source_manifest(spec, source_root, local_runtime=local_runtime)
         if not reuse_internal:
-            _run(
-                [
+            build_command = [
                     sys.executable,
                     "-m",
                     "build",
@@ -174,13 +179,19 @@ def build_wheelhouse(
                     str(output_dir),
                     str(package_root),
                 ]
-            )
+            if no_build_isolation:
+                build_command.append("--no-isolation")
+            _run(build_command)
         wheel = _wheel_for(spec, output_dir)
         _assert_wheel_metadata(spec, wheel, source_root)
         built.append({"name": spec.name, "version": expected_package_version(spec.name), "file": wheel.name, "sha256": _sha256(wheel)})
 
     if download_runtime:
-        runtime_requirements = ROOT / "requirements-runtime.txt"
+        # Resolve internal wheel metadata and runtime requirements together.
+        # Downloading runtime requirements alone can select versions forbidden
+        # by an internal adapter, leaving an apparently complete offline bundle
+        # that cannot actually be installed.
+        runtime_requirements = ROOT / ("requirements-backend.txt" if profile == "backend" else "requirements.txt")
         _run(
             [
                 sys.executable,
@@ -189,6 +200,8 @@ def build_wheelhouse(
                 "download",
                 "--disable-pip-version-check",
                 "--dest",
+                str(output_dir),
+                "--find-links",
                 str(output_dir),
                 "-r",
                 str(runtime_requirements),
@@ -200,6 +213,7 @@ def build_wheelhouse(
         "version": EXPECTED_VERSION,
         "internal_packages": built,
         "runtime_dependencies_downloaded": bool(download_runtime),
+        "profile": profile,
     }
     (output_dir / "akane-package-wheelhouse.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -214,6 +228,8 @@ def main() -> int:
     )
     parser.add_argument("--source-root", type=Path, default=ROOT.parent)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "package_wheels")
+    parser.add_argument("--profile", choices=("full", "backend"), default="full")
+    parser.add_argument("--no-build-isolation", action="store_true", help="Use an already prepared build environment.")
     parser.add_argument(
         "--internal-only",
         action="store_true",
@@ -241,6 +257,8 @@ def main() -> int:
             download_runtime=not args.internal_only,
             reuse_internal=args.reuse_internal,
             local_runtime=args.local_runtime,
+            profile=args.profile,
+            no_build_isolation=args.no_build_isolation,
         )
     except (OSError, RuntimeError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:
         print(f"AKANE_PACKAGE_WHEELHOUSE_FAILED:{exc}")

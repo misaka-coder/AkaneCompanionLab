@@ -23,6 +23,7 @@
     "extra_setting": ""
   },
   "context_libraries": [],
+  "dialogue_services": {},
   "appearance": {
     "default_outfit": "default",
     "default_emotion": "normal",
@@ -142,6 +143,8 @@
       }
     ],
     "care_preferences": {
+      "favorite_items": [],
+      "disliked_items": [],
       "favorite_tags": [],
       "disliked_tags": [],
       "offering_tags": ["offering"],

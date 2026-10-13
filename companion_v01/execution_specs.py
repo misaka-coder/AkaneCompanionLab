@@ -68,16 +68,21 @@ EXEC_CANCEL_RESULT_STATUSES: frozenset[str] = frozenset(
     {EXEC_STATUS_CANCELLED, "already_ended", EXEC_STATUS_UNKNOWN, "cancel_failed"}
 )
 
-# Bounded initial wait: a short command returns its final status in the current
-# turn; only commands still alive after the window become running + run_id.
-EXEC_DEFAULT_TIMEOUT_SECONDS = 120
-EXEC_MAX_TIMEOUT_SECONDS = 600
+# Command-end reason describing the *output stream* rather than the command's own
+# result: the command's process ended while a surviving child still held the
+# inherited stdout/stderr handles, so the captured output ends at that exit and
+# the exit code above remains the command's real result.
+EXEC_REASON_OUTPUT_OPEN_AFTER_EXIT = "output_open_after_exit"
+
+# Execution deadlines are opt-in; returning a running receipt never ends a
+# process. Initial/status waits only bound how long a tool call waits for it.
+EXEC_DEFAULT_TIMEOUT_SECONDS = 0
 EXEC_DEFAULT_INITIAL_WAIT_SECONDS = 8
 EXEC_MIN_INITIAL_WAIT_SECONDS = 1
 EXEC_MAX_INITIAL_WAIT_SECONDS = 10
 EXEC_DEFAULT_STATUS_WAIT_SECONDS = 0
 EXEC_MIN_STATUS_WAIT_SECONDS = 0
-EXEC_MAX_STATUS_WAIT_SECONDS = 30
+EXEC_MAX_STATUS_WAIT_SECONDS = 60
 
 EXEC_DEFAULT_RUN_RETENTION_SECONDS = 600
 EXEC_DEFAULT_MAX_RUNS = 128
@@ -108,11 +113,15 @@ ARTIFACT_STATUS_NOT_REQUESTED = "not_requested"
 
 
 def normalize_timeout_seconds(value: Any) -> int:
+    if value is None:
+        return EXEC_DEFAULT_TIMEOUT_SECONDS
     try:
         seconds = int(value)
-    except (TypeError, ValueError):
-        seconds = EXEC_DEFAULT_TIMEOUT_SECONDS
-    return max(1, min(EXEC_MAX_TIMEOUT_SECONDS, seconds))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("invalid_execution_timeout") from exc
+    if isinstance(value, bool) or seconds < 0 or (isinstance(value, float) and value != seconds):
+        raise ValueError("invalid_execution_timeout")
+    return seconds
 
 
 def normalize_initial_wait_seconds(value: Any) -> int:
@@ -180,7 +189,8 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
         "使用当前宿主用户权限运行 Shell 命令或脚本；它不是 Shell 沙箱。cwd 可为工作区相对路径、"
         "已配置别名或真实宿主绝对目录；省略时使用当前项目，没有当前项目时使用执行根。先从真实命令输出发现路径。"
         "命令语言以执行宿主事实中的 command_shell 为准；Windows 使用 PowerShell，需用 cmd 时显式调用 cmd.exe /c。"
-        "短命令直接返回终态，仍在运行时返回 run_id，之后用 exec_status 或 exec_cancel。"
+        "短命令直接返回终态；等待到期返回 running 和原 run_id，命令继续执行。"
+        "查进度或续读用 exec_status，停止用 exec_cancel。"
         "input_resources 用于暂存现有材料，output_globs 用于登记生成资源；精确路径约束见对应参数。"
         "根据 status、exit_code、stdout、stderr、reason 和 recommended_action 判断真实结果。"
         "长任务暂无输出不等于停滞；不要仅据此取消或重复启动。下载前确定目标目录，"
@@ -212,16 +222,16 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
             },
             "timeout_seconds": {
                 "type": "integer",
-                "minimum": 1,
-                "maximum": EXEC_MAX_TIMEOUT_SECONDS,
-                "description": "命令自身的超时秒数。",
+                "minimum": 0,
+                "description": "可选的命令运行期限：省略或 0 表示不限时，正数表示到时终止进程；与前台等待窗口无关。",
             },
             "initial_wait_seconds": {
                 "type": "integer",
                 "minimum": EXEC_MIN_INITIAL_WAIT_SECONDS,
                 "maximum": EXEC_MAX_INITIAL_WAIT_SECONDS,
-                "description": "本轮最多等待秒数；窗口内未结束的命令转为 running 并返回 run_id。",
+                "description": "单命令初始页等待上限，受整批共享窗口限制；未结束返回 running 和 run_id。",
             },
+            "background": {"type": "boolean", "description": "设 true 受理后立即返回 run_id，跳过前台等待；默认 false。"},
             "interactive": {"type": "boolean", "description": "Keep stdin open for exec_input UTF-8 writes (default false). This is a pipe, not a TTY; read output with exec_status, stop with exec_cancel."},
             "input_resources": {
                 "type": "array",
@@ -339,14 +349,11 @@ EXEC_RUN_TOOL_SPEC = CapabilityToolSpec(
 
 EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
     capability_id=EXEC_STATUS_TOOL_NAME,
-    display_name="Query a running command",
+    display_name="Query a task and read its output",
     description=(
-        "按 run_id 查询已启动命令的状态，并用 cursor 增量读取输出。每次返回自 cursor 之后的新输出"
-        "片段和 next_cursor；任务终止后仍可逐页读完剩余输出，全部读完后 next_cursor 才为 null。"
-        "如果任务仍在运行，可用 wait_seconds 在同一次工具调用内等待进入终态或等待窗口结束，"
-        "期间产生的输出会在返回时一并给出，避免进度行或警告触发反复的模型轮询；进入终态会提前返回。"
-        "cursor 用于超长输出或运行中增量观察，普通命令不需要机械翻页。终态结果保留一段可读时间，"
-        "之后返回 unknown。"
+        "按命令 run_id 或普通工具 job_id 查询状态。传上次 next_cursor 可续读输出；全部读完后 next_cursor 为 null。"
+        "wait_seconds 只限制本次查询等待，任务终止会提前返回，否则窗口结束时给出期间增量输出；"
+        "进度行不结束等待，也不终止任务。终态仍可续读剩余输出；结果过期后返回 unknown。"
     ),
     input_schema={
         "type": "object",
@@ -361,7 +368,7 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
                 "type": "integer",
                 "minimum": EXEC_MIN_STATUS_WAIT_SECONDS,
                 "maximum": EXEC_MAX_STATUS_WAIT_SECONDS,
-                "description": "运行中最多等待进入终态或窗口结束的秒数；默认 0，continuation 通常使用 30。",
+                "description": "运行中最多等待进入终态或窗口结束的秒数；默认 0。",
             },
         },
         "required": ["run_id"],
@@ -429,8 +436,8 @@ EXEC_STATUS_TOOL_SPEC = CapabilityToolSpec(
 
 EXEC_CANCEL_TOOL_SPEC = CapabilityToolSpec(
     capability_id=EXEC_CANCEL_TOOL_NAME,
-    display_name="Stop a running command",
-    description=("停止指定 run_id 的命令。命令已结束时返回 already_ended，不会误报。"),
+    display_name="Request cancellation of a task",
+    description=("按命令 run_id 或普通工具 job_id 请求停止任务；只有执行器确认停止才是 cancelled，cancelling 只是已请求。"),
     input_schema={
         "type": "object",
         "properties": {"run_id": {"type": "string", "maxLength": EXEC_RUN_ID_MAX_CHARS}},

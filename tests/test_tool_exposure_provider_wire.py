@@ -10,6 +10,9 @@ from companion_v01.local_capability_config import save_capability_approval_mode
 from companion_v01.mcp_host_manager import McpHostManager, McpManagementService
 from companion_v01.plugin_active_generation import ActivePluginGeneration, PluginGenerationSnapshot
 from companion_v01.plugin_generation import PluginGenerationProcess
+from companion_v01.plugin_generation_candidate import PluginGenerationCandidateBuilder
+from companion_v01.plugin_installation import PluginGenerationSource
+from types import SimpleNamespace
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
 from companion_v01.instance_profile import PluginSelection
 from tests import test_tool_exposure_wire as wire
@@ -44,23 +47,18 @@ class ProviderWireFixture:
             _,_,result = await act("capability_load",{"capability_ids":[name]})
             return json.loads(result.followup_context.split("\n",1)[1])["capabilities"][0]
         contract = await load(deferred)
-        _,_,result = await act("capability_invoke",{"capability_id":deferred,"contract_ref":contract["contract_ref"],"arguments":arguments})
+        _,_,result = await act("capability_invoke",{"capability_id":deferred,"arguments":arguments})
         self.assertFalse(result.capability_result.is_error,result)
         value_check("deferred",result)
         _,before = await asyncio.to_thread(self.request)
         self.compare("provider-real",f"{resident}-{stream}-initial",first,before,history_prefix=True)
         await upgrade()
-        _,stale,result = await act(resident,arguments)
-        self.assertFalse(json.loads(result.followup_context)["executed"])
-        self.assertIn("capability_contract_stale",result.followup_context)
+        _,updated,result = await act(resident,arguments)
+        self.assertFalse(result.capability_result.is_error,result)
+        value_check("recovered",result)
         current = await load(resident)
         published = initial[wire.TOOL_CAPABILITY_SELECTION_FIELD].capability_catalog.snapshot(resident)
         self.assertEqual(published["spec"]["input_schema"],current["input_schema"])
-        _,_,result = await act("capability_invoke",{"capability_id":resident,"contract_ref":current["contract_ref"],"arguments":arguments})
-        self.assertFalse(result.capability_result.is_error,result)
-        value_check("recovered",result)
-        _,_,result = await act(resident,arguments)
-        self.assertFalse(json.loads(result.followup_context)["executed"])
         _,recovered = await asyncio.to_thread(self.request)
         self.compare("provider-real",f"{resident}-{stream}-recovery",before,recovered,history_prefix=True)
         self.finish()
@@ -73,7 +71,7 @@ class ProviderWireFixture:
         value_check("boundary",result)
         current = await load(resident)
         await revoke()
-        _,_,result = await act("capability_invoke",{"capability_id":resident,"contract_ref":current["contract_ref"],"arguments":arguments})
+        _,_,result = await act("capability_invoke",{"capability_id":resident,"arguments":arguments})
         self.assertFalse(json.loads(result.followup_context)["executed"])
         self.assertIn("capability_not_available",result.followup_context)
         self.compare("provider-real",f"{resident}-{stream}-boundary",recovered,after,tools_equal=False)
@@ -81,6 +79,45 @@ class ProviderWireFixture:
 class InstalledProviderWireTests(ProviderWireFixture,unittest.TestCase):
     setUpClass = classmethod(installed.CapabilityDiscoveryInstalledPluginTests.setUpClass.__func__)
     tearDownClass = classmethod(installed.CapabilityDiscoveryInstalledPluginTests.tearDownClass.__func__)
+
+    def test_same_artifact_restart_preserves_wire_contract_and_uses_new_worker(self):
+        async def run():
+            active = ActivePluginGeneration()
+            source = PluginGenerationSource(installed.PLUGIN_ID, self.site_dir, self.staged["digest"],
+                                           tuple(self.staged["permissions"]))
+            builder = PluginGenerationCandidateBuilder(source_resolver=SimpleNamespace(
+                resolve_generation_source=lambda name: source), project_root=installed.PROJECT_ROOT,
+                work_root=self.root / "restart-workers")
+            selections = (PluginSelection(installed.PLUGIN_ID, True),)
+            first = await builder.build(selections)
+            await active.publish(first)
+            self.engine.tool_handlers = {}
+            self.engine.plugin_capability_source = PluginCapabilityToolBridge(active, config_base_dir=self.root)
+            self.provider("openai")
+            self.begin(1)
+            async def act(value):
+                context, payload = await asyncio.to_thread(self.request,
+                    action=(installed.PLUGIN_ID + ".echo.v1", {"value": value}))
+                result, _ = await asyncio.to_thread(self.execute_response)
+                self.assertFalse(result.capability_result.is_error, result)
+                self.assertEqual(result.capability_result.value["calls"], 1)
+                return context, payload
+            try:
+                before, request = await act(10)
+                _, published = await asyncio.to_thread(self.request)
+                second = await builder.build(selections)
+                self.assertEqual(first.processes[0].implementation_revision, second.processes[0].implementation_revision)
+                self.assertNotEqual(first.processes[0].generation_id, second.processes[0].generation_id)
+                await active.publish(second)
+                after, current = await act(20)
+                capability = installed.PLUGIN_ID + ".echo.v1"
+                self.assertEqual(before[wire.TOOL_CAPABILITY_SELECTION_FIELD].capability_catalog.snapshot(capability),
+                                 after[wire.TOOL_CAPABILITY_SELECTION_FIELD].capability_catalog.snapshot(capability))
+                self.compare("provider-real", "identical-artifact-restart", published, current, history_prefix=True)
+                self.assertNotIn("【能力目录更新】", str(current["messages"]))
+            finally:
+                await active.stop()
+        asyncio.run(run())
 
     def scenario(self,protocol,stream):
         async def run():
@@ -125,6 +162,9 @@ class McpProviderWireTests(ProviderWireFixture,unittest.TestCase):
             self.assertTrue(saved["ok"],saved)
         async def upgrade():
             state.write_text('{"unit":"cent"}',encoding="utf-8")
+            refreshed = await asyncio.to_thread(service.discover,
+                profile_user_id=self.scope["profile_user_id"],server_id="demo")
+            self.assertTrue(refreshed["ok"],refreshed)
         async def revoke():
             value = await asyncio.to_thread(service.set_enabled,profile_user_id=self.scope["profile_user_id"],
                                             server_id="demo",enabled=False)

@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -111,6 +112,57 @@ class McpTransportFacadeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["tools"][0]["name"], "search")
         self.assertEqual(result["tools"][0]["inputSchema"]["properties"]["query"]["type"], "string")
+
+
+class McpStdioLargeResponseTests(unittest.IsolatedAsyncioTestCase):
+    SERVER_SOURCE = '''
+import json
+import sys
+
+text = "研究证据。" * int(sys.argv[1])
+for line in sys.stdin.buffer:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "test", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "extract", "description": text, "inputSchema": {"type": "object"}}]}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": text}], "isError": False}
+    else:
+        continue
+    response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
+    sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\\n")
+    sys.stdout.buffer.flush()
+'''
+
+    def _server(self, directory: str, repeats: int = 30000) -> dict:
+        script = Path(directory, "server.py")
+        script.write_text(self.SERVER_SOURCE, encoding="utf-8")
+        return {"command": sys.executable, "args": [str(script), str(repeats)], "cwd": directory}
+
+    async def test_tool_call_reads_long_utf8_document_without_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            caller = mcp_stdio_discoverer.McpStdioToolCaller(timeout_seconds=5)
+            result = await caller(server=self._server(directory), tool_name="extract", arguments={"url": "https://example.test/paper"})
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["content"][0]["text"], "研究证据。" * 30000)
+
+    async def test_discovery_reads_long_tool_contract_without_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            discoverer = mcp_stdio_discoverer.McpStdioToolDiscoverer(timeout_seconds=5)
+            result = await discoverer(server=self._server(directory))
+        self.assertEqual(result["tools"][0]["description"], "研究证据。" * 30000)
+
+    async def test_oversized_lines_report_structured_failure_for_both_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.object(mcp_stdio_discoverer, "_MCP_STDIO_MAX_MESSAGE_BYTES", 64 * 1024):
+            server = self._server(directory, repeats=10000)
+            for kind in ("call", "discovery"):
+                with self.subTest(kind=kind), self.assertRaisesRegex(mcp_stdio_discoverer.McpStdioDiscoveryError, "^mcp_response_too_large$"):
+                    if kind == "call":
+                        await mcp_stdio_discoverer.McpStdioToolCaller(timeout_seconds=5)(server=server, tool_name="extract")
+                    else:
+                        await mcp_stdio_discoverer.McpStdioToolDiscoverer(timeout_seconds=5)(server=server)
 
 
 if __name__ == "__main__":

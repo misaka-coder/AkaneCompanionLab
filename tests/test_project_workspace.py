@@ -225,7 +225,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
                     for actor in ("master", "bob")]
         self.assertTrue(handler._permission_decision(contexts[0], {"command": "echo test"}).allowed)
         self.assertFalse(handler._permission_decision(contexts[1], {"command": "echo test"}).allowed)
-        with patch("companion_v01.tool_handlers.execution.execute_exec_run") as run:
+        with patch("companion_v01.tool_handlers.execution_runtime.run.execute_exec_run") as run:
             result = handler.execute(call={"type": "exec_run", "command": "echo test"}, context=contexts[1])
             run.assert_not_called()
         self.assertEqual(result.stream_events[0]["status"], "blocked")
@@ -1311,7 +1311,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
                 event={"type": "capability_execution_result", "status": "completed"},
             )
 
-        with patch("companion_v01.tool_handlers.execution.execute_exec_run", side_effect=fake_execute):
+        with patch("companion_v01.tool_handlers.execution_runtime.run.execute_exec_run", side_effect=fake_execute):
             result = handler.execute(
                 call={"type": "exec_run", "command": "echo ok", "cwd": "alias:project"},
                 context=self._context(session_id="private-b"),
@@ -1343,7 +1343,7 @@ class ProjectWorkspaceServiceTests(unittest.TestCase):
                 event={"type": "capability_execution_result", "status": "completed"},
             )
 
-        with patch("companion_v01.tool_handlers.execution.execute_exec_run", side_effect=fake_execute):
+        with patch("companion_v01.tool_handlers.execution_runtime.run.execute_exec_run", side_effect=fake_execute):
             handler.execute(
                 call={"type": "exec_run", "command": "echo default"},
                 context=self._context(),

@@ -149,8 +149,8 @@ class RestrictedCapabilitySelectionTests(unittest.TestCase):
         validation = orchestration.validate_legacy_tool_call(
             self.engine, call, client_context=context(), profile_user_id="alice", session_id="s1")
         self.assertTrue(validation.ok, validation.message)
-        self.assertEqual(routed.resolved_handlers["mcp.demo.echo"].contract_error(), "")
-        self.assertEqual(child.resolved_handlers["mcp.demo.echo"].contract_error(), "capability_contract_stale")
+        self.assertEqual(routed.resolved_handlers["mcp.demo.echo"].availability_error(), "")
+        self.assertFalse(child.resolved_handlers["mcp.demo.echo"].native_declared)
 
     def test_empty_selection_does_not_fall_back_to_global_alias_discovery(self):
         child = restrict_capability_selection(self.parent, allowed_tool_names=())

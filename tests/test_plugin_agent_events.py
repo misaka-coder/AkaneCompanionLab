@@ -80,7 +80,7 @@ class QQTurnRouterTests(unittest.IsolatedAsyncioTestCase):
     def _build(self, *, session_work_queue=None, prefetch_calls=None):
         references = {
             "ref-master": {
-                "channel": "qq", "kind": "direct", "recipient": "user:1906243651",
+                "channel": "qq", "kind": "direct", "recipient": "user:987654321",
                 "session": "master", "profile": "master", "character": "reimu",
             },
             "ref-group": {
@@ -92,7 +92,7 @@ class QQTurnRouterTests(unittest.IsolatedAsyncioTestCase):
         host_router = HostAgentEventRouter(references.get)
 
         class Gateway:
-            master_qq = "1906243651"
+            master_qq = "987654321"
 
             def context_from_delivery_context(self, payload):
                 return QQMessageContext(
@@ -301,8 +301,8 @@ class ConversationReferenceAuthorityTests(unittest.TestCase):
                 request_context=QQMessageContext(
                     should_respond=True,
                     reason="private",
-                    user_id=1906243651,
-                    target_id=1906243651,
+                    user_id=987654321,
+                    target_id=987654321,
                     session_id="master",
                     profile_user_id="master",
                     character_pack_id="reimu",

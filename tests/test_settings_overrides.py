@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -48,16 +49,13 @@ class SettingsOverrideStoreTests(unittest.TestCase):
                 so.set_override(config, store, key=key, raw_value="x")
             self.assertEqual(ctx.exception.reason, "not_editable")
 
-    def test_startup_replay_skips_non_editable(self) -> None:
+    def test_saved_load_skips_non_editable_without_changing_process_config(self) -> None:
         store = _temp_store()
         store.save({"TOOL_ROUND_HARD_LIMIT": 7, "TEXT_API_KEY": "secret", "HOST": "0.0.0.0"})
         original = config.TOOL_ROUND_HARD_LIMIT
-        try:
-            applied = so.load_and_apply_saved_overrides(config, store)
-            self.assertEqual(applied, {"TOOL_ROUND_HARD_LIMIT": 7})
-            self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, 7)
-        finally:
-            config.TOOL_ROUND_HARD_LIMIT = original
+        applied = so.load_saved_overrides(store)
+        self.assertEqual(applied, {"TOOL_ROUND_HARD_LIMIT": 7})
+        self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, original)
 
     def test_runtime_config_view_keeps_bot_override_out_of_process_globals(self) -> None:
         store = _temp_store()
@@ -73,6 +71,22 @@ class SettingsOverrideStoreTests(unittest.TestCase):
         view.TOOL_ROUND_HARD_LIMIT = 4
         self.assertEqual(view.TOOL_ROUND_HARD_LIMIT, 4)
         self.assertEqual(config.TOOL_ROUND_HARD_LIMIT, original)
+
+    def test_cross_conversation_switch_is_per_bot_and_defaults_open(self) -> None:
+        first_store = _temp_store()
+        second_store = _temp_store()
+        self.assertTrue(config.Settings.model_fields["MEMORY_CROSS_CONVERSATION_ENABLED"].default)
+        with patch.object(config, "MEMORY_CROSS_CONVERSATION_ENABLED", True):
+            first = so.RuntimeConfigView(config, so.load_saved_overrides(first_store))
+            second = so.RuntimeConfigView(config, so.load_saved_overrides(second_store))
+            self.assertTrue(first.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertTrue(second.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertFalse(so.set_override(
+                first, first_store, key="MEMORY_CROSS_CONVERSATION_ENABLED", raw_value="false"))
+            self.assertFalse(first.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertTrue(second.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertTrue(config.MEMORY_CROSS_CONVERSATION_ENABLED)
+            self.assertFalse(so.load_saved_overrides(first_store)["MEMORY_CROSS_CONVERSATION_ENABLED"])
 
 
 class SettingsUpdateEndpointTests(unittest.TestCase):

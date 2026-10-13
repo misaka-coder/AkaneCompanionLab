@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .desktop_pet_character_resources import MAX_CHARACTER_METADATA_BYTES, sanitize_character_pack_id
 from .care_runtime import MAX_DESKTOP_INVENTORY_ITEMS, normalize_desktop_care_config
+from .shop_artwork import update_artwork
 
 _lock = threading.RLock()
 
@@ -37,6 +38,8 @@ SHOP_ERROR_REASONS = frozenset(
         "invalid_shop_price",
         "invalid_shop_request",
         "invalid_shop_usable_in",
+        "invalid_shop_image",
+        "invalid_shop_art_kind",
         "shop_item_ambiguous",
         "shop_item_id_unavailable",
         "shop_item_limit_reached",
@@ -175,6 +178,8 @@ def _shop_view(data: dict) -> list:
                 ],
                 "usable_in": modes or list(SHOP_MODES),
                 "custom": bool(entry.get("custom")),
+                "image": str(entry.get("image") or ""),
+                "art_kind": entry.get("art_kind", "auto"),
             }
         )
     return items
@@ -230,15 +235,21 @@ def update_shop_item(service, pack_id, payload):
         entry["price"] = price
         # Merge so that special-effect keys the editor does not manage stay intact.
         entry["effects"] = {**entry.get("effects", {}), **effects}
+        update_artwork(path.parent, entry, payload)
         encoded = _write(path, raw, data)
         if encoded is None:
             return {"ok": False, "status": "conflict", "reason": "shop_revision_conflict"}
         return _result(encoded, data)
 
 
-def create_shop_item(service, pack_id, payload):
+def create_shop_item(service, pack_id, payload, *, operation_id=""):
     with _lock:
         path, raw, data = _read(service, pack_id)
+        stable_id = f"{CUSTOM_ITEM_ID_PREFIX}{hashlib.sha256(operation_id.encode()).hexdigest()[:12]}" if operation_id else ""
+        if stable_id:
+            existing = next((i for i in _shop_view(data) if i["id"] == stable_id), None)
+            if existing is not None:
+                return {**_result(raw, data), "item_id": stable_id, "status": "already_created"}
         if payload.get("revision") != hashlib.sha256(raw).hexdigest():
             return {"ok": False, "status": "conflict", "reason": "shop_revision_conflict"}
         care = data["care"]
@@ -256,7 +267,7 @@ def create_shop_item(service, pack_id, payload):
         existing = {str(entry.get("id") or "") for entry in items if isinstance(entry, dict)}
         item_id = ""
         for _ in range(16):
-            candidate = f"{CUSTOM_ITEM_ID_PREFIX}{uuid.uuid4().hex[:12]}"
+            candidate = stable_id or f"{CUSTOM_ITEM_ID_PREFIX}{uuid.uuid4().hex[:12]}"
             if candidate not in existing:
                 item_id = candidate
                 break
@@ -278,6 +289,7 @@ def create_shop_item(service, pack_id, payload):
         }
         if description:
             entry["description"] = description
+        update_artwork(path.parent, entry, payload)
         items.append(entry)
         encoded = _write(path, raw, data)
         if encoded is None:

@@ -134,7 +134,9 @@ class _AnthropicStream:
     def __init__(self, *, response: requests.Response, model: str):
         self._response = response
         self._model = model
+        self.model = model
         self.usage = None
+        self._usage_fields = {}
         self.provider_content = []
         self._blocks = {}
         self._json_parts = {}
@@ -152,7 +154,7 @@ class _AnthropicStream:
                     line = str(raw_line).strip()
                 if not line:
                     self._capture_content(event_name, data_lines)
-                    if event_name == "message_start" and data_lines:
+                    if event_name in {"message_start", "message_delta"} and data_lines:
                         self._capture_stream_usage(data_lines)
                     chunk = _chunk_from_sse_event(event_name, data_lines, self._model)
                     if chunk is not None:
@@ -168,6 +170,8 @@ class _AnthropicStream:
 
             if data_lines:
                 self._capture_content(event_name, data_lines)
+                if event_name in {"message_start", "message_delta"}:
+                    self._capture_stream_usage(data_lines)
                 chunk = _chunk_from_sse_event(event_name, data_lines, self._model)
                 if chunk is not None:
                     yield chunk
@@ -196,11 +200,10 @@ class _AnthropicStream:
     def _capture_stream_usage(self, data_lines: list) -> None:
         try:
             payload = json.loads("\n".join(data_lines).strip())
-            raw = (payload.get("message") or {}).get("usage") or {}
-            self.usage = SimpleNamespace(
-                cache_read_input_tokens=int(raw.get("cache_read_input_tokens", 0) or 0),
-                cache_creation_input_tokens=int(raw.get("cache_creation_input_tokens", 0) or 0),
-            )
+            message = payload.get("message") or {}
+            self.model = message.get("model") or self.model
+            self._usage_fields.update(message.get("usage") or payload.get("usage") or {})
+            self.usage = _anthropic_usage(self._usage_fields)
         except Exception:
             pass
 
@@ -472,12 +475,23 @@ def _raise_for_status(response: requests.Response) -> None:
     raise RuntimeError(message or f"Anthropic request failed: HTTP {response.status_code}")
 
 
+def _anthropic_usage(usage: dict):
+    # Anthropic input_tokens excludes cache reads and writes. Normalize the
+    # denominator to total input, matching OpenAI/Gemini usage semantics.
+    read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    creation = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    prompt = int(usage.get("input_tokens", 0) or 0) + read + creation
+    completion = int(usage.get("output_tokens", 0) or 0)
+    return SimpleNamespace(prompt_tokens=prompt, completion_tokens=completion,
+                           total_tokens=prompt + completion, cache_read_input_tokens=read,
+                           cache_creation_input_tokens=creation,
+                           _akane_cache_read_reported=usage.get("cache_read_input_tokens") is not None)
+
+
 def _build_openai_style_response(payload: dict, model: str):
     text = _extract_anthropic_text(payload)
     raw_content = payload.get("content") or []
     usage = payload.get("usage") or {}
-    prompt_tokens = int(usage.get("input_tokens", 0) or 0)
-    completion_tokens = int(usage.get("output_tokens", 0) or 0)
     message_content = raw_content if _anthropic_content_has_tool_use(raw_content) else text
     return SimpleNamespace(
         id=payload.get("id", f"chatcmpl-{uuid.uuid4().hex}"),
@@ -496,13 +510,7 @@ def _build_openai_style_response(payload: dict, model: str):
                 ),
             )
         ],
-        usage=SimpleNamespace(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
-            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
-            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
-        ),
+        usage=_anthropic_usage(usage),
     )
 
 

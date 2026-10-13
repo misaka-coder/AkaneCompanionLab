@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from capcore import InvocationContext
+from akane_plugin.contracts import PluginInvocationContext
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -27,6 +28,8 @@ def build_plugins_router(
     admin_auth: AdminWriteAuth | None = None,
     job_store: HostJobStore | None = None,
     job_control: Callable[..., dict[str, Any]] | None = None,
+    engine: Any = None,
+    resolve_identity_from_query: Callable[[Request], tuple[str, str]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
     management_auth = admin_auth or AdminWriteAuth.local_compatibility()
@@ -279,10 +282,29 @@ def build_plugins_router(
         if error is not None:
             return _response(error, status_code=400)
 
+        context = InvocationContext(client_mode="plugin_admin")
+        if resolve_identity_from_query is not None and (
+            request.query_params.get("user_id") or request.query_params.get("session_id")
+        ):
+            session, profile = resolve_identity_from_query(request)
+            scope_payload = {
+                "user_id": session, "real_user_id": profile,
+                "character_pack_id": request.query_params.get("character_pack_id", ""),
+                "client_mode": request.query_params.get("client_mode", "plugin_admin"),
+            }
+            character = (engine._resolve_payload_character_pack_id(scope_payload) if engine is not None
+                         else scope_payload["character_pack_id"])
+            # Tools use the client's conversation identity. Memory storage may
+            # canonicalize it separately; doing that here would select another game.
+            context = PluginInvocationContext(
+                profile_user_id=profile, session_id=session, client_mode="plugin_admin",
+                character_pack_id=character,
+            )
+
         result = await extension_management_service.invoke_capability(
             capability_id,
             payload,
-            context=InvocationContext(client_mode="plugin_admin"),
+            context=context,
         )
         projected = project_capability_result(result)
         status_code = _status_code_for_result(projected)

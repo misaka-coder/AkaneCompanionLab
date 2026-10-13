@@ -75,7 +75,6 @@ class ProviderRawResultTests(unittest.TestCase):
                 error="",
                 latest_emotion="",
                 latest_speech="",
-                latest_reply_medium="",
                 native_preface_text="",
                 metadata_status="accepted_model",
                 metadata_present=True,

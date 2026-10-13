@@ -82,6 +82,46 @@ class VerificationEntrypointTests(unittest.TestCase):
         self.assertTrue(all(stage["status"] == "planned" for stage in stages))
         self.assertTrue(all(stage["timeout_seconds"] > 0 for stage in stages))
 
+    def test_full_check_only_includes_desktop_and_scene_checks(self) -> None:
+        powershell = _powershell_executable()
+        if not powershell:
+            self.skipTest("PowerShell is unavailable")
+
+        result = subprocess.run(
+            [
+                powershell, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(VERIFY_SCRIPT), "-Tier", "Full", "-CheckOnly", "-Json",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout.strip())
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["tier"], "Full")
+        self.assertTrue(payload["check_only"])
+        stages = payload["stages"]
+        self.assertEqual(
+            [stage["name"] for stage in stages],
+            [
+                "python-lint", "python-full-regression", "windows-bootstrap-contract",
+                "desktop-control-center", "desktop-instance-storage",
+                "desktop-pet-boundaries", "desktop-pet-runtime", "desktop-workspace-import",
+                "desktop-window-physics", "desktop-workshop-modules", "desktop-workshop-state",
+                "desktop-scene-contracts", "desktop-scene-tests",
+                "tauri-tests", "tauri-check", "tauri-format", "public-export", "public-audit",
+                "diff-hygiene",
+            ],
+        )
+        self.assertTrue(all(stage["status"] == "planned" for stage in stages))
+        self.assertTrue(all(0 < stage["timeout_seconds"] <= 1200 for stage in stages))
+
     def test_preflight_failure_is_structured_and_does_not_run_stages(self) -> None:
         powershell = _powershell_executable()
         if not powershell:

@@ -14,6 +14,7 @@ class ClientMode(str, Enum):
 
 
 class ClientCapability(str, Enum):
+    SPEECH_UNITS = "speech_units_v1"
     SCENE_PRESENTATION = "scene_presentation_v1"
     SPEECH_SEGMENTS = "speech_segments"
     BACKGROUND = "background"

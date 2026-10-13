@@ -15,7 +15,7 @@ from .local_capability_config import (
     get_voice_profile_runtime_config, load_capability_config,
 )
 from .runtime_settings import runtime_setting
-from .tts_provider_selection import EDGE_TTS_PROVIDER_ID, GPT_SOVITS_PROVIDER_ID
+from .tts_provider_selection import EDGE_TTS_PROVIDER_ID, GPT_SOVITS_PROVIDER_ID, IRODORI_PROVIDER_ID
 
 
 def unavailable(reason):
@@ -42,7 +42,7 @@ def resolve_tts_connection(engine, config, invocation):
                    for key, default in (("voice", "zh-CN-XiaoxiaoNeural"), ("rate", "+6%"),
                                         ("volume", "+0%"), ("pitch", "+4Hz"))}
         return PluginConnectionResult(True, "configured", model=provider, options={"client": options})
-    if provider != GPT_SOVITS_PROVIDER_ID:
+    if provider not in (GPT_SOVITS_PROVIDER_ID, IRODORI_PROVIDER_ID):
         return unavailable("requested_provider_unknown")
     profile_id = voice.get("profile_id", "")
     preview = invocation.host_parameters.get("tts_preview")
@@ -55,8 +55,8 @@ def resolve_tts_connection(engine, config, invocation):
     if str(invocation.context.client_mode).startswith("qq"):
         user = qq_voice_config_profile(config, invocation.context, settings)
     saved = load_capability_config(base_dir=root, profile_user_id=user)
-    entry = build_provider_config_entry(CONFIGURABLE_PROVIDER_BY_ID[GPT_SOVITS_PROVIDER_ID],
-        saved.get("providers", {}).get(GPT_SOVITS_PROVIDER_ID))
+    entry = build_provider_config_entry(CONFIGURABLE_PROVIDER_BY_ID[provider],
+        saved.get("providers", {}).get(provider))
     if preview is not None:
         entry = {"status": "configured", "endpoint": preview.get("endpoint", "")}
     status = entry.get("status")
@@ -70,6 +70,13 @@ def resolve_tts_connection(engine, config, invocation):
         profile = dict(preview.get("profile") or {})
     if not profile:
         return unavailable("requested_voice_profile_missing")
+    if profile.get("providerId", GPT_SOVITS_PROVIDER_ID) != provider:
+        return unavailable("tts_voice_profile_provider_mismatch")
+    if provider == IRODORI_PROVIDER_ID:
+        if not profile.get("irodoriVoiceId"):
+            return unavailable("irodori_voice_id_missing")
+        return PluginConnectionResult(True, "configured", base_url=entry["endpoint"], model=provider,
+            options={"client": {"timeout_seconds": 90.0}, "profile": profile})
 
     def project(value):
         if isinstance(value, dict):

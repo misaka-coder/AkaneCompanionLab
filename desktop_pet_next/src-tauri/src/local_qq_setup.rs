@@ -53,13 +53,16 @@ fn loopback_url(raw: &str) -> Result<reqwest::Url, &'static str> {
 }
 
 fn binding(app: &AppHandle, request: &SetupRequest) -> Result<Binding, &'static str> {
-    let state = super::load_pet_state(app.clone()).map_err(|_| "local_qq_binding_unavailable")?;
-    let instance = super::runtime_instance_id().map_err(|_| "local_qq_binding_unavailable")?;
-    let launch_bot = super::runtime_bound_bot_id().map_err(|_| "local_qq_binding_unavailable")?;
-    let current = super::current_bound_backend_url(&state);
+    let state = crate::pet_state::persistence::load_pet_state(app.clone())
+        .map_err(|_| "local_qq_binding_unavailable")?;
+    let instance = crate::runtime::config::runtime_instance_id()
+        .map_err(|_| "local_qq_binding_unavailable")?;
+    let launch_bot = crate::runtime::config::runtime_bound_bot_id()
+        .map_err(|_| "local_qq_binding_unavailable")?;
+    let current = crate::backend::binding::current_bound_backend_url(&state);
     let backend = loopback_url(&current)?;
     let requested = loopback_url(&request.backend_url)?;
-    let launched = loopback_url(&super::runtime_backend_url())?;
+    let launched = loopback_url(&crate::runtime::config::runtime_backend_url())?;
     if state.host_id != instance
         || state.bound_bot_id != request.bot_id
         || request.bot_id != launch_bot
@@ -82,7 +85,8 @@ fn binding(app: &AppHandle, request: &SetupRequest) -> Result<Binding, &'static 
         return Err("local_qq_launch_profile_missing");
     }
     Ok(Binding {
-        root: super::akane_data_root().map_err(|_| "local_qq_binding_unavailable")?,
+        root: crate::runtime::paths::akane_data_root()
+            .map_err(|_| "local_qq_binding_unavailable")?,
         backend,
         qq,
         api,
@@ -424,7 +428,7 @@ pub async fn local_qq_setup(app: AppHandle, window: tauri::Window, request: Setu
     };
     // Recovery must still work when the WebUI config is broken or its port is occupied.
     if request.action == "openFolder" {
-        if super::open_path_in_file_manager(&root).is_err() {
+        if crate::local_files::system_open::open_path_in_file_manager(&root).is_err() {
             return failure("napcat_open_failed");
         }
         let mut result = snapshot(&root, &binding, false);
@@ -496,7 +500,7 @@ pub async fn local_qq_setup(app: AppHandle, window: tauri::Window, request: Setu
             }
             // The private login URL goes directly to the OS, never through UI state, logs or model history.
             url.query_pairs_mut().append_pair("token", token);
-            if super::open_url_with_system(url.as_str()).is_err() {
+            if crate::local_files::system_open::open_url_with_system(url.as_str()).is_err() {
                 return failure("napcat_open_failed");
             }
         }

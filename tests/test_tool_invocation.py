@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import json
 
+import tempfile
 import unittest
+from types import MappingProxyType, SimpleNamespace
+from unittest.mock import patch
 
-from capcore import CapabilityToolSpec
+from capcore import CapabilityDescriptor, CapabilityResult, CapabilityToolSpec
 
 from companion_v01 import tool_orchestration_engine
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.tool_invocation import (
     LEGACY_JSON,
     NATIVE_OPENAI,
+    NATIVE_TOOL_CALL_FIELD,
+    TOOL_CAPABILITY_SELECTION_FIELD,
     TOOL_INVOCATION_ID_FIELD,
+    TOOL_MODEL_ARGUMENTS_FIELD,
+    TOOL_MODEL_NAME_FIELD,
     TOOL_PARSE_ERROR_FIELD,
     TOOL_RAW_ARGUMENTS_FIELD,
     TOOL_SOURCE_FIELD,
@@ -87,6 +94,30 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertEqual(
             invocation_to_legacy_tool_call(inv),
             {"type": "web_search", "action": "search", "query": "天气"},
+        )
+
+    def test_protocol_parse_preserves_provider_arguments_and_scheduling_fields(self) -> None:
+        raw_call = {
+            "type": "mcp.demo.echo",
+            TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+            TOOL_INVOCATION_ID_FIELD: "call-wire-preserved",
+            TOOL_MODEL_NAME_FIELD: "mcp_demo_echo",
+            TOOL_MODEL_ARGUMENTS_FIELD: {
+                "type": "business-value",
+                "arguments": {"nested": True},
+                "host_background": True,
+            },
+            "_tool_background": True,
+        }
+
+        invocation = tool_orchestration_engine.parse_tool_call(raw_call)
+        assert invocation is not None
+
+        self.assertEqual(invocation.model_name, "mcp_demo_echo")
+        self.assertEqual(invocation.model_arguments, raw_call[TOOL_MODEL_ARGUMENTS_FIELD])
+        self.assertEqual(
+            invocation_to_legacy_tool_call(invocation, include_metadata=True),
+            raw_call,
         )
 
     def test_malformed_provider_arguments_survive_bridge_and_become_tool_error(self) -> None:
@@ -235,7 +266,9 @@ class ToolInvocationTests(unittest.TestCase):
             session_id="s1",
         )
 
-        self.assertEqual(normalized, {"type": "web_search", "query": "天气", "limit": 2})
+        self.assertTrue(normalized[TOOL_INVOCATION_ID_FIELD].startswith("call_"))
+        self.assertEqual({key: value for key, value in normalized.items() if not key.startswith("_tool_")},
+            {"type": "web_search", "query": "天气", "limit": 2})
         self.assertEqual(handler.normalized_inputs, [{"type": "web_search", "query": "天气", "ignored": ""}])
 
     def test_live_native_source_survives_normalize_but_not_execute_args(self) -> None:
@@ -285,6 +318,165 @@ class ToolInvocationTests(unittest.TestCase):
         self.assertIsInstance(result, ToolExecutionResult)
         self.assertEqual(result.tool_type, "web_search")
         self.assertEqual(handler.executed_call, {"type": "web_search", "query": "天气", "limit": 2})
+        self.assertEqual(len(handler.normalized_inputs), 1)
+        self.assertEqual(handler.normalized_inputs[0]["query"], "天气")
+        self.assertEqual(handler.normalized_inputs[0]["type"], "web_search")
+
+    def test_model_round_parses_wire_then_prepares_once_for_execution(self) -> None:
+        from companion_v01.capability_registry import CapabilitySelection
+        from companion_v01.engine import AkaneMemoryEngine
+
+        class Handler:
+            tool_type = "demo"
+
+            def __init__(self):
+                self.normalized_inputs = []
+                self.executed_calls = []
+
+            def tool_spec(self):
+                return CapabilityToolSpec(
+                    capability_id=self.tool_type,
+                    display_name="Demo",
+                    description="Test tool",
+                    input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+                    risk="low",
+                    confirm="never",
+                    effects=(),
+                    visible_in=("desktop",),
+                )
+
+            def normalize_call(self, value):
+                self.normalized_inputs.append(dict(value))
+                return {"type": self.tool_type, "query": str(value.get("query") or "").strip(), "limit": 5}
+
+            def execute(self, *, call, context):
+                self.executed_calls.append(dict(call))
+                return ToolExecutionResult(tool_type=self.tool_type, followup_context="prepared call executed")
+
+        handler = Handler()
+        selection = CapabilitySelection(
+            light_hints=(),
+            tool_names=(handler.tool_type,),
+            module_names=(),
+            schema_tool_names=(handler.tool_type,),
+            native_tool_names=(handler.tool_type,),
+            resolved_handlers=MappingProxyType({handler.tool_type: handler}),
+        )
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        engine.tool_handlers = {}
+        engine._resolve_tool_handlers = lambda **_kwargs: selection.resolved_handlers
+        client = ClientProtocolContext(requested_mode=ClientMode.SCENE_STATIC, effective_mode=ClientMode.SCENE_STATIC)
+        wire_arguments = {"query": " weather "}
+
+        _output, calls, rejections = engine._prepare_tool_round_decisions(
+            final_output={
+                "speech": "",
+                "tool_call": None,
+                NATIVE_TOOL_CALL_FIELD: {
+                    "type": "demo",
+                    "query": " weather ",
+                    TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                    TOOL_INVOCATION_ID_FIELD: "call-prepared-once",
+                    TOOL_MODEL_NAME_FIELD: "demo",
+                    TOOL_MODEL_ARGUMENTS_FIELD: wire_arguments,
+                },
+                TOOL_CAPABILITY_SELECTION_FIELD: selection,
+            },
+            user_message="search",
+            client_context=client,
+            profile_user_id="u",
+            session_id="s",
+        )
+
+        self.assertEqual(rejections, [])
+        self.assertEqual(handler.normalized_inputs, [])
+        self.assertEqual(calls[0][TOOL_MODEL_ARGUMENTS_FIELD], wire_arguments)
+        result = tool_orchestration_engine.execute_tool_call(
+            engine,
+            profile_user_id="u",
+            session_id="s",
+            tool_call=calls[0],
+            visual_payload={},
+            now_ts=1,
+            client_context=client,
+        )
+
+        self.assertEqual(len(handler.normalized_inputs), 1)
+        self.assertFalse(
+            any(str(key).startswith("_tool_") for key in handler.normalized_inputs[0]),
+            handler.normalized_inputs[0],
+        )
+        self.assertEqual(handler.executed_calls, [{"type": "demo", "query": "weather", "limit": 5}])
+        self.assertEqual(calls[0][TOOL_MODEL_ARGUMENTS_FIELD], wire_arguments)
+        self.assertIsInstance(result, ToolExecutionResult)
+
+    def test_native_adapter_business_keys_survive_preparation_and_execution(self) -> None:
+        from companion_v01.capability_contracts import ContractBoundHandler, contract_snapshot
+        from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
+        from companion_v01.tool_handlers.adapters import AdapterCapabilityToolHandler
+
+        class Adapter:
+            def __init__(self):
+                self.calls = []
+
+            async def invoke(self, capability_id, args, ctx):
+                self.calls.append(dict(args))
+                return CapabilityResult(is_error=False, status="ok", content={"echo": args})
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "type": {"type": "string"},
+                "arguments": {"type": "object"},
+                "background": {"type": "boolean"},
+            },
+            "required": ["type", "arguments", "background"],
+            "additionalProperties": False,
+        }
+        expected = {"type": "business-value", "arguments": {"nested": "exact  spacing"}, "background": True}
+        for handler_class in (AdapterCapabilityToolHandler, PluginCapabilityToolHandler):
+            for frozen in (False, True):
+                for unknown in (False, True):
+                    with self.subTest(handler=handler_class.__name__, frozen=frozen, unknown=unknown), tempfile.TemporaryDirectory() as directory:
+                        adapter = Adapter()
+                        name = "demo.echo"
+                        descriptor = CapabilityDescriptor(
+                            id=name, display_name="Echo", short_hint="Echo business keys",
+                            visible_in=("desktop",), prompt_exposed=True, risk="low", confirm="never",
+                            effects=(), trigger=None, inputs=(), outputs=(), raw={}, input_schema=schema,
+                        )
+                        handler = handler_class(capability_id=name, adapter=adapter, descriptor=descriptor,
+                                                config_base_dir=directory)
+                        selected = ContractBoundHandler(handler, contract_snapshot(handler, scope="test"),
+                            current_handler=lambda _: handler) if frozen else handler
+                        engine = SimpleNamespace(_resolve_tool_handlers=lambda **_: {name: selected})
+                        arguments = {**expected, "host_background": True}
+                        if unknown:
+                            arguments["_tool_business_unknown"] = "must reach CapCore validation"
+                        raw = {**arguments, "type": name, TOOL_SOURCE_FIELD: NATIVE_OPENAI,
+                               TOOL_INVOCATION_ID_FIELD: "call-business-keys", TOOL_MODEL_NAME_FIELD: "demo_echo",
+                               TOOL_MODEL_ARGUMENTS_FIELD: arguments}
+                        invocation = tool_orchestration_engine.parse_tool_call(raw)
+                        with patch.object(handler, "normalize_call", wraps=handler.normalize_call) as normalizer:
+                            prepared = tool_orchestration_engine.prepare_tool_invocation(engine, invocation,
+                                                                                       raw_tool_call=raw, for_execution=True)
+                            self.assertTrue(prepared.invocation.background)
+                            self.assertEqual(prepared.normalized_call["arguments"],
+                                             {key: value for key, value in arguments.items() if key != "host_background"})
+                            result, envelope = tool_orchestration_engine.execute_tool_invocation(
+                                engine, invocation=invocation, prepared=prepared, profile_user_id="owner",
+                                session_id="test", visual_payload={}, now_ts=1,
+                            )
+                        self.assertEqual(normalizer.call_count, 1)
+                        self.assertEqual(envelope.invocation_id, "call-business-keys")
+                        self.assertEqual(prepared.invocation.model_arguments, arguments)
+                        self.assertTrue(raw[TOOL_MODEL_ARGUMENTS_FIELD]["host_background"])
+                        if unknown:
+                            self.assertEqual(adapter.calls, [])
+                            self.assertIn("unknown_argument", result.followup_context)
+                        else:
+                            self.assertEqual(adapter.calls, [expected])
+                            self.assertEqual(envelope.status, "ok")
 
     def test_validation_reports_unknown_tool(self) -> None:
         engine = FakeEngine(RecordingHandler())

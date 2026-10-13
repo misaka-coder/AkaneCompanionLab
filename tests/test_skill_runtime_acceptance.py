@@ -381,7 +381,7 @@ class SkillMemcoreRealHandlerTests(unittest.TestCase):
                     card_text = str(tool_payloads[0].get("content") or "")
                     self.assertIn("[compact_reloadable]", card_text)
                     self.assertIn("tool: load_skill", card_text)
-                    self.assertIn("reload: open_memory(memory_id=", card_text)
+                    self.assertIn(f"source_id: {observation_sid}", card_text)
                     self.assertNotIn("遵循步骤并逐步执行" * 4, card_text)
                     self.assertNotIn(str(tmp), card_text)
                     self.assertNotIn("C:\\", card_text)

@@ -327,6 +327,9 @@ class RichMaterialTests(unittest.TestCase):
         self.assertEqual(len(payload["native_user_images"]), 1)
         self.assertIn("请查看内容", payload["message"])
         self.assertEqual(payload["native_user_images"][0]["attachment_id"], payload["qq_current_attachment_ids"][0])
+        self.assertEqual(payload["native_user_images"][0]["source_sender_id"], "202")
+        self.assertEqual(payload["native_user_images"][0]["source_sender_label"], "发送者")
+        self.assertEqual(payload["native_user_images"][0]["source_message_id"], "505")
 
     def test_duplicate_file_event_does_not_materialize_or_reply_twice(self):
         self._post([self.file_segment()], repeat=True)
@@ -377,6 +380,10 @@ class RichMaterialTests(unittest.TestCase):
                     self.gateway._onebot_transport.call = self._onebot
                 payload, _ = self._post([segment])
                 self.assertEqual(len(payload["native_user_images"]), 1)
+                image = payload["native_user_images"][0]
+                self.assertEqual(image["source_sender_id"], "404")
+                self.assertEqual(image["source_sender_label"], "原作者")
+                self.assertEqual(image["source_message_id"], "606")
 
     def test_cards_reach_direct_quote_forward_model_payload(self):
         for kind in ("direct", "reply", "forward"):

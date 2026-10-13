@@ -7,12 +7,18 @@ static REVISION: AtomicU64 = AtomicU64::new(0);
 static ACK: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
-pub fn scene_playback_active() -> bool { ACTIVE.load(Ordering::SeqCst) }
+pub fn scene_playback_active() -> bool {
+    ACTIVE.load(Ordering::SeqCst)
+}
 
 #[tauri::command]
 pub fn ack_scene_playback(window: WebviewWindow, revision: u64) -> Result<(), String> {
-    if window.label() != "main" { return Err("desktop_window_required".into()); }
-    if REVISION.load(Ordering::SeqCst) == revision { ACK.store(revision, Ordering::SeqCst); }
+    if window.label() != "main" {
+        return Err("desktop_window_required".into());
+    }
+    if REVISION.load(Ordering::SeqCst) == revision {
+        ACK.store(revision, Ordering::SeqCst);
+    }
     Ok(())
 }
 
@@ -30,7 +36,9 @@ pub fn release_scene_playback(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn claim_scene_playback(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    if window.label() != "scene" { return Err("scene_window_required".into()); }
+    if window.label() != "scene" {
+        return Err("scene_window_required".into());
+    }
     let revision = REVISION.fetch_add(1, Ordering::SeqCst) + 1;
     ACTIVE.store(true, Ordering::SeqCst);
     if let Err(error) = app.emit_to("main", "scene-playback-claim", revision) {
@@ -39,7 +47,9 @@ pub async fn claim_scene_playback(app: AppHandle, window: WebviewWindow) -> Resu
     }
     let start = Instant::now();
     while ACK.load(Ordering::SeqCst) != revision {
-        if REVISION.load(Ordering::SeqCst) != revision { return Err("scene_playback_superseded".into()); }
+        if REVISION.load(Ordering::SeqCst) != revision {
+            return Err("scene_playback_superseded".into());
+        }
         if start.elapsed() > Duration::from_secs(4) {
             release(&app);
             return Err("桌宠尚未完成声音交接，请稍后重新连接。".into());
@@ -49,9 +59,17 @@ pub async fn claim_scene_playback(app: AppHandle, window: WebviewWindow) -> Resu
     Ok(())
 }
 
-pub fn is_scene_write_path(path: &str) -> bool {
-    matches!(path, "scene/actions" | "scene/turn" | "scene/receipts" | "scene/resources/import" | "scene/cancel" | "scene/shop/items/add")
-        || path.starts_with("scene/story/")
+pub fn is_scene_admin_path(path: &str) -> bool {
+    matches!(
+        path,
+        "scene/snapshot"
+            | "scene/actions"
+            | "scene/turn"
+            | "scene/receipts"
+            | "scene/resources/import"
+            | "scene/cancel"
+            | "scene/shop/items/add"
+    ) || path.starts_with("scene/story/")
 }
 
 #[tauri::command]
@@ -74,7 +92,10 @@ pub async fn open_scene_window(app: AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let owner = app.clone();
     window.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed | tauri::WindowEvent::CloseRequested { .. }) {
+        if matches!(
+            event,
+            tauri::WindowEvent::Destroyed | tauri::WindowEvent::CloseRequested { .. }
+        ) {
             release(&owner);
         }
     });

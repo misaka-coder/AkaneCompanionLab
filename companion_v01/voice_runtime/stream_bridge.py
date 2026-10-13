@@ -76,7 +76,7 @@ class VoiceResponseStreamBridge:
     """
 
     _IGNORED_EVENT_TYPES = {
-        "delivery_hint",
+        "speech_mode",
         "final_ui",
         "metadata_ready",
         "speech_chunk",
@@ -99,14 +99,36 @@ class VoiceResponseStreamBridge:
         self._next_segment_index = 0
         self._final_speech: str | None = None
         self._final_memory_metadata: dict[str, Any] | None = None
+        from ..speech_units import VoiceEventReplay
+        self._voice_replay = VoiceEventReplay()
 
     def accept_stream_event(self, stream_event: Mapping[str, Any]) -> VoiceStreamBridgeResult:
         if not isinstance(stream_event, Mapping):
             return self._failed("", "stream_event_must_be_object")
         event_type = str(stream_event.get("type") or "")
+        if event_type == "speech_mode":
+            self._voice_replay.begin_stage()
+        if event_type == "voice_segment":
+            from .speech_artifact import encode_speech_artifact, MEDIA_TYPE
+            accepted = self._voice_replay.accept(stream_event)
+            if accepted is None:
+                return VoiceStreamBridgeResult(status="duplicate", reason="voice_segment_already_accepted", source_event_type=event_type)
+            return self._accept_speech_segment({**accepted, "index": self._next_segment_index,
+                                                "text": encode_speech_artifact(accepted)}, media_type=MEDIA_TYPE)
         if event_type == "speech_segment":
+            if stream_event.get("speech_protocol") == "speech_units_v1":
+                return VoiceStreamBridgeResult(status="ignored", reason="display_text_only", source_event_type=event_type)
             return self._accept_speech_segment(stream_event)
         if event_type == "final":
+            from ..speech_units import voice_segments
+            payload = stream_event.get("payload")
+            segments = voice_segments(payload.get("utterances") if isinstance(payload, Mapping) else None,
+                                      default_emotion=payload.get("emotion", "") if isinstance(payload, Mapping) else "")
+            self._voice_replay.begin_final(segments)
+            for segment in segments:
+                result = self.accept_stream_event(segment)
+                if not result.accepted and result.status != "duplicate":
+                    return result
             return self._accept_final(stream_event)
         if event_type in self._IGNORED_EVENT_TYPES:
             return VoiceStreamBridgeResult(
@@ -116,7 +138,7 @@ class VoiceResponseStreamBridge:
             )
         return self._failed(event_type, "unsupported_stream_event")
 
-    def _accept_speech_segment(self, stream_event: Mapping[str, Any]) -> VoiceStreamBridgeResult:
+    def _accept_speech_segment(self, stream_event: Mapping[str, Any], *, media_type="text/plain; charset=utf-8") -> VoiceStreamBridgeResult:
         event_type = "speech_segment"
         if self._final_speech is not None:
             return self._failed(event_type, "response_stream_already_finalized")
@@ -144,7 +166,7 @@ class VoiceResponseStreamBridge:
             return self._failed(event_type, "voice_response_not_streaming")
 
         unit_key = self._unit_key(index)
-        artifact_result = self._put_text_artifact(unit_key=unit_key, text=text)
+        artifact_result = self._put_text_artifact(unit_key=unit_key, text=text, media_type=media_type)
         if not artifact_result.ok:
             return VoiceStreamBridgeResult(
                 status="failed",
@@ -278,12 +300,12 @@ class VoiceResponseStreamBridge:
             drive_result=drive,
         )
 
-    def _put_text_artifact(self, *, unit_key: str, text: str) -> VoiceTextArtifactResult:
+    def _put_text_artifact(self, *, unit_key: str, text: str, media_type="text/plain; charset=utf-8") -> VoiceTextArtifactResult:
         try:
             result = self.text_artifacts.put_text(
                 artifact_key=f"voice-text:{unit_key}",
                 text=text,
-                media_type="text/plain; charset=utf-8",
+                media_type=media_type,
             )
         except Exception:
             return VoiceTextArtifactResult.failed("text_artifact_write_failed", retryable=True)

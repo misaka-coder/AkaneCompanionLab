@@ -21,7 +21,7 @@ def read_exposure_state(engine, *, base_dir, profile_user_id, session_id, charac
     except Exception:
         return {"ok": False, "status": "unavailable", "reason": "tool_exposure_catalog_unavailable",
                 "scope": public_scope, "preferences": preferences, "tools": []}
-    backend = str(getattr(config_module or config, "MEMORY_BACKEND", "legacy")).lower()
+    backend = str(getattr(config_module or config, "MEMORY_BACKEND", "memcore")).lower()
     manager = getattr(engine, "memcore_manager", None)
     supported = backend == "memcore" and bool(getattr(manager, "available", False))
     baseline = None

@@ -10,6 +10,10 @@ from typing import Any
 
 
 def resolve_payload_character_pack_id(payload):
+    from ..dialogue_targets import trusted_target
+    target = trusted_target(payload)
+    if target is not None:
+        return target.memory_domain
     for key in ("character_pack_id", "characterPackId", "character_pack"):
         value = str((payload or {}).get(key) or "").strip()
         if value:

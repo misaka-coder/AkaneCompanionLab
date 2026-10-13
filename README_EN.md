@@ -4,7 +4,7 @@
 >
 > This project is currently an Alpha preview with known limitations and is not recommended for production environments. Windows provides a repeatable first-run bootstrap and a single unified launcher. Desktop installer packages and native Linux/macOS desktop clients are not yet provided as official release artifacts.
 
-AkaneCompanionLab is a desktop companion-character system featuring a FastAPI backend, a static Web client, a Windows-first Tauri desktop pet, and an interactive Character Workshop for crafting custom characters.
+AkaneCompanionLab is a desktop companion-character system featuring a FastAPI backend, QQ integration, a Windows-first Tauri desktop pet, and an interactive Character Workshop for crafting custom characters.
 
 It is designed not merely as another "clever Q&A chatbot", but as a companion who shares your daily life. Below are the key characteristics that set it apart from ordinary chatbot wrappers—every single one is backed by working code, leaving out unfinished promises.
 
@@ -22,7 +22,7 @@ It is designed not merely as another "clever Q&A chatbot", but as a companion wh
 
 **Skills on-demand loading & model self-authoring hot reload.** The ambient prompt context only holds stable Skill names and activation scenarios. When a task matches, the full `SKILL.md`, references, or executable scripts are loaded dynamically via tools. Scripts reuse the existing Shell runtime, and execution traces seamlessly enter MemCore's tool timeline. Furthermore, the master can instruct the companion to draft, validate, and atomically publish new Skills right inside the execution workspace—taking effect on the very next model turn without restarting the backend. Contract and permission boundaries are documented in [`docs/akane_skills_hot_reload_v1.md`](docs/akane_skills_hot_reload_v1.md).
 
-**One unified backend, multiple front-ends.** Web, desktop pet, and QQ share the same underlying turn engine, but each client adapts presentation and tool capabilities to its native environment (for example, QQ only transmits text, voice messages, and sticker images, omitting full-body portrait rendering, scenes, and BGM).
+**One unified backend, multiple front-ends.** The desktop pet and QQ share the same underlying turn engine, but each client adapts presentation and tool capabilities to its native environment (for example, QQ only transmits text, voice messages, and sticker images, omitting full-body portrait rendering, scenes, and BGM).
 
 **Immersive Scene & Stories ("片刻小屋").** Beyond floating on the desktop corner, the companion can expand into a full immersive room window. Experience dynamic day/night background shifts, interactive dialogues, and multi-act visual stories. Creators can write interactive stories in intuitive Markdown syntax without writing code (see [`docs/story_markdown_guide.md`](docs/story_markdown_guide.md)).
 
@@ -33,7 +33,6 @@ It is designed not merely as another "clever Q&A chatbot", but as a companion wh
 | Component | Status | Description |
 | --- | --- | --- |
 | FastAPI Backend | Usable | For local learning, research, and experimentation |
-| Web Client | Usable | Fully functional; public export bundles default Akane assets |
 | Tauri Desktop Pet | Alpha | Primarily tested and verified on Windows / WebView2 |
 | Immersive Scene & Stories ("片刻小屋") | Alpha | Interactive room, day/night lighting, and multi-act Markdown story player |
 | Computer Use | Alpha | Windows native device control and Chrome bridge under safe leases |
@@ -49,8 +48,7 @@ Unimplemented features return clear error statuses rather than faking success fo
 
 ```mermaid
 flowchart LR
-    Web[Web client] --> API[FastAPI companion backend]
-    Pet[Tauri desktop pet] --> API
+    Pet[Tauri desktop pet] --> API[FastAPI companion backend]
     QQ[Optional QQ / NapCat] --> API
     API --> Memory[MemCore SQLite + optional vector index]
     API --> LLM[Configurable LLM APIs]
@@ -64,8 +62,7 @@ The repository separates source, tools, documentation, and local private data:
 
 - `companion_v01/`: FastAPI backend and core Akane runtime modules
 - `services/`: Shared service clients
-- `web/`: Static Web client served directly by the backend
-- `desktop_pet/`: Legacy Electron desktop pet V0 (frozen for reference)
+- `web/assets/`: Shared artwork for manifests, shop and scenes; no Web client
 - `desktop_pet_next/`: Mainline Tauri / WebView2 desktop pet
 - `desktop_pet_creator_kit/`: Character pack creation and calibration tools
 - `tests/`: Comprehensive test suite
@@ -82,7 +79,7 @@ For standard users on Windows:
 1. Install Python 3.11 or newer (ensure `Add Python to PATH` is checked in the installer).
 2. Double-click `启动_Akane.bat`.
 3. The first launch automatically sets up `.venv`, installs Python dependencies, and generates `.env` for advanced options.
-4. If no LLM is configured yet, the desktop app automatically opens the Control Center "Model" page (or the Web fallback opens settings). Select your provider, detect models, test the API connection, and save.
+4. If no LLM is configured yet, the desktop app automatically opens the Control Center "Model" page. Select your provider, detect models, test the API connection, and save.
 
 After initial setup, simply double-click the same file for daily use.
 
@@ -103,10 +100,10 @@ The launcher defaults to `Auto` mode, targeting the desktop pet:
 - On first run without build artifacts, if Node.js and Rust are detected, it builds and launches the Tauri pet automatically.
 - If desktop prerequisites are missing, it reports the missing tools with clear instructions rather than silently falling back to Web.
 
-You can explicitly choose the client:
+You can explicitly choose desktop or backend-only mode:
 
 ```powershell
-.\start_akane.bat -Mode Web
+.\start_akane.bat -Mode Backend
 .\start_akane.bat -Mode Desktop
 ```
 
@@ -138,12 +135,11 @@ The first double-click of `启动_Akane.bat` proceeds through the following stag
 | Surface | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | FastAPI Backend | Primary validation | Source-runnable (manual setup) | Source-runnable (manual setup) |
-| Web Client | Supported | Supported | Supported |
 | Tauri Desktop Pet / Workshop | Alpha, Windows-first | Not guaranteed | Not guaranteed |
 | QQ / NapCat | Optional | Depends on external NapCat | Depends on external NapCat |
 | Windows System Music / Window Sensing | Supported / structured degradation | Unsupported | Unsupported |
 
-"Multi-front-end" signifies that Web, Windows desktop pet, and QQ share the same backend protocol; it does not promise equal native client maturity across all desktop operating systems.
+"Multi-front-end" signifies that the Windows desktop pet and QQ share the same backend protocol; it does not promise equal native client maturity across all desktop operating systems. The Electron client and backend-served Web chat/preview pages have been retired. Browser automation tools and Vite/Playwright development checks remain available. See [frontend cleanup preparation](docs/frontend_cleanup_preparation_v1.md).
 
 The project does not bundle local LLMs. Cloud APIs offer the lowest hardware barrier; local inference via Ollama depends on user-selected models, VRAM, and quantization settings.
 
@@ -186,11 +182,23 @@ Default backend URL: `http://127.0.0.1:9999`.
 ### Linux / macOS Backend
 
 ```bash
-python3 -m venv .venv
-./.venv/bin/python -m pip install --no-index --find-links ./package_wheels -r requirements.txt
-cp .env.example .env
+python3.11 -m venv .venv
+./.venv/bin/python scripts/install_dependencies.py --profile backend
+cp .env.backend.example .env
+# Configure the model API in .env before starting:
 ./.venv/bin/python launch_akane_memory_v01.py
 ```
+
+Source clones do not contain the maintainer's ignored `package_wheels/`.
+The installer downloads [official package artifacts and matching sources](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13),
+verifies the repository-pinned SHA-256, and installs ordinary wheels.
+Third-party dependencies use your configured public pip index. The `backend`
+profile excludes Chroma, browser, document/media and local ML packages;
+`--profile full` installs optional host dependencies. Existing offline wheelhouse
+and explicit package-index settings remain supported.
+
+See [backend installation](docs/backend_installation_v1.md) and the
+[Linux capability matrix](docs/linux_backend_capabilities_v1.md).
 
 ## Testing & Verification
 

@@ -19,6 +19,13 @@ class _Clock:
 class HostJobStoreTests(unittest.TestCase):
     owner = HostJobOwner("profile", "session")
 
+    def test_database_uses_wal_and_long_busy_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = HostJobStore(Path(temp_dir) / "jobs.db")
+            with store._connect() as connection:
+                self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
+                self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
+
     def _create(self, store: HostJobStore, *, key: str = "call-1", payload: dict | None = None) -> dict:
         return store.create(
             owner=self.owner,

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 from capcore import InvocationContext
 from companion_v01.background_tasks import BackgroundTaskRunner
-from companion_v01.bot_runtime import _dispatch_host_job_completion
+from companion_v01.bot_runtime_components.completion import _dispatch_host_job_completion
 from companion_v01.capability_registry import ExecutorBroker
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.extension_management import ExtensionManagementService, PluginSelectionStore

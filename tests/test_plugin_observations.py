@@ -73,7 +73,7 @@ class ObservationTests(unittest.IsolatedAsyncioTestCase):
         engine._get_prompt_profile_registry = lambda: type("Registry", (), {"resolve": lambda *args, **kwargs: profile})()
         engine.plugin_observations_provider = self.broker.observations.prompt_context
         def prepare():
-            with patch.object(response_builder, "_memory_backend", return_value="legacy"):
+            with patch("config.MEMORY_BACKEND", "legacy"):
                 return response_builder.prepare_context(engine, session_id="session", profile_user_id="owner",
                     character_pack_id="akane", user_message="next move", recent_raw=[],
                     recent_episodic_summaries=[], recent_semantic_summaries=[], confirmed_snippets=[], now_ts=100)

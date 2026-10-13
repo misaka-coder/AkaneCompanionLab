@@ -8,8 +8,7 @@ accidentally shipping runtime data or copyrighted corpora.
 
 - `companion_v01/`: FastAPI backend and Akane runtime modules.
 - `services/`: shared service clients such as LLM and TTS clients.
-- `web/`: legacy/static web frontend served by the backend.
-- `desktop_pet/`: frozen Electron desktop pet V0.
+- `web/assets/`: shared art for backend manifests, shop and scenes; no Web client.
 - `desktop_pet_next/`: Tauri/WebView2 desktop pet mainline.
 - `desktop_pet_creator_kit/`: character pack tooling and templates.
 - `tests/`: Python test suite.
@@ -25,8 +24,7 @@ The root keeps only common entrypoints and configuration:
 
 - `launch_akane_memory_v01.py`
 - `start_akane_next.ps1` / `start_akane_next.bat`
-- `start_akane_preview.ps1`
-- `start_akane_desktop_pet.ps1`
+- `start_akane.bat` / `启动_Akane.bat`: desktop by default; `-Mode Backend` starts only the backend.
 - `run_quick_regression.ps1`
 - `run_qq_workshop_self_check.ps1`
 - `config.py`

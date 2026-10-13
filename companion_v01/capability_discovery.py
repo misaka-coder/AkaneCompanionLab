@@ -18,7 +18,6 @@ from capcore import CapabilityToolSpec
 
 from .capability_discovery_specs import CAPABILITY_LOAD_TOOL_SPEC, CAPABILITY_SEARCH_TOOL_SPEC, CAPABILITY_LIST_TOOL_SPEC, CAPABILITY_INVOKE_TOOL_SPEC
 from .capability_contracts import contract_snapshot, scope_key
-from .native_tool_schema import build_openai_native_tool_from_spec
 from .tool_handlers.core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult
 
 
@@ -105,18 +104,9 @@ class _CatalogEntry:
     def full(self) -> dict[str, Any]:
         payload = _spec_payload(self.spec)
         payload["capability_id"] = self.capability_id
-        payload["contract_ref"] = self.snapshot["contract_ref"]
         guide = getattr(self.handler, "usage_guide", None)
         if callable(guide):
             payload["usage_guide"] = guide()
-        # computer_use is invoked through this loaded canonical schema. Its
-        # native declaration is generated separately by the actual provider
-        # request path; duplicating it here adds no callable interface.
-        if self.capability_id != "computer_use":
-            try:
-                payload["native_schema"] = build_openai_native_tool_from_spec(self.spec)
-            except Exception:
-                payload["native_schema"] = None
         return payload
 
 
@@ -136,6 +126,7 @@ class CapabilityDiscoveryCatalog:
         authorization_profile_user_id: str = "",
         refresh=None,
         refresh_targets=None,
+        resolve_handler=None,
     ) -> None:
         self.profile_user_id = str(profile_user_id or "").strip()
         self.session_id = str(session_id or "").strip()
@@ -146,6 +137,7 @@ class CapabilityDiscoveryCatalog:
         self._cursor_secret = bytes(cursor_secret or b"akane-capability-discovery-v1")
         self._refresh = refresh
         self._refresh_targets = refresh_targets
+        self._resolve_handler = resolve_handler
         self.scope = scope_key(profile_user_id=self.profile_user_id, session_id=self.session_id,
                                character_pack_id=character_pack_id, client_mode=self.client_mode,
                                domain_profile_id=self.domain_profile_id,
@@ -206,7 +198,8 @@ class CapabilityDiscoveryCatalog:
             authorization_profile_user_id=self.authorization_profile_user_id,
             cursor_secret=self._cursor_secret,
             refresh=lambda: self.current().restricted(allowed),
-            refresh_targets=lambda ids: self.current_for(ids).restricted(allowed))
+            refresh_targets=lambda ids: self.current_for(ids).restricted(allowed),
+            resolve_handler=lambda name: self.current_handler(name) if name in allowed else None)
 
     def snapshot(self, capability_id):
         entry = self._by_id.get(capability_id)
@@ -214,6 +207,14 @@ class CapabilityDiscoveryCatalog:
 
     def current_snapshot(self, capability_id):
         return self.current_for((capability_id,)).snapshot(capability_id)
+
+    def current_binding(self, capability_id):
+        current = self.current_for((capability_id,))
+        return current.snapshot(capability_id), current.handler(capability_id)
+
+    def current_handler(self, capability_id):
+        """Resolve authority without serializing or hashing a public catalog."""
+        return self._resolve_handler(capability_id) if self._resolve_handler is not None else self.current_for((capability_id,)).handler(capability_id)
 
     def handler(self, capability_id):
         entry = self._by_id.get(capability_id)
@@ -292,7 +293,7 @@ class CapabilityDiscoveryCatalog:
             "catalog_revision": self.revision,
             "reason": "capability_not_available" if missing else "",
             "recovery_hint": (
-                "已返回的契约可以立即通过 capability_invoke 使用，无需重复加载。缺失 ID 在当前目录不可见；"
+                "已返回的用法可以立即通过 capability_invoke 使用，无需重复加载。缺失 ID 在当前目录不可见；"
                 "可用 capability_list 核对当前 ID，不要据此判断整批能力都不可用。" if capabilities and missing else
                 "请求的 ID 在当前目录不可见；可用 capability_list 核对当前能力，再加载精确 ID。" if missing else ""
             ),
@@ -374,6 +375,7 @@ def build_capability_discovery_handlers(
     authorization_profile_user_id: str = "",
     refresh=None,
     refresh_targets=None,
+    resolve_handler=None,
     search_enabled: bool = True,
 ) -> tuple[dict[str, Any], CapabilityDiscoveryCatalog]:
     catalog = CapabilityDiscoveryCatalog(
@@ -387,6 +389,7 @@ def build_capability_discovery_handlers(
         authorization_profile_user_id=authorization_profile_user_id,
         refresh=refresh,
         refresh_targets=refresh_targets,
+        resolve_handler=resolve_handler,
     )
     return {
         **({CAPABILITY_SEARCH_TOOL_ID: CapabilityDiscoveryToolHandler(catalog, operation="search")} if search_enabled else {}),

@@ -128,6 +128,22 @@ class CachedEmbeddingProvider(BaseEmbeddingProvider):
     def collection_key(self) -> str:
         return self.inner.collection_key()
 
+    def snapshot_runtime(self) -> dict[str, object]:
+        snapshot = getattr(self.inner, "snapshot_runtime", None)
+        state = dict(snapshot()) if callable(snapshot) else {"status": "unavailable"}
+        with self._lock:
+            state["cached_entries"] = len(self._cache)
+            state["cache_max_entries"] = self.max_entries
+        return state
+
+    def close(self, *, timeout: float = 5.0) -> bool:
+        close = getattr(self.inner, "close", None)
+        if callable(close) and close(timeout=timeout) is False:
+            return False
+        with self._lock:
+            self._cache.clear()
+        return True
+
     def embed_text(self, text: str) -> list[float]:
         return self._embed_one("text", text, self.inner.embed_text)
 

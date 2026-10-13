@@ -11,7 +11,6 @@ const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
 const REQUIRED_FILES = [
   "control-center-lab.html",
   "control-center-v2.html",
-  "src/control-center-lab.js",
   "src/control-center/action-router.js",
   "src/control-center/data-sources.js",
   "src/control-center-v2/index.js",
@@ -24,9 +23,13 @@ const REQUIRED_FILES = [
   "scripts/control-center-action-bridge-smoke.mjs",
   "scripts/control-center-runtime-probe.mjs",
   "scripts/control-center-ux-smoke.mjs",
+  "scripts/data-source-modules-smoke.mjs",
+  "scripts/data-source-state-smoke.mjs",
 ];
 
 const FORBIDDEN_LEGACY_FILES = [
+  "src/control-center-lab.js",
+  "src/control-center/action-helpers.js",
   "src/settings.js",
   "src/settings.css",
   "src/control-center-lab.css",
@@ -107,10 +110,19 @@ console.log("=== control-center verification matrix ===\n");
 // 1. File existence check
 checkRequiredFiles();
 
+runStep("data-source modules", ["run", "smoke:data-source-modules"]);
+runStep("data-source failure and request state", ["run", "smoke:data-source-state"]);
+
 // 2. Action bridge smoke
 runStep("smoke actions", ["run", "smoke:control-center-actions"]);
 
 // 2b. V2 real-view-model and action-feedback contract
+runStep("view-model module boundaries", ["run", "smoke:control-center-view-model-modules"]);
+runStep("view-model failure and scope behavior", ["run", "test:control-center-view-model"]);
+runStep("application request ownership", ["run", "test:control-center-app"]);
+runStep("application module boundaries", ["run", "smoke:control-center-app-modules"]);
+runStep("bridge request ownership and lifecycle", ["run", "test:control-center-bridge"]);
+runStep("bridge module boundaries", ["run", "smoke:control-center-bridge-modules"]);
 runStep("smoke V2", ["run", "smoke:control-center-v2"]);
 
 // 3. Runtime probe

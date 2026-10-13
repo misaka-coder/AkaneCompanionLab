@@ -102,12 +102,12 @@ support range. Registration and queue admission do not prove recipient delivery.
    command, and verify the plugin is active. Source tests alone do not prove host integration.
    For a new model tool, use the exact ID from the capability update or
    `capability_list`, call `capability_load(capability_ids=[...])`, then
-   `capability_invoke(capability_id=..., contract_ref=..., arguments={...})`.
+   `capability_invoke(capability_id=..., arguments={...})`.
    Installation does not require a restart or a new conversation. A new tool
    can execute through this fixed entry immediately; loading does not add a
-   native declaration. A resident preference is merged at the host's supported
-   context boundary. If a previously native contract becomes stale, load the
-   current contract and use `capability_invoke` until its declaration is updated.
+   native declaration. Selecting resident takes effect in the next model request.
+   Compatible updates remain callable; correct arguments only when the tool
+   reports a real input error. Version references are managed by the host.
 7. For a published update, stage the new version and install the new stage; the
    previous release stays usable until the new one activates. Use `discard_stage`
    for an unwanted stage, `rollback` for a bad update, and `uninstall` only when the

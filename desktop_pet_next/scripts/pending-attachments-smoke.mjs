@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import vm from "node:vm";
+import vm, { petRuntimeSource, petFunctionSource, petFunctions } from "./pet-production-functions.mjs";
 import { createPendingAttachments } from "../src/pending-attachments.js";
 import { renderChat } from "../src/control-center-v2/components/chat.js";
 
@@ -28,8 +28,8 @@ assert.equal(draft.restore(batch), false);
 finish();
 assert.equal(draft.importing(), 0);
 
-const main = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-const between = (start, end) => main.slice(main.indexOf(start), main.indexOf(end, main.indexOf(start) + start.length));
+const main = petRuntimeSource();
+const between = start => petFunctionSource(/function (\w+)\(/.exec(start)[1]);
 const sent = [];
 let accepted = false;
 const context = { pendingAttachments: draft, sending: true, proactiveWakeRunning: false,

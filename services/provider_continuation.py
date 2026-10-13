@@ -71,16 +71,57 @@ def capture(response: Any, *, bundle: Any, calls: list[dict], extras: dict | Non
     return {"route": route(bundle), "calls": expected, "data": data}
 
 
-def overlay(message: dict, states: dict | None) -> dict:
+def overlay(message: dict, states: dict | None, *, sanitize: Any = None) -> dict:
     calls = batch(message)
     if not calls:
         return message
     state = (states or {}).get(str(calls[0].get("id") or ""))
     if not state:
         return message
+    if callable(sanitize):
+        aligned = align(state, sanitize)
+        if aligned is not state:
+            # Parallel calls share one carrier. Cache its durable comparison
+            # once so history rebuilds do not reclean every earlier batch.
+            for call in state.get("calls", []):
+                identity = str(call.get("id") or "")
+                if states.get(identity) is state:
+                    states[identity] = aligned
+            state = aligned
     if calls != state.get("calls"):
         raise ValueError("provider_continuation_batch_changed")
     return {**message, FIELD: deepcopy(state)}
+
+
+def align(state: Any, sanitize: Any) -> Any:
+    """Cache the host-sanitized batch without changing provider replay data.
+
+    MemCore stores scrubbed arguments; signed provider replay needs the original
+    data. Native blocks already carry those arguments; OpenAI-compatible signed
+    calls retain originals separately only when the host actually changed them.
+    """
+
+    if not isinstance(state, dict) or not callable(sanitize):
+        return state
+    if state.get("_host_aligned"):
+        return state
+    calls = state.get("calls")
+    if not isinstance(calls, list):
+        return state
+    aligned: list[Any] = []
+    for call in calls:
+        if not isinstance(call, dict):
+            aligned.append(call)
+            continue
+        arguments = call.get("arguments")
+        sanitized = sanitize(deepcopy(arguments))
+        if sanitized != arguments:
+            call = {**call, "arguments": sanitized}
+        aligned.append(call)
+    result = {**state, "calls": aligned, "_host_aligned": True}
+    if aligned != calls and state.get("data", {}).get("openai"):
+        result["wire_calls"] = calls
+    return result
 
 
 def carry(source: dict, target: dict, *, bundle: Any = None) -> dict:
@@ -113,8 +154,16 @@ def public_message(message: dict) -> dict:
 def chat_wire_message(message: dict) -> dict:
     result = deepcopy(message)
     extras = wire_data(message, "openai") or {}
-    result.pop(FIELD, None)
+    state = result.pop(FIELD, {})
+    originals = {
+        original.get("id"): original.get("arguments")
+        for original, projected in zip(state.get("wire_calls", []), state.get("calls", []))
+        if original.get("arguments") != projected.get("arguments")
+    } if extras else {}
     for call in result.get("tool_calls", []):
+        if call.get("id") in originals:
+            arguments = originals[call["id"]]
+            call["function"]["arguments"] = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
         if call.get("id") in extras:
             call["extra_content"] = deepcopy(extras[call["id"]])
     return result

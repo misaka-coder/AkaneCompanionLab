@@ -4,7 +4,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,15 +21,10 @@ from companion_v01.execution_specs import (
     EXEC_STATUS_RUNNING,
 )
 from companion_v01.skill_runtime import SkillRegistry
+from tests.test_execution_local import _python_command
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_SOURCE = ROOT / "skills" / "coding-project"
-
-
-def _python_command(code: str) -> str:
-    if os.name == "nt":
-        return subprocess.list2cmdline([sys.executable, "-c", code])
-    return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
 class CodingProjectSkillTests(unittest.TestCase):
@@ -243,8 +237,11 @@ class CodingLoopSmokeTests(unittest.TestCase):
         fail = _python_command("import sys;sys.exit(3)")
         ok = _python_command("print('last-step-ok')")
         if os.name == "nt":
-            masked = self._run(f"{fail} & {ok}", initial_wait_seconds=5)
-            propagated = self._run(f"{fail} && {ok}", initial_wait_seconds=5)
+            masked = self._run(f"{fail}; {ok}", initial_wait_seconds=5)
+            propagated = self._run(
+                f"{fail}; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}; {ok}",
+                initial_wait_seconds=5,
+            )
         else:
             masked = self._run(f"{fail}; {ok}", initial_wait_seconds=5)
             propagated = self._run(f"set -e; {fail}; {ok}", initial_wait_seconds=5)

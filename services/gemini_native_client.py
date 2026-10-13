@@ -143,6 +143,7 @@ class _GeminiStream:
     def __init__(self, *, response: requests.Response, model: str) -> None:
         self._response = response
         self._model = model
+        self.model = model
         self.usage: Any = None
         self._closed = False
         self.provider_content: list[dict[str, Any]] = []
@@ -160,6 +161,7 @@ class _GeminiStream:
                 if usage is not None:
                     self.usage = usage
                 model = str(payload.get("modelVersion") or self._model)
+                self.model = model
                 candidates = payload.get("candidates") or []
                 if not isinstance(candidates, list) or not candidates:
                     continue
@@ -815,6 +817,7 @@ def _gemini_usage(value: Any) -> Any:
         total_tokens=total_tokens,
         prompt_tokens_details=SimpleNamespace(cached_tokens=cached_tokens),
         cache_read_input_tokens=cached_tokens,
+        _akane_cache_read_reported=value.get("cachedContentTokenCount") is not None,
         cache_creation_input_tokens=0,
     )
 

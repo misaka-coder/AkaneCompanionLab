@@ -18,6 +18,7 @@ DESKTOP_PET_DEFAULT_EMOTION = "正常"
 
 DESKTOP_PET_CAPABILITIES = (
     "speech_segments",
+    "speech_units_v1",
     "desktop_context",
     "screen_vision",
     "tts",

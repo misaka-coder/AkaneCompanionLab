@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>五子棋 · 同伴对弈</title>
+    <link rel="stylesheet" href="/src/gomoku.css" />
+  </head>
+  <body>
+    <div id="app" class="gomoku-app">
+      <main class="gomoku-window" id="gomoku-window">
+        <!-- 顶部控制栏 -->
+        <header class="gomoku-header" data-tauri-drag-region>
+          <div class="header-title-group" data-tauri-drag-region>
+            <span class="header-icon" data-tauri-drag-region>🎮</span>
+            <strong class="header-title" data-tauri-drag-region>五子棋</strong>
+            <select id="mode-select" class="mode-select" title="切换对战模式">
+              <option value="duel" selected>宿命对决</option>
+              <option value="assist">军师参谋</option>
+            </select>
+            <select id="color-select" class="mode-select color-select" title="选择执子方（黑棋先手 / 白棋后手）">
+              <option value="1" selected>● 执黑(先)</option>
+              <option value="2">○ 执白(后)</option>
+            </select>
+          </div>
+          <div class="header-actions">
+            <button id="btn-undo" class="tool-btn" type="button" title="悔棋 2 步">↩️</button>
+            <button id="btn-reset" class="tool-btn" type="button" title="重新开局">🔄</button>
+            <button id="btn-close" class="tool-btn close-btn" type="button" title="关闭棋盘">✕</button>
+          </div>
+        </header>
+
+        <!-- 棋盘主体 -->
+        <section class="board-container" id="board-container">
+          <div class="board-frame" id="board-frame">
+            <!-- 顶栏列字母刻度 A-O -->
+            <div class="col-labels" id="col-labels"></div>
+
+            <div class="board-inner">
+              <!-- 左栏行数字刻度 1-15 -->
+              <div class="row-labels" id="row-labels"></div>
+
+              <!-- 15x15 交互棋盘 -->
+              <div class="board-grid" id="board-grid" aria-label="五子棋盘">
+                <!-- 交叉线与星位由 CSS/SVG 生成 -->
+                <div class="grid-lines"></div>
+                <!-- 棋子与悬停准星由 JS 动态挂载 -->
+                <div class="pieces-layer" id="pieces-layer"></div>
+                <div class="hover-reticle" id="hover-reticle" hidden></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 底部状态指示胶囊 -->
+        <footer class="gomoku-footer">
+          <div class="status-capsule" id="status-capsule">
+            <span class="status-stone" id="status-stone">●</span>
+            <span class="status-text" id="status-text">玩家执黑 (第 1 手)</span>
+          </div>
+          <button id="btn-ask-help" class="ask-help-btn" type="button" hidden title="向伴侣请教这一手的战术建议">
+            💡 求助伴侣
+          </button>
+          <button id="btn-retry" class="ask-help-btn" type="button" hidden>重试</button>
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/src/gomoku.js"></script>
+  </body>
+</html>

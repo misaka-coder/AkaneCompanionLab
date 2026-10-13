@@ -7,20 +7,28 @@ const { chromium } = await import(process.env.AKANE_PLAYWRIGHT_MODULE || "playwr
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Exercise production DOM and event handlers with deferred I/O at the Tauri boundary.
 // This fixture never writes a real character pack or activates a desktop character.
-let source = await readFile(resolve(root, "src/workshop.js"), "utf8");
-source = source.replace(/^import[\s\S]*?from "@tauri[^\n]*\n/gm, "")
-  .replace('import "./workshop.css";', '')
-  .replace('const isTauriRuntime = Boolean(window.__TAURI_INTERNALS__);', 'const isTauriRuntime = true;')
-  .replace('const appWindow = isTauriRuntime ? getCurrentWindow() : null;', 'const appWindow = null;')
-  .replace('boot();', 'bindUi(); bindInstanceStorage("workshop-smoke");');
-source = `const invoke = (...args) => window.fixtureInvoke(...args);\nconst tauriFetch = (...args) => window.fixtureFetch(...args);\n` + source + `
-window.workshop = { view, switchTab, saveCalibration, saveDraft, loadDraft, autoSaveDraft,
-  loadCalibrationTab, loadCalibrationOutfitPreview, normalizePacks, findPack,
-  sendTestChatMessage, resetTestChatSession, clearDraft,
-  refreshPacks, applySnapshot, applyPack, openCreateDialog, createCharacterPack,
-  openContextLibraryDialog, createContextLibrary, importPack, exportPack,
-  render, calibrationPreview, loadPortraitsTab, createOutfit, setDefaultPortrait, previewEmotion, runPortraitCutoutForPreview,
-  ready: () => calibrationReadyTarget, clearImages: () => portraitImageUrlCache.clear() };
+const source = `
+import { createWorkshopApplication } from "/src/workshop/application.js";
+import { normalizePacks } from "/src/workshop/pack-model.js";
+import { bindInstanceStorage } from "/src/instance-storage.js";
+const application = createWorkshopApplication({ platform: {
+  isTauriRuntime: true, appWindow: null,
+  invoke: (...args) => window.fixtureInvoke(...args),
+  tauriFetch: (...args) => window.fixtureFetch(...args),
+  emit: async () => {}, emitTo: async () => {}, listen: async () => () => {},
+} });
+const { features, state, view } = application;
+features.bindings.bindUi();
+bindInstanceStorage("workshop-smoke");
+window.workshop = {
+  view, normalizePacks,
+  ...features.selection, ...features.persona, ...features.catalog,
+  ...features.contextLibraries, ...features.stories, ...features.portraits,
+  ...features.portraitCutout, ...features.calibration, ...features.testChat,
+  ...features.navigation, ...features.renderer,
+  ready: () => state.calibrationState.calibrationReadyTarget,
+  clearImages: () => state.assetState.portraitImageUrlCache.clear(),
+};
 `;
 const html = (await readFile(resolve(root, "workshop.html"), "utf8"))
   .replace('</head>', '<link rel="stylesheet" href="/src/workshop.css"></head>');
@@ -418,6 +426,68 @@ try {
   assert.equal(await page.evaluate(() => workshop.loadDraft('a').identity.name), 'draft survives removed pack');
   assert.equal(await page.locator('#persona-empty-state').isVisible(), true);
   assert.equal(await page.evaluate(() => workshop.view.workspacePackId), '');
+  // Story reads and creation must retain the selected pack and dialog ownership.
+  const storyFailures = [];
+  const story = id => ({ story_id: id, title: `fixture story ${id}`, file_name: `${id}.md`, size_bytes: 100, path: `fixture-${id}.md` });
+  await page.evaluate(() => {
+    workshop.view.packs = workshop.normalizePacks(['a', 'b'].map(id => ({ id, profile: { identity: { name: id } } })));
+    workshop.switchTab('stories', 'a'); workshop.switchTab('stories', 'b');
+  });
+  await page.evaluate(item => {
+    const index = pending.findIndex(p => p.command === 'list_character_stories' && p.args.packId === 'b');
+    pending.splice(index, 1)[0].resolve([item]);
+  }, story('b'));
+  await page.waitForFunction(() => document.querySelector('#stories-list').textContent.includes('fixture story b'));
+  await page.evaluate(item => resolveNext('list_character_stories', [item]), story('a'));
+  if (!(await page.locator('#stories-list').textContent()).includes('fixture story b')) storyFailures.push('old story success overwrites selected pack');
+  await page.evaluate(() => { workshop.switchTab('stories', 'a'); workshop.switchTab('stories', 'b'); });
+  await page.evaluate(item => {
+    const index = pending.findIndex(p => p.command === 'list_character_stories' && p.args.packId === 'b');
+    pending.splice(index, 1)[0].resolve([item]);
+  }, story('b'));
+  await page.waitForFunction(() => document.querySelector('#stories-list').textContent.includes('fixture story b'));
+  await page.evaluate(() => resolveNext('list_character_stories', 'fixture old story failure', true));
+  if (!(await page.locator('#stories-list').textContent()).includes('fixture story b')) storyFailures.push('old story failure overwrites selected pack');
+  await page.locator('#create-story-btn').click();
+  await page.locator('#story-title-input').fill('fixture B creation');
+  await page.locator('#story-id-input').fill('fixture_b');
+  await page.locator('#story-form button[type=submit]').click();
+  await page.evaluate(() => { void workshop.createStory(); });
+  if (await page.evaluate(() => calls.filter(c => c.command === 'create_character_story_template').length) !== 1) storyFailures.push('duplicate story creation reaches native bridge');
+  await page.locator('#story-dialog-cancel').click();
+  await page.evaluate(item => { workshop.switchTab('stories', 'a'); resolveNext('list_character_stories', [item]); }, story('a'));
+  await page.locator('#create-story-btn').click();
+  await page.locator('#story-title-input').fill('fixture A dialog');
+  await page.evaluate(() => resolveNext('create_character_story_template', 'fixture-b.md'));
+  if (!(await page.locator('#story-dialog').evaluate(el => el.open))) storyFailures.push('old story creation closes a newer dialog');
+  await page.evaluate(item => {
+    const index = pending.findIndex(p => p.command === 'list_character_stories');
+    if (index >= 0) pending.splice(index, 1)[0].resolve([item]);
+  }, story('b'));
+  assert.deepEqual(storyFailures, [], 'story operations preserve current selection and dialog');
+  await page.locator('#story-id-input').fill('fixture_a');
+  await page.locator('#story-form button[type=submit]').click();
+  assert.equal(await page.locator('#story-title-input').isDisabled(), true, 'story write exposes busy state');
+  await page.evaluate(() => resolveNext('create_character_story_template', 'fixture-a.md'));
+  await page.waitForFunction(() => pending.some(p => p.command === 'list_character_stories'));
+  await page.evaluate(item => resolveNext('list_character_stories', [item]), story('a'));
+  await page.waitForFunction(() => pending.some(p => p.command === 'open_local_file'));
+  await page.evaluate(() => resolveNext('open_local_file', null));
+  await page.waitForFunction(() => !document.querySelector('#story-title-input').disabled);
+  assert.equal(await page.locator('#story-dialog').evaluate(el => el.open), false, 'current story success closes its own dialog');
+  await page.locator('#create-story-btn').click();
+  await page.locator('#story-title-input').fill('fixture rejected story');
+  await page.locator('#story-id-input').fill('fixture_rejected');
+  await page.locator('#story-form button[type=submit]').click();
+  await page.evaluate(() => resolveNext('create_character_story_template', 'fixture story write failure', true));
+  await page.waitForFunction(() => !document.querySelector('#story-title-input').disabled);
+  assert.match(await page.locator('#story-dialog-error').textContent(), /fixture story write failure/);
+  assert.equal(await page.locator('#story-dialog').evaluate(el => el.open), true, 'current story failure keeps its form available');
+  await page.locator('#story-form button[type=submit]').click();
+  await page.evaluate(() => resolveNext('create_character_story_template', null));
+  await page.waitForFunction(() => !document.querySelector('#story-title-input').disabled);
+  assert.match(await page.locator('#story-dialog-error').textContent(), /无效结果/);
+  assert.equal(await page.locator('#story-dialog').evaluate(el => el.open), true, 'invalid native result is not a successful creation');
   assert.deepEqual(errors, [], 'no uncaught browser errors');
-  console.log('workshop browser smoke passed: calibration geometry/ownership, persona drafts, test request isolation, portrait mutations, refresh/write races, dialog ownership, import/export, removed-pack empty state; 0 page errors');
+  console.log('workshop browser smoke passed: calibration geometry/ownership, persona drafts, test request isolation, portrait mutations, refresh/write races, dialog ownership, import/export, removed-pack empty state, story read/write ownership and failure states; 0 page errors');
 } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

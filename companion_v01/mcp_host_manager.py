@@ -12,6 +12,7 @@ import threading
 import time
 from uuid import uuid4
 from typing import Any, Mapping
+from capcore import CapabilityToolSpec, validate_tool_spec_args
 
 from capcore_adapter_mcp import (
     McpClientError,
@@ -20,6 +21,7 @@ from capcore_adapter_mcp import (
     McpStdioServerConfig,
     McpStreamableHttpServerConfig,
     McpToolRecord,
+    McpToolContractError,
 )
 
 from .local_capability_config import (
@@ -59,6 +61,19 @@ def _config_fingerprint(config: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def _tool_record_from_config(tool: Mapping[str, Any]) -> McpToolRecord:
+    return McpToolRecord(name=str(tool.get("name") or ""), description=str(tool.get("description") or ""),
+                         input_schema=tool.get("inputSchema"), output_schema=tool.get("outputSchema"),
+                         annotations=tool.get("annotations"), raw=dict(tool))
+
+
+def _catalog_fingerprint(tools) -> str:
+    public = [{key: tool.get(key) or ("" if key in {"name", "description"} else {})
+               for key in ("name", "description", "inputSchema", "outputSchema", "annotations")} for tool in tools]
+    return hashlib.sha256(json.dumps(sorted(public, key=lambda tool: tool["name"]),
+                                    ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 class McpHostManager:
     """Own pooled MCP clients on one stable Host event loop."""
 
@@ -74,11 +89,32 @@ class McpHostManager:
         self._statuses: dict[tuple[str, str], dict[str, Any]] = {}
         self._contract_boot = uuid4().hex
         self._contract_epochs: dict[tuple[str, str], int] = {}
+        self._confirmed_catalogs: dict[tuple[str, str], tuple[str, tuple[dict[str, Any], ...], str]] = {}
+        self._discover_tasks: dict[tuple[str, str, str, str], asyncio.Task] = {}
+        self.catalog_sink = None
         atexit.register(self.close)
 
     def contract_revision(self, *, profile_user_id: str, server_id: str) -> str:
         with self._lock:
             return f"{self._contract_boot}:{self._contract_epochs.get((profile_user_id, server_id), 0)}"
+
+    def confirmed_tools(self, *, profile_user_id: str, server_id: str, server_config: Mapping[str, Any]):
+        with self._lock:
+            value = self._confirmed_catalogs.get((profile_user_id, server_id))
+            if (value is not None and value[0] == _config_fingerprint(server_config)
+                    and _catalog_fingerprint(server_config.get("tools") or []) in
+                    {value[2], _catalog_fingerprint(value[1])}):
+                return tuple(dict(tool) for tool in value[1])
+        return None
+
+    def _remember_tools(self, profile_user_id, server_id, config, tools, expected_revision):
+        records = tuple(_tool_record_mapping(tool) for tool in tools)
+        with self._lock:
+            if expected_revision != self.contract_revision(profile_user_id=profile_user_id, server_id=server_id):
+                return False
+            self._confirmed_catalogs[(profile_user_id, server_id)] = (
+                _config_fingerprint(config), records, _catalog_fingerprint(config.get("tools") or []))
+        return True
 
     def client(
         self,
@@ -148,6 +184,7 @@ class McpHostManager:
         tool_name: str,
         arguments: Mapping[str, Any],
         expected_revision: str = "",
+        expected_tool: McpToolRecord | None = None,
     ) -> Mapping[str, Any]:
         future = self._submit(
             self._call_tool(
@@ -157,6 +194,7 @@ class McpHostManager:
                 tool_name=tool_name,
                 arguments=arguments,
                 expected_revision=expected_revision,
+                expected_tool=expected_tool,
             )
         )
         return await asyncio.wrap_future(future)
@@ -230,7 +268,30 @@ class McpHostManager:
         server_id: str,
         server_config: Mapping[str, Any],
     ) -> dict[str, Any]:
-        self._mark(profile_user_id, server_id, status="starting", reason="")
+        revision = self.contract_revision(profile_user_id=profile_user_id, server_id=server_id)
+        key = (profile_user_id, server_id, _config_fingerprint(server_config), revision)
+        task = self._discover_tasks.get(key)
+        if task is None:
+            task = asyncio.create_task(self._discover_once(profile_user_id=profile_user_id,
+                server_id=server_id, server_config=server_config, expected_revision=revision))
+            self._discover_tasks[key] = task
+            task.add_done_callback(lambda finished: self._finish_discovery(key, finished))
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done() and self._discover_tasks.get(key) is task:
+                self._discover_tasks.pop(key, None)
+
+    def _finish_discovery(self, key, task):
+        if self._discover_tasks.get(key) is task:
+            self._discover_tasks.pop(key, None)
+        if not task.cancelled():
+            task.exception()
+
+    async def _discover_once(self, *, profile_user_id, server_id, server_config, expected_revision):
+        if expected_revision != self.contract_revision(profile_user_id=profile_user_id, server_id=server_id):
+            raise McpClientError("mcp_config_changed_during_discovery")
+        self._mark_current(profile_user_id, server_id, expected_revision, status="starting", reason="")
         server = self._runtime_server(profile_user_id, server_id, server_config)
         try:
             if isinstance(server, McpStreamableHttpServerConfig):
@@ -241,11 +302,14 @@ class McpHostManager:
                 tools = await self._stdio.list_tools(server)
         except Exception as exc:
             reason = mcp_failure_reason(exc, fallback="mcp_tools_list_failed")
-            self._mark(profile_user_id, server_id, status="error", reason=reason)
+            self._mark_current(profile_user_id, server_id, expected_revision, status="error", reason=reason)
             raise McpClientError(reason) from exc
-        self._mark(
+        if not self._remember_tools(profile_user_id, server_id, server_config, tools, expected_revision):
+            raise McpClientError("mcp_config_changed_during_discovery")
+        self._mark_current(
             profile_user_id,
             server_id,
+            expected_revision,
             status="ready",
             reason="",
             fingerprint=_config_fingerprint(server_config),
@@ -265,23 +329,69 @@ class McpHostManager:
         tool_name: str,
         arguments: Mapping[str, Any],
         expected_revision: str = "",
+        expected_tool: McpToolRecord | None = None,
     ) -> Mapping[str, Any]:
         if expected_revision and expected_revision != self.contract_revision(profile_user_id=profile_user_id, server_id=server_id):
-            raise McpClientError("capability_contract_stale")
+            raise McpClientError("executor_runtime_changed")
         server = self._runtime_server(profile_user_id, server_id, server_config)
+        revision = expected_revision or self.contract_revision(profile_user_id=profile_user_id, server_id=server_id)
+        transport = self._http if isinstance(server, McpStreamableHttpServerConfig) else self._stdio
+        assert transport is not None
         try:
-            if isinstance(server, McpStreamableHttpServerConfig):
-                assert self._http is not None
-                result = await self._http.call_tool(server, tool_name, arguments)
-            else:
-                assert self._stdio is not None
-                result = await self._stdio.call_tool(server, tool_name, arguments)
+            try:
+                result = await transport.call_tool(server, tool_name, arguments, expected_tool=expected_tool)
+            except McpToolContractError:
+                # The transport guarantees no tools/call was sent. Resolve its
+                # confirmed declaration, rather than asking the model to renew
+                # a public fingerprint. Never replay a dispatched/unknown call.
+                current = next((tool for tool in transport.confirmed_tools(server) or () if tool.name == tool_name), None)
+                if current is None:
+                    raise McpClientError("mcp_tool_not_available")
+                # Read-only hints are not trusted for host authorization. Only
+                # newly declared effects can require stronger admission here.
+                policy_hints = ("destructiveHint", "openWorldHint")
+                if expected_tool is None or any(
+                    (current.annotations or {}).get(key) is True
+                    and (expected_tool.annotations or {}).get(key) is not True
+                    for key in policy_hints
+                ):
+                    raise McpClientError("mcp_tool_policy_changed: current safety hints must be admitted by the host")
+                spec = CapabilityToolSpec(capability_id="mcp.current", display_name=tool_name, description="",
+                    input_schema=dict(current.input_schema or {}), risk="low", confirm="never", effects=(), visible_in=())
+                validation = validate_tool_spec_args(spec, arguments)
+                if not validation.ok:
+                    details = [{"field":error.argument, "reason":error.code, "detail":error.detail}
+                               for error in validation.errors]
+                    raise McpClientError("mcp_tool_arguments_invalid: " + json.dumps(details, ensure_ascii=False))
+                result = await transport.call_tool(server, tool_name, arguments, expected_tool=current)
+        except McpToolContractError as exc:
+            self._mark_current(profile_user_id, server_id, revision, status="ready", reason="",
+                               contractStatus="changed")
+            raise McpClientError("mcp_tool_declaration_changed_before_dispatch") from exc
         except Exception as exc:
             reason = mcp_failure_reason(exc, fallback="mcp_tool_call_failed")
-            self._mark(profile_user_id, server_id, status="error", reason=reason)
+            self._mark_current(profile_user_id, server_id, revision, status="error", reason=reason)
             raise McpClientError(reason) from exc
-        self._mark(profile_user_id, server_id, status="ready", reason="")
+        finally:
+            tools = transport.confirmed_tools(server)
+            if tools is not None and self._remember_tools(profile_user_id, server_id, server_config, tools, revision):
+                sink = self.catalog_sink
+                if callable(sink):
+                    try:
+                        await asyncio.to_thread(sink, profile_user_id, server_id, server_config,
+                                                tuple(_tool_record_mapping(tool) for tool in tools), revision)
+                    except Exception:
+                        self._mark_current(profile_user_id, server_id, revision,
+                                           catalogReason="mcp_catalog_persist_failed")
+        self._mark_current(profile_user_id, server_id, revision, status="ready", reason="")
         return result
+
+    def _mark_current(self, profile_user_id, server_id, expected_revision, **fields):
+        with self._lock:
+            if expected_revision == self.contract_revision(profile_user_id=profile_user_id, server_id=server_id):
+                value = dict(self._statuses.get((profile_user_id, server_id)) or {"status": "starting", "reason": ""})
+                value.pop("updatedAt", None)
+                self._mark(profile_user_id, server_id, **{**value, **fields})
 
     async def _close_server(
         self,
@@ -359,11 +469,12 @@ class McpHostManager:
                 raise McpClientError("mcp_host_manager_closed")
             return
         with self._lock:
-            if not self._ready.is_set():
-                if self._closed:
-                    raise McpClientError("mcp_host_manager_closed")
-                self._thread = threading.Thread(target=self._run_loop, name="akane-mcp-host", daemon=True)
-                self._thread.start()
+            if self._closed:
+                raise McpClientError("mcp_host_manager_closed")
+            if not self._ready.is_set() and self._thread is None:
+                thread = threading.Thread(target=self._run_loop, name="akane-mcp-host", daemon=True)
+                thread.start()
+                self._thread = thread
         if not self._ready.wait(timeout=3.0):
             raise McpClientError("mcp_host_worker_start_timeout")
 
@@ -396,15 +507,12 @@ class ManagedMcpClient:
         self.server_id = str(server_id)
         self.server_config = dict(server_config)
         self._contract_revision = manager.contract_revision(profile_user_id=self.profile_user_id, server_id=self.server_id)
+        self._tools = tuple(_tool_record_from_config(tool) for tool in self.server_config.get("tools") or [])
 
     async def list_tools(self, _server: Any) -> tuple[McpToolRecord, ...]:
         if self._contract_revision != self.manager.contract_revision(profile_user_id=self.profile_user_id, server_id=self.server_id):
-            raise McpClientError("capability_contract_stale")
-        return await self.manager.alist_tools(
-            profile_user_id=self.profile_user_id,
-            server_id=self.server_id,
-            server_config=self.server_config,
-        )
+            raise McpClientError("executor_runtime_changed")
+        return self._tools
 
     async def call_tool(self, _server: Any, tool_name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         return await self.manager.acall_tool(
@@ -414,6 +522,7 @@ class ManagedMcpClient:
             tool_name=tool_name,
             arguments=arguments,
             expected_revision=self._contract_revision,
+            expected_tool=next((tool for tool in self._tools if tool.name == tool_name), None),
         )
 
     async def aclose(self) -> None:
@@ -428,6 +537,7 @@ class McpManagementService:
         self.manager = manager
         self._locks_guard = threading.RLock()
         self._server_locks: dict[tuple[str, str], threading.RLock] = {}
+        self.manager.catalog_sink = self._persist_invocation_catalog
         try:
             self.migration_status = migrate_legacy_profile_mcp_servers(base_dir=self.base_dir)
         except Exception:
@@ -441,6 +551,25 @@ class McpManagementService:
         key = (str(profile_user_id), str(server_id))
         with self._locks_guard:
             return self._server_locks.setdefault(key, threading.RLock())
+
+    def _persist_invocation_catalog(self, profile_user_id, server_id, config, tools, revision):
+        with self._server_lock("__host__", server_id):
+            current = get_mcp_server_runtime_config(base_dir=self.base_dir, profile_user_id=profile_user_id, server_id=server_id)
+            if (not current or not current.get("enabled") or _config_fingerprint(current) != _config_fingerprint(config)
+                    or self.manager.contract_revision(profile_user_id=profile_user_id, server_id=server_id) != revision
+                    or _catalog_fingerprint(current.get("tools") or []) not in
+                    {_catalog_fingerprint(config.get("tools") or []), _catalog_fingerprint(tools)}):
+                return
+            normalized = normalize_mcp_tool_discovery_payload(server_id, {"tools": list(tools)})
+            previous = {str(tool.get("name") or ""): tool for tool in current.get("tools") or []}
+            merged = [{**tool, **{key: previous.get(tool["name"], {})[key]
+                       for key in ("risk", "confirm", "effects", "modelVisible", "promptExposed")
+                       if key in previous.get(tool["name"], {})}} for tool in normalized.get("tools") or []]
+            if normalized.get("ok") and merged != list(current.get("tools") or []):
+                result = save_mcp_server_discovery(base_dir=self.base_dir, profile_user_id=profile_user_id,
+                                                   server_id=server_id, payload={"tools": merged})
+                if not result.get("ok"):
+                    raise McpClientError("mcp_catalog_persist_failed")
 
     def list(self, *, profile_user_id: str) -> dict[str, Any]:
         payload = list_mcp_server_configs(base_dir=self.base_dir, profile_user_id=profile_user_id)

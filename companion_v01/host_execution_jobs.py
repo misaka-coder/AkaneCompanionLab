@@ -47,10 +47,14 @@ class HostExecutionJobRuntime:
         store: HostJobStore,
         conversation_ref_issuer: Callable[[ToolExecutionContext], str] | None,
         completion_publisher: Callable[[HostJob], Any] | None = None,
+        completion_work: Any = None,
+        turn_coordinator: Any = None,
     ) -> None:
         self.store = store
         self.conversation_ref_issuer = conversation_ref_issuer
         self.completion_publisher = completion_publisher
+        self.completion_work = completion_work
+        self.turn_coordinator = turn_coordinator
         self._runs: dict[str, _TrackedRun] = {}
         self._lock = threading.RLock()
 
@@ -91,17 +95,19 @@ class HostExecutionJobRuntime:
                 "reason": "job_conversation_context_unavailable",
             }
         job_owner = HostJobOwner(context.profile_user_id, context.session_id)
+        parent_token = self.turn_coordinator.active_token(context.profile_user_id, context.session_id) if self.turn_coordinator is not None else ""
         created = self.store.create(
             owner=job_owner,
             capability_source=HOST_EXECUTION_JOB_SOURCE,
             capability_id="exec_run",
-            payload={"run_id": run_id},
+            payload={"run_id": run_id, **({"parent_turn_token": parent_token} if parent_token else {})},
             idempotency_key=run_id,
             argument_fingerprint=str(argument_fingerprint or ""),
             character_pack_id=context.character_pack_id,
             channel=context.client_mode,
             delivery_target=conversation_ref,
-            tool_call_id=run_id,
+            turn_id=str(context.request_context.get("_host_origin_turn_id") or ""),
+            tool_call_id=str(context.invocation_id or run_id),
             completion_mode="silent",
             # Synchronous completion is already paired in the calling turn.
             # arm_agent_completion promotes this only after exec_run yields.
@@ -133,6 +139,35 @@ class HostExecutionJobRuntime:
                 claim_token=str(claimed.get("claim_token") or ""),
             )
         return {"ok": True, "status": "running", "tracked": True, "job_id": job_id}
+
+    def track_result(self, *, context, run_id, reader, wait=True):
+        if self.completion_work is None:
+            return
+        job = self.store.get_by_key(owner=HostJobOwner(context.profile_user_id, context.session_id),
+            capability_source=HOST_EXECUTION_JOB_SOURCE, capability_id="exec_run", idempotency_key=run_id)
+        if job is not None:
+            self.completion_work.track(job, read=reader, wait=wait)
+
+    def observe_query(self, *, context, mapped):
+        """Terminal observation suppresses a notice, never a later output page."""
+        if not self.accepts(context) or context.result_consumer != "model":
+            return
+        job = self.store.get_by_key(owner=HostJobOwner(context.profile_user_id, context.session_id),
+            capability_source=HOST_EXECUTION_JOB_SOURCE, capability_id="exec_run",
+            idempotency_key=str(mapped.data.get("run_id") or ""))
+        if job is None or (job.character_pack_id, job.channel) != (context.character_pack_id, context.client_mode):
+            return
+        if self.completion_work is not None:
+            self.completion_work.observe(job, mapped)
+        from .execution_specs import EXEC_TERMINAL_STATUSES
+        ended = mapped.event_status in EXEC_TERMINAL_STATUSES or (
+            mapped.event_status == "already_ended" and mapped.reason in EXEC_TERMINAL_STATUSES)
+        consumed_by = str(context.request_context.get("_host_origin_turn_id") or context.invocation_id or "")
+        if ended and job.status in {"running", "succeeded", "failed", "cancelled"} and consumed_by:
+            if self.completion_work is not None:
+                self.completion_work.query(job, consumed_by=consumed_by, terminal_observed=True)
+            else:
+                self.store.consume_model_completion(job, consumed_by=consumed_by, terminal_observed=True)
 
     def observe_start(
         self,

@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -27,6 +28,15 @@ class SettingsCatalogDriftTests(unittest.TestCase):
         fields = set(config.Settings.model_fields.keys())
         stale = sc.declared_keys() - fields
         self.assertEqual(stale, set(), f"catalog declares fields that no longer exist: {sorted(stale)}")
+
+    def test_fixed_memory_backend_is_not_advertised_as_a_setting(self) -> None:
+        self.assertEqual(config.MEMORY_BACKEND, "memcore")
+        self.assertNotIn("MEMORY_BACKEND", config.Settings.model_fields)
+        self.assertNotIn("MEMORY_BACKEND", sc.declared_keys())
+        catalog = sc.build_settings_catalog()
+        self.assertNotIn("MEMORY_BACKEND", {
+            entry["key"] for group in catalog["categories"] for entry in group["settings"]
+        })
 
     def test_scopes_are_valid(self) -> None:
         catalog = sc.build_settings_catalog()
@@ -79,6 +89,28 @@ class SettingsCatalogDriftTests(unittest.TestCase):
         self.assertEqual(entries["VISION_BASE_URL"]["managedIn"], sc.MANAGED_MODEL_SERVICE)
         self.assertFalse(entries["VISION_BASE_URL"]["editable"])
 
+    def test_memcore_compaction_settings_catalog_entries(self) -> None:
+        for mode, trigger in (("chat_prefix", 123456), ("independent", 0)):
+            with self.subTest(mode=mode, trigger=trigger):
+                catalog = sc.build_settings_catalog(
+                    SimpleNamespace(
+                        MEMCORE_COMPACTION_REQUEST_MODE=mode,
+                        MEMCORE_WORKING_TOKEN_TRIGGER=trigger,
+                    )
+                )
+                entries = {e["key"]: e for group in catalog["categories"] for e in group["settings"]}
+                req_mode = entries["MEMCORE_COMPACTION_REQUEST_MODE"]
+                token_trig = entries["MEMCORE_WORKING_TOKEN_TRIGGER"]
+                self.assertEqual(req_mode["current"], mode)
+                self.assertIs(type(req_mode["current"]), str)
+                self.assertEqual(token_trig["current"], trigger)
+                self.assertIs(type(token_trig["current"]), int)
+                for key in ("MEMCORE_COMPACTION_REQUEST_MODE", "MEMCORE_WORKING_TOKEN_TRIGGER"):
+                    self.assertEqual(entries[key]["scope"], sc.SCOPE_RESTART_CLIENT)
+                    self.assertFalse(entries[key]["editable"])
+                    self.assertFalse(entries[key]["sensitive"])
+                    self.assertNotIn(key, sc.MEMORY_RESTART_KEYS)
+
     def test_external_huggingface_and_current_attention_keys_are_recognized(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / ".env"
@@ -100,6 +132,8 @@ class SettingsCatalogDriftTests(unittest.TestCase):
             env_path.write_text(
                 "FINANCE_ASSISTANT_ENABLED=false\n"
                 "MAX_TASK_WORKER_ROUNDS=3\n"
+                "WEB_IDENTITY_MODE=owner\n"
+                "MEMORY_BACKEND=legacy\n"
                 "QQ_GROUP_FOLLOW_TTL_SECONDS=120\n",
                 encoding="utf-8",
             )
@@ -113,6 +147,8 @@ class SettingsCatalogDriftTests(unittest.TestCase):
             )
             self.assertIn("FINANCE_ASSISTANT_ENABLED", rendered)
             self.assertIn("MAX_TASK_WORKER_ROUNDS", rendered)
+            self.assertIn("WEB_IDENTITY_MODE", rendered)
+            self.assertIn("MEMORY_BACKEND", rendered)
             self.assertIn(
                 "QQ_GROUP_FOLLOW_TTL_SECONDS->QQ_GROUP_ATTENTION_TTL_SECONDS",
                 rendered,

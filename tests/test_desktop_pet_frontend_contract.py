@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import re
 import unittest
+from tests.desktop_pet_source import read_pet_runtime_source, read_pet_module, read_workshop_source, read_realtime_voice_source
+from tests.desktop_pet_source import read_control_center_bridge_source, read_workspace_source
+from tests.tauri_character_source import read_tauri_character_source, read_tauri_function
 from pathlib import Path
 
 
@@ -8,35 +12,60 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _read(path: str) -> str:
+    if path == "desktop_pet_next/src/workspace.js":
+        return read_workspace_source()
+    if path == "desktop_pet_next/src/control-center-v2/bridge.js":
+        return read_control_center_bridge_source()
+    if path == "desktop_pet_next/src/main.js":
+        return read_pet_runtime_source()
+    if path == "desktop_pet_next/src/realtime-voice-client.js":
+        return read_realtime_voice_source()
+    if path == "desktop_pet_next/src/control-center/data-sources.js":
+        return _read_control_center_data_source()
+    if path == "desktop_pet_next/src/control-center-v2/view-model.js":
+        return _read_control_center_namespace(path, "desktop_pet_next/src/control-center-v2/view-model")
+    if path == "desktop_pet_next/src/workshop.js":
+        return read_workshop_source()
+    if path == "desktop_pet_next/src-tauri/src/main.rs":
+        return read_tauri_character_source()
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def _read_control_center_data_source() -> str:
+    return _read_control_center_namespace(
+        "desktop_pet_next/src/control-center/data-sources.js",
+        "desktop_pet_next/src/control-center/data-source",
+    )
+
+
+def _read_control_center_namespace(entry: str, directory: str) -> str:
+    """Keep source contracts attached to the facade's reachable implementation."""
+    namespace = (ROOT / directory).resolve()
+    command_contract = (ROOT / "desktop_pet_next/src/control-center/settings-command-contract.js").resolve()
+    pending = [ROOT / entry]
+    seen, sources = set(), []
+    while pending:
+        path = pending.pop().resolve()
+        if path in seen:
+            continue
+        seen.add(path)
+        source = path.read_text(encoding="utf-8")
+        sources.append(source)
+        for relative in re.findall(r'\bfrom\s+["\'](\.[^"\']+)["\']', source):
+            dependency = (path.parent / relative).resolve()
+            if dependency.is_relative_to(namespace) or dependency == command_contract:
+                pending.append(dependency)
+    return "\n".join(sources)
+
+
 class DesktopPetFrontendContractTests(unittest.TestCase):
-    def test_activity_runtime_keeps_audio_playback_from_message_interruption(self) -> None:
-        source = _read("desktop_pet/renderer/services/ActivityRuntime.js")
-
-        self.assertIn("interruptForUserMessage()", source)
-        self.assertIn('this._current?.type === "vocal_performance"', source)
-        self.assertIn('this._current.status === "running"', source)
-        self.assertIn('nextStatus: "interrupted"', source)
-        self.assertNotIn('this._current?.type === "audio_playback" && this._current.status === "running"', source)
-
-    def test_activity_runtime_confirms_playback_and_reports_failures(self) -> None:
-        source = _read("desktop_pet/renderer/services/ActivityRuntime.js")
-
-        self.assertIn("PLAY_RETRY_DELAYS_MS", source)
-        self.assertIn("_playWithConfirmation", source)
-        self.assertIn("_waitForPlaybackProgress", source)
-        self.assertIn("audio_play_no_progress", source)
-        self.assertIn("音频播放动作失败了", source)
-        self.assertIn("this._audioEl.muted = false", source)
-        self.assertIn("this._audioEl.volume = 1", source)
-
     def test_desktop_pet_renders_assistant_working_tool_event(self) -> None:
         # Backend emits assistant_working before each tool runs; the streaming
         # frontend must surface it so the pet isn't frozen on "thinking" through
         # a multi-second tool call (CLAUDE.md §9: backend ability != felt UX).
-        backend = _read("companion_v01/engine.py")
+        from inspect import getsource
+        from companion_v01.engine import AkaneMemoryEngine
+        backend = getsource(AkaneMemoryEngine._build_tool_working_stream_event)
         tool_rounds = _read("companion_v01/engine_services/tool_rounds.py")
         self.assertIn("build_tool_working_stream_event", backend)
         self.assertIn('"type": "assistant_working"', tool_rounds)
@@ -77,71 +106,6 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("abilities.approvalRequest.decide", _read("desktop_pet_next/src/control-center/action-router.js"))
         self.assertIn("item.actionId", system_page)
 
-    def test_workspace_panel_opens_local_location_instead_of_browser_download(self) -> None:
-        source = _read("desktop_pet/renderer/ui/WorkspacePanel.js")
-
-        self.assertIn("fetchWorkspaceItemLocation", source)
-        self.assertIn("showItemInFolder", source)
-        self.assertNotIn("openExternal", source)
-        self.assertNotIn("open-external", source)
-        self.assertIn('action: "clear_files"', source)
-        self.assertIn("清理了", source)
-        self.assertIn("源文件和生成文件", source)
-
-    def test_presentation_controller_keeps_formal_reply_priority_and_segment_precedence(self) -> None:
-        source = _read("desktop_pet/renderer/services/PresentationController.js")
-
-        self.assertIn("const SOURCE_PRIORITY", source)
-        self.assertIn("formal: 3", source)
-        self.assertIn('source !== "formal" && this.isFormalActive()', source)
-        self.assertIn("this.canAcceptPassive()", source)
-        self.assertIn("queue: true", source)
-        self.assertLess(
-            source.index("const segments = this._normalizeSegments"),
-            source.index("const speech = String"),
-        )
-        self.assertIn('source: "speech_segments"', source)
-
-    def test_settings_defaults_are_safe_for_productized_desktop_pet(self) -> None:
-        source = _read("desktop_pet/main/settings-store.js")
-
-        self.assertIn('backendUrl: "http://127.0.0.1:9999"', source)
-        self.assertIn('outfit: "猫娘"', source)
-        self.assertIn("voiceEnabled: false", source)
-        self.assertIn("voiceInputEnabled: true", source)
-        self.assertIn("clipboardContextEnabled: false", source)
-        self.assertIn('["水手服", "睡衣"].includes(outfit)', source)
-
-    def test_pet_scale_is_persisted_and_drives_window_and_renderer_layout(self) -> None:
-        settings_store = _read("desktop_pet/main/settings-store.js")
-        window_source = _read("desktop_pet/main/window.js")
-        app_source = _read("desktop_pet/renderer/app.js")
-        settings_page = _read("desktop_pet/renderer/settings.js")
-        context_menu = _read("desktop_pet/renderer/ui/ContextMenu.js")
-        styles = _read("desktop_pet/renderer/styles.css")
-
-        self.assertIn("petScale: 1", settings_store)
-        self.assertIn("PET_SCALE_VALUES", settings_store)
-        self.assertIn("normalizePetScale", settings_store)
-        self.assertIn("getPetWindowSize", window_source)
-        self.assertIn("applyPetScaleBounds", window_source)
-        self.assertIn("resolveWindowBounds(settings.windowBounds, settings.petScale)", window_source)
-
-        self.assertIn('style.setProperty("--pet-scale"', app_source)
-        self.assertIn("chatInput.refreshLayout", app_source)
-        self.assertIn('"set-pet-scale"', app_source)
-        self.assertIn("petScale: currentPetScale", app_source)
-
-        self.assertIn("大小与占用", settings_page)
-        self.assertIn('data-field="petScale"', settings_page)
-        self.assertIn("normalizePetScale", settings_page)
-        self.assertIn('data-action="set-pet-scale"', context_menu)
-
-        self.assertIn("--pet-scale", styles)
-        self.assertIn("--chat-input-min-height", styles)
-        self.assertIn("calc(318px * var(--pet-scale))", styles)
-        self.assertIn("calc(324px * var(--pet-scale))", styles)
-
     def test_next_music_queue_has_visible_management_surfaces(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
         control_center_source = _read("desktop_pet_next/src/control-center-v2/components/overview.js")
@@ -151,7 +115,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
 
         self.assertIn("playMusicTrackBySourceId", main_source)
         self.assertIn("removeMusicTrackBySourceId", main_source)
-        self.assertIn("parseLrcText", main_source)
+        self.assertIn("parseLrcText", _read("desktop_pet_next/src/desktop-music-player.js"))
         self.assertIn("buildCurrentLyricSnapshot", main_source)
         self.assertIn("lyric_current", main_source)
         self.assertIn("scheduleBackendMusicTimeline", main_source)
@@ -166,7 +130,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertNotIn("runDroppedWorkspaceImportInBackground", main_source)
         self.assertIn('"import_dropped_files"', main_source)
         self.assertNotIn("/desktop-pet/workspace/import-local", main_source)
-        self.assertIn('const BASE_CAPABILITIES = ["speech_segments", "tts", "file_drop", "tool_actions"]', main_source)
+        self.assertIn('const BASE_CAPABILITIES = ["speech_segments", "speech_units_v1", "tts", "file_drop", "tool_actions"]', main_source)
         self.assertIn("function getProfileUserId()", main_source)
         self.assertIn("real_user_id: getProfileUserId()", main_source)
         self.assertNotIn("real_user_id: PROFILE_USER_ID", main_source)
@@ -227,7 +191,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
 
         self.assertIn("function startNextTtsPrepare(token)", main_source)
         self.assertIn("function queueStreamedTtsSegment(text, turnToken, segmentIndex = null)", main_source)
-        self.assertIn("function queueStreamedReplySegment(text, turnToken)", main_source)
+        self.assertIn("function queueStreamedReplySegment(text, turnToken,", main_source)
         self.assertIn('function queueLiveTtsPayloadItems(items, signature = "")', main_source)
         self.assertIn("function createTurnLatencyTrace(kind, turnToken, details = {})", main_source)
         self.assertIn('storage?.getItem("akane.debug.turn") === "1"', main_source)
@@ -246,7 +210,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("function displayReplyBubbleText(text, { speaking = true } = {})", main_source)
         self.assertIn("function getSegmentDisplayDelay(text)", main_source)
         self.assertIn("if (!rendered && !backgroundObservation) {\n        showThinking();", main_source)
-        self.assertIn("queueStreamedReplySegment(text, turnToken)", main_source)
+        self.assertIn("queueStreamedReplySegment(text, turnToken, { syncToAudio: !speechUnits })", main_source)
         self.assertIn("rendered = true;", main_source)
         self.assertIn('if (!rendered && bubbleKind === "thinking")', main_source)
         self.assertIn("queueStreamedTtsSegment(text, turnToken, acceptedSpeechIndex++)", main_source)
@@ -269,7 +233,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("ttsPrewarmReadyAtByKey.set(key, Date.now())", main_source)
         self.assertIn('logTtsTiming("prewarm-ready"', main_source)
         self.assertGreaterEqual(main_source.count("signal: controller.signal"), 2)
-        self.assertIn("async function fetchTtsAudio(text, token)", main_source)
+        self.assertIn("async function fetchTtsAudio(text, token, item = {})", main_source)
         self.assertIn("async function playPreparedTtsAudio(prepared, token, { reply = false, displayText = \"\" } = {})", main_source)
         self.assertIn("function discardPendingTtsPrepare(pendingPrepared)", main_source)
         self.assertIn("resetStreamingTtsState(turnToken)", main_source)
@@ -279,7 +243,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("TTS_SLOW_REQUEST_MS", main_source)
         self.assertIn("const TTS_CHUNK_SOFT_LIMIT = 24", main_source)
         self.assertIn("segmentSpeechForDelivery", main_source)
-        self.assertIn('"./speech-delivery.js"', main_source)
+        self.assertIn('"../speech-delivery.js"', main_source)
         self.assertIn("function splitTtsTextForLatency(text)", main_source)
         self.assertIn(
             "segmentSpeechForDelivery(normalized, { minChars: 1, maxChars: TTS_CHUNK_SOFT_LIMIT })",
@@ -401,8 +365,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         wrapper_source = tauri_source[wrapper_index:blocking_index]
         self.assertIn("spawn_blocking(move ||", wrapper_source)
 
-        end_index = tauri_source.index("#[tauri::command]\nfn create_portrait_outfit", blocking_index)
-        blocking_source = tauri_source[blocking_index:end_index]
+        self.assertIn("import_generated_portrait_image_with_directory", read_tauri_function("import_generated_portrait_image_blocking"))
+        blocking_source = read_tauri_function("import_generated_portrait_image_with_directory")
         self.assertIn("let outfit = sanitize_asset_id(&outfit)", blocking_source)
         self.assertIn("let emotion = sanitize_asset_id(&emotion)", blocking_source)
         self.assertIn("safe_child_path(&characters_dir, &pack_id)", blocking_source)
@@ -414,11 +378,10 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         )
         self.assertIn("Ok(list_character_pack_outfits(&pack_dir, &asset_root))", blocking_source)
 
-        writer_index = tauri_source.index("fn write_bytes_atomic")
-        safe_path_index = tauri_source.index("fn safe_child_path", writer_index)
-        writer_source = tauri_source[writer_index:safe_path_index]
-        self.assertIn('let tmp_path = parent.join(format!(".{file_name}.tmp"))', writer_source)
+        writer_source = read_tauri_function("write_bytes_atomic")
+        self.assertIn("create_new(true)", writer_source)
         self.assertIn("fs::rename(&tmp_path, path)", writer_source)
+        self.assertNotIn("fs::remove_file(path)", writer_source)
 
     def test_character_pack_install_commands_remain_owned_by_tauri_and_workshop(self) -> None:
         control_center_source = _read("desktop_pet_next/src/control-center-v2/components/overview.js")
@@ -494,7 +457,6 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertFalse((ROOT / "desktop_pet_next/src/control-center/action-surface-contract.js").exists())
 
     def test_next_settings_uses_control_center_navigation_layout(self) -> None:
-        compatibility_module = _read("desktop_pet_next/src/control-center-lab.js")
         control_center_source = _read("desktop_pet_next/src/control-center-v2/components/shell.js")
         control_center_index = _read("desktop_pet_next/src/control-center-v2/index.js")
         control_center_html = _read("desktop_pet_next/control-center-lab.html")
@@ -506,7 +468,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
 
         self.assertIn('id="app"', control_center_html)
         self.assertIn('src="/src/control-center-v2/index.js"', control_center_html)
-        self.assertIn('import "./control-center-v2/index.js"', compatibility_module)
+        self.assertFalse((ROOT / "desktop_pet_next/src/control-center-lab.js").exists())
         self.assertIn("export function renderControlCenterShell", control_center_source)
         self.assertIn("renderOverview", control_center_source)
         self.assertIn("renderModelService", control_center_source)
@@ -620,12 +582,12 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("async function saveDraft(options = {})", workshop_source)
         self.assertIn("const allowLocalFallback = options.allowLocalFallback !== false", workshop_source)
         self.assertIn('invoke("save_character_pack", {', workshop_source)
-        self.assertIn("request: {\n            packId,", workshop_source)
+        self.assertRegex(workshop_source, r'invoke\("save_character_pack",\s*{\s*request:\s*{\s*packId,')
         self.assertIn("dialogue: exampleLines.length ? { local_click_lines: exampleLines } : null", workshop_source)
         self.assertIn("dialogue: data.dialogue", workshop_source)
         self.assertIn("示例 / 点击反馈台词", workshop_html)
         self.assertIn('invoke("create_character_pack", {', workshop_source)
-        self.assertIn("request: {\n        packId,", workshop_source)
+        self.assertRegex(workshop_source, r'invoke\("create_character_pack",\s*{\s*request:\s*{\s*packId,')
         self.assertIn('data-tab="context"', workshop_html)
         self.assertIn("提示词里会看到什么", workshop_html)
         self.assertIn("你只需要往新文件夹里放以主题命名的 .md 文件", workshop_html)
@@ -711,7 +673,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("function showCreateError", workshop_source)
         self.assertIn("appWindow.onCloseRequested", workshop_source)
         self.assertIn("function buildWorkshopSnapshotSignature", workshop_source)
-        self.assertIn("if (signature === lastWorkshopSnapshotSignature)", workshop_source)
+        self.assertIn("if (signature === registryState.lastWorkshopSnapshotSignature)", workshop_source)
         self.assertIn("core:window:allow-destroy", tauri_capabilities)
         self.assertIn(".first-use-panel", workshop_css)
         self.assertIn(".asset-empty-state", workshop_css)
@@ -748,7 +710,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('"重新应用"', workshop_source)
         self.assertNotIn("main_window.reload()", tauri_source)
         self.assertIn("write_text_atomic(&path, &raw_state)", tauri_source)
-        self.assertNotIn("app.emit_to(", tauri_source)
+        self.assertNotIn("app.emit_to(", read_tauri_function("activate_character_pack"))
         self.assertIn("fn set_default_portrait", tauri_source)
         self.assertIn("tauri::ipc::Response::new(bytes)", tauri_source)
         self.assertNotIn("if emotions.is_empty() {\n            continue;", tauri_source)
@@ -783,20 +745,17 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("scheduleSnapshot: false", main_source)
         self.assertIn("void registerCharacterActivationBridge().catch", main_source)
         self.assertNotIn("await registerCharacterActivationBridge();", main_source)
-        self.assertLess(
-            main_source.index('let lastAppliedLayoutSignature = "";'),
-            main_source.index("boot();"),
-        )
-        self.assertLess(
-            main_source.index("let panelSyncTimer = null;"),
-            main_source.index("boot();"),
-        )
+        application = read_pet_module("application.js")
+        self.assertIn('let lastAppliedLayoutSignature = "";', read_pet_module("window.js"))
+        self.assertIn("let panelSyncTimer = null;", read_pet_module("panel.js"))
+        self.assertLess(application.index("createWindowController({"), application.index("startup = boot()"))
+        self.assertLess(application.index("createPanelController({"), application.index("startup = boot()"))
         self.assertIn("void registerSettingsBridge().catch", main_source)
         self.assertIn("setPetEmotion(state.currentEmotion, { persist: false, force: true });", main_source)
         self.assertIn("scheduleTauriRuntimeBridges();\n    await loadAndApplyPersistedCharacterState();", main_source)
-        self.assertIn("window.setTimeout(startTauriRuntimeBridges, 0);", main_source)
+        self.assertIn("lifecycle.setTimeout(startTauriRuntimeBridges, 0);", main_source)
         self.assertIn(
-            "await reloadCharacterResources({ startup: true });\n    scheduleNativeWindowStateApply({ forceHitTest: true });",
+            "await reloadCharacterResources({ startup: true });\n    if (lifecycle.disposed) return false;\n    scheduleNativeWindowStateApply({ forceHitTest: true });",
             main_source,
         )
         self.assertNotIn("await syncNativeHitTest({ force: true });\n    await reloadCharacterResources", main_source)
@@ -821,11 +780,12 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("createTargetedEventEmitter", control_center_source)
         self.assertEqual(
             control_center_source.count(
-                'emitMainEvent(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" })'
+                'await host.requestSnapshot();'
             ),
             2,
         )
         self.assertNotIn('emitMainEvent({ command: "requestSnapshot" })', control_center_source)
+        self.assertIn('requestSnapshot: () => emitMainEvent(SETTINGS_COMMAND_EVENT, { command: "requestSnapshot" })', control_center_source)
         self.assertIn(
             "const [capabilitiesCatalog, voiceProfilesCatalog, approvalRequestsCatalog] = await Promise.all([",
             data_sources,
@@ -884,7 +844,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("botScopedPath(state?.boundBotId", workspace_source)
         self.assertIn("data-bound-bot-select", control_center_source)
         self.assertIn('actionId === "settings.selectBot"', control_center_bridge)
-        self.assertIn("createControlCenterDataSource(sourceOptions)", control_center_bridge)
+        self.assertIn("createDataSource = createControlCenterDataSource", control_center_bridge)
+        self.assertIn("createDataSource(sourceOptions)", control_center_bridge)
         self.assertIn("readBotCatalog", data_source)
         self.assertIn('settingsSelectBot: "settings.selectBot"', action_router)
         self.assertIn('CONTROL_CENTER_ACTIONS.settingsSelectBot]: "setBoundBot"', data_source)
@@ -901,8 +862,8 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("care: createUnresolvedCareFeature()", main_source)
         self.assertIn("applyCareFeatureStatus(resolveCareFeatureFromHealth(data))", main_source)
         self.assertIn("function stopCareRuntime()", main_source)
-        self.assertIn("window.clearTimeout(carePassiveTimer)", main_source)
-        self.assertIn("window.clearTimeout(careWorkTimer)", main_source)
+        self.assertIn("lifecycle.clearTimeout(carePassiveTimer)", main_source)
+        self.assertIn("lifecycle.clearTimeout(careWorkTimer)", main_source)
         self.assertIn("if (!isCareRuntimeActive()) return false;", main_source)
         self.assertIn("attachDesktopCareContext({", main_source)
         self.assertIn("care: isCareRuntimeActive() ? normalizeCareState(state.care", main_source)
@@ -929,7 +890,6 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('els.summary.textContent = "养成模块未启用";', shop_source)
         self.assertIn('els.coins.textContent = "—";', shop_source)
         self.assertIn("delete result.desktop_care", feature_source)
-        self.assertIn("resetCareEvaluationBaseline", feature_source)
 
     def test_next_pet_window_geometry_does_not_persist_stale_pixel_size(self) -> None:
         main_source = _read("desktop_pet_next/src/main.js")
@@ -940,7 +900,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn("state.height = null;", main_source)
         self.assertIn("width: null,\n    height: null,", main_source)
         self.assertIn("const activePackId = getCurrentCharacterPackId();", main_source)
-        self.assertIn("buildCharacterPackOutfits(activePackId)", main_source)
+        self.assertIn("buildRuntimeCharacterPackOutfits(activePackId)", main_source)
         self.assertIn("fn saved_window_position_visible", tauri_source)
         self.assertIn("normalize_pet_state(&mut state)?;", tauri_source)
         self.assertIn("state.width = None;", tauri_source)
@@ -955,7 +915,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         character_template = _read("desktop_pet_creator_kit/templates/character_pack/character.json")
         renderer_doc = _read("docs/desktop-pet-visual-renderer.md")
 
-        self.assertIn('import { createVisualRenderer } from "./visual-renderer.js"', main_source)
+        self.assertIn("import { createVisualRenderer } from '../visual-renderer.js'", read_pet_module("application.js"))
         self.assertIn("const visualRenderer = createVisualRenderer", main_source)
         self.assertIn("visualRenderer.setCharacterLabel", main_source)
         self.assertIn("visualRenderer.setExpression", main_source)
@@ -977,7 +937,7 @@ class DesktopPetFrontendContractTests(unittest.TestCase):
         self.assertIn('"style": "soft"', character_template)
         self.assertIn("let menuAnchor = null", main_source)
         self.assertIn("function repositionOpenMenu", main_source)
-        self.assertIn('window.addEventListener("resize", () =>', main_source)
+        self.assertIn('lifecycle.on(window, "resize", () =>', main_source)
         self.assertIn("repositionOpenMenu();", main_source)
         self.assertIn("overscroll-behavior: contain", styles)
         self.assertIn(".quick-menu .menu-actions button:disabled", styles)
@@ -1043,7 +1003,7 @@ class PetReachGestureT5ContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         base = Path(__file__).parent.parent / "desktop_pet_next" / "src"
-        cls.main_src = (base / "main.js").read_text(encoding="utf-8")
+        cls.main_src = read_pet_runtime_source()
         cls.styles_src = (base / "portrait-motion.css").read_text(encoding="utf-8")
         assert '@import "./portrait-motion.css"' in (base / "styles.css").read_text(encoding="utf-8")
 
@@ -1067,9 +1027,15 @@ class PetReachGestureT5ContractTests(unittest.TestCase):
         self.assertIn('"smtcAction"', self.main_src)
 
     def test_final_activity_does_not_repeat_native_media_tool_execution(self) -> None:
-        self.assertIn("function payloadHasSystemMediaExecution(payload)", self.main_src)
-        self.assertIn('toolType === "system_media_control"', self.main_src)
-        self.assertIn("if (payloadHasSystemMediaExecution(payload)) return;", self.main_src)
+        bubble = read_pet_module("bubble.js")
+        chat = read_pet_module("chat.js")
+        plugins = read_pet_module("plugins.js")
+        self.assertIn("bubblePort.renderPayload(payload,", chat)
+        self.assertIn('source: "restore"', bubble)
+        self.assertNotIn("activityPort", bubble)
+        self.assertNotIn("executeLocalMusicControl", bubble)
+        self.assertNotIn("controlSystemMediaPlayback", bubble)
+        self.assertIn("activityPort.executeLocalMusicControl(payload._desktop_music_control)", plugins)
 
     def test_notifyMusicUnavailable_before_reach_gesture(self) -> None:
         unavailable_pos = self.main_src.index("notifyMusicActivityUnavailable")
@@ -1081,8 +1047,8 @@ class ProjectWorkspacePickerContractTests(unittest.TestCase):
     def test_host_path_stays_inside_tauri_and_public_ui_uses_project_ids(self) -> None:
         root = Path(__file__).parent.parent
         workspace_html = (root / "desktop_pet_next" / "workspace.html").read_text(encoding="utf-8")
-        workspace_js = (root / "desktop_pet_next" / "src" / "workspace.js").read_text(encoding="utf-8")
-        tauri_source = (root / "desktop_pet_next" / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        workspace_js = read_workspace_source()
+        tauri_source = read_tauri_character_source()
 
         self.assertIn('id="bind-project-directory"', workspace_html)
         self.assertIn('invoke("bind_project_directory")', workspace_js)
@@ -1123,9 +1089,9 @@ class FloatingPanelHandoffContractTests(unittest.TestCase):
         cls.panel_html = (root / "desktop_pet_next" / "panel.html").read_text(encoding="utf-8")
         cls.panel_js = (root / "desktop_pet_next" / "src" / "panel.js").read_text(encoding="utf-8")
         cls.panel_css = (root / "desktop_pet_next" / "src" / "panel.css").read_text(encoding="utf-8")
-        cls.main_js = (root / "desktop_pet_next" / "src" / "main.js").read_text(encoding="utf-8")
-        cls.workspace_js = (root / "desktop_pet_next" / "src" / "workspace.js").read_text(encoding="utf-8")
-        cls.tauri_rs = (root / "desktop_pet_next" / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        cls.main_js = read_pet_runtime_source()
+        cls.workspace_js = read_workspace_source()
+        cls.tauri_rs = read_tauri_character_source()
 
     def test_panel_theme_toggle_persists_locally(self) -> None:
         self.assertIn('id="theme-toggle-btn"', self.panel_html)
@@ -1168,7 +1134,8 @@ class FloatingPanelHandoffContractTests(unittest.TestCase):
         self.assertIn("TrySkipNextAsync", self.tauri_rs)
         self.assertIn("TrySkipPreviousAsync", self.tauri_rs)
         self.assertIn("TryStopAsync", self.tauri_rs)
-        self.assertNotIn("SendInput", self.tauri_rs)
+        self.assertNotIn("SendInput", read_tauri_function("control_system_media_macos"))
+        self.assertNotIn("SendInput", read_tauri_function("control_system_media_windows"))
         self.assertIn("TODO: Linux MPRIS", self.tauri_rs)
         self.assertIn('system_media_control_unavailable(action, "unsupported_platform"', self.tauri_rs)
 

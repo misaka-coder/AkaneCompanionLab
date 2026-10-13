@@ -96,7 +96,7 @@ class ToolExposureDevelopmentTests(unittest.TestCase):
                     h.compare("development","install-notice",before_check,after_install,history_prefix=True)
                     _,_,contract_result = await h.act("capability_load",{"capability_ids":[CAPABILITY]})
                     contract = json.loads(contract_result.followup_context.split("\n",1)[1])["capabilities"][0]
-                    _,_,value = await h.act("capability_invoke",{"capability_id":CAPABILITY,"contract_ref":contract["contract_ref"],"arguments":{"values":[3,4]}})
+                    _,_,value = await h.act("capability_invoke",{"capability_id":CAPABILITY,"arguments":{"values":[3,4]}})
                     self.assertEqual(value.capability_result.value,{"count":2,"sum":7,"squares":25})
                     _,before_update = await asyncio.to_thread(h.request)
                     # The candidate uses the public adapter protocol to report
@@ -132,8 +132,8 @@ class UnhealthyPlugin:
                     # The old provider may have a fresh rollback generation;
                     # recover its actual current contract rather than guessing.
                     _,_,retained = await h.act("capability_load",{"capability_ids":[CAPABILITY]})
-                    retained_ref = json.loads(retained.followup_context.split("\n",1)[1])["capabilities"][0]["contract_ref"]
-                    _,_,old_value = await h.act("capability_invoke",{"capability_id":CAPABILITY,"contract_ref":retained_ref,"arguments":{"values":[3,4]}})
+                    self.assertNotIn("contract_ref", json.loads(retained.followup_context.split("\n",1)[1])["capabilities"][0])
+                    _,_,old_value = await h.act("capability_invoke",{"capability_id":CAPABILITY,"arguments":{"values":[3,4]}})
                     self.assertEqual(old_value.capability_result.value,{"count":2,"sum":7,"squares":25})
                     await h.act("workspace_write",{"path":"src/exposure_development/__init__.py","content":SOURCE.replace('Plugin("example.exposure-development")','Plugin("example.exposure-development", version="0.2.0")')})
                     _,_,fixed_stage = await h.act("manage_extension",{"action":"stage_source","path":project})

@@ -130,6 +130,64 @@ class HostStorageMaintenanceTests(unittest.TestCase):
             self.assertEqual(reclaimed, 12)
             self.assertFalse(remaining.exists())
 
+    def test_qq_media_retention_only_removes_old_downloaded_originals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bots = Path(temp) / "bots"
+            account = bots / "personal" / "napcat" / "qq" / ("nt_qq_" + "a" * 32)
+            pic = account / "nt_data" / "Pic" / "2026-09" / "Ori"
+            emoji = account / "nt_data" / "Emoji" / "emoji-recv" / "2026-09" / "Ori"
+            pic.mkdir(parents=True)
+            emoji.mkdir(parents=True)
+            old_pic = pic / "old.jpg"
+            recent_pic = pic / "recent.jpg"
+            old_emoji = emoji / "old.png"
+            db = account / "nt_db" / "nt_msg.db"
+            db.parent.mkdir()
+            for path in (old_pic, recent_pic, old_emoji, db):
+                path.write_bytes(b"data")
+            for path in (old_pic, old_emoji, db):
+                os.utime(path, (1, 1))
+            cutoff = time.time() - 60
+
+            preview, reclaimed = MODULE.prune_expired_qq_media(
+                bots, older_than_epoch=cutoff, dry_run=True,
+            )
+            self.assertEqual(preview["file_count"], 2)
+            self.assertEqual(reclaimed, 0)
+            self.assertTrue(old_pic.exists())
+
+            summary, reclaimed = MODULE.prune_expired_qq_media(
+                bots, older_than_epoch=cutoff, dry_run=False,
+            )
+            self.assertEqual(summary["file_count"], 2)
+            self.assertEqual(reclaimed, 8)
+            self.assertFalse(old_pic.exists())
+            self.assertFalse(old_emoji.exists())
+            self.assertTrue(recent_pic.exists())
+            self.assertTrue(db.exists())
+
+    def test_qq_media_retention_skips_symlinked_media_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            external = root / "external"
+            external.mkdir()
+            old = external / "old.jpg"
+            old.write_bytes(b"data")
+            os.utime(old, (1, 1))
+            data = root / "bots" / "personal" / "napcat" / "qq" / ("nt_qq_" + "a" * 32) / "nt_data"
+            data.mkdir(parents=True)
+            try:
+                (data / "Pic").symlink_to(external, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("directory symlinks unavailable")
+
+            summary, reclaimed = MODULE.prune_expired_qq_media(
+                root / "bots", older_than_epoch=time.time() - 60, dry_run=False,
+            )
+            self.assertIsNone(summary)
+            self.assertEqual(reclaimed, 0)
+            self.assertTrue(old.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

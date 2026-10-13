@@ -11,8 +11,8 @@ class TurnContextTests(unittest.TestCase):
         self.assertEqual(
             resolve_qq_actor_relation(
                 client_mode=ClientMode.QQ_TEXT,
-                actor_stable_id="qq:1906243651",
-                master_qq="1906243651",
+                actor_stable_id="qq:987654321",
+                master_qq="987654321",
             ),
             "owner",
         )
@@ -22,7 +22,7 @@ class TurnContextTests(unittest.TestCase):
             resolve_qq_actor_relation(
                 client_mode=ClientMode.QQ_TEXT,
                 actor_stable_id="qq:2660153472",
-                master_qq="1906243651",
+                master_qq="987654321",
             ),
             "participant",
         )
@@ -31,8 +31,8 @@ class TurnContextTests(unittest.TestCase):
         self.assertEqual(
             resolve_qq_actor_relation(
                 client_mode=ClientMode.DESKTOP_PET,
-                actor_stable_id="qq:1906243651",
-                master_qq="1906243651",
+                actor_stable_id="qq:987654321",
+                master_qq="987654321",
             ),
             "",
         )
@@ -40,7 +40,7 @@ class TurnContextTests(unittest.TestCase):
             resolve_qq_actor_relation(
                 client_mode=ClientMode.QQ_TEXT,
                 actor_stable_id="",
-                master_qq="1906243651",
+                master_qq="987654321",
             ),
             "",
         )

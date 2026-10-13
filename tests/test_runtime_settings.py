@@ -331,6 +331,58 @@ class BotSettingsViewTests(unittest.TestCase):
 
 
 class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
+    def test_omitted_summary_model_uses_session_chat_route_after_switch_and_reload(self) -> None:
+        captured = []
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "companion_v01.llm_runtime.build_llm_client",
+            side_effect=lambda **kwargs: SimpleNamespace(route=kwargs["base_url"]),
+        ):
+            runtime = LLMRuntime(
+                settings=BotSettingsView(chat_model_name="chat-default", chat_base_url="https://chat.example/v1"),
+                config_module=SimpleNamespace(
+                    MEMCORE_SUMMARY_MODEL_NAME="",
+                    MEMCORE_SUMMARY_API_KEY="unused-summary-key",
+                    MEMCORE_SUMMARY_BASE_URL="https://summary.example/v1",
+                ),
+                log_dir=temp_dir,
+            )
+            runtime._call_json = lambda **kwargs: captured.append(kwargs["bundle"]) or {"summary": "ok"}
+            self.assertIsNone(runtime.memcore_summary)
+            runtime.call_memcore_json(system_prompt="s", user_prompt="u", fallback={}, chat_model_override="session-pro")
+            runtime.call_memcore_json(system_prompt="s", user_prompt="u", fallback={})
+            status = runtime.reload_from_config(settings=BotSettingsView(
+                chat_model_name="new-default", chat_base_url="https://new-chat.example/v1",
+            ))
+            runtime.call_memcore_json(system_prompt="s", user_prompt="u", fallback={}, chat_model_override="session-flash")
+        self.assertEqual([bundle.model for bundle in captured], ["session-pro", "chat-default", "session-flash"])
+        self.assertEqual([bundle.client.route for bundle in captured], [
+            "https://chat.example/v1", "https://chat.example/v1", "https://new-chat.example/v1",
+        ])
+        self.assertEqual(status["memcoreSummaryModel"], "new-default")
+
+    def test_explicit_summary_model_without_separate_route_reuses_current_chat_client(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "companion_v01.llm_runtime.build_llm_client", side_effect=lambda **_kwargs: SimpleNamespace(),
+        ):
+            runtime = LLMRuntime(settings=BotSettingsView(chat_model_name="chat"),
+                config_module=SimpleNamespace(MEMCORE_SUMMARY_MODEL_NAME="gemini-3.1-pro-high"), log_dir=temp_dir)
+            old_client = runtime.chat.client
+            self.assertIs(runtime.memcore_summary.client, old_client)
+            runtime.reload_from_config(settings=BotSettingsView(chat_model_name="different-chat"))
+            self.assertIs(runtime.memcore_summary.client, runtime.chat.client)
+            self.assertIsNot(runtime.memcore_summary.client, old_client)
+            self.assertEqual(runtime.memcore_summary.model, "gemini-3.1-pro-high")
+
+    def test_incomplete_explicit_summary_route_does_not_mix_provider_credentials(self) -> None:
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._config_module = SimpleNamespace(
+            MEMCORE_SUMMARY_MODEL_NAME="summary-model", MEMCORE_SUMMARY_BASE_URL="https://summary.example/v1",
+        )
+        with self.assertLogs("akane.llm_runtime", level="WARNING"):
+            bundle = runtime._build_memcore_summary_bundle()
+        self.assertIsNone(bundle.client)
+        self.assertEqual(bundle.model, "summary-model")
+
     def test_memcore_summary_prefers_complete_host_dedicated_route(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime.settings = BotSettingsView(
@@ -370,7 +422,7 @@ class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
         )
         self.assertEqual(bundle.client._akane_bundle_role, "memcore_summary")
 
-    def test_memcore_json_uses_atomic_aux_bundle(self) -> None:
+    def test_memcore_json_explicit_route_ignores_session_chat_model(self) -> None:
         runtime = LLMRuntime.__new__(LLMRuntime)
         runtime._bundle_lock = __import__("threading").RLock()
         runtime.memcore_summary = SimpleNamespace(client=object(), model="gpt-5.6-luna")
@@ -387,6 +439,7 @@ class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
             system_prompt="system",
             user_prompt="user",
             fallback={"summary": ""},
+            chat_model_override="session-pro",
         )
 
         self.assertIs(captured["bundle"], runtime.memcore_summary)
@@ -425,11 +478,13 @@ class LLMRuntimeSettingsIsolationTests(unittest.TestCase):
                     settings=settings_a,
                     log_dir=Path(temp_dir) / "a",
                     instance_id="bot-a",
+                    config_module=SimpleNamespace(),
                 )
                 runtime_b = LLMRuntime(
                     settings=settings_b,
                     log_dir=Path(temp_dir) / "b",
                     instance_id="bot-b",
+                    config_module=SimpleNamespace(),
                 )
 
         self.assertEqual(

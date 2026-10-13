@@ -1,7 +1,6 @@
 """Open-task continuations over existing execution/Job authorities, not a store."""
 
 import threading
-import time
 from typing import Callable
 
 
@@ -14,18 +13,21 @@ class TaskWork:
 
     def __init__(self):
         self._pending = {}
+        self._observers = {}
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._control_state = "running"
         self._resume_generation = 0
 
-    def track(self, key: str, *, inspect: Callable, cancel: Callable) -> None:
+    def track(self, key: str, *, inspect: Callable, cancel: Callable, observe: Callable | None = None) -> None:
         cancel_now = False
         with self._condition:
             if self._control_state in {"stopping", "stopped"}:
                 cancel_now = True
             else:
                 self._pending.setdefault(key, (inspect, cancel))
+                if observe is not None:
+                    self._observers.setdefault(key, observe)
             self._condition.notify_all()
         if cancel_now:
             # A task stopped while a worker was admitting a new action must
@@ -43,6 +45,7 @@ class TaskWork:
             ready.append({"id": key, **value})
             with self._lock:
                 self._pending.pop(key, None)
+                self._observers.pop(key, None)
         return ready
 
     def wait(self, cancelled: Callable[[], bool]) -> list[dict]:
@@ -53,8 +56,14 @@ class TaskWork:
             if ready:
                 return ready
             # No model request, busy loop or parent conversation lock while idle.
-            time.sleep(0.2)
+            with self._condition:
+                self._condition.wait(timeout=0.2)
         return []
+
+    def notify(self) -> None:
+        """A known pending authority changed; wake without a fixed delay."""
+        with self._condition:
+            self._condition.notify_all()
 
     def wait_for_resume(self, cancelled: Callable[[], bool]) -> bool:
         """Block while paused without dispatching another model/tool step."""
@@ -116,6 +125,11 @@ class TaskWork:
             return bool(self._pending)
 
     @property
+    def pending_ids(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._pending)
+
+    @property
     def state(self) -> str:
         with self._lock:
             return self._control_state
@@ -133,6 +147,13 @@ class TaskWork:
         """A terminal fact already returned as a tool result needs no event."""
         with self._lock:
             self._pending.pop(key, None)
+            self._observers.pop(key, None)
+
+    def observe(self, key, value):
+        with self._lock:
+            observer = self._observers.get(key)
+        if observer is not None:
+            observer(value)
 
     def close(self) -> list[str]:
         """Request cancellation on task exit; never claim unconfirmed termination."""

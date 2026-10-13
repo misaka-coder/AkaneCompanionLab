@@ -130,7 +130,7 @@ class LocalTestLauncherTests(unittest.TestCase):
         self.assertIn('foreach ($name in @("CHAT", "TEXT", "AUX"))', source)
         self.assertIn('"VISION_MODEL_NAME"', source)
         self.assertIn('"EXECUTION_ENABLED"', source)
-        self.assertIn('"MEMORY_BACKEND"', source)
+        self.assertNotIn('"MEMORY_BACKEND"', source)
         self.assertIn("MEMCORE_OPERATION_PROJECTION_POLICY=compact_after_terminal", source)
         remote_allowlist = source[source.index("$allowlist = @(") : source.index(")\n$allowlistJson")]
         self.assertNotIn('"CHAT_API_KEY"', remote_allowlist)

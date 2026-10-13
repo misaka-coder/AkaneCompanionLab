@@ -13,6 +13,7 @@
           <p id="shop-summary">正在整理货架</p>
         </div>
         <div class="header-actions">
+          <button id="manage-shop" type="button" aria-pressed="false">管理商品</button>
           <button id="refresh-shop" class="primary-button" type="button">刷新</button>
           <button id="close-shop" type="button">关闭</button>
         </div>
@@ -27,7 +28,7 @@
           <strong id="care-coins">0</strong>
         </article>
         <article class="metric">
-          <span>饥饿</span>
+          <span>饱腹</span>
           <strong id="care-hunger">0</strong>
         </article>
         <article class="metric">
@@ -62,7 +63,7 @@
             <h2>今日货架 <span class="section-tag">可编辑食物</span></h2>
             <div class="section-actions">
               <p id="shop-count">0 件商品</p>
-              <button id="create-item" class="primary-button" type="button">新增商品</button>
+              <button id="create-item" class="primary-button" type="button" hidden>新增商品</button>
             </div>
           </div>
           <div id="shop-items" class="item-grid">
@@ -86,10 +87,19 @@
           <div class="editor-header"><div><span class="eyebrow">自定义商品</span><h2 id="editor-title">调整食物</h2></div><button id="editor-close" type="button" aria-label="关闭编辑">×</button></div>
           <p id="editor-description">修改会保存到当前角色，之后的购买和投喂都会使用这些数值。</p>
           <label class="name-field">商品名<input id="food-name" name="name" type="text" required maxlength="40" placeholder="例如：抹茶大福"></label>
+          <div class="artwork-editor">
+            <img id="food-image-preview" alt="商品配图预览" width="100" height="100">
+            <div>
+              <label>商品配图<input id="food-image" type="file" accept="image/png,image/jpeg,image/webp"></label>
+              <p class="field-hint" id="food-image-status">PNG、JPG 或 WebP，最大 4 MB。留空使用分类插画。</p>
+              <button id="food-image-remove" type="button">使用默认插画</button>
+            </div>
+          </div>
+          <label class="note-field">默认插画<select id="food-art-kind"><option value="auto">按商品名自动选择</option><option value="dessert">甜点</option><option value="drink">饮品</option><option value="meal">主食</option><option value="gift">礼物</option></select></label>
           <label class="price-field">售价 · 金币<input id="food-price" name="price" type="number" required min="0" max="999999" step="1"></label>
           <h3>每次投喂的效果</h3>
           <div class="effect-fields">
-            <label>饥饿<input id="food-hunger" name="hunger" type="number" required min="-100" max="100" step="1"></label>
+            <label>饱腹<input id="food-hunger" name="hunger" type="number" required min="-100" max="100" step="1"></label>
             <label>精力<input id="food-energy" name="energy" type="number" required min="-100" max="100" step="1"></label>
             <label>好感<input id="food-affection" name="affection" type="number" required min="-100" max="100" step="1"></label>
           </div>

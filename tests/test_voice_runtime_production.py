@@ -465,7 +465,6 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
                         messages[0]["presentation"],
                         {
                             "emotion": "happy",
-                            "activity": {"action": "pause", "source_id": "system_media_current"},
                         },
                     )
                     self.assertEqual(tts.calls, ["好的。"])
@@ -2933,7 +2932,7 @@ class VoiceRuntimeProductionTests(unittest.TestCase):
             )
             try:
                 with patch(
-                    "companion_v01.voice_runtime.production.SqliteVoiceRuntimeJournal",
+                    "companion_v01.voice_runtime.production_runtime.assembly.SqliteVoiceRuntimeJournal",
                     side_effect=OSError("private path and storage detail"),
                 ):
                     failed = initialization_failure.create_coordinator(

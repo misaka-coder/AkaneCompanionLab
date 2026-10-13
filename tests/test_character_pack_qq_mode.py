@@ -72,11 +72,11 @@ class QQSaikenV5Tests(unittest.TestCase):
     def test_command_parser_covers_saiken_shrine_and_quota(self) -> None:
         with TemporaryDirectory() as tmp:
             gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
-            self.assertEqual(gateway.parse_economy_command("赛钱 12"), {"action": "saiken", "amount": 12})
-            self.assertEqual(gateway.parse_economy_command("捐 3"), {"action": "saiken", "amount": 3})
-            self.assertEqual(gateway.parse_economy_command("赛钱 1000000"), {"action": "saiken", "amount": 0})
-            self.assertEqual(gateway.parse_economy_command("赛钱箱"), {"action": "shrine"})
-            self.assertEqual(gateway.parse_economy_command("我的额度"), {"action": "quota"})
+            self.assertEqual(gateway.parse_economy_command("/赛钱 12"), {"action": "saiken", "amount": 12})
+            self.assertIsNone(gateway.parse_economy_command("捐 3"))
+            self.assertIsNone(gateway.parse_economy_command("/赛钱 1000000"))
+            self.assertEqual(gateway.parse_economy_command("/赛钱箱"), {"action": "shrine"})
+            self.assertEqual(gateway.parse_economy_command("/额度"), {"action": "quota"})
 
     def test_saiken_command_is_idempotent_and_zero_never_becomes_one(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -85,14 +85,14 @@ class QQSaikenV5Tests(unittest.TestCase):
             gateway = NapCatQQGateway(state_path=Path(tmp) / "qq_gateway_state.json")
 
             zero = gateway.handle_economy_command(
-                self._context("赛钱 0", message_id="message-zero"),
+                self._context("/赛钱 0", message_id="message-zero"),
                 care_module=_module(store),
                 now_ms=1100,
             )
-            self.assertEqual(zero["status"], "invalid_amount")
+            self.assertIsNone(zero)
 
             first = gateway.handle_economy_command(
-                self._context("赛钱 5", message_id="message-one"),
+                self._context("/赛钱 5", message_id="message-one"),
                 care_module=_module(store),
                 now_ms=1200,
             )
@@ -101,7 +101,7 @@ class QQSaikenV5Tests(unittest.TestCase):
             self.assertIn("当前兑换额度：5 枚", first["qq_action_note"])
 
             duplicate = gateway.handle_economy_command(
-                self._context("赛钱 5", message_id="message-one"),
+                self._context("/赛钱 5", message_id="message-one"),
                 care_module=_module(store),
                 now_ms=1300,
             )
@@ -135,22 +135,22 @@ class QQSaikenV5Tests(unittest.TestCase):
             ]
 
             blocked = gateway.handle_economy_command(
-                self._context("购买 测试团子", message_id="buy-before"),
+                self._context("/购买 测试团子", message_id="buy-before"),
                 care_module=_module(store),
                 shop_items=shop_items,
                 now_ms=1100,
             )
             self.assertEqual(blocked["status"], "insufficient_quota")
-            self.assertIn("先「赛钱 N」", blocked["reply"])
+            self.assertIn("先「/赛钱 N」", blocked["reply"])
 
             gateway.handle_economy_command(
-                self._context("赛钱 5", message_id="saiken-before-buy"),
+                self._context("/赛钱 5", message_id="saiken-before-buy"),
                 care_module=_module(store),
                 shop_items=shop_items,
                 now_ms=1200,
             )
             bought = gateway.handle_economy_command(
-                self._context("购买 测试团子", message_id="buy-after"),
+                self._context("/购买 测试团子", message_id="buy-after"),
                 care_module=_module(store),
                 shop_items=shop_items,
                 now_ms=1300,
@@ -168,14 +168,14 @@ class QQSaikenV5Tests(unittest.TestCase):
             self.assertEqual(snapshot["shrine_total"], 5)
 
             shrine = gateway.handle_economy_command(
-                self._context("赛钱箱", message_id="shrine-read"),
+                self._context("/赛钱箱", message_id="shrine-read"),
                 care_module=_module(store),
                 now_ms=1400,
             )
             self.assertTrue(shrine["_llm_passthrough"])
             self.assertIn("香火总额：5 枚", shrine["qq_action_note"])
             quota = gateway.handle_economy_command(
-                self._context("我的额度", message_id="quota-read"),
+                self._context("/额度", message_id="quota-read"),
                 care_module=_module(store),
                 now_ms=1500,
             )
@@ -215,7 +215,7 @@ class OfferingFreeTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="状态",
+                clean_message="/养成",
                 character_pack_id=CHAR_ID,
             )
 
@@ -374,7 +374,7 @@ class OfferingItemTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="供奉 三色团子",
+                clean_message="/供奉 三色团子",
                 character_pack_id=CHAR_ID,
             )
             result = gateway.handle_economy_command(
@@ -420,7 +420,7 @@ class QQShopMergeTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="商店",
+                clean_message="/商店",
                 character_pack_id=CHAR_ID,
             )
             result = gateway.handle_economy_command(
@@ -468,7 +468,7 @@ class QQStatusDisplayTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="饥饿度现在多少",
+                clean_message="/养成",
                 character_pack_id=CHAR_ID,
             )
             result = gateway.handle_economy_command(
@@ -503,7 +503,7 @@ class QQStatusDisplayTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="养成状态",
+                clean_message="/养成",
                 character_pack_id=CHAR_ID,
             )
             result = gateway.handle_economy_command(
@@ -543,7 +543,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="购买 逆转卡",
+                clean_message="/购买 逆转卡",
                 character_pack_id=CHAR_ID,
             )
             buy_result = gateway.handle_economy_command(buy_context, care_module=_module(store), shop_items=[], now_ms=2000)
@@ -559,7 +559,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="投喂 逆转卡",
+                clean_message="/投喂 逆转卡",
                 sender_label="休比",
                 character_pack_id=CHAR_ID,
             )
@@ -595,7 +595,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="购买 精力满格符",
+                clean_message="/购买 精力满格符",
                 character_pack_id=CHAR_ID,
             )
             buy_result = gateway.handle_economy_command(buy_context, care_module=_module(store), shop_items=[], now_ms=2000)
@@ -611,7 +611,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="投喂 精力满格符",
+                clean_message="/投喂 精力满格符",
                 character_pack_id=CHAR_ID,
             )
             feed_result = gateway.handle_economy_command(feed_context, care_module=_module(store), shop_items=[], now_ms=3000)
@@ -646,7 +646,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="购买 饥饿置零卡",
+                clean_message="/购买 饥饿置零卡",
                 character_pack_id=CHAR_ID,
             )
             buy_result = gateway.handle_economy_command(buy_context, care_module=_module(store), shop_items=[], now_ms=2000)
@@ -662,7 +662,7 @@ class QQFeedItemPromptTests(unittest.TestCase):
                 group_id=10001,
                 session_id=PROFILE,
                 profile_user_id=PROFILE,
-                clean_message="投喂 饥饿置零卡",
+                clean_message="/投喂 饥饿置零卡",
                 character_pack_id=CHAR_ID,
             )
             feed_result = gateway.handle_economy_command(feed_context, care_module=_module(store), shop_items=[], now_ms=3000)
@@ -678,10 +678,10 @@ class QQFeedItemPromptTests(unittest.TestCase):
 
 
 class OfferingIsolationTests(unittest.TestCase):
-    """Shared vitals vs per-user state boundaries."""
+    """Conversation body vs per-member relationship boundaries."""
 
-    def test_offering_hunger_goes_to_shared_body(self) -> None:
-        """Food offered in QQ affects the shared body hunger, not per-user."""
+    def test_offering_hunger_is_shared_within_conversation_only(self) -> None:
+        """QQ members share their conversation body; other conversations stay isolated."""
         with TemporaryDirectory() as tmp:
             store = _store(tmp)
             store.sync_from_client(
@@ -705,8 +705,28 @@ class OfferingIsolationTests(unittest.TestCase):
                 profile_user_id="master",
                 character_pack_id=CHAR_ID,
                 client_mode="desktop_pet",
+                now_ms=1000,
             )
-            self.assertEqual(desktop_snap["hunger"], 50)
+            self.assertEqual(desktop_snap["hunger"], 30)
+            for relation in ("qq:111", "qq:222"):
+                same_conversation = store.snapshot_for_client(
+                    profile_user_id=PROFILE,
+                    character_pack_id=CHAR_ID,
+                    client_mode="qq_text",
+                    relation_user_id=relation,
+                    now_ms=1000,
+                )
+                self.assertEqual(same_conversation["hunger"], 75)
+                self.assertEqual(same_conversation["affection"], 13 if relation == "qq:111" else 10)
+            other_conversation = store.snapshot_for_client(
+                profile_user_id=PROFILE,
+                conversation_id="other-group",
+                character_pack_id=CHAR_ID,
+                client_mode="qq_text",
+                relation_user_id="qq:111",
+                now_ms=1000,
+            )
+            self.assertEqual((other_conversation["hunger"], other_conversation["affection"]), (55, 10))
 
     def test_offering_affection_stays_per_user(self) -> None:
         """QQ offering affection goes to relation, not desktop affection."""

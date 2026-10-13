@@ -7,8 +7,6 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-import chromadb
-
 from .embedding_provider import BaseEmbeddingProvider, HashedEmbeddingProvider
 from .text_utils import tokenize
 
@@ -20,6 +18,15 @@ class VectorStore:
         *,
         embedding_provider: BaseEmbeddingProvider | None = None,
     ):
+        try:
+            import chromadb
+        except ModuleNotFoundError as exc:
+            if exc.name != "chromadb":
+                raise
+            raise RuntimeError(
+                "vector_memory_dependency_missing: install requirements-runtime.txt "
+                "to enable the Chroma vector backend"
+            ) from exc
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()

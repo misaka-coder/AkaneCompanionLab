@@ -1,7 +1,7 @@
 # Akane-owned package release set. Keep exact pins so a host release cannot
 # silently combine incompatible 0.x package versions.
 capcore==0.1.3
-capcore-adapter-mcp==0.1.0
+capcore-adapter-mcp==0.1.1
 capcore-adapter-python==0.1.0
 capcore-adapter-speech==0.1.0
 capcore-adapter-comfyui==0.1.0
@@ -11,5 +11,6 @@ promptpack-core==0.1.0
 capcore-provider-native-tools==0.1.0
 capcore-provider-openai==0.1.0
 capcore-provider-anthropic==0.1.0
-memcore==0.1.0+chatv6.2
+# Distribution name differs from the import name (`memcore`).
+memcore-kernel==0.1.7
 voicecore==0.1.1

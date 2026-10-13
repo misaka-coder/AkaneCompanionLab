@@ -44,7 +44,7 @@ class LegacyDeliveredAnalysis:
 class TimelineFacade(Protocol):
     def inspect_turn_source(self, source_id: str, **scope: Any) -> dict[str, Any]: ...
 
-    def import_legacy_message(
+    def append_standalone_message(
         self, record: dict[str, Any], *, role: str, **scope: Any
     ) -> dict[str, Any]: ...
 
@@ -148,7 +148,7 @@ def migrate_delivered_history(
             report["pairs_completed"] += 1
             continue
         if not event_exists:
-            result = timeline.import_legacy_message(
+            result = timeline.append_standalone_message(
                 {
                     "source_id": event_source_id,
                     "content": _render_event_message(entry.event_payload),
@@ -170,7 +170,7 @@ def migrate_delivered_history(
                 return report
             report["turns_written"] += 1
         if not analysis_exists:
-            result = timeline.import_legacy_message(
+            result = timeline.append_standalone_message(
                 {
                     "source_id": analysis_source_id,
                     "content": _render_historical_analysis(entry.analysis_text),

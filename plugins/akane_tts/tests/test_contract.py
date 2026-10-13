@@ -10,9 +10,41 @@ from unittest.mock import patch
 
 from akane_plugin import CapabilityResult, InvocationContext
 from akane_tts.plugin import TTSAdapter, CAPABILITY_ID, descriptor, inspect_audio
+from akane_tts.irodori import IrodoriTTSClient, IrodoriClientError
 
 
 class ContractTests(unittest.TestCase):
+    def test_caption_is_bounded_and_cannot_load_a_different_voice_or_model(self):
+        requests = []
+        async def post(body):
+            requests.append(body)
+            return {"audio": b"test", "media_type": "audio/wav"}
+        async def run():
+            client = IrodoriTTSClient("http://127.0.0.1:9890")
+            client._post = post
+            profile = {"irodoriVoiceId": "cecilia", "caption": "ignored profile value"}
+            await client.synthesize("こんにちは。", profile=profile, caption="親しい相手に自然に優しく話す。")
+            await client.synthesize("こんにちは。", profile=profile)
+            self.assertEqual(requests[0]["voice"], "cecilia")
+            self.assertEqual(requests[0]["irodori"]["caption"], "親しい相手に自然に優しく話す。")
+            self.assertEqual(requests[0]["irodori"]["cfg_scale_caption"], 2.0)
+            self.assertNotIn("caption", requests[1]["irodori"])
+            for invalid in ("あ" * 81, {"ref_embed": "private/path"}):
+                with self.assertRaisesRegex(IrodoriClientError, "tts_irodori_caption_invalid"):
+                    await client.synthesize("こんにちは。", profile=profile, caption=invalid)
+            self.assertEqual(len(requests), 2)
+            await client.aclose()
+        asyncio.run(run())
+
+    def test_caption_is_rejected_for_gpt_before_resolving_connections(self):
+        class Connections:
+            async def resolve(self, _name):
+                raise AssertionError("unsupported caption must not open connections")
+        result = asyncio.run(TTSAdapter(None, Connections()).invoke(CAPABILITY_ID,
+            {"text": "test", "voice": {"provider": "provider.tts.gpt_sovits.local", "profile_id": "test"}, "caption": "優しく話す。"},
+            InvocationContext("owner", "session", "web")))
+        self.assertEqual(result.reason, "tts_caption_provider_unsupported")
+
     def test_health_does_not_import_the_edge_backend(self):
         original_import = builtins.__import__
         def check_import(name, *args, **kwargs):

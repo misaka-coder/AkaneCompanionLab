@@ -1,5 +1,8 @@
 # Petdesk Runtime Architecture v0
 
+> 路线设计记录。开发当前 Tauri 桌宠从 [开发入口](DEVELOPMENT.md) 和
+> `desktop_pet_next/src/pet/` 看起；下文规划的独立 runtime 结构不等于当前目录结构。
+
 Status: implementation planning document
 Date: 2026-07-02
 

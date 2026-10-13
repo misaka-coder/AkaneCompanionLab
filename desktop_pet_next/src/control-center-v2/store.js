@@ -37,6 +37,8 @@ export function createInitialControlCenterState(options = {}) {
     presentationNotice: null,
     modelDraft: null,
     modelModels: [],
+    modelSubagentModels: [],
+    modelVisionModels: [],
     chatHistory: { phase: "idle", error: "", sessionId: "" },
     chatJobControls: {},
     voiceProfileSuggestion: null,

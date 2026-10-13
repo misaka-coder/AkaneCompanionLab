@@ -1,17 +1,13 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import vm from "node:vm";
+import vm, { petRuntimeSource, petFunctionSource, petFunctions } from "./pet-production-functions.mjs";
 import { createWorkspaceImportQueue } from "../src/workspace-import.js";
 import { createPendingAttachments } from "../src/pending-attachments.js";
+import { createWorkspaceTransport } from "../src/workspace/transport.js";
+import { productionRustSource, rustFunctionSource } from "./tauri-production-source.mjs";
 
-const main = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-const workspace = fs.readFileSync(new URL("../src/workspace.js", import.meta.url), "utf8");
-const rust = fs.readFileSync(new URL("../src-tauri/src/main.rs", import.meta.url), "utf8");
-const between = (source, start, end) => {
-  const first = source.indexOf(start), last = source.indexOf(end, first + start.length);
-  assert.ok(first >= 0 && last > first, start);
-  return source.slice(first, last);
-};
+const main = petRuntimeSource();
+const rust = productionRustSource();
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const camel = (text) => text.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
 const calls = [], refreshed = [], statuses = [];
@@ -23,7 +19,7 @@ const context = {
   invoke: async (command, args) => {
     // Match default Tauri macro camelCase argument projection against the
     // production Rust signature, not a hand-maintained list of expected keys.
-    const signature = rust.match(new RegExp(`#\\[tauri::command\\]\\s+async fn ${command}\\(([\\s\\S]*?)\\) ->`));
+    const signature = rust.match(new RegExp(`#\\[tauri::command\\]\\s+(?:pub(?:\\([^)]*\\))? )?async fn ${command}\\(([\\s\\S]*?)\\) ->`));
     assert.ok(signature, command);
     const keys = [...signature[1].matchAll(/\b([a-z_]+):\s*(?:String|Vec<String>)/g)].map((entry) => camel(entry[1]));
     assert.deepEqual(keys.filter((key) => !(key in args)), [], `${command} required keys`);
@@ -34,16 +30,15 @@ const context = {
   setRuntimeStatus: (text) => statuses.push(text),
   showBubbleText() {}, friendlyErrorMessage: (value) => value,
   formatError: (error) => error.message || String(error),
-  buildDroppedAudioItems: () => [],
   sending: false, replyDisplayActive: false, showChatInput() {},
 };
 vm.createContext(context);
-vm.runInContext(between(main, "function attachmentDraftScope()", "const pendingAttachments ="), context);
+vm.runInContext(petFunctionSource("attachmentDraftScope"), context);
 context.pendingAttachments = createPendingAttachments({ readScope: context.attachmentDraftScope });
-vm.runInContext(between(main, "const enqueueWorkspaceImport =", "\n});") + "\n});", context);
-vm.runInContext(between(main, "async function importDroppedFilesToWorkspace(", "function buildWorkspaceAudioSourceId("), context);
-vm.runInContext(between(main, "function summarizeWorkspaceImportSkipped(", "async function notifyWorkspaceRefresh("), context);
-vm.runInContext(between(main, "async function handleDroppedFiles(", "// M66-D: importDroppedFilesToWorkspace"), context);
+vm.runInContext(petFunctionSource("enqueueWorkspaceImport"), context);
+vm.runInContext(petFunctions(["importDroppedFilesToWorkspace", "importClipboardAttachments", "importAttachmentEntries", "uploadClipboardAttachments"]), context);
+vm.runInContext(petFunctionSource("summarizeWorkspaceImportSkipped"), context);
+vm.runInContext(petFunctionSource("handleDroppedFiles"), context);
 
 const first = deferred();
 response = () => first.promise;
@@ -84,18 +79,16 @@ assert.equal((await queued).reason, "attachment_scope_changed");
 assert.equal(calls.length, before + 1, "queued old-scope file never uploads");
 
 response = async () => ({ ok: true });
-context.workspaceRouteType = () => "attachments";
-context.buildWorkspaceExportFileName = () => "note.txt";
-vm.runInContext(between(workspace, "async function invokeWorkspaceItemAction(", "function workspaceRouteType("), context);
-context.PROFILE_USER_ID = "master";
+const workspace = createWorkspaceTransport({ invoke: context.invoke, isCurrent: () => true });
 for (const action of ["open", "reveal", "save_desktop"]) {
-  await context.invokeWorkspaceItemAction({ handle: "att_1" }, action);
+  await workspace.invokeWorkspaceItemAction({ state: { ...context.state } }, { handle: "att_1", title: "note", format: "txt" }, action);
   assert.equal(calls.at(-1).args.botId, "bot-a");
   assert.equal(calls.at(-1).args.sessionId, "session-b");
+  assert.equal(calls.at(-1).args.fileName, "note.txt");
 }
 const conf = JSON.parse(fs.readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
 assert.ok(!conf.app.security.assetProtocol.scope.includes("$APPCACHE/audio/**"));
 assert.ok(rust.includes('let audio_cache_dir = desktop_runtime_cache_dir("attachments/audio")?;'));
 assert.ok(rust.includes('.allow_directory(&audio_cache_dir, true)'));
-assert.ok(between(rust, "async fn import_dropped_files(", "fn list_character_packs(").includes('"skipped_count": skipped_items.len()'));
+assert.ok(rustFunctionSource("import_dropped_files").includes('"skipped_count": skipped_items.len()'));
 console.log("workspace-import: queue, scope isolation, native argument contracts, error recovery, partial feedback and audio scope passed (no live effects)");

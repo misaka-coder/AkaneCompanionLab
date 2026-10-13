@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import hashlib
-import json
 import re
 import threading
 import time
@@ -72,15 +70,15 @@ class McpStdioCapabilityAdapter:
         )
         self._liveness_clock = liveness_clock
         self._liveness_lock = threading.RLock()
-        self._liveness_cache: tuple[float, frozenset[str]] | None = None
-        self._live_tools: tuple[dict[str, Any], ...] = ()
+        self._live_tools = self.tool_configs
+        self._metadata_confirmed = bool(self.tool_configs) or self.server_config.get("lastDiscovery", {}).get("status") == "ready"
+        self._discovery_attempted = False
+        self._discovery_sequence = 0
+        self._discovery_reason = ""
         self._current_revision = current_revision
         self._captured_revision = contract_revision
-        self.contract_revision = hashlib.sha256(json.dumps({
-            "runtime": contract_revision,
-            "connection": {key: self.server_config.get(key) for key in
-                ("transport", "command", "args", "cwd", "env", "url", "headers")},
-        }, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        # Runtime epochs guard captured clients, not public tool contracts.
+        self.contract_revision = ""
         self._capability_tool_names: dict[str, str] = {}
         self._client = client or _AkaneMcpClient(
             server_config=self.server_config,
@@ -116,19 +114,25 @@ class McpStdioCapabilityAdapter:
         ctx: InvocationContext,
     ) -> CapabilityResult:
         if self._current_revision is not None and self._current_revision() != self._captured_revision:
-            return CapabilityResult(is_error=True, status="rejected", reason="capability_contract_stale")
+            return CapabilityResult(is_error=True, status="rejected", reason="executor_runtime_changed")
         return await self._core.invoke(capability_id, args, ctx)
 
     def current_tool_configs(self, *, refresh: bool = False) -> tuple[dict[str, Any], ...]:
-        """Definitions from the same real tools/list lease as readiness."""
-        if not self.is_live(refresh=refresh):
+        """Last confirmed declarations; ordinary reads never renew a health lease."""
+        if not bool(self.server_config.get("enabled")) or not _server_has_transport_config(self.server_config):
             return ()
+        observed_sequence = self._discovery_sequence
+        with self._liveness_lock:
+            if (refresh and observed_sequence == self._discovery_sequence
+                    or not self._metadata_confirmed and not self._discovery_attempted):
+                self._discover_tools()
+            tools = self._live_tools
         overrides = {str(tool.get("name") or ""): tool for tool in self.tool_configs}
         return tuple({**overrides.get(str(tool.get("name") or ""), {}), **tool,
                       **{key: overrides[str(tool.get("name") or "")][key]
                          for key in ("risk", "confirm", "effects", "modelVisible")
                          if key in overrides.get(str(tool.get("name") or ""), {})}, "promptExposed": True}
-                     for tool in self._live_tools
+                     for tool in tools
                      if overrides.get(str(tool.get("name") or ""), {}).get("modelVisible") is not False)
 
     async def aclose(self) -> None:
@@ -148,16 +152,12 @@ class McpStdioCapabilityAdapter:
         return str(self._capability_tool_names.get(str(capability_id or "").strip()) or "")
 
     def is_live(self, capability_id: str = "", *, refresh: bool = False) -> bool:
-        """Probe a real initialize/tools-list exchange and cache only its lease."""
-        if not bool(self.server_config.get("enabled")):
-            return False
-        if not _server_has_transport_config(self.server_config):
-            return False
-        now = float(self._liveness_clock())
-        with self._liveness_lock:
-            cached = self._liveness_cache
-            if not refresh and cached is not None and cached[0] > now:
-                return self._capability_is_present(capability_id, cached[1])
+        """Declaration eligibility only. Connection failure is reported by invocation."""
+        tools = self.current_tool_configs(refresh=refresh)
+        return self._capability_is_present(capability_id, frozenset(str(tool.get("name") or "") for tool in tools))
+
+    def _discover_tools(self) -> None:
+        self._discovery_attempted = True
         try:
             result = self._liveness_probe(server=self.server_config)
             if inspect.isawaitable(result):
@@ -166,19 +166,13 @@ class McpStdioCapabilityAdapter:
             if not isinstance(raw_tools, list):
                 raise McpStdioDiscoveryError("mcp_liveness_invalid_response")
             self._live_tools = tuple(dict(tool) for tool in raw_tools if isinstance(tool, Mapping))
-            live_tool_names = frozenset(
-                str(tool.get("name") or "").strip()
-                for tool in raw_tools
-                if isinstance(tool, Mapping) and str(tool.get("name") or "").strip()
-            )
-            expires_at = float(self._liveness_clock()) + 15.0
-        except Exception:
-            live_tool_names = frozenset()
-            self._live_tools = ()
-            expires_at = float(self._liveness_clock()) + 5.0
-        with self._liveness_lock:
-            self._liveness_cache = (expires_at, live_tool_names)
-        return self._capability_is_present(capability_id, live_tool_names)
+            self._metadata_confirmed = True
+            self._discovery_reason = ""
+        except Exception as exc:
+            # A failed refresh does not revoke confirmed declarations.
+            self._discovery_reason = str(exc) or "mcp_tools_list_failed"
+        finally:
+            self._discovery_sequence += 1
 
     def _capability_is_present(self, capability_id: str, live_tool_names: frozenset[str]) -> bool:
         clean_capability_id = str(capability_id or "").strip()

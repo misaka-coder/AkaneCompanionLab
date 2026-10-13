@@ -6,6 +6,10 @@ import {
 } from "./control-center/event-bridge.js";
 
 import "./shop.css";
+import dessertArt from "../../web/assets/shop/dessert.svg";
+import drinkArt from "../../web/assets/shop/drink.svg";
+import mealArt from "../../web/assets/shop/meal.svg";
+import giftArt from "../../web/assets/shop/gift.svg";
 
 const SHOP_STATUS_EVENT = "akane-next-shop-status";
 
@@ -48,6 +52,10 @@ let saving = false;
 let requestSequence = 0;
 let pendingAction = false;
 let actionTimer = 0;
+let managing = false;
+let imageSequence = 0;
+let imageReading = false;
+const DEFAULT_ART = { dessert: dessertArt, drink: drinkArt, meal: mealArt, gift: giftArt };
 
 function currentScope() {
   return [snapshot?.state?.backendUrl, snapshot?.state?.boundBotId, snapshot?.character?.packId].join("|");
@@ -64,9 +72,27 @@ async function init() {
 }
 
 function bindActions() {
+  document.querySelector("#manage-shop").addEventListener("click", () => {
+    managing = !managing;
+    document.querySelector("#manage-shop").setAttribute("aria-pressed", String(managing));
+    document.querySelector("#manage-shop").textContent = managing ? "完成管理" : "管理商品";
+    render();
+  });
+  document.querySelector("#food-image").addEventListener("change", readImageSelection);
+  document.querySelector("#food-image-remove").addEventListener("click", () => {
+    if (!editing || saving) return;
+    ++imageSequence;
+    imageReading = false;
+    editing.imageUpload = "";
+    document.querySelector("#food-image").value = "";
+    els.save.disabled = false;
+    els.editorError.hidden = true;
+    renderImagePreview();
+  });
+  for (const id of ["food-art-kind", "food-name"]) document.querySelector(`#${id}`).addEventListener("input", renderImagePreview);
   for (const id of ["editor-close", "editor-cancel"]) document.querySelector(`#${id}`).addEventListener("click", () => { if (!saving) els.editor.close(); });
   els.editor.addEventListener("cancel", (event) => { if (saving) event.preventDefault(); });
-  els.editor.addEventListener("close", () => { editing = null; });
+  els.editor.addEventListener("close", () => { editing = null; ++imageSequence; imageReading = false; });
   els.form.addEventListener("submit", (event) => { event.preventDefault(); void saveFood(); });
   els.createItem?.addEventListener("click", () => openCreateEditor());
   els.refresh?.addEventListener("click", () => {
@@ -148,6 +174,7 @@ function render() {
   const care = normalizeCareState(snapshot?.state?.care, careConfig);
   const items = careConfig.enabled ? mergeShopItems(careConfig.shopItems, shopSettings?.items) : [];
   if (els.createItem) {
+    els.createItem.hidden = !managing;
     els.createItem.disabled = !careConfig.enabled || !shopSettings || shopLoading || saving || pendingAction;
   }
 
@@ -197,7 +224,7 @@ function renderWork(config, care) {
   }
 
   els.workSummary.textContent =
-    `外出 ${work.durationSeconds} 秒，消耗 饥饿 ${work.hungerCost} / 精力 ${work.energyCost}，` +
+    `外出 ${work.durationSeconds} 秒，消耗 饱腹 ${work.hungerCost} / 精力 ${work.energyCost}，` +
     `回来可获得 ${work.rewardCoinsMin}-${work.rewardCoinsMax} 金币。`;
   els.startWork.textContent = "出门";
   els.startWork.disabled = pendingAction || saving || care.hunger < work.minHunger || care.energy < work.minEnergy;
@@ -256,7 +283,7 @@ function createShopItem(item, care) {
 
   const canBuy = care.coins >= item.price && !pendingAction && !saving && !shopLoading;
   element.innerHTML = `
-    <div class="item-mark">${foodIcon(item.name)}</div>
+    <div class="item-mark"></div>
     <div class="item-body">
       <div class="item-topline">
         <h3>${escapeHtml(item.name)}</h3>
@@ -269,11 +296,13 @@ function createShopItem(item, care) {
   `;
 
   const actions = element.querySelector(".item-actions");
+  appendArtwork(element.querySelector(".item-mark"), item);
   const buyButton = document.createElement("button");
   buyButton.type = "button";
   buyButton.className = canBuy ? "primary-button" : "";
   buyButton.textContent = "购买";
   buyButton.disabled = !canBuy;
+  if (care.coins < item.price) buyButton.textContent = `还差 ${item.price - care.coins} 金币`;
   buyButton.addEventListener("click", () => {
     if (!isCareFeatureAvailable()) {
       showCareDisabled();
@@ -294,7 +323,8 @@ function createShopItem(item, care) {
   deleteButton.textContent = "下架";
   deleteButton.disabled = !shopSettings || shopLoading || saving || pendingAction;
   deleteButton.addEventListener("click", () => { void removeShopItem(item); });
-  actions.append(deleteButton, editButton, buyButton);
+  if (managing) actions.append(deleteButton, editButton);
+  actions.append(buyButton);
   return element;
 }
 
@@ -340,7 +370,7 @@ function createInventoryItem(item, count) {
   const element = document.createElement("article");
   element.className = "shop-item";
   element.innerHTML = `
-    <div class="item-mark">${count}</div>
+    <div class="item-mark"></div>
     <div class="item-body">
       <div class="item-topline">
         <h3>${escapeHtml(item.name)}</h3>
@@ -352,6 +382,7 @@ function createInventoryItem(item, count) {
   `;
 
   const feedButton = document.createElement("button");
+  appendArtwork(element.querySelector(".item-mark"), item);
   feedButton.type = "button";
   feedButton.className = "primary-button";
   feedButton.textContent = "投喂";
@@ -505,7 +536,7 @@ function setStatus(message) {
 
 function formatEffects(effects = {}) {
   const parts = [];
-  if (effects.hunger) parts.push(`饥饿 ${formatSigned(effects.hunger)}`);
+  if (effects.hunger) parts.push(`饱腹 ${formatSigned(effects.hunger)}`);
   if (effects.energy) parts.push(`精力 ${formatSigned(effects.energy)}`);
   if (effects.affection) parts.push(`好感 ${formatSigned(effects.affection)}`);
   return parts.join(" / ") || "普通小物件";
@@ -537,17 +568,88 @@ function formatError(error) {
   return error?.message || String(error || "unknown");
 }
 
-function foodIcon(name) {
-  if (/茶|咖啡|奶|饮|水/.test(name)) return "🍵";
-  if (/饭|团|寿司|便当/.test(name)) return "🍙";
-  if (/果|莓|桃|苹/.test(name)) return "🍎";
-  if (/蛋糕|甜|布丁|巧克力/.test(name)) return "🍰";
-  if (/面|包|饼/.test(name)) return "🥐";
-  return "🍬";
+function defaultArtwork(item) {
+  if (DEFAULT_ART[item.art_kind]) return DEFAULT_ART[item.art_kind];
+  if (/蛋糕|甜|布丁|团子|巧克力/.test(item.name)) return dessertArt;
+  if (/茶|奶|咖啡|饮|果汁/.test(item.name)) return drinkArt;
+  if (/面|饭|便当|寿司|饼|餐/.test(item.name)) return mealArt;
+  return giftArt;
+}
+
+function artworkSource(item) {
+  if (item.image_url && snapshot?.state?.backendUrl) {
+    try {
+      const base = new URL(snapshot.state.backendUrl);
+      const url = new URL(item.image_url, base);
+      if (url.origin === base.origin && ["http:", "https:"].includes(url.protocol)) return url.href;
+    } catch { /* Use the bundled illustration while offline. */ }
+  }
+  return defaultArtwork(item);
+}
+
+function appendArtwork(parent, item) {
+  const image = document.createElement("img");
+  image.alt = item.name;
+  image.src = artworkSource(item);
+  image.addEventListener("error", () => { image.src = defaultArtwork(item); }, { once: true });
+  parent.append(image);
+}
+
+function renderImagePreview() {
+  if (!editing) return;
+  const item = { name: document.querySelector("#food-name").value,
+    art_kind: document.querySelector("#food-art-kind").value };
+  const uploaded = editing.imageUpload;
+  const source = uploaded === undefined ? editing.imageUrl : uploaded;
+  document.querySelector("#food-image-preview").src = source || defaultArtwork(item);
+  document.querySelector("#food-image-status").textContent = imageReading ? "正在读取图片…" :
+    source ? "保存后，桌宠和 QQ 会共用这张配图。" : "PNG、JPG 或 WebP，最大 4 MB。当前使用分类插画。";
+}
+
+async function readImageSelection() {
+  const edit = editing;
+  const sequence = ++imageSequence;
+  const file = document.querySelector("#food-image").files?.[0];
+  if (!edit || saving || !file) return;
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 4 * 1024 * 1024) {
+    imageReading = false;
+    els.save.disabled = false;
+    els.editorError.textContent = "请选择不超过 4 MB 的 PNG、JPG 或 WebP 图片。";
+    els.editorError.hidden = false;
+    return;
+  }
+  imageReading = true;
+  els.save.disabled = true;
+  els.editorError.hidden = true;
+  renderImagePreview();
+  try {
+    const data = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("图片读取失败，请重新选择。"));
+      reader.readAsDataURL(file);
+    });
+    const preview = new Image();
+    preview.src = data;
+    try { await preview.decode(); } catch { throw new Error("图片无法预览，请选择有效的 PNG、JPG 或 WebP 图片。"); }
+    if (preview.naturalWidth * preview.naturalHeight > 16000000) throw new Error("图片超过 1600 万像素，请先缩小后再上传。");
+    if (editing === edit && sequence === imageSequence) edit.imageUpload = data;
+  } catch (error) {
+    if (editing === edit && sequence === imageSequence) {
+      els.editorError.textContent = formatError(error);
+      els.editorError.hidden = false;
+    }
+  } finally {
+    if (editing === edit && sequence === imageSequence) {
+      imageReading = false;
+      els.save.disabled = false;
+      renderImagePreview();
+    }
+  }
 }
 
 function effectBadges(effects) {
-  return [["hunger", "饥饿"], ["energy", "精力"], ["affection", "好感"]]
+  return [["hunger", "饱腹"], ["energy", "精力"], ["affection", "好感"]]
     .map(([key, label]) => `<span>${label} <b>${formatSigned(effects[key])}</b></span>`).join("");
 }
 
@@ -565,6 +667,7 @@ async function shopRequest(action, values = {}) {
     if (result.reason === "shop_revision_conflict") throw new Error("食物配置已在其他地方更新。请取消编辑、刷新后再修改。");
     if (result.reason === "shop_item_limit_reached") throw new Error("货架上的商品已达上限，先整理一些再新增。");
     if (result.reason === "invalid_shop_name") throw new Error("商品名需要 1～40 个字符，且不能包含换行。");
+    if (result.reason === "invalid_shop_image") throw new Error("配图无法读取。请使用不超过 4 MB、1600 万像素以内的静态 PNG、JPG 或 WebP。");
     if (result.reason === "invalid_shop_price" || result.reason === "invalid_shop_effects") throw new Error("价格或效果超出可设置的范围。");
     if (reply.httpStatus === 401 || reply.httpStatus === 403) throw new Error("当前连接没有商店管理权限。");
     throw new Error("食物设置未能保存或读取，请检查连接及输入范围。");
@@ -602,7 +705,7 @@ function editorInputs() {
 }
 
 function setEditorDisabled(disabled) {
-  for (const input of els.form.querySelectorAll("input")) input.disabled = disabled;
+  for (const input of els.form.querySelectorAll("input, select, #food-image-remove")) input.disabled = disabled;
 }
 
 function saveLabel(mode) {
@@ -610,16 +713,22 @@ function saveLabel(mode) {
 }
 
 function showEditor() {
+  ++imageSequence;
+  imageReading = false;
+  document.querySelector("#food-image").value = "";
   els.editorError.hidden = true;
   setEditorDisabled(false);
   els.save.disabled = false;
   els.editor.showModal();
+  renderImagePreview();
 }
 
 function openFoodEditor(item) {
   if (!shopSettings || saving) return;
   const modes = item.usable_in || item.usableIn;
   editing = { mode: "edit", id: item.id, scope: currentScope(), revision: shopSettings.revision };
+  editing.imageUrl = item.image ? artworkSource(item) : "";
+  document.querySelector("#food-art-kind").value = item.art_kind || "auto";
   els.editorTitle.textContent = item.name;
   els.editorDescription.textContent = "修改会保存到当前角色，之后的购买和投喂都会使用这些数值。";
   const inputs = editorInputs();
@@ -635,6 +744,7 @@ function openFoodEditor(item) {
 function openCreateEditor() {
   if (!shopSettings || saving || shopLoading || pendingAction) return;
   editing = { mode: "create", scope: currentScope(), revision: shopSettings.revision };
+  document.querySelector("#food-art-kind").value = "auto";
   els.editorTitle.textContent = "新增商品";
   els.editorDescription.textContent = "新商品会加进当前角色的货架，名字、价格和效果都由你来定。";
   const inputs = editorInputs();
@@ -649,7 +759,7 @@ function openCreateEditor() {
 }
 
 async function saveFood() {
-  if (!editing || saving || !els.form.reportValidity()) return;
+  if (!editing || saving || imageReading || !els.form.reportValidity()) return;
   const edit = editing;
   const inputs = editorInputs();
   const name = inputs.name.value.trim();
@@ -663,7 +773,9 @@ async function saveFood() {
   els.save.textContent = "正在保存…";
   els.editorError.hidden = true;
   try {
-    const shared = { revision: edit.revision, name, price, effects, description, usable_in: usableIn };
+    const shared = { revision: edit.revision, name, price, effects, description, usable_in: usableIn,
+      art_kind: document.querySelector("#food-art-kind").value,
+      ...(edit.imageUpload !== undefined ? { image_upload: edit.imageUpload } : {}) };
     const result = edit.mode === "create"
       ? await shopRequest("create", shared)
       : await shopRequest("update", { ...shared, item_id: edit.id });
@@ -681,7 +793,7 @@ async function saveFood() {
       els.editorError.hidden = false;
     }
   } finally {
-    if (edit.scope === currentScope()) {
+    if (edit.scope === currentScope() && (!editing || editing === edit)) {
       saving = false;
       setEditorDisabled(false);
       els.save.disabled = false;

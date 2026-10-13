@@ -82,11 +82,14 @@ class ExecutionSpecsTests(unittest.TestCase):
         run_props = EXEC_RUN_TOOL_SPEC.input_schema["properties"]
         self.assertNotIn("maxLength", run_props["command"])
         self.assertEqual(run_props["cwd"]["maxLength"], 512)
+        self.assertEqual(run_props["timeout_seconds"]["minimum"], 0)
+        self.assertNotIn("maximum", run_props["timeout_seconds"])
+        self.assertNotIn("timeout_seconds", EXEC_RUN_TOOL_SPEC.input_schema["required"])
         self.assertEqual(EXEC_RUN_TOOL_SPEC.max_result_bytes, EXEC_RUN_RESULT_MAX_BYTES)
         self.assertEqual(EXEC_STATUS_TOOL_SPEC.max_result_bytes, EXEC_STATUS_RESULT_MAX_BYTES)
         self.assertEqual(EXEC_CANCEL_TOOL_SPEC.max_result_bytes, EXEC_CANCEL_RESULT_MAX_BYTES)
         self.assertIn("cancel_failed", EXEC_CANCEL_TOOL_SPEC.output_schema["properties"]["status"]["enum"])
-        self.assertEqual(EXEC_STATUS_TOOL_SPEC.input_schema["properties"]["wait_seconds"]["maximum"], 30)
+        self.assertEqual(EXEC_STATUS_TOOL_SPEC.input_schema["properties"]["wait_seconds"]["maximum"], 60)
 
     def test_exec_description_is_honest_about_trusted_not_sandboxed(self) -> None:
         self.assertIn("不是 Shell 沙箱", EXEC_RUN_TOOL_SPEC.description)
@@ -106,15 +109,21 @@ class ExecutionSpecsTests(unittest.TestCase):
         )
 
     def test_normalization_clamps_windows(self) -> None:
-        self.assertEqual(normalize_timeout_seconds(None), 120)
-        self.assertEqual(normalize_timeout_seconds(99999), 600)
-        self.assertEqual(normalize_timeout_seconds(0), 1)
         self.assertEqual(normalize_initial_wait_seconds(None), 8)
         self.assertEqual(normalize_initial_wait_seconds(99), 10)
         self.assertEqual(normalize_initial_wait_seconds(0), 1)
         self.assertEqual(normalize_status_wait_seconds(None), 0)
-        self.assertEqual(normalize_status_wait_seconds(99), 30)
+        self.assertEqual(normalize_status_wait_seconds(99), 60)
         self.assertEqual(normalize_status_wait_seconds(-1), 0)
+
+    def test_execution_deadline_is_opt_in_and_not_capped_at_600(self) -> None:
+        self.assertEqual(normalize_timeout_seconds(None), 0)
+        self.assertEqual(normalize_timeout_seconds(0), 0)
+        self.assertEqual(normalize_timeout_seconds(99999), 99999)
+        self.assertEqual(normalize_timeout_seconds("7200"), 7200)
+        for value in (-1, -0.5, True, "invalid", float("inf")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                normalize_timeout_seconds(value)
 
 
 class ExecutionRunStoreTests(unittest.TestCase):
@@ -381,7 +390,7 @@ class _FakeExecutionProvider:
             raise self.availability_value
         return self.availability_value
 
-    def run(self, *, owner, command, cwd="", timeout_seconds=120, initial_wait_seconds=8):
+    def run(self, *, owner, command, cwd="", timeout_seconds=0, initial_wait_seconds=8):
         self.run_called = True
         self.last_run_kwargs = {
             "owner": owner,
@@ -445,7 +454,7 @@ class ExecOrchestrationTests(unittest.TestCase):
         self.assertEqual(mapped.envelope_status, "ok")
         self.assertEqual(mapped.event_status, EXEC_STATUS_RUNNING)
         self.assertIn("exec_status", mapped.model_feedback)
-        self.assertIn("不等于停滞或没有下载", mapped.model_feedback)
+        self.assertIn("暂无新输出不代表停滞", mapped.model_feedback)
 
     def test_silent_status_and_completion_do_not_infer_file_state(self) -> None:
         store = self._store()
@@ -454,7 +463,7 @@ class ExecOrchestrationTests(unittest.TestCase):
         provider = _FakeExecutionProvider(store)
         running = execute_exec_status(provider, owner=OWNER, run_id=run_id)
         self.assertEqual(running.event_status, EXEC_STATUS_RUNNING)
-        self.assertIn("不要仅因无输出取消", running.model_feedback)
+        self.assertIn("不要据此取消或重复启动", running.model_feedback)
         store.mark_terminal(run_id, EXEC_STATUS_COMPLETED, owner=OWNER, exit_code=0)
         for completed in (
             execute_exec_status(provider, owner=OWNER, run_id=run_id),
@@ -479,7 +488,7 @@ class ExecOrchestrationTests(unittest.TestCase):
         self.assertNotIn("[local_path]", mapped.model_feedback)
         self.assertIn("TOKEN=[redacted]", mapped.model_feedback)
 
-    def test_run_normalizes_and_forwards_bounded_arguments(self) -> None:
+    def test_run_preserves_execution_deadline_and_bounds_initial_wait(self) -> None:
         provider = _FakeExecutionProvider(self._store())
         execute_exec_run(
             provider,
@@ -495,10 +504,27 @@ class ExecOrchestrationTests(unittest.TestCase):
                 "owner": OWNER,
                 "command": "echo done",
                 "cwd": "workspace:/job",
-                "timeout_seconds": 600,
+                "timeout_seconds": 9999,
                 "initial_wait_seconds": 10,
             },
         )
+
+    def test_default_and_zero_deadlines_are_forwarded_as_unlimited(self) -> None:
+        for kwargs in ({}, {"timeout_seconds": 0}):
+            with self.subTest(kwargs=kwargs):
+                provider = _FakeExecutionProvider(self._store())
+                result = execute_exec_run(provider, owner=OWNER, command="echo done", **kwargs)
+                self.assertEqual(result.event_status, EXEC_STATUS_COMPLETED)
+                self.assertEqual(provider.last_run_kwargs["timeout_seconds"], 0)
+
+    def test_invalid_deadline_is_rejected_before_provider_dispatch(self) -> None:
+        for value in (-1, -0.5, True, "invalid", float("inf")):
+            with self.subTest(value=value):
+                provider = _FakeExecutionProvider(self._store())
+                result = execute_exec_run(provider, owner=OWNER, command="echo done", timeout_seconds=value)
+                self.assertEqual(result.event_status, "rejected")
+                self.assertEqual(result.reason, "invalid_execution_timeout")
+                self.assertFalse(provider.run_called)
 
     def test_failed_timeout_and_cancelled_are_errors(self) -> None:
         cases = (
@@ -611,7 +637,9 @@ class ExecOrchestrationTests(unittest.TestCase):
                 )
 
         provider = AdvancingProvider()
-        result = execute_exec_status(provider, owner=OWNER, run_id=run_id, wait_seconds=1)
+        started = time.monotonic()
+        result = execute_exec_status(provider, owner=OWNER, run_id=run_id, wait_seconds=60)
+        self.assertLess(time.monotonic() - started, 5)
         self.assertEqual(result.event_status, EXEC_STATUS_COMPLETED)
         self.assertEqual(provider.calls, 2)
         self.assertEqual(result.data["finished_at"], 130.0)

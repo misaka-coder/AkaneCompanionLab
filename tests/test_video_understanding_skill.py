@@ -507,7 +507,7 @@ class VideoUnderstandingMemcoreTraceTests(unittest.TestCase):
                     card_text = "\n".join(str(m.get("content") or "") for m in tool_payloads)
                     self.assertIn("[compact_reloadable]", card_text)
                     self.assertIn("tool: exec_run", card_text)
-                    self.assertIn("reload: open_memory(memory_id=", card_text)
+                    self.assertTrue(any(f"source_id: {sid}" in card_text for sid in observation_sids))
                     self.assertIn("status: success", card_text)
                     self.assertIn("已加载 Skill video-understanding", card_text)
                     self.assertIn("已把当前会话材料 gen_001, gen_002 的原始图片加载到紧随本结果的视觉证据消息", card_text)

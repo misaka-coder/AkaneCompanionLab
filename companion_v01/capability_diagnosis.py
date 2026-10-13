@@ -255,7 +255,7 @@ def build_capability_diagnosis(
             lines.append(f"Satellite：{satellite_status}")
     if unavailable:
         lines.append("当前不可用：" + "；".join(unavailable))
-    lines.append("数据来自当前配置与能力快照，只读；访问权限请使用 /access，识图等能力使用各自命令。")
+    lines.append("数据来自当前配置与能力快照，只读；访问权限请使用 /权限，识图等能力使用各自命令。")
     return {
         "handled": True,
         "ok": True,

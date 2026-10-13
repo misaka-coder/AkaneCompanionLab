@@ -55,6 +55,8 @@ _ADAPTER_TRANSPORT_FIELDS = frozenset(
         TOOL_EXECUTION_RECEIPT_FIELD,
         TOOL_EXECUTION_RECEIPTS_FIELD,
         TOOL_CAPABILITY_SELECTION_FIELD,
+        "_tool_background",
+        "_tool_scheduling_error",
     }
 )
 
@@ -330,6 +332,9 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
             return self._failure_from_exception(exc, fallback="adapter_invoke_failed")
         if not isinstance(result, CapabilityResult):
             return self._failure("adapter_result_invalid")
+        if result.is_error and result.status == "rejected" and result.reason == "executor_runtime_changed":
+            from ..capability_contracts import contract_failure
+            return contract_failure(self.tool_type, result.reason)
         if not result.is_error and not result.has_value:
             result = replace(result, value=result.content)
         from ..execution_policies import transform_execution_result
@@ -511,7 +516,7 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         if request_id:
             followup = (
                 f"这个{self._source_label()}需要用户确认，审批请求已经创建。"
-                "主人可在 QQ 发送 /approve 放行最新请求，随后让你继续并重试同一调用；"
+                "主人可在 QQ 发送 /批准 放行最新请求，随后让你继续并重试同一调用；"
                 "获批前不要声称已经完成。"
             )
         else:
@@ -616,6 +621,9 @@ class AdapterCapabilityToolHandler(BaseToolHandler):
         if "mcp" not in self._source_label().lower():
             return self._failure(reason)
         safe_reason = mcp_failure_reason(error, fallback=fallback)
+        if safe_reason == "executor_runtime_changed":
+            from ..capability_contracts import contract_failure
+            return contract_failure(self.tool_type, safe_reason)
         diagnostic = build_mcp_failure_diagnostic(error, stage="tool_call")
         feedback = (
             f"MCP 工具调用失败：{safe_reason}。"

@@ -101,7 +101,8 @@ def build_scene_router(*, service, admin_auth) -> APIRouter:
             raise HTTPException(409, str(exc)) from exc
 
     @router.post("/snapshot", response_model=Snapshot)
-    async def snapshot(identity: Identity):
+    async def snapshot(identity: Identity, request: Request):
+        authorize(request)
         try:
             return await asyncio.to_thread(service.snapshot, identity)
         except ValueError as exc:
@@ -119,6 +120,7 @@ def build_scene_router(*, service, admin_auth) -> APIRouter:
 
     @router.post("/story/catalog", response_model=StoryCatalogResponse)
     async def story_catalog(identity: Identity, request: Request):
+        authorize(request)
         return await asyncio.to_thread(service.story.catalog, identity)
 
     @router.post("/story/start", response_model=StoryRunState)

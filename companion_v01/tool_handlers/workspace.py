@@ -284,7 +284,7 @@ class ReadWorkspaceToolHandler(BaseToolHandler):
                 f'read_workspace(cursor="{next_cursor}")'
             )
         elif complete:
-            lines.append(f"已读取本次目标范围（本次展示 {shown_chars} 字）。")
+            lines.append(f"本次读取已结束（本次展示 {shown_chars} 字），目标状态见以上逐项结果。")
         if result.get("extraction_capped"):
             lines.append(
                 "注意：部分 Word/Excel/PDF/ZIP 的渲染文本达到单次提取窗口上限，"

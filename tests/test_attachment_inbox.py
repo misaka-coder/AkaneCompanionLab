@@ -148,6 +148,8 @@ class AttachmentInboxTests(unittest.TestCase):
                 origin_name="sample.png",
                 mime_type="image/png",
                 storage_relpath="user/session/sample.png",
+                source_message_id="message-a",
+                detail={"qq_sender_id": "404", "qq_sender_label": "原作者"},
                 timestamp=100,
             )
 
@@ -167,6 +169,9 @@ class AttachmentInboxTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["image_count"], 1)
             self.assertEqual(result["images"][0]["attachment_handle"], "img_001")
+            self.assertEqual(result["images"][0]["source_sender_id"], "404")
+            self.assertEqual(result["images"][0]["source_sender_label"], "原作者")
+            self.assertEqual(result["images"][0]["source_message_id"], "message-a")
             self.assertTrue(result["images"][0]["data_url"].startswith("data:image/png;base64,"))
             self.assertNotIn(str(image_path), str(result))
             self.assertFalse(isolated["ok"])

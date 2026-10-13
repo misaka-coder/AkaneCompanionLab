@@ -62,17 +62,23 @@ def _read_audio(resource, *, media_type):
     return audio
 
 
-async def synthesize_tts_service(*, engine, text, voice, emotion, context: ToolExecutionContext, preview=None, transient=False):
+async def synthesize_tts_service(*, engine, text, voice, emotion, context: ToolExecutionContext, preview=None, transient=False, caption=""):
+    if caption:
+        from .speech_policy import IRODORI_CAPTION_MAX_CHARS
+        if not isinstance(caption, str) or len(caption) > IRODORI_CAPTION_MAX_CHARS:
+            raise TTSServiceError("tts_caption_invalid", outcome_known=True)
+        if voice.get("provider") != "provider.tts.irodori.local":
+            raise TTSServiceError("tts_caption_provider_unsupported", outcome_known=True)
     if transient:
         from .plugin_managed_artifacts import transient_audio_scope
         with transient_audio_scope(context.profile_user_id, context.session_id) as resources:
             return await _synthesize_tts_service(engine=engine, text=text, voice=voice, emotion=emotion,
-                context=context, preview=preview, transient_resources=resources)
+                context=context, preview=preview, transient_resources=resources, caption=caption)
     return await _synthesize_tts_service(engine=engine, text=text, voice=voice, emotion=emotion,
-        context=context, preview=preview)
+        context=context, preview=preview, caption=caption)
 
 
-async def _synthesize_tts_service(*, engine, text, voice, emotion, context, preview=None, transient_resources=None):
+async def _synthesize_tts_service(*, engine, text, voice, emotion, context, preview=None, transient_resources=None, caption=""):
     files_factory = getattr(engine, "_get_generated_file_service", None)
     if not callable(files_factory):
         raise TTSServiceError("tts_media_service_unavailable", outcome_known=True)
@@ -80,7 +86,7 @@ async def _synthesize_tts_service(*, engine, text, voice, emotion, context, prev
     if files is None:
         raise TTSServiceError("tts_media_service_unavailable", outcome_known=True)
     response = await EnginePluginCapabilityProvider(engine).call_service("tts", "synthesize",
-        {"text": text, "voice": dict(voice), "emotion": emotion}, context=context,
+        {"text": text, "voice": dict(voice), "emotion": emotion, **({"caption": caption} if caption else {})}, context=context,
         private_parameters={"tts_preview": {**preview, "voice": dict(voice)}} if preview is not None else None)
     result = response.result
     if result.is_error:

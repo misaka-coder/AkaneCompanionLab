@@ -32,18 +32,37 @@ def execute_tool_batch(
     handler_for: Callable[[dict[str, Any]], Any],
     cancelled: Callable[[], bool] | None = None,
     scope_id: str = "",
+    wait_for_background: Callable[[float], None] | None = None,
+    wait_seconds: float | None = None,
 ) -> list[ToolExecutionResult]:
-    """Parallelize adjacent declared reads; all other calls are order barriers.
+    from .execution_wait import batch_wait_budget
+    with batch_wait_budget(wait_seconds) as deadline:
+        results = _execute_tool_batch(calls, execute=execute, handler_for=handler_for,
+                                      cancelled=cancelled, scope_id=scope_id)
+        if wait_for_background is not None:
+            wait_for_background(deadline)
+        return results
+
+
+def _execute_tool_batch(
+    calls: list[dict[str, Any]],
+    *,
+    execute: Callable[[dict[str, Any]], ToolExecutionResult],
+    handler_for: Callable[[dict[str, Any]], Any],
+    cancelled: Callable[[], bool] | None = None,
+    scope_id: str = "",
+) -> list[ToolExecutionResult]:
+    """Overlap adjacent parallel-capable calls and collect results in call order.
 
     Return exactly one result per call in request order, including calls skipped
-    after cancellation. A read after a write must observe that completed write.
-    This is batch scheduling, not a filesystem lock across independent tasks.
+    after cancellation. Ordered actions remain barriers until their tool call
+    returns; a background receipt does not imply that later calls depend on it.
     """
     def run(call):
         tool_type = str(call.get("type") or "unknown")
         started_at, started = time.time(), time.monotonic()
         try:
-            if cancelled is not None and cancelled():
+            if cancelled is not None and cancelled() and tool_type != "exec_cancel":
                 result = cancelled_tool_result(tool_type)
             else:
                 result = execute(call)
@@ -58,7 +77,7 @@ def execute_tool_batch(
                                 "status": "failed", "reason": "tool_exception:" + type(exc).__name__}],
                 followup_context=f"<tool_use_error>Tool execution failed ({type(exc).__name__}); inspect other results before continuing.</tool_use_error>",
             )
-        timing = {
+        timing = {**result.execution_timing,
             "started_at": started_at, "finished_at": time.time(),
             "duration_ms": round((time.monotonic() - started) * 1000, 3),
         }
@@ -72,9 +91,11 @@ def execute_tool_batch(
             pass
         return replace(result, execution_timing=timing)
 
-    def is_read(call):
+    def is_parallel(call):
         try:
             handler = handler_for(call)
+            if bool(getattr(handler, "parallel_execution", False)):
+                return True
             getter = getattr(handler, "tool_metadata", None)
             metadata = getter() if callable(getter) else None
             return metadata is not None and bool(getattr(metadata, "is_read_only", False))
@@ -84,21 +105,21 @@ def execute_tool_batch(
             return False
 
     results = []
-    reads = []
+    parallel_calls = []
     parallel_limit = tool_parallel_limit()
 
     def flush():
-        if len(reads) == 1:
-            results.append(run(reads[0]))
-        elif reads:
-            with ThreadPoolExecutor(max_workers=min(parallel_limit, len(reads)), thread_name_prefix="akane-tool") as pool:
-                futures = [pool.submit(copy_context().run, run, call) for call in reads]
+        if len(parallel_calls) == 1:
+            results.append(run(parallel_calls[0]))
+        elif parallel_calls:
+            with ThreadPoolExecutor(max_workers=min(parallel_limit, len(parallel_calls)), thread_name_prefix="akane-tool") as pool:
+                futures = [pool.submit(copy_context().run, run, call) for call in parallel_calls]
                 results.extend(future.result() for future in futures)
-        reads.clear()
+        parallel_calls.clear()
 
     for call in calls:
-        if is_read(call):
-            reads.append(call)
+        if is_parallel(call):
+            parallel_calls.append(call)
         else:
             flush()
             results.append(run(call))

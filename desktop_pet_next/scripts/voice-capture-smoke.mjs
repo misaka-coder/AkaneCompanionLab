@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import vm from "node:vm";
+import vm, { petRuntimeSource, petFunctionSource, petFunctions } from "./pet-production-functions.mjs";
 import { captureMicrophone } from "../src/voice-capture.js";
 
 const deferred = () => {
@@ -9,13 +9,8 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-function production(name) {
-  const match = new RegExp(`(?:async )?function ${name}\\(`).exec(source);
-  assert.ok(match, name);
-  const next = /\n(?:async )?function \w+\(/.exec(source.slice(match.index + 1));
-  return source.slice(match.index, next ? match.index + 1 + next.index : undefined);
-}
+const source = petRuntimeSource();
+const production = petFunctionSource;
 function harness({ realtime = true, timeoutMs = 15000 } = {}) {
   const requests = [], effects = [];
   const button = { classList: { toggle() {} } };
@@ -29,8 +24,9 @@ function harness({ realtime = true, timeoutMs = 15000 } = {}) {
     els: { voiceRecordButton: button, voicePlayer: {} },
     voiceInputState: "idle", voiceInputToken: 0, voiceCaptureController: null,
     realtimeVoiceCall: null, realtimeVoiceTurn: null, voiceRecorder: null, asrController: null,
+    voiceCallCleanupTask: null,
     voiceStream: null, voiceChunks: [], voiceStartedAt: 0,
-    canUseRealtimeVoice: () => realtime, isReplyActive: () => false,
+    canUseRealtimeVoice: () => realtime, isReplyActive: () => false, sceneOwnsPlayback: () => false,
     showBubbleText: (text) => effects.push(["bubble", text]),
     showError: (text) => effects.push(["error", text]),
     describeVoiceError: (error) => error.message,

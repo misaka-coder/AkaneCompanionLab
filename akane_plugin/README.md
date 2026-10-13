@@ -4,6 +4,11 @@
 and program calls. It requires Python 3.11+ and CapCore 0.1.3. The SDK wheel
 contains only this package; it does not import or install the Akane host.
 
+Start with the function example below. For desktop UI integration, use the
+[complete Gomoku reference](../examples/desktop_features/gomoku/README.md);
+[development tasks](../docs/DEVELOPMENT.md) point to current host code.
+The later version notes describe individual APIs; they are not an onboarding checklist.
+
 This source release supplies wheels locally; it has not been published to a
 public package index. Build the SDK with `python -m build`, then install its
 wheel and the matching CapCore wheel in your virtual environment:
@@ -57,7 +62,7 @@ Package this as an ordinary Python project. Its `pyproject.toml` declares:
 [project]
 name = "example-math"
 version = "0.1.0"
-dependencies = ["akane-plugin>=0.8,<0.9"]
+dependencies = ["akane-plugin>=0.14,<0.15"]
 
 [project.entry-points."akane.plugins.v1"]
 "example.math" = "example_math:create_plugin"

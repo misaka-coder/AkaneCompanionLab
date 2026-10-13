@@ -63,6 +63,21 @@ class CreatorKitImageDraftTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+            character["dialogue_services"] = {"shopkeeper": {"name": "售货员姐姐", "persona": "亲切地介绍甜点。"}}
+            character["care"] = {"care_preferences": {"favorite_items": ["草莓蛋糕"], "disliked_tags": ["spicy"]}}
+            metadata = pack_dir / "character.json"
+            metadata.write_text(json.dumps(character), encoding="utf-8")
+            accepted = subprocess.run(["node", str(VALIDATOR), str(pack_dir)], cwd=ROOT,
+                                      capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+            for value in ({"dialogue_services": {"shopkeeper": {"tools": ["web_search"]}}},
+                          {"care": {"care_preferences": {"favorite_items": "不是列表"}}}):
+                invalid = {**character, **value}
+                metadata.write_text(json.dumps(invalid), encoding="utf-8")
+                rejected = subprocess.run(["node", str(VALIDATOR), str(pack_dir)], cwd=ROOT,
+                                          capture_output=True, text=True, encoding="utf-8")
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("not customizable" if "dialogue_services" in value else "must be an array", rejected.stdout)
 
 
 if __name__ == "__main__":

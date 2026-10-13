@@ -344,7 +344,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=False,
                         latest_emotion="",
                         latest_speech="",
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
                 return SimpleNamespace(
@@ -354,7 +353,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=True,
                     latest_emotion="",
                     latest_speech="",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -524,7 +522,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=False,
                     latest_emotion="",
                     latest_speech="",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -580,7 +577,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=True,
                         latest_emotion="",
                         latest_speech="",
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
                 return SimpleNamespace(
@@ -590,7 +586,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=False,
                     latest_emotion="",
                     latest_speech="",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -652,7 +647,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=True,
                         latest_emotion="",
                         latest_speech="第一句已经说完。",
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
                 yield {"type": "speech_chunk", "text": "这里补上剩余结论。"}
@@ -664,7 +658,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=False,
                     latest_emotion="",
                     latest_speech="这里补上剩余结论。",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -675,7 +668,8 @@ class FinalRecoveryTests(unittest.TestCase):
         delivered = [event["text"] for event in events if event.get("type") == "speech_segment"]
         self.assertEqual(delivered, ["第一句已经说完。", "这里补上剩余结论。"])
         self.assertIn("第一句已经说完。", llm.calls[1]["user_prompt"])
-        self.assertIn("从 speech 中解析出的完整句子", llm.calls[1]["user_prompt"])
+        self.assertIn("【已交付句子】", llm.calls[1]["user_prompt"])
+        self.assertIn("沿用当前客户端的字段说明", llm.calls[1]["user_prompt"])
         self.assertIn("用户可能已经看到或听到", llm.calls[1]["user_prompt"])
         self.assertEqual(result["speech"], "第一句已经说完。\n这里补上剩余结论。")
 
@@ -704,7 +698,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=True,
                         latest_emotion="",
                         latest_speech="好。",
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
                 # The recovery provider repeats the already-emitted prefix,
@@ -720,7 +713,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=False,
                     latest_emotion="",
                     latest_speech="好。好。结束。",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -757,7 +749,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=True,
                         latest_emotion="",
                         latest_speech="先给你第一句。",
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
                 self.assert_recovery_prompt(kwargs["user_prompt"])
@@ -770,7 +761,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=False,
                     latest_emotion="",
                     latest_speech="这里是剩余结论。",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -813,7 +803,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=True,
                     latest_emotion="",
                     latest_speech="第一句。",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -1084,7 +1073,6 @@ class FinalRecoveryTests(unittest.TestCase):
                             fallback_used=True,
                             latest_emotion="",
                             latest_speech="",
-                            latest_reply_medium="",
                             native_preface_text="",
                         )
                     return SimpleNamespace(
@@ -1094,7 +1082,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=False,
                         latest_emotion="",
                         latest_speech="",
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
 
@@ -1272,7 +1259,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=True,
                     latest_emotion="",
                     latest_speech="",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -1400,7 +1386,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=True,
                     latest_emotion="",
                     latest_speech="",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -1495,7 +1480,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=True,
                         latest_emotion="",
                         latest_speech="我先查一下。",
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
                 return SimpleNamespace(
@@ -1505,7 +1489,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=False,
                     latest_emotion="",
                     latest_speech="查到了：仓库是 monorepo。",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -1546,7 +1529,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=True,
                     latest_emotion="",
                     latest_speech="",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -1638,7 +1620,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=True,
                         latest_emotion="",
                         latest_speech="",
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
                 return SimpleNamespace(
@@ -1654,7 +1635,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=False,
                     latest_emotion="",
                     latest_speech="",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 
@@ -1789,7 +1769,6 @@ class FinalRecoveryTests(unittest.TestCase):
                         fallback_used=True,
                         latest_emotion="",
                         latest_speech=protocol,
-                        latest_reply_medium="",
                         native_preface_text="",
                     )
                 yield {"type": "speech_chunk", "text": "已经重新用原生工具入口处理。"}
@@ -1801,7 +1780,6 @@ class FinalRecoveryTests(unittest.TestCase):
                     fallback_used=False,
                     latest_emotion="",
                     latest_speech="已经重新用原生工具入口处理。",
-                    latest_reply_medium="",
                     native_preface_text="",
                 )
 

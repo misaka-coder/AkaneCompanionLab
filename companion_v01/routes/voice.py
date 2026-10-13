@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import inspect
 import shutil
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
@@ -48,6 +51,7 @@ def build_voice_router(
     asr_adapter_factory: Callable[[str], Any] | None = None,
     realtime_asr_coordinator_factory: VoiceRealtimeCoordinatorFactory | None = None,
     realtime_asr_call_factory: VoiceRealtimeCallFactory | None = None,
+    admin_auth: Any = None,
 ) -> APIRouter:
     router = APIRouter()
     provider_config_base_dir = _resolve_provider_config_base_dir(
@@ -57,10 +61,43 @@ def build_voice_router(
 
     @router.websocket("/voice/realtime")
     async def voice_realtime(websocket: WebSocket) -> None:
+        from ..deployment_security import AdminWriteAuth
+        policy = getattr(engine, "owner_private_policy", None)
+        decision = (admin_auth or AdminWriteAuth.local_compatibility()).authorize(websocket)
+        if policy is not None and policy.enabled and not decision.ok:
+            await websocket.close(code=1008, reason=decision.reason)
+            return
+
+        def trusted_factory(factory):
+            if factory is None or policy is None:
+                return factory
+            async def invoke(request):
+                payload = {"user_id": request.session_id, "real_user_id": request.profile_user_id,
+                           "character_pack_id": request.character_pack_id, "client_mode": "desktop_pet",
+                           "client_capabilities": ["speech", "speech_units_v1"]}
+                character = engine._resolve_payload_character_pack_id(payload)
+                policy.stamp_desktop(payload, owner_authenticated=decision.ok, character=character)
+                trusted_request = replace(request, character_pack_id=character,
+                                          conversation_ref=payload["_memory_desktop_ref"])
+                async def prepare():
+                    result = factory(trusted_request)
+                    return await result if inspect.isawaitable(result) else result
+                coordinator = getattr(engine, "turn_coordinator", None)
+                if policy.resolve(payload).shared and coordinator is not None:
+                    # Journal recovery may write pending projections. It must
+                    # respect the same turn boundary as a new voice input.
+                    async with coordinator.hold("master", "master", actor_id="master",
+                                                channel="desktop_voice", turn_kind="voice_recovery",
+                                                memory_domain=character):
+                        return await prepare()
+                return await prepare()
+            return invoke
         await handle_voice_realtime_websocket(
             websocket,
-            coordinator_factory=realtime_asr_coordinator_factory,
-            call_factory=realtime_asr_call_factory,
+            subprotocol=next((p for p in websocket.scope.get("subprotocols", [])
+                              if p.startswith("akane.desktop-chat.")), None) if decision.ok else None,
+            coordinator_factory=trusted_factory(realtime_asr_coordinator_factory),
+            call_factory=trusted_factory(realtime_asr_call_factory),
             runtime_metrics=runtime_metrics,
             log_event=log_event,
         )
@@ -212,6 +249,12 @@ def build_voice_router(
             engine=engine,
             payload=payload,
         )
+        if payload.get("prewarm") is True:
+            from ..speech_policy import character_speech_policy
+            from ..tts_provider_selection import IRODORI_PROVIDER_ID
+            policy = character_speech_policy(engine, str(payload.get("character_pack_id") or payload.get("characterPackId") or ""))
+            if resolution.get("requestedProviderId") == IRODORI_PROVIDER_ID or policy.get("language") in {"日语", "日本語", "ja"}:
+                text = "おかえり。"
         failure = tts_resolution_failure(resolution)
         if failure:
             reason = _safe_tts_reason(failure)
@@ -254,7 +297,8 @@ def build_voice_router(
         headers = _tts_response_headers(resolution)
 
         try:
-            synthesized = await synthesize_tts_resolution(
+            synthesized = await _synthesize_for_request(
+                request=request,
                 resolution=resolution,
                 text=text,
                 payload=payload,
@@ -306,6 +350,26 @@ def build_voice_router(
         )
 
     return router
+
+
+async def _synthesize_for_request(*, request, **kwargs):
+    """Propagate desktop aborts through the host invocation to the HTTP client."""
+    disconnected = asyncio.Event()
+
+    async def watch_disconnect():
+        while not disconnected.is_set():
+            if await request.is_disconnected():
+                disconnected.set()
+                return
+            await asyncio.sleep(0.1)
+
+    monitor = asyncio.create_task(watch_disconnect())
+    try:
+        return await synthesize_tts_resolution(**kwargs, cancel_requested=disconnected.is_set)
+    finally:
+        disconnected.set()
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
 
 
 async def _invoke_asr_adapter(
@@ -480,6 +544,11 @@ def _tts_response_headers(resolution: Mapping[str, Any]) -> dict[str, str]:
         "X-Akane-TTS-Status": str(resolution.get("status") or ""),
         "X-Akane-TTS-Fallback": str(resolution.get("fallbackProviderId") or ""),
         "X-Akane-TTS-Reason": _safe_tts_reason(resolution.get("reason")),
+        "X-Akane-Voice-Style": quote(str(resolution.get("voiceStyle") or "")[:120], safe=""),
+        "X-Akane-Voice-Style-Requested": quote(
+            str(resolution.get("voiceStyleRequested") or "")[:120], safe=""),
+        "X-Akane-Voice-Style-Fallback": "true" if resolution.get("voiceStyleFallback") else "false",
+        "X-Akane-Voice-Style-Fallback-Reason": _safe_tts_reason(resolution.get("voiceStyleFallbackReason")),
     }
 
 

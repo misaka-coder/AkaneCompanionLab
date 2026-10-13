@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from capcore import CapabilityResult
+import httpx
 from fastapi import FastAPI
 from akane_plugin import EventSubscription, GROUP_CONVERSATION_EVENT, PluginInvocationContext
 from companion_v01.async_task_supervisor import AsyncTaskSupervisor
@@ -21,6 +22,7 @@ from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.plugin_events import PluginEventBroker, _PluginEventRegistration
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
 from companion_v01.plugin_turn_requests import HostTurnRequests
+from companion_v01.plugin_turn_intents import PluginTurnError
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
 from companion_v01.session_inbox import SessionInboxStore
@@ -47,6 +49,7 @@ class QQInboundTurnsTests(unittest.IsolatedAsyncioTestCase):
         self.prompts, self.steers, self.logs, self.passive = [], [], [], []
         self.reject_steers = False
         self.model_error = False
+        self.tools_started = False
 
         async def execute(_registration, event, **_kwargs):
             return CapabilityResult(is_error=False, status="ok", content=event.data)
@@ -83,6 +86,8 @@ class QQInboundTurnsTests(unittest.IsolatedAsyncioTestCase):
 
         def stream(payload):
             engine.turns.append(dict(payload))
+            if self.tools_started:
+                self.coordinator.mark_tool_activity(payload["_turn_control_id"])
             self.entered.set()
             if not self.release.wait(5):
                 raise RuntimeError("test_model_timeout")
@@ -103,7 +108,7 @@ class QQInboundTurnsTests(unittest.IsolatedAsyncioTestCase):
                 self.turns.prompt_context(
                     profile_user_id=payload["real_user_id"],
                     session_id=payload["user_id"],
-                    character_pack_id=payload["character_pack_id"],
+                    character_pack_id=str(payload.get("character_pack_id") or ""),
                 )
             )
             if control.get("stop_requested"):
@@ -164,6 +169,184 @@ class QQInboundTurnsTests(unittest.IsolatedAsyncioTestCase):
             await self.turns.aclose()
 
         self.addAsyncCleanup(close)
+
+    async def test_verified_bot_quote_keeps_independent_admission_after_queueing(self):
+        event = {
+            "post_type": "message", "message_type": "group", "self_id": 100,
+            "user_id": 300, "group_id": 87, "message_id": 871001,
+            "message": [
+                {"type": "reply", "data": {"id": "871000"}},
+                {"type": "text", "data": {"text": "可以呀"}},
+            ],
+        }
+        self.gateway.resolve_quoted_message_evidence = lambda _event, **_kw: {
+            "ok": True, "quoted_message": {
+                "message_id": "871000", "text": "一起喝茶吧", "actor_id": "100",
+                "actor_label": "Akane", "actor_is_bot": True,
+                "conversation_kind": "group", "conversation_id": "87",
+            }, "attachments": [],
+        }
+        session, profile = self.gateway.resolve_identity(user_id=300, group_id=87)
+        context = SimpleNamespace(profile_user_id=profile, session_id=session,
+                                  character_pack_id=self.gateway.resolve_character_pack_id(session))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test") as client:
+            async with self.coordinator.hold(
+                context.profile_user_id, context.session_id, actor_id="qq:300",
+                channel="qq", memory_domain=context.character_pack_id,
+            ) as token:
+                self.coordinator.begin_finalization(token)
+                response = (await client.post("/api/qq/napcat/event", json=event)).json()
+                self.assertIn("send_result", response)
+                self.assertEqual(response["send_result"]["status"], "queued", response)
+                self.assertEqual(self.engine.turns, [])
+                self.assertTrue(self.turns._inbounds)
+                self.assertTrue(all(not inbound.required for inbound in self.turns._inbounds.values()))
+            self.assertTrue(await asyncio.to_thread(self.entered.wait, 3), self.logs)
+            await self.supervisor.close()
+            await self.queue.close(timeout=5)
+        self.assertEqual(len(self.engine.turns), 1, self.logs)
+        self.assertEqual(self.engine.turns[0]["turn_kind"], "qq_optional_reply")
+        sends = [call for call in self.network.call_args_list if call.args[1].endswith("/send_group_msg")]
+        self.assertEqual(len(sends), 1)
+        self.assertFalse(any("failed" in name for name, _data in self.logs), self.logs)
+
+    async def test_plugin_only_admission_still_requires_a_live_request(self):
+        context = PluginInvocationContext("profile", "session", "qq", character_pack_id="reimu")
+        with self.turns.inbound(context, required=True) as inbound:
+            with self.assertRaisesRegex(PluginTurnError, "agent_turn_scope_expired"):
+                with self.turns.processing_inbound(inbound, "turn-token"):
+                    self.fail("An unrequested passive input must not run a model.")
+
+    @staticmethod
+    def _group_message(actor, message_id, text):
+        return {
+            "post_type": "message", "message_type": "group", "self_id": 100,
+            "user_id": actor, "group_id": 87, "message_id": message_id,
+            "sender": {"user_id": actor, "nickname": f"user-{actor}"},
+            "message": [{"type": "at", "data": {"qq": "100"}},
+                        {"type": "text", "data": {"text": text}}],
+        }
+
+    async def test_ordinary_group_chat_keeps_owner_and_same_actor_messages_in_fifo(self):
+        event = self._group_message
+        self.release.clear()
+        with patch("config.MASTER_QQ", "300"):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test") as client:
+                first = asyncio.create_task(client.post("/api/qq/napcat/event", json=event(200, 873001, "普通问题")))
+                try:
+                    self.assertTrue(await asyncio.to_thread(self.entered.wait, 3), self.logs)
+                    for actor, message_id, text in (
+                        (400, 873002, "另一位群友的问题"),
+                        (300, 873003, "主人的普通问题"),
+                        (200, 873004, "发起者的第二个问题"),
+                    ):
+                        result = (await client.post("/api/qq/napcat/event", json=event(actor, message_id, text))).json()
+                        self.assertEqual(result["send_result"]["status"], "queued", result)
+                    duplicate = (await client.post("/api/qq/napcat/event", json=event(300, 873003, "主人的普通问题"))).json()
+                    self.assertEqual(duplicate["reason"], "duplicate_event", duplicate)
+                    self.assertEqual(len(self.engine.turns), 1)
+                    self.assertEqual(self.store.pending_count("qq_group_shared_87\0qq_group_shared_87"), 3)
+                finally:
+                    self.release.set()
+                    first_response = (await first).json()
+                self.assertEqual(first_response["status"], "ok", first_response)
+                await asyncio.wait_for(asyncio.gather(*list(self.queue._workers.values())), 5)
+                await self.supervisor.close()
+                await self.queue.close(timeout=5)
+        self.assertEqual(self.steers, [])
+        self.assertEqual([payload["message"] for payload in self.engine.turns], [
+            "【user-200】普通问题", "【user-400】另一位群友的问题",
+            "【user-300】主人的普通问题", "【user-200】发起者的第二个问题",
+        ])
+        queued = [data for name, data in self.logs if name == "qq_group_turn_queued"]
+        self.assertEqual(len(queued), 3)
+        self.assertEqual([data["queue_sequence"] for data in queued], sorted(
+            data["queue_sequence"] for data in queued
+        ))
+        self.assertEqual(self.store.pending_count("qq_group_shared_87\0qq_group_shared_87"), 0)
+
+    async def test_owner_message_during_a_dequeued_ordinary_reply_starts_its_own_turn(self):
+        event = self._group_message
+        self.release.clear()
+        with patch("config.MASTER_QQ", "300"):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test") as client:
+                async with self.coordinator.hold(
+                    "qq_group_shared_87", "qq_group_shared_87", accepts_steering=False,
+                ):
+                    initial = (await client.post("/api/qq/napcat/event", json=event(200, 874001, "排队的普通问题"))).json()
+                    self.assertEqual(initial["send_result"]["status"], "queued", initial)
+                try:
+                    self.assertTrue(await asyncio.to_thread(self.entered.wait, 3), self.logs)
+                    result = (await client.post("/api/qq/napcat/event", json=event(300, 874002, "主人还有一个问题"))).json()
+                    self.assertEqual(result["send_result"]["status"], "queued", result)
+                    self.assertEqual(len(self.engine.turns), 1)
+                finally:
+                    self.release.set()
+                await asyncio.wait_for(asyncio.gather(*list(self.queue._workers.values())), 5)
+                await self.supervisor.close()
+                await self.queue.close(timeout=5)
+        self.assertEqual(self.steers, [])
+        self.assertEqual([payload["message"] for payload in self.engine.turns], [
+            "【user-200】排队的普通问题", "【user-300】主人还有一个问题",
+        ])
+        self.assertEqual(self.store.pending_count("qq_group_shared_87\0qq_group_shared_87"), 0)
+
+    async def test_owner_message_after_tool_task_finalization_is_queued(self):
+        with patch("config.MASTER_QQ", "300"):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test") as client:
+                async with self.coordinator.hold(
+                    "qq_group_shared_87", "qq_group_shared_87", actor_id="qq:200", channel="qq",
+                ) as token:
+                    self.assertTrue(self.coordinator.mark_tool_activity(token))
+                    self.assertEqual(self.coordinator.begin_finalization(token)["status"], "finalizing")
+                    result = (await client.post("/api/qq/napcat/event", json=self._group_message(
+                        300, 875001, "收尾时的新问题",
+                    ))).json()
+                    self.assertEqual(result["send_result"]["status"], "queued", result)
+                    self.assertEqual(self.engine.turns, [])
+                    self.assertEqual(self.coordinator.drain(token)["steers"], [])
+                await asyncio.wait_for(asyncio.gather(*list(self.queue._workers.values())), 5)
+        self.assertEqual(self.steers, [])
+        self.assertEqual([payload["message"] for payload in self.engine.turns], ["【user-300】收尾时的新问题"])
+        self.assertEqual(self.store.pending_count("qq_group_shared_87\0qq_group_shared_87"), 0)
+
+    async def test_owner_can_steer_another_actor_task_past_queued_group_messages(self):
+        def event(actor, message_id, text):
+            return {
+                "post_type": "message", "message_type": "group", "self_id": 100,
+                "user_id": actor, "group_id": 87, "message_id": message_id,
+                "sender": {"user_id": actor, "nickname": f"user-{actor}"},
+                "message": [{"type": "at", "data": {"qq": "100"}},
+                            {"type": "text", "data": {"text": text}}],
+            }
+
+        self.tools_started = True
+        self.release.clear()
+        with patch("config.MASTER_QQ", "300"):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test") as client:
+                first = asyncio.create_task(client.post("/api/qq/napcat/event", json=event(200, 872001, "修复执行器")))
+                try:
+                    self.assertTrue(await asyncio.to_thread(self.entered.wait, 3), self.logs)
+                    waiting = (await client.post("/api/qq/napcat/event", json=event(400, 872002, "稍后回答我"))).json()
+                    self.assertEqual(waiting["send_result"]["status"], "queued", waiting)
+                    owner = (await client.post("/api/qq/napcat/event", json=event(300, 872003, "别跑全量测试"))).json()
+                    self.assertEqual(owner["send_result"]["reason"], "steer_accepted_without_visible_ack", owner)
+                    self.assertEqual(len(self.engine.turns), 1)
+                    self.assertEqual(self.store.pending_count(
+                        f"{owner['profile_user_id']}\0{owner['session_id']}"), 2)
+                finally:
+                    self.release.set()
+                    first_response = (await first).json()
+                self.assertEqual(first_response["status"], "ok", first_response)
+                self.assertEqual([item.content for item in self.steers], ["【user-300】别跑全量测试"])
+                self.assertEqual(self.steers[0].actor_id, "qq:300")
+                owner_item = self.store.get(self.steers[0].receipt_item_id)
+                self.assertEqual(owner_item.status, "committed")
+                await self.supervisor.close()
+                await self.queue.close(timeout=5)
+                self.assertEqual(len(self.engine.turns), 2)
+                self.assertIn("稍后回答我", self.engine.turns[-1]["message"])
+                self.assertFalse(any("failed" in name for name, _data in self.logs), self.logs)
 
     async def test_group_event_preserves_channel_facts_and_host_identity(self):
         recorder = _Recorder()

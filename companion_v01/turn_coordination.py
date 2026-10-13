@@ -65,11 +65,14 @@ class _ActiveTurn:
     actor_id: str
     channel: str
     turn_kind: str = ""
+    memory_domain: str | None = None
     pending: list[SteeringInput] = field(default_factory=list)
     stop_requested: bool = False
     stop_reason: str = ""
     phase: str = "running"
     scope_check: Callable[[], bool] | None = None
+    accepts_steering: bool = True
+    tools_started: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +199,26 @@ class TurnCoordinator:
         self._async_locks: dict[str, tuple[asyncio.Lock, int]] = {}
         self._stop_epochs: dict[str, int] = {}
         self._stop_listeners: list[Callable[..., Any]] = []
+        self._before_turn_listeners: list[Callable[..., Any]] = []
+        self._restart_paused = False
+
+    def pause_if_idle_for_restart(self) -> bool:
+        """Fence new turns only when both active and waiting turns have settled."""
+        with self._state_lock:
+            if self._async_locks or self._active:
+                return False
+            self._restart_paused = True
+            return True
+
+    def resume_after_restart_check(self) -> None:
+        with self._state_lock:
+            self._restart_paused = False
+
+    def bind_before_turn_listener(self, listener):
+        """Host maintenance runs inside the same boundary, before context is read."""
+        with self._state_lock:
+            if listener not in self._before_turn_listeners:
+                self._before_turn_listeners.append(listener)
 
     def bind_stop_listener(self, listener):
         with self._state_lock:
@@ -271,6 +294,16 @@ class TurnCoordinator:
         with self._state_lock:
             return key in self._active
 
+    def mark_tool_activity(self, token: Any) -> bool:
+        """Keep a turn steerable between tool batches until finalization."""
+        normalized = str(token or "").strip()
+        with self._state_lock:
+            active = next((item for item in self._active.values() if item.token == normalized), None)
+            if active is None or active.phase != "running":
+                return False
+            active.tools_started = True
+            return True
+
     def offer_steer(
         self,
         *,
@@ -286,6 +319,9 @@ class TurnCoordinator:
         receipt_item_id: Any = "",
         receipt_claim_token: Any = "",
         current_attachment_ids: list[str] | None = None,
+        memory_domain: Any = None,
+        allow_other_actor: bool = False,
+        require_tool_activity: bool = False,
     ) -> dict[str, Any]:
         text = str(content or "").strip()
         actor = str(actor_id or "").strip()
@@ -298,6 +334,13 @@ class TurnCoordinator:
                 return {"ok": False, "status": "idle", "reason": "no_active_turn"}
             if active.phase != "running":
                 return {"ok": False, "status": "finalizing", "reason": "active_turn_finalizing"}
+            if not active.accepts_steering:
+                return {"ok": False, "status": "busy_maintenance", "reason": "active_work_has_no_model_consumer"}
+            if channel and active.channel and str(channel).strip() != active.channel:
+                return {"ok": False, "status": "busy_other_channel", "reason": "reply_channel_mismatch"}
+            if (memory_domain is not None and active.memory_domain is not None
+                    and str(memory_domain).strip() != active.memory_domain):
+                return {"ok": False, "status": "busy_other_scope", "reason": "memory_domain_mismatch"}
             if active.turn_kind in {"qq_attention", "plugin_event"}:
                 # Ambient attention and plugin events are host-initiated work,
                 # not work owned by the passive message's sender. A real
@@ -314,8 +357,12 @@ class TurnCoordinator:
                     "reason": "addressed_input_preempts_optional_turn",
                     "turn_token": active.token,
                 }
-            if active.actor_id != actor:
+            # Only a trusted host caller can grant operator steering. Keep the
+            # real sender on the input and the original task owner unchanged.
+            if active.actor_id != actor and not allow_other_actor:
                 return {"ok": False, "status": "busy_other_actor", "reason": "actor_mismatch"}
+            if require_tool_activity and not active.tools_started:
+                return {"ok": False, "status": "busy_chat", "reason": "ordinary_chat_requires_separate_turn"}
             safe_images = tuple(
                 dict(raw)
                 for raw in list(native_user_images or [])[:5]
@@ -375,6 +422,12 @@ class TurnCoordinator:
                 "turn_token": active.token,
             }
 
+    def has_pending_controls(self, token: Any) -> bool:
+        """Wake a work wait without consuming the next boundary's controls."""
+        with self._state_lock:
+            return any(item.token == str(token or "") and (item.pending or item.stop_requested)
+                       for item in self._active.values())
+
     def drain(self, token: Any) -> dict[str, Any]:
         normalized = str(token or "").strip()
         self._refresh_scope(normalized)
@@ -421,15 +474,24 @@ class TurnCoordinator:
         actor_id: Any = "",
         channel: Any = "",
         turn_kind: Any = "",
+        memory_domain: Any = None,
+        accepts_steering: bool = True,
     ):
         key = _identity_key(profile_user_id, session_id)
         with self._state_lock:
+            if self._restart_paused:
+                raise RuntimeError("backend_restart_pending")
             entry = self._async_locks.get(key)
             lock = entry[0] if entry is not None else asyncio.Lock()
             self._async_locks[key] = (lock, (entry[1] if entry is not None else 0) + 1)
         token = ""
         try:
             async with lock:
+                with self._state_lock:
+                    listeners = tuple(self._before_turn_listeners)
+                profile, session = key.split("\0", 1)
+                for listener in listeners:
+                    await listener(profile_user_id=profile, session_id=session, turn_kind=str(turn_kind or ""))
                 token = f"turnctl_{uuid.uuid4().hex}"
                 with self._state_lock:
                     self._active[key] = _ActiveTurn(
@@ -437,6 +499,8 @@ class TurnCoordinator:
                         actor_id=str(actor_id or "").strip(),
                         channel=str(channel or "").strip(),
                         turn_kind=str(turn_kind or "").strip(),
+                        memory_domain=None if memory_domain is None else str(memory_domain).strip(),
+                        accepts_steering=accepts_steering,
                     )
                 yield token
         finally:

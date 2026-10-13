@@ -126,28 +126,22 @@ class DesktopMusicTimelineService:
                 [
                     "【当前音乐位置】",
                     "- 这首歌的歌词线索还没准备好。",
-                    "- 你现在只知道音频标题、播放状态和进度；不要编造歌词内容。",
                 ]
             )
 
         status = str(timeline.get("status") or "").strip().lower()
-        title = str(timeline.get("title") or activity.get("title") or "当前音频").strip()
         if status in {"pending", "processing"}:
             return "\n".join(
                 [
                     "【当前音乐位置】",
-                    f"- 正在播放：{title}",
-                    "- 歌词线索还没准备好，当前还不能确定唱到哪一句。",
-                    "- 不要编造歌词内容；如果主人问起，可以自然说现在只能感知播放进度。",
+                    "- 歌词线索还没准备好。",
                 ]
             )
         if status == "failed":
             return "\n".join(
                 [
                     "【当前音乐位置】",
-                    f"- 正在播放：{title}",
-                    "- 歌词线索暂时没有准备好。",
-                    "- 不要编造歌词内容。",
+                    "- 歌词线索暂不可用（读取失败）。",
                 ]
             )
 
@@ -156,17 +150,14 @@ class DesktopMusicTimelineService:
         segments = list(timeline.get("segments") or [])
         nearby = self._nearby_segments(segments, progress_seconds=progress)
         quality = self._timeline_quality(timeline)
-        lines = [
-            "【当前音乐位置】",
-            f"- 正在播放：{title}",
-        ]
-        if progress:
-            lines.append(f"- 当前进度：{self._format_time(progress)}。")
+        # Title/progress already appear in the activity snapshot; this tail
+        # contributes only nearby lyric evidence and its current reliability.
+        lines = ["【当前音乐位置】"]
         if progress and ready_until and progress > ready_until + 5:
-            lines.append("- 当前播放进度已经超过可用歌词线索范围，不要补编后续歌词。")
+            lines.append("- 当前进度已超过歌词线索范围。")
 
         if not nearby:
-            lines.append("- 当前进度附近暂无可用歌词线索，不要编造歌词内容。")
+            lines.append("- 当前进度附近暂无歌词线索。")
             return "\n".join(lines)
 
         lines.append("- 此刻附近隐约听到的词句：")
@@ -174,10 +165,8 @@ class DesktopMusicTimelineService:
             text = " ".join(str(segment.get("text") or "").split())[:160]
             if text:
                 lines.append(f"  - “{text}”")
-        lines.append("- 这些只是大致听到的人声，不保证逐字完全准确。")
         if quality == TIMELINE_QUALITY_MIXED:
-            lines.append("- 当前词句可能受伴奏影响更明显，如果不确定就自然说听得不太清楚。")
-        lines.append("- 请把这些当作你和主人一起听歌时自然注意到的内容，不要说自己在看文件。")
+            lines.append("- 词句可靠性：受伴奏影响。")
         return "\n".join(lines)
 
     def _schedule_timeline_build(

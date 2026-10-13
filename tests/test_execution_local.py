@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ from companion_v01.execution_specs import (
     EXEC_STATUS_TIMED_OUT,
     EXEC_STATUS_UNKNOWN,
 )
+from companion_v01.execution_specs import EXEC_REASON_OUTPUT_OPEN_AFTER_EXIT
 
 
 def _python_command(code: str) -> str:
@@ -54,6 +56,43 @@ def _shutdown_executor(executor):
         time.sleep(.05)
 
 
+class _WatcherClock:
+    """Advance only the execution watcher, leaving real waits and children alone."""
+
+    def __init__(self):
+        self.offset = 0
+        self.started = threading.Event()
+        self.observed = threading.Event()
+
+    def monotonic(self):
+        self.started.set()
+        return time.monotonic() + self.offset
+
+    def sleep(self, seconds):
+        if self.offset:
+            self.observed.set()
+        time.sleep(seconds)
+
+
+class _ContinuousOutputPipe:
+    """Pause one read, then keep producing data until the test releases it."""
+
+    def __init__(self):
+        self.reading = threading.Event()
+        self.release = threading.Event()
+        self.stop = threading.Event()
+        self.closed = threading.Event()
+
+    def read(self, size):
+        self.reading.set()
+        if not self.release.wait(5) or self.stop.is_set():
+            return b""
+        return b"x" * size
+
+    def close(self):
+        self.closed.set()
+
+
 class TrustedLocalExecutorTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -62,6 +101,59 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.workspace.mkdir()
         self.run_log_dir = Path(self._tmp.name) / "runlogs"
         self.owner = ExecutionRunOwner(profile_user_id="alice", session_id="s1", provider_id="local")
+        self._gate_dir = Path(tempfile.gettempdir()) / f"akane-execution-gates-{os.getpid()}"
+        self._gates: list[Path] = []
+        self.addCleanup(self._release_detached_children)
+
+    def _detached_child_command(
+        self,
+        seconds: float,
+        *,
+        finish: str = "print('parent complete', flush=True)",
+    ) -> str:
+        """A command that leaves a child holding the stdout/stderr pipes it inherited.
+
+        ``stdout=sys.stdout`` hands the child the very pipe the executor gave the
+        command, which is what a Windows ``Start-Process`` launch does to a detached
+        grandchild: the command exits while the child keeps the write end open. The
+        child stays clear of the disposable workspace and exits as soon as the test
+        opens its gate, so no test leaks a process or a pipe.
+        """
+
+        self._gate_dir.mkdir(parents=True, exist_ok=True)
+        gate = self._gate_dir / f"gate-{uuid.uuid4().hex[:8]}.open"
+        self._gates.append(gate)
+        child = "\n".join(
+            (
+                "import time",
+                "from pathlib import Path",
+                f'gate = Path(r"{gate}")',
+                f"deadline = time.monotonic() + {seconds}",
+                "while not gate.exists() and time.monotonic() < deadline:",
+                "    time.sleep(0.05)",
+                "gate.unlink(missing_ok=True)",
+            )
+        )
+        outer = (
+            "import subprocess, sys; "
+            f"subprocess.Popen([sys.executable, '-c', {child!r}], "
+            f'cwd=r"{Path(__file__).resolve().parent}", '
+            "stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr); "
+            f"{finish}"
+        )
+        return _python_command(outer)
+
+    def _release_detached_children(self) -> None:
+        """Let test children exit before the disposable workspace is removed."""
+
+        if not self._gates:
+            return
+        for gate in self._gates:
+            gate.write_text("open", encoding="utf-8")
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and any(gate.exists() for gate in self._gates):
+            time.sleep(0.05)
+        time.sleep(0.2)
 
     def _executor(self, **kwargs) -> TrustedLocalExecutor:
         defaults = {"workspace_root": self.workspace, "run_log_dir": self.run_log_dir}
@@ -108,6 +200,38 @@ class TrustedLocalExecutorTests(unittest.TestCase):
 
         self.assertEqual(start.status, EXEC_STATUS_FAILED)
         self.assertEqual(start.exit_code, 7)
+
+    def test_wrapped_child_failure_preserves_outer_exit_code_and_child_output(self) -> None:
+        from companion_v01.execution_runtime.mapping import map_exec_run_outcome
+
+        executor = self._executor()
+        child = "import sys; print('child_failed', flush=True); sys.exit(7)"
+        for propagate in (False, True):
+            with self.subTest(propagate=propagate):
+                code = (
+                    "import subprocess, sys; "
+                    f"result = subprocess.run([sys.executable, '-c', {child!r}]); "
+                    "print('child_exit=' + str(result.returncode), flush=True); "
+                    + ("sys.exit(result.returncode)" if propagate else "print('parent_finished', flush=True)")
+                )
+                start = executor.run(owner=self.owner, command=_python_command(code), initial_wait_seconds=5)
+                self.assertEqual(start.status, EXEC_STATUS_FAILED if propagate else EXEC_STATUS_COMPLETED)
+                self.assertEqual(start.exit_code, 7 if propagate else 0)
+                self.assertIn("child_failed", start.stdout)
+                self.assertIn("child_exit=7", start.stdout)
+                mapped = map_exec_run_outcome(start)
+                self.assertEqual(mapped.envelope_status, "error" if propagate else "ok")
+                self.assertIn("child_exit=7", mapped.model_feedback)
+                self.assertEqual(mapped.data["exit_code"], start.exit_code)
+
+    def test_wrapped_child_check_true_reports_failure(self) -> None:
+        executor = self._executor()
+        child = "import sys; sys.exit(7)"
+        code = f"import subprocess, sys; subprocess.run([sys.executable, '-c', {child!r}], check=True)"
+        start = executor.run(owner=self.owner, command=_python_command(code), initial_wait_seconds=5)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertNotEqual(start.exit_code, 0)
+        self.assertIn("CalledProcessError", start.stderr)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell object output regression")
     def test_windows_flushes_selected_file_properties_before_exit(self) -> None:
@@ -243,6 +367,121 @@ class TrustedLocalExecutorTests(unittest.TestCase):
 
     # -- long task / status / cancel / timeout ---------------------------------------
 
+    def test_foreground_and_background_outlive_legacy_execution_deadline(self) -> None:
+        from companion_v01.execution_run import execute_exec_status
+
+        cases = (
+            ("foreground-default", False, {}),
+            ("background-default", True, {}),
+            ("background-zero", True, {"timeout_seconds": 0}),
+            ("background-long-deadline", True, {"timeout_seconds": 7200}),
+        )
+        for name, background, kwargs in cases:
+            with self.subTest(name=name):
+                executor = self._executor()
+                clock = _WatcherClock()
+                gate = self.workspace / f"finish-{name}"
+                command = _python_command("\n".join((
+                    "import time",
+                    "from pathlib import Path",
+                    "print('task-started', flush=True)",
+                    f"while not Path('{gate.name}').exists(): time.sleep(.02)",
+                    "print('task-completed', flush=True)",
+                )))
+                with patch("companion_v01.local_execution_runtime.process.time", clock):
+                    start = executor.run(owner=self.owner, command=command, background=background,
+                                         initial_wait_seconds=1, **kwargs)
+                    self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+                    self.assertTrue(clock.started.wait(3))
+                    proc = executor._procs[start.run_id]
+                    deadline = time.monotonic() + 5
+                    progress = executor.status(owner=self.owner, run_id=start.run_id)
+                    while "task-started" not in progress.tail and time.monotonic() < deadline:
+                        time.sleep(.02)
+                        progress = executor.status(owner=self.owner, run_id=start.run_id)
+                    self.assertIn("task-started", progress.tail)
+
+                    clock.offset = 720
+                    self.assertTrue(clock.observed.wait(3), "watcher did not continue after 600 seconds")
+                    alive = executor.status(owner=self.owner, run_id=start.run_id)
+                    self.assertEqual(alive.status, EXEC_STATUS_RUNNING)
+                    self.assertIsNone(proc.poll())
+
+                    gate.touch()
+                    final = execute_exec_status(executor, owner=self.owner, run_id=start.run_id,
+                                                cursor=progress.next_cursor, wait_seconds=10)
+                    self.assertEqual(final.event_status, EXEC_STATUS_COMPLETED)
+                    self.assertEqual(final.data["run_id"], start.run_id)
+                    self.assertIn("task-completed", final.data["tail"])
+                    self.assertNotIn("task-started", final.data["tail"])
+                    self.assertIsNotNone(proc.poll())
+
+    def test_invalid_execution_deadline_does_not_start_a_process(self) -> None:
+        executor = self._executor()
+        with patch.object(executor, "_spawn") as spawn:
+            for timeout in (-1, -0.5, True, "invalid", float("inf")):
+                with self.subTest(timeout=timeout):
+                    result = executor.run(owner=self.owner, command="echo hello", timeout_seconds=timeout)
+                    self.assertEqual(result.status, EXEC_STATUS_FAILED)
+                    self.assertEqual(result.reason, "invalid_execution_timeout")
+                    self.assertEqual(result.run_id, "")
+            spawn.assert_not_called()
+
+    def test_explicit_background_deadline_still_terminates_the_process(self) -> None:
+        from companion_v01.execution_run import execute_exec_status
+
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command=_sleep_command(30),
+                             background=True, timeout_seconds=1)
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+        proc = executor._procs[start.run_id]
+        final = execute_exec_status(executor, owner=self.owner, run_id=start.run_id, wait_seconds=10)
+        self.assertEqual(final.event_status, EXEC_STATUS_TIMED_OUT)
+        self.assertIsNotNone(proc.poll())
+
+    def test_flushed_progress_is_incremental_before_process_exit(self) -> None:
+        from companion_v01.execution_run import execute_exec_status
+
+        executor = self._executor()
+        command = _python_command("\n".join((
+            "import sys, time",
+            "from pathlib import Path",
+            "print('initial-progress', flush=True)",
+            "print('initial-warning', file=sys.stderr, flush=True)",
+            "while not Path('allow-second').exists(): time.sleep(.02)",
+            "print('middle-progress', flush=True)",
+            "while not Path('allow-finish').exists(): time.sleep(.02)",
+            "print('completed-progress', flush=True)",
+        )))
+        start = executor.run(
+            owner=self.owner, command=command, initial_wait_seconds=3, timeout_seconds=20,
+        )
+        self.assertEqual(start.status, EXEC_STATUS_RUNNING)
+        self.assertIn("initial-progress", start.stdout)
+        self.assertIn("initial-warning", start.stderr)
+
+        (self.workspace / "allow-second").touch()
+        progress = execute_exec_status(
+            executor, owner=self.owner, run_id=start.run_id,
+            cursor=start.next_cursor, wait_seconds=1,
+        )
+        self.assertEqual(progress.event_status, EXEC_STATUS_RUNNING)
+        self.assertIn("middle-progress", progress.data["tail"])
+        self.assertNotIn("initial-progress", progress.data["tail"])
+        self.assertNotIn("initial-warning", progress.data["tail"])
+
+        (self.workspace / "allow-finish").touch()
+        wait_started = time.monotonic()
+        final = execute_exec_status(
+            executor, owner=self.owner, run_id=start.run_id,
+            cursor=progress.data["next_cursor"], wait_seconds=10,
+        )
+        self.assertEqual(final.event_status, EXEC_STATUS_COMPLETED)
+        self.assertLess(time.monotonic() - wait_started, 8)
+        self.assertIn("completed-progress", final.data["tail"])
+        self.assertNotIn("initial-progress", final.data["tail"])
+        self.assertNotIn("middle-progress", final.data["tail"])
+
     def test_long_command_returns_running_then_status(self) -> None:
         executor = self._executor()
         start = executor.run(owner=self.owner, command=_sleep_command(30), initial_wait_seconds=1)
@@ -252,7 +491,7 @@ class TrustedLocalExecutorTests(unittest.TestCase):
 
         mapped = map_exec_run_outcome(start)
         self.assertIn("[running:", mapped.model_feedback)
-        self.assertIn("[next: exec_status", mapped.model_feedback)
+        self.assertIn("[progress: exec_status", mapped.model_feedback)
         status = executor.status(owner=self.owner, run_id=start.run_id)
         self.assertEqual(status.status, EXEC_STATUS_RUNNING)
         executor.cancel(owner=self.owner, run_id=start.run_id)
@@ -323,6 +562,20 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         start = executor.run(owner=self.owner, command="echo hi", cwd="does_not_exist", initial_wait_seconds=1)
         self.assertEqual(start.status, EXEC_STATUS_FAILED)
         self.assertIn("cwd_not_found", start.reason)
+
+        from companion_v01.execution_run import execute_exec_run
+
+        mapped = execute_exec_run(
+            executor, owner=self.owner, command="echo hi", cwd="does_not_exist", initial_wait_seconds=1,
+        )
+        self.assertEqual(mapped.envelope_status, "error")
+        self.assertEqual(mapped.event_status, EXEC_STATUS_FAILED)
+        self.assertEqual(mapped.reason, "invalid_execution_cwd:cwd_not_found")
+        self.assertEqual(mapped.data["run_id"], "")
+        self.assertIsNone(mapped.data["exit_code"])
+        self.assertIn("command failed to start", mapped.model_feedback)
+        self.assertIn(mapped.reason, mapped.model_feedback)
+        self.assertNotIn("invalid_execution_run_id", mapped.model_feedback)
 
     def test_mount_alias_resolves_outside_workspace(self) -> None:
         mount = Path(self._tmp.name) / "mounted"
@@ -628,6 +881,226 @@ class TrustedLocalExecutorTests(unittest.TestCase):
         self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
         self.assertIn("drained", start.stdout)
         self.assertIn("drained", (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8"))
+
+    # -- detached children that inherit the output pipes -----------------------------
+
+    def test_completed_command_leaves_no_detached_readers(self) -> None:
+        executor = self._executor()
+        start = executor.run(owner=self.owner, command="echo hello", initial_wait_seconds=3)
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertEqual(start.reason, "")
+        self.assertEqual(executor._detached_readers, {})
+
+    def test_detached_child_command_keeps_its_real_result(self) -> None:
+        executor = self._executor()
+        start = executor.run(
+            owner=self.owner,
+            command=self._detached_child_command(8.0),
+            initial_wait_seconds=8,
+        )
+
+        # The command itself exited 0; the child it started still holds stdout.
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED, start)
+        self.assertEqual(start.exit_code, 0)
+        self.assertEqual(start.reason, EXEC_REASON_OUTPUT_OPEN_AFTER_EXIT)
+        self.assertNotEqual(start.reason, "output_capture_incomplete")
+        self.assertIn("parent complete", start.stdout)
+        self.assertIn(
+            "parent complete",
+            (self.run_log_dir / f"{start.run_id}.log").read_text(encoding="utf-8"),
+        )
+        # The still-open pipe is tracked so it can be released, not leaked.
+        self.assertIn(start.run_id, executor._detached_readers)
+
+    def test_open_output_stream_is_visible_in_the_model_receipt(self) -> None:
+        from companion_v01.execution_run import map_exec_run_outcome
+
+        executor = self._executor()
+        start = executor.run(
+            owner=self.owner,
+            command=self._detached_child_command(8.0),
+            initial_wait_seconds=8,
+        )
+        mapped = map_exec_run_outcome(start)
+
+        self.assertEqual(mapped.envelope_status, "ok")
+        self.assertIn("[exit code: 0", mapped.model_feedback)
+        self.assertIn("output still open", mapped.model_feedback)
+        self.assertNotIn("output_capture_incomplete", mapped.model_feedback)
+
+    def test_detached_child_does_not_mask_a_failing_command(self) -> None:
+        executor = self._executor()
+        start = executor.run(
+            owner=self.owner,
+            command=self._detached_child_command(8.0, finish="sys.exit(3)"),
+            initial_wait_seconds=8,
+        )
+
+        # An open inherited pipe must never turn a real non-zero exit into success.
+        self.assertEqual(start.status, EXEC_STATUS_FAILED, start)
+        self.assertEqual(start.exit_code, 3)
+        self.assertEqual(start.reason, EXEC_REASON_OUTPUT_OPEN_AFTER_EXIT)
+
+    def test_output_capture_failure_still_fails_with_an_open_pipe(self) -> None:
+        executor = self._executor()
+        with patch.object(executor, "_drain_readers", return_value=False), patch.object(
+            executor, "_capture_failed", return_value=True
+        ):
+            start = executor.run(owner=self.owner, command="echo captured", initial_wait_seconds=5)
+
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertEqual(start.reason, "output_capture_incomplete")
+        self.assertEqual(executor._detached_readers, {})
+
+    @unittest.skipUnless(os.name == "nt", "Windows pipe error codes")
+    def test_pipe_probe_distinguishes_eof_from_real_errors(self) -> None:
+        import ctypes
+        from companion_v01.local_execution_runtime import output as output_runtime
+
+        read_fd, write_fd = os.pipe()
+        try:
+            with os.fdopen(read_fd, "rb") as pipe:
+                for error in (109, 5, 6):
+                    with self.subTest(error=error):
+                        def failed_peek(*args):
+                            ctypes.set_last_error(error)
+                            return 0
+
+                        with patch.object(output_runtime._KERNEL32, "PeekNamedPipe", side_effect=failed_peek):
+                            if error == 109:
+                                self.assertIsNone(output_runtime._pipe_data_waiting(pipe))
+                            else:
+                                with self.assertRaises(OSError) as caught:
+                                    output_runtime._pipe_data_waiting(pipe)
+                                self.assertEqual(caught.exception.winerror, error)
+        finally:
+            os.close(write_fd)
+
+    def test_pipe_probe_error_is_reported_as_capture_failure(self) -> None:
+        class ExitedParentExecutor(TrustedLocalExecutor):
+            def _spawn(self, *args, **kwargs):
+                proc = super()._spawn(*args, **kwargs)
+                proc.wait(timeout=5)
+                return proc
+
+        executor = ExitedParentExecutor(workspace_root=self.workspace, run_log_dir=self.run_log_dir)
+        self.addCleanup(_shutdown_executor, executor)
+        with patch("companion_v01.local_execution_runtime.output._pipe_data_waiting",
+                   side_effect=OSError("pipe probe failed")):
+            start = executor.run(owner=self.owner, command="echo captured", initial_wait_seconds=5)
+
+        self.assertEqual(start.exit_code, 0)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertEqual(start.reason, "output_capture_incomplete")
+
+    def test_capture_failure_still_tracks_the_other_open_pipe(self) -> None:
+        class FaultyPipe:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def fileno(self):
+                raise OSError("pipe probe failed")
+
+            def read(self, size):
+                return self.inner.read(size)
+
+            def close(self):
+                self.inner.close()
+
+        class FaultyStderrExecutor(TrustedLocalExecutor):
+            def _read_pipe(self, run_id, owner, pipe, stream):
+                return super()._read_pipe(run_id, owner, FaultyPipe(pipe) if stream == "stderr" else pipe, stream)
+
+        executor = FaultyStderrExecutor(workspace_root=self.workspace, run_log_dir=self.run_log_dir)
+        self.addCleanup(_shutdown_executor, executor)
+        start = executor.run(owner=self.owner, command=self._detached_child_command(30), initial_wait_seconds=8)
+        self.assertEqual(start.status, EXEC_STATUS_FAILED)
+        self.assertEqual(start.reason, "output_capture_incomplete")
+        self.assertIn(start.run_id, executor._detached_readers)
+        readers = executor._detached_readers[start.run_id].readers
+        executor.request_shutdown()
+        self.assertTrue(self._join_threads(readers))
+        self.assertNotIn(start.run_id, executor._detached_readers)
+
+    def test_continuously_readable_pipe_retires_and_stays_tracked_until_closed(self) -> None:
+        for mode in ("shutdown", "shutdown_before_detach", "retention"):
+            with self.subTest(mode=mode):
+                executor = self._executor()
+                start = executor.run(owner=self.owner, command="echo completed", initial_wait_seconds=3)
+                self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+                pipe = _ContinuousOutputPipe()
+                reader = threading.Thread(target=executor._read_pipe,
+                                          args=(start.run_id, self.owner, pipe, "stdout"), daemon=True)
+                with patch("companion_v01.local_execution_runtime.output._pipe_data_waiting", return_value=True):
+                    try:
+                        reader.start()
+                        self.assertTrue(pipe.reading.wait(2))
+                        if mode == "shutdown_before_detach":
+                            executor.request_shutdown()
+                        executor._detach_readers(start.run_id, (reader,))
+                        if mode == "shutdown":
+                            executor.request_shutdown()
+                        elif mode == "retention":
+                            executor._detached_readers[start.run_id].detached_at -= executor.store.retention_seconds + 1
+                        # Requesting retirement must not discard a still-open
+                        # reader's ownership, even if its pipe is always ready.
+                        self.assertIn(start.run_id, executor._detached_readers)
+                        self.assertFalse(pipe.closed.is_set())
+                        pipe.release.set()
+                        reader.join(2)
+                        self.assertFalse(reader.is_alive(), "continuous output prevented retirement")
+                        self.assertTrue(pipe.closed.is_set())
+                        self.assertNotIn(start.run_id, executor._detached_readers)
+                        self.assertNotIn(start.run_id, executor._reader_retire)
+                    finally:
+                        pipe.stop.set()
+                        pipe.release.set()
+                        reader.join(2)
+
+    def test_unusable_log_with_an_open_pipe_reports_persistence_failure(self) -> None:
+        executor = self._executor()
+        with patch.object(executor, "_drain_readers", return_value=False), patch.object(
+            executor, "_log_failed", return_value=True
+        ):
+            start = executor.run(owner=self.owner, command="echo kept", initial_wait_seconds=5)
+
+        self.assertEqual(start.status, EXEC_STATUS_COMPLETED)
+        self.assertEqual(start.reason, "output_persistence_failed")
+
+    def test_detached_output_pipes_are_released_within_a_bound(self) -> None:
+        executor = self._executor(detached_reader_limit=1)
+        first = executor.run(
+            owner=self.owner,
+            command=self._detached_child_command(30.0),
+            initial_wait_seconds=8,
+        )
+        self.assertIn(first.run_id, executor._detached_readers)
+        parked = executor._detached_readers[first.run_id]
+
+        second = executor.run(
+            owner=self.owner,
+            command=self._detached_child_command(30.0),
+            initial_wait_seconds=8,
+        )
+
+        # The limit is a bound, not a suggestion: the oldest parked pair retires
+        # itself (it closes its own pipe, so nothing blocks on a foreign read).
+        self.assertIn(second.run_id, executor._detached_readers)
+        self.assertTrue(self._join_threads(parked.readers), "the oldest parked readers did not retire")
+        self.assertNotIn(first.run_id, executor._detached_readers)
+        kept = executor._detached_readers[second.run_id]
+
+        executor.request_shutdown()
+        self.assertTrue(self._join_threads(kept.readers), "shutdown did not release parked readers")
+        self.assertEqual(executor._detached_readers, {})
+
+    @staticmethod
+    def _join_threads(threads, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        for thread in threads:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in threads)
 
     def test_compacted_output_can_be_reloaded_from_the_same_status_tool(self) -> None:
         executor = self._executor()

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..deployment_security import AdminWriteAuth
@@ -33,8 +33,57 @@ def build_desktop_pet_router(
     resolve_identity_from_payload: ResolveIdentityFromPayload,
     admin_auth: AdminWriteAuth | None = None,
 ) -> APIRouter:
-    router = APIRouter()
     desktop_admin_auth = admin_auth or AdminWriteAuth.local_compatibility()
+
+    async def _private_material_scope(request: Request):
+        policy = getattr(engine, "owner_private_policy", None)
+        if policy is None or not policy.enabled:
+            yield
+            return
+        decision = desktop_admin_auth.authorize(request)
+        if not decision.ok:
+            raise HTTPException(status_code=decision.status_code, detail=decision.reason)
+        payload = dict(request.query_params)
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.json()
+            except ValueError:
+                body = {}
+            if isinstance(body, dict):
+                payload.update(body)
+        elif "multipart/form-data" in content_type:
+            form = await request.form()
+            payload.update({key: value for key, value in form.items() if isinstance(value, str)})
+        payload["client_mode"] = "desktop_pet"
+        character = engine._resolve_payload_character_pack_id(payload)
+        policy.stamp_desktop(payload, owner_authenticated=True, character=character)
+        with policy.scope(payload, character=character):
+            yield
+
+    router = APIRouter(dependencies=[Depends(_private_material_scope)])
+
+    @router.post("/desktop-pet/music/control-result")
+    async def local_music_control_result(request: Request):
+        decision = desktop_admin_auth.authorize(request)
+        if not decision.ok:
+            raise HTTPException(status_code=decision.status_code, detail=decision.reason)
+        payload = await request.json()
+        service = getattr(engine, "local_music_control", None)
+        if service is None or not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="desktop_music_control_unavailable")
+        return service.acknowledge(payload)
+
+    def _care_origin(request, payload, character):
+        policy = getattr(engine, "owner_private_policy", None)
+        if policy is None:
+            return {}
+        decision = desktop_admin_auth.authorize(request)
+        if policy.enabled and not decision.ok:
+            raise HTTPException(status_code=decision.status_code, detail=decision.reason)
+        trusted_payload = dict(payload)
+        policy.stamp_desktop(trusted_payload, owner_authenticated=decision.ok, character=character)
+        return {"conversation_ref": trusted_payload["_memory_desktop_ref"]}
 
     @router.post("/desktop-pet/project-workspaces/action")
     async def desktop_pet_project_workspace_action(request: Request) -> JSONResponse:
@@ -157,6 +206,10 @@ def build_desktop_pet_router(
                 result = await asyncio.to_thread(delete_shop_item, service, pack_id, payload)
             else:
                 raise ValueError("invalid_shop_action")
+            if result.get("ok"):
+                from ..shop_artwork import artwork_url
+                result["items"] = [{**item, "image_url": artwork_url(service, pack_id, item)}
+                                   for item in result.get("items", [])]
             return JSONResponse(result, status_code=200 if result.get("ok") else 409,
                                 headers={"Cache-Control": "no-store"})
         except ValueError as exc:
@@ -181,10 +234,13 @@ def build_desktop_pet_router(
         session_id, profile_user_id = resolve_identity_from_payload(payload)
         character_pack_id = resolve_character_pack_id_from_payload(payload)
         legacy_state = payload.get("legacy_state", payload.get("legacyState"))
+        care_origin = _care_origin(request, payload, character_pack_id)
         try:
             result = await asyncio.to_thread(
                 engine.build_desktop_care_snapshot,
+                **care_origin,
                 profile_user_id=profile_user_id,
+                session_id=session_id,
                 character_pack_id=character_pack_id,
                 legacy_state=legacy_state,
                 now_ms=int(time.time() * 1000),
@@ -228,10 +284,14 @@ def build_desktop_pet_router(
         character_pack_id = resolve_character_pack_id_from_payload(payload)
         action = str(payload.get("action") or "").strip()[:40]
         item_id = str(payload.get("item_id") or payload.get("itemId") or "").strip()[:120]
+        care_origin = _care_origin(request, payload, character_pack_id)
         try:
             result = await asyncio.to_thread(
                 engine.manage_desktop_care_action,
+                **care_origin,
                 profile_user_id=profile_user_id,
+                session_id=session_id,
+                request_id=str(payload.get("request_id") or "").strip()[:160],
                 character_pack_id=character_pack_id,
                 action=action,
                 item_id=item_id,

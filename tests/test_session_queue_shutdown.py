@@ -36,8 +36,10 @@ class SessionQueueShutdownTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(work)
 
         queue = DurableSessionWorkQueue(self.store, handler)
+        self.assertTrue(queue.is_idle_for_restart())
         first = await queue.enqueue(**self.fields())
         await asyncio.to_thread(started.wait, 1)
+        self.assertFalse(queue.is_idle_for_restart())
         second = await queue.enqueue(**self.fields("two"))
         try:
             result = await queue.close(timeout=0.01)
@@ -50,6 +52,7 @@ class SessionQueueShutdownTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
         self.assertEqual((await queue.close(timeout=2))["status"], "stopped")
+        self.assertTrue(queue.is_idle_for_restart())
         self.assertEqual(calls, ["finished"])
         self.assertEqual(self.store.get(first["item_id"]).status, "committed")
         self.assertEqual(self.store.get(second["item_id"]).status, "queued")
@@ -113,6 +116,7 @@ class SessionQueueShutdownTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(started.wait, 1)
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            self.assertFalse(queue.is_idle_for_restart())
             try:
                 self.assertEqual((await queue.close(timeout=0.01))["reason"], "session_queue_drain_timeout")
             finally:

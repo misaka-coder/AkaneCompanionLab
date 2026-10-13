@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import asyncio
 import time
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,8 +13,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.qq_group_attention import QQGroupAttentionState
+from companion_v01.turn_coordination import TurnCoordinator
 from companion_v01.routes.qq import (
     _apply_group_attention_actor_scope,
     _group_attention_review_event,
@@ -23,6 +26,36 @@ from companion_v01.routes.qq import (
 
 
 class QQGroupAttentionStateTests(unittest.TestCase):
+    def test_only_window_participants_can_supersede_and_restart_after_finish(self):
+        now = [0.0]
+        state = QQGroupAttentionState(clock=lambda: now[0])
+        ticket, _ = state.arm("group", mode="adaptive", delay_seconds=10, actor_keys=("a",))
+        now[0] = 5
+        same, _ = state.arm("group", mode="adaptive", delay_seconds=10, actor_keys=("b",))
+        self.assertEqual(same.deadline, 10)
+        state.claim(ticket)
+        self.assertEqual(state.supersede_for_actor("group", "newcomer"), "")
+        self.assertEqual(state.supersede_for_actor("group", "b"), ticket.token)
+        self.assertFalse(state.begin_reply(ticket))
+        self.assertEqual(state.supersede_for_actor("group", "b"), "")
+        self.assertEqual(state.arm("group", mode="adaptive", delay_seconds=10)[1], "in_flight_dirty")
+        self.assertFalse(state.has_pending("group"))
+        now[0] = 30
+        self.assertTrue(state.finish(ticket))
+        next_ticket, _ = state.arm("group", mode="adaptive", delay_seconds=10, actor_keys=("b",))
+        self.assertEqual(next_ticket.deadline, 40)
+
+    def test_reply_started_or_finalizing_observation_is_not_superseded(self):
+        for finalizing in (False, True):
+            with self.subTest(finalizing=finalizing):
+                state = QQGroupAttentionState(clock=lambda: 0)
+                ticket, _ = state.arm("group", mode="adaptive", delay_seconds=0, actor_keys=("a",))
+                state.claim(ticket)
+                if not finalizing:
+                    self.assertTrue(state.begin_reply(ticket))
+                self.assertEqual(state.supersede_for_actor("group", "a", stop_running=lambda _token: False), "")
+                self.assertFalse(state.is_superseded(ticket))
+
     def test_review_event_preserves_attention_semantics_without_dynamic_prose(self) -> None:
         self.assertEqual(
             _group_attention_review_event("engaged_followup"),
@@ -115,12 +148,149 @@ class QQGroupAttentionStateTests(unittest.TestCase):
         self.assertIsNotNone(next_ticket)
         self.assertEqual(next_reason, "armed")
 
+    def test_cancel_invalidates_claimed_ticket_without_finishing_its_replacement(self) -> None:
+        state = QQGroupAttentionState(clock=lambda: 100.0)
+        old, _ = state.arm("group", mode="adaptive", delay_seconds=0)
+        self.assertTrue(state.claim(old))
+        self.assertTrue(state.cancel("group"))
+        self.assertFalse(state.is_current(old))
+        new, reason = state.arm("group", mode="adaptive", delay_seconds=0)
+        self.assertEqual(reason, "armed")
+        self.assertTrue(state.claim(new))
+        self.assertFalse(state.finish(old, discard_dirty=True))
+        self.assertTrue(state.is_current(new))
+        self.assertTrue(state.is_in_flight("group"))
+
+    def test_cancel_pending_leaves_claimed_turn_alone(self) -> None:
+        state = QQGroupAttentionState(clock=lambda: 100.0)
+        pending, _ = state.arm("group", mode="adaptive", delay_seconds=10)
+        self.assertTrue(state.cancel_pending("group"))
+        self.assertFalse(state.claim(pending))
+        claimed, _ = state.arm("group", mode="adaptive", delay_seconds=0)
+        self.assertTrue(state.claim(claimed))
+        self.assertFalse(state.cancel_pending("group"))
+        self.assertTrue(state.is_current(claimed))
+
+    def test_image_refresh_requires_existing_review_and_marks_running_review_dirty(self) -> None:
+        state = QQGroupAttentionState(clock=lambda: 100.0)
+        self.assertEqual(state.refresh_if_active("group", ("a",)), "")
+        ticket, _ = state.arm("group", mode="adaptive", delay_seconds=10, actor_keys=("a",))
+        self.assertEqual(state.refresh_if_active("group", ("b",)), "already_pending")
+        self.assertTrue(state.claim(ticket))
+        self.assertEqual(state.supersede_for_actor("group", "b"), ticket.token)
+        self.assertEqual(state.refresh_if_active("group", ("b",)), "in_flight_dirty")
+        self.assertTrue(state.finish(ticket))
+
 
 class QQGroupAttentionGatewayTests(unittest.TestCase):
+    def test_new_image_binds_pixels_to_pending_review_and_empty_forward_stays_silent(self) -> None:
+        scheduled = []
+        processed = []
+        observed = []
+
+        class Engine:
+            desktop_pet_character_resources = None
+
+            @staticmethod
+            def record_passive_qq_message(_payload):
+                return {"ok": True, "source_id": "text-source"}
+
+            @staticmethod
+            def record_passive_qq_messages(payloads):
+                return {"ok": True, "results": [{"ok": True, "source_id": "image-source"} for _ in payloads],
+                        "recorded_count": len(payloads), "count": len(payloads)}
+
+            @staticmethod
+            def ingest_qq_attachments(**_kwargs):
+                return [{"attachment_id": "unread-image", "attachment_handle": "img_unread",
+                         "kind": "image", "status": "ready"}]
+
+            @staticmethod
+            def prepare_qq_native_image_inputs(**_kwargs):
+                return {"ok": True, "status": "ready", "images": [
+                    {"attachment_id": "unread-image", "attachment_handle": "img_unread",
+                     "data_url": "data:image/png;base64,cGl4ZWxz"},
+                ]}
+
+            @staticmethod
+            def prefetch_remote_media_links_for_message(**_kwargs):
+                return {}
+
+            @staticmethod
+            def process_turn_stream(payload):
+                processed.append(payload)
+                return iter(())
+
+        class Supervisor:
+            @staticmethod
+            def create_task(coroutine):
+                scheduled.append(coroutine)
+                return SimpleNamespace(done=lambda: False)
+
+        class Metrics:
+            @staticmethod
+            def observe_request(*_args, **_kwargs):
+                pass
+
+        gateway = NapCatQQGateway()
+        app = FastAPI()
+        app.include_router(build_qq_router(
+            engine=Engine(), qq_gateway=gateway,
+            config_module=SimpleNamespace(QQ_BRIDGE_ENABLED=True, QQ_GROUP_ATTENTION_MODE="adaptive",
+                                          QQ_GROUP_ATTENTION_DELAY_SECONDS=0),
+            runtime_metrics=Metrics(), logger=SimpleNamespace(exception=lambda *_a, **_k: None),
+            log_event=lambda name, **kwargs: observed.append((name, kwargs)),
+            async_task_supervisor=Supervisor(),
+        ))
+        client = TestClient(app)
+        base = {"post_type": "message", "message_type": "group", "self_id": 10001,
+                "user_id": 20002, "group_id": 30003, "sender": {"nickname": "Alice"}}
+        text_response = client.post("/api/qq/napcat/event", json={
+            **base, "message_id": "text-first",
+            "message": [{"type": "text", "data": {"text": "看看这个"}}],
+        })
+        self.assertTrue(text_response.json()["attention"]["scheduled"])
+        ticket = scheduled.pop(0)
+        image_response = client.post("/api/qq/napcat/event", json={
+            **base, "message_id": "image-next",
+            "message": [{"type": "image", "data": {"file": "unread.jpg", "url": "http://127.0.0.1/unread.jpg"}}],
+        })
+        self.assertEqual(image_response.json()["status"], "buffered")
+        asyncio.run(scheduled.pop(0))
+        self.assertTrue(any(name == "qq_group_attention_considered" and
+                            details["reason"] == "passive_image_bound_to_attention"
+                            for name, details in observed))
+        asyncio.run(ticket)
+        self.assertEqual(len(processed), 1, observed)
+        self.assertEqual(processed[0]["qq_current_attachment_ids"], ["unread-image"])
+        self.assertEqual(processed[0]["native_user_images"][0]["attachment_handle"], "img_unread")
+
+        gateway.resolve_forward_message_evidence = lambda _event, *, context: {
+            "ok": False, "status": "unavailable", "forward_count": 1, "resolved_count": 0,
+            "forwards": [{"forward_id": "empty-forward", "ok": False, "status": "empty",
+                          "node_count": 0, "nodes": []}], "attachments": [],
+        }
+        forward_response = client.post("/api/qq/napcat/event", json={
+            **base, "group_id": 30004, "message_id": "unread-forward",
+            "message": [{"type": "forward", "data": {"id": "empty-forward"}}],
+        })
+        self.assertEqual(forward_response.json()["status"], "buffered")
+        asyncio.run(scheduled.pop(0))
+        self.assertTrue(any(name == "qq_group_attention_considered" and
+                            details["reason"] == "forward_content_unavailable"
+                            for name, details in observed))
+        self.assertEqual(scheduled, [])
+        self.assertEqual(len(processed), 1)
+
     def test_listen_command_is_admitted_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "qq-state.json"
-            gateway = NapCatQQGateway(state_path=state_path)
+            channel = QQChannelRuntimeConfig(
+                enabled=True, profile_ref="attention-test", bot_id="10001",
+                onebot_http_url="http://127.0.0.1:1", webhook_secret="", onebot_access_token="",
+                require_webhook_auth=False, require_self_id=True,
+            )
+            gateway = NapCatQQGateway(state_path=state_path, channel_config=channel)
             context = gateway.build_message_context(
                 {
                     "post_type": "message",
@@ -129,7 +299,10 @@ class QQGroupAttentionGatewayTests(unittest.TestCase):
                     "user_id": 20002,
                     "group_id": 30003,
                     "message_id": "listen-1",
-                    "raw_message": "/listen adaptive",
+                    "message": [
+                        {"type": "at", "data": {"qq": "10001"}},
+                        {"type": "text", "data": {"text": " /搭话 自然"}},
+                    ],
                 }
             )
 
@@ -142,7 +315,7 @@ class QQGroupAttentionGatewayTests(unittest.TestCase):
             )
             self.assertTrue(result["ok"])
             self.assertEqual(result["attention_mode"], "adaptive")
-            restored = NapCatQQGateway(state_path=state_path)
+            restored = NapCatQQGateway(state_path=state_path, channel_config=channel)
             self.assertEqual(restored.resolve_group_attention_mode(30003), "adaptive")
 
     def test_passive_message_is_not_falsely_addressed_to_assistant(self) -> None:
@@ -355,6 +528,9 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
         self.assertEqual(processed[0]["message"], "event.group_attention_idle_review")
         self.assertEqual(processed[0]["memory_attention_reference_source_ids"], ["observed-1"])
         self.assertNotIn("event.group_attention_idle_review", processed[0].get("extra_context", ""))
+        self.assertIn("turn_kind: qq_attention", processed[0].get("extra_context", ""))
+        self.assertNotIn("判断此时加入是否自然", processed[0].get("extra_context", ""))
+        self.assertNotIn("不要换措辞", processed[0].get("extra_context", ""))
         self.assertEqual(processed[0]["message_addressing"]["trigger"], "group_attention_idle_review")
         self.assertFalse(processed[0]["message_addressing"]["addressed_to_assistant"])
         self.assertEqual(processed[0]["qq_delivery_context"]["source_message_id"], "")
@@ -843,6 +1019,325 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
                 "conversation_id": "30003",
             },
         )
+
+
+
+class QQGroupAttentionRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.scheduled = []
+        self.processed = []
+        self.logs = []
+        self.now = [0.0]
+        self.state = QQGroupAttentionState(clock=lambda: self.now[0])
+        self.sequence = 0
+        self.gateway = NapCatQQGateway(channel_config=QQChannelRuntimeConfig(
+            enabled=True, profile_ref="attention-recovery-test", bot_id="10001",
+            onebot_http_url="http://127.0.0.1:1", webhook_secret="", onebot_access_token="",
+            require_webhook_auth=False, require_self_id=True,
+        ))
+        self.gateway.send_reply = lambda *_args, **_kwargs: {"ok": True}
+
+        def record(payload):
+            return {"ok": True, "source_id": f"source-{payload.get('message', '')}"}
+
+        def process(payload):
+            self.processed.append(dict(payload))
+            yield {"type": "final_ui", "payload": {"speech": "", "_deliberate_silence": True}}
+
+        def prepare_qq_native_image_inputs(**_kwargs):
+            return {"status": "ready", "images": [{"data_url": "data:image/png;base64,cGl4ZWxz"}]}
+
+        def prefetch_remote_media_links_for_message(**_kwargs):
+            return {}
+
+        engine = SimpleNamespace(
+            desktop_pet_character_resources=None,
+            ingest_qq_attachments=lambda **_kwargs: [
+                {"attachment_id": "image-1", "attachment_handle": "img_1", "kind": "image", "status": "ready"}
+            ],
+            record_passive_qq_message=record,
+            record_passive_qq_messages=lambda payloads: {"ok": True, "results": [record(p) for p in payloads]},
+            prepare_qq_native_image_inputs=prepare_qq_native_image_inputs,
+            prefetch_remote_media_links_for_message=prefetch_remote_media_links_for_message,
+            process_turn_stream=process,
+        )
+        self.engine = engine
+        self.coordinator = TurnCoordinator()
+        self.config = SimpleNamespace(
+            QQ_BRIDGE_ENABLED=True, QQ_GROUP_ATTENTION_MODE="adaptive",
+            QQ_GROUP_ATTENTION_DELAY_SECONDS=0, QQ_GROUP_ATTENTION_TTL_SECONDS=120,
+            QQ_GROUP_ATTENTION_IDLE_COOLDOWN_SECONDS=60, QQ_ATTACHMENT_READY_WAIT_SECONDS=0,
+        )
+        def schedule(coroutine):
+            self.scheduled.append(coroutine)
+            return SimpleNamespace(done=lambda: False)
+
+        app = FastAPI()
+        with patch("companion_v01.routes.qq.QQGroupAttentionState", return_value=self.state):
+            app.include_router(build_qq_router(
+                engine=engine,
+                config_module=self.config,
+                turn_coordinator=self.coordinator,
+                qq_gateway=self.gateway,
+                runtime_metrics=SimpleNamespace(observe_request=lambda *_args, **_kwargs: None),
+                logger=SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+                log_event=lambda name, **kwargs: self.logs.append((name, kwargs)),
+                async_task_supervisor=SimpleNamespace(create_task=schedule),
+            ))
+        self.client = TestClient(app)
+        self.addCleanup(self.client.close)
+        self.addCleanup(lambda: [coroutine.close() for coroutine in self.scheduled])
+
+    def post(self, text="看看这张图", *, image=False, user_id=20002, targeted_command=True):
+        self.sequence += 1
+        if not text.startswith("/搭话"):
+            text = f"{text} {self.sequence}"
+        message = ([{"type": "image", "data": {"file": "test.png", "url": "http://127.0.0.1/test.png"}}]
+                   if image else [{"type": "text", "data": {"text": text}}])
+        if text.startswith("/搭话") and targeted_command:
+            message.insert(0, {"type": "at", "data": {"qq": "10001"}})
+        response = self.client.post("/api/qq/napcat/event", json={
+            "post_type": "message", "message_type": "group", "self_id": 10001,
+            "user_id": user_id, "group_id": 30003, "message_id": f"recovery-{self.sequence}",
+            "time": int(time.time()), "sender": {"nickname": "群成员", "role": "admin"},
+            "message": message,
+        })
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
+    def test_unselected_command_does_not_cancel_or_extend_attention(self):
+        first = self.post("正常群聊话题")
+        self.assertTrue(first["attention"]["scheduled"])
+        pending = len(self.scheduled)
+        command = self.post("/搭话 关闭", targeted_command=False)
+        self.assertEqual(command["reason"], "group_command_requires_explicit_mention")
+        self.assertEqual(self.gateway.resolve_group_attention_mode(30003, default="adaptive"), "adaptive")
+        self.assertEqual(len(self.scheduled), pending)
+        self.assertEqual(self.processed, [])
+
+    def test_queued_unselected_command_remains_record_only(self):
+        with patch.object(self.coordinator, "is_busy", return_value=True):
+            command = self.post("/搭话 关闭", targeted_command=False)
+        self.assertEqual(command["reason"], "group_command_requires_explicit_mention")
+        self.assertEqual(len(self.scheduled), 1)
+        asyncio.run(self.scheduled.pop(0))
+        self.assertEqual(self.scheduled, [])
+        self.assertEqual(self.processed, [])
+        self.assertEqual(self.gateway.resolve_group_attention_mode(30003, default="adaptive"), "adaptive")
+
+    async def stage_image(self):
+        self.post(image=True)
+        await self.scheduled.pop(0)
+        self.assertTrue(self.post()["attention"]["scheduled"])
+
+    async def recover_with_new_message(self):
+        self.now[0] += 61
+        self.assertTrue(self.post("新的话题")["attention"]["scheduled"])
+        await self.scheduled.pop(0)
+        self.assertEqual(len(self.processed), 1)
+
+    def test_image_preparation_failure_releases_group_and_preserves_reason(self):
+        async def scenario():
+            await self.stage_image()
+            original = asyncio.to_thread
+            async def fail(fn, *args, **kwargs):
+                if fn.__name__ == "prepare_qq_native_image_inputs":
+                    raise RuntimeError("test preparation failure")
+                return await original(fn, *args, **kwargs)
+            with patch("asyncio.to_thread", fail):
+                await self.scheduled.pop(0)
+            self.assertEqual(self.processed, [])
+            self.assertTrue(any(name == "qq_group_attention_failed" and data["reason"] == "RuntimeError"
+                                for name, data in self.logs))
+            self.assertEqual(self.post()["attention"]["reason"], "idle_cooldown")
+            await self.recover_with_new_message()
+        asyncio.run(scenario())
+
+    async def pause_and_interrupt(self, *, phase="prepare_qq_native_image_inputs", reopen=False,
+                                  cancel_task=False, late_failure=False):
+        await self.stage_image()
+        original = asyncio.to_thread
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def pause(fn, *args, **kwargs):
+            if fn.__name__ == phase:
+                entered.set()
+                await release.wait()
+                if late_failure:
+                    raise RuntimeError("obsolete preparation failed")
+            return await original(fn, *args, **kwargs)
+        with patch("asyncio.to_thread", pause):
+            task = asyncio.create_task(self.scheduled.pop(0))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=5)
+                if cancel_task:
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                else:
+                    self.assertEqual(self.post("/搭话 关闭")["attention_mode"], "off")
+                    if reopen:
+                        self.assertEqual(self.post("/搭话 自然")["attention_mode"], "adaptive")
+                        self.assertTrue(self.post("重新开启后的话题")["attention"]["scheduled"])
+                    release.set()
+                    await asyncio.wait_for(task, timeout=5)
+            finally:
+                release.set()
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(self.processed, [])
+        if reopen:
+            # Finishing or failing an obsolete preparation must preserve the
+            # replacement snapshot, its ticket, and its cooldown state.
+            await self.scheduled.pop(0)
+            self.assertEqual(len(self.processed), 1)
+        elif cancel_task:
+            await self.recover_with_new_message()
+        else:
+            self.assertEqual(self.post()["attention"]["reason"], "mode_off")
+            self.post("/搭话 自然")
+            await self.recover_with_new_message()
+
+    def test_disable_during_image_preparation_prevents_model_call(self):
+        asyncio.run(self.pause_and_interrupt())
+
+    def test_disable_during_link_preparation_prevents_model_call(self):
+        asyncio.run(self.pause_and_interrupt(phase="prefetch_remote_media_links_for_message"))
+
+    def test_reenable_does_not_revive_old_preparation_or_remove_new_snapshot(self):
+        asyncio.run(self.pause_and_interrupt(reopen=True))
+
+    def test_obsolete_preparation_failure_does_not_damage_new_observation(self):
+        asyncio.run(self.pause_and_interrupt(reopen=True, late_failure=True))
+
+    def test_cancelled_task_releases_group(self):
+        asyncio.run(self.pause_and_interrupt(cancel_task=True))
+
+    async def exercise_message_during_generation(self, *, newcomer=False, reply_started=False, finalizing=False):
+        await self.stage_image()
+        # Both participants belong to the same initial observation window.
+        self.post("我也在这个话题里", user_id=20003)
+        self.config.QQ_GROUP_ATTENTION_DELAY_SECONDS = 10
+        entered = threading.Event()
+        release = threading.Event()
+        settled = []
+        sent = []
+        original_process = self.engine.process_turn_stream
+        original_record = self.engine.record_passive_qq_messages
+        original_arm = self.state.arm
+        armed = []
+
+        def track_arm(*args, **kwargs):
+            result = original_arm(*args, **kwargs)
+            if result[1] == "armed":
+                armed.append(result[0])
+            return result
+
+        def send(_context, text, **_kwargs):
+            sent.append(text)
+            return {"ok": True}
+
+        def process(payload):
+            self.processed.append(dict(payload))
+            if reply_started:
+                yield {"type": "speech_segment", "text": "正在回复旧话题。"}
+            if finalizing:
+                self.coordinator.begin_finalization(payload["_turn_control_id"])
+            entered.set()
+            if not release.wait(timeout=10):
+                raise TimeoutError("test model was not released")
+            settled.append("model_and_persistence_finished")
+            try:
+                yield {"type": "final_ui", "payload": {"speech": "正在回复旧话题。", "tool_events": []}}
+                settled.append("stream_exhausted")
+            finally:
+                settled.append("stream_closed")
+
+        def record(payloads):
+            self.assertIn("stream_closed", settled, "new history must wait for the old turn to settle")
+            return original_record(payloads)
+
+        self.engine.process_turn_stream = process
+        self.engine.record_passive_qq_messages = record
+        self.gateway.send_reply = send
+        with patch.object(self.state, "arm", side_effect=track_arm):
+            task = asyncio.create_task(self.scheduled.pop(0))
+            worker = None
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                self.now[0] = 50
+                response = self.post("补充刚才的话", user_id=20004 if newcomer else 20003)
+                self.assertEqual(response["status"], "buffered")
+                interrupted = any(name == "qq_group_attention_superseded" for name, _ in self.logs)
+                self.assertEqual(interrupted, not (newcomer or reply_started or finalizing))
+                self.assertEqual(armed, [])
+                self.assertEqual(len(self.scheduled), 1)  # Passive writes, not another model request.
+                worker = asyncio.create_task(self.scheduled.pop(0))
+                await asyncio.sleep(0)
+                self.assertEqual(armed, [])
+                self.now[0] = 80
+                release.set()
+                await asyncio.wait_for(task, 5)
+                await asyncio.wait_for(worker, 5)
+                self.assertEqual(len(armed), 1)
+                self.assertEqual(armed[0].deadline, 90)
+                self.assertEqual(bool(sent), newcomer or reply_started or finalizing)
+                self.assertEqual("stream_exhausted" in settled, newcomer or reply_started or finalizing)
+                self.assertEqual(len(self.processed), 1)
+                self.engine.process_turn_stream = original_process
+                await self.scheduled.pop(0)
+                self.assertEqual(len(self.processed), 2)
+                self.assertNotIn("participant_keys", self.processed[-1])
+            finally:
+                release.set()
+                await asyncio.gather(task, *([worker] if worker is not None else []), return_exceptions=True)
+
+    def test_window_participant_followup_cancels_unspoken_reply_and_restarts_after_settlement(self):
+        asyncio.run(self.exercise_message_during_generation())
+
+    def test_newcomer_waits_for_reply_and_persistence_before_next_countdown(self):
+        asyncio.run(self.exercise_message_during_generation(newcomer=True))
+
+    def test_started_reply_finishes_before_next_countdown(self):
+        asyncio.run(self.exercise_message_during_generation(reply_started=True))
+
+    def test_finalizing_reply_finishes_before_next_countdown(self):
+        asyncio.run(self.exercise_message_during_generation(finalizing=True))
+
+    def test_participant_followup_during_preparation_restarts_after_worker_finishes(self):
+        async def scenario():
+            await self.stage_image()
+            original = asyncio.to_thread
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            async def pause(fn, *args, **kwargs):
+                if fn.__name__ == "prepare_qq_native_image_inputs":
+                    entered.set()
+                    await release.wait()
+                return await original(fn, *args, **kwargs)
+
+            with patch("asyncio.to_thread", pause):
+                task = asyncio.create_task(self.scheduled.pop(0))
+                try:
+                    await asyncio.wait_for(entered.wait(), 5)
+                    response = self.post("再补充一点")
+                    self.assertEqual(response["attention"]["reason"], "in_flight_dirty")
+                    self.assertEqual(self.scheduled, [])
+                    self.config.QQ_GROUP_ATTENTION_DELAY_SECONDS = 10
+                    self.now[0] = 50
+                    release.set()
+                    await asyncio.wait_for(task, 5)
+                finally:
+                    release.set()
+                    await asyncio.gather(task, return_exceptions=True)
+            self.assertEqual(self.processed, [])
+            self.assertEqual(len(self.scheduled), 1)
+            response = self.post("等待期间继续补充")
+            self.assertEqual(response["attention"]["reason"], "already_pending")
+            await self.scheduled.pop(0)
+            self.assertEqual(len(self.processed), 1)
+        asyncio.run(scenario())
 
 
 if __name__ == "__main__":

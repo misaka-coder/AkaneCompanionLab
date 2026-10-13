@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from capcore import CapabilityResult
-from companion_v01.bot_runtime import _record_host_job_completion
+from companion_v01.bot_runtime_components.completion import _record_host_job_completion
 from companion_v01.client_protocol import ClientMode
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.host_jobs import HostJobOwner, HostJobStore

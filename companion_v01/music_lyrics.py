@@ -257,7 +257,7 @@ class OnlineLyricsService:
             "providers": provider_names,
         }
         self._write_cache(cache_path, self._cache_payload(result, title=title, artist=artist, album=album, source=source))
-        return result
+        return {**result, "segments": self._public_segments(segments)}
 
     def _search_online_lrc(self, query: str, provider_names: list[str]) -> str | None:
         if self.search_func is not None:
@@ -362,10 +362,16 @@ class OnlineLyricsService:
             "source": LYRICS_PROVIDER_SOURCE,
             "provider": LYRICS_PROVIDER_SOURCE,
             "confidence": str(cache_payload.get("confidence") or ""),
-            "segments": segments[:MAX_LRC_SEGMENTS],
+            "segments": self._public_segments(segments[:MAX_LRC_SEGMENTS]),
             "lineCount": len(segments) if segments else int(cache_payload.get("lineCount") or 0),
             "cached": bool(cache_hit),
         }
+
+    @staticmethod
+    def _public_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # The desktop timeline reader consumes time_seconds. Keep start/end
+        # for existing API consumers, and adapt legacy caches at this boundary.
+        return [{**segment, "time_seconds": segment["start"]} for segment in segments]
 
     def _failure(
         self,

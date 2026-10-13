@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from companion_v01.durable_session_queue import DurableSessionWorkQueue, RetryableSessionWorkError
 from companion_v01.session_inbox import SessionInboxStore
@@ -19,6 +21,13 @@ class _Clock:
 
 
 class SessionInboxStoreTests(unittest.TestCase):
+    def test_inbox_database_uses_wal_and_long_busy_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "inbox.db")
+            with store._connect() as connection:
+                self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
+                self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
+
     def _enqueue(
         self,
         store: SessionInboxStore,
@@ -105,22 +114,39 @@ class SessionInboxStoreTests(unittest.TestCase):
             second_claim = store.claim_next("profile\0session", worker_id="worker-b")
             self.assertEqual(second_claim["item"].item_id, second["item_id"])
 
-    def test_expected_item_claim_cannot_jump_over_an_earlier_message(self) -> None:
+    def test_active_turn_steer_can_bypass_queued_messages_without_reordering_them(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SessionInboxStore(Path(temp_dir) / "akane_memory_v01.db")
             first = self._enqueue(store, source_event_id="event-1")
             second = self._enqueue(store, source_event_id="event-2")
 
-            blocked = store.claim_next(
+            steer = store.claim_next(
                 "profile\0session",
                 worker_id="active-turn",
                 expected_item_id=second["item_id"],
             )
 
-            self.assertEqual(blocked["status"], "blocked")
-            self.assertEqual(blocked["next_item_id"], first["item_id"])
+            self.assertTrue(steer["ok"])
+            self.assertEqual(steer["item"].item_id, second["item_id"])
             self.assertEqual(store.get(first["item_id"]).status, "queued")
-            self.assertEqual(store.get(second["item_id"]).status, "queued")
+            self.assertTrue(store.commit(second["item_id"], claim_token=steer["claim_token"])["ok"])
+            next_turn = store.claim_next("profile\0session", worker_id="worker")
+            self.assertEqual(next_turn["item"].item_id, first["item_id"])
+
+    def test_active_turn_steer_claim_is_scoped_and_cannot_be_claimed_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SessionInboxStore(Path(temp_dir) / "akane_memory_v01.db")
+            queued = self._enqueue(store, source_event_id="steer")
+            wrong_session = store.claim_next("profile\0other", worker_id="active-turn",
+                                            expected_item_id=queued["item_id"])
+            self.assertFalse(wrong_session["ok"])
+            first = store.claim_next("profile\0session", worker_id="active-turn",
+                                     expected_item_id=queued["item_id"])
+            duplicate = store.claim_next("profile\0session", worker_id="active-turn",
+                                         expected_item_id=queued["item_id"])
+            self.assertTrue(first["ok"])
+            self.assertFalse(duplicate["ok"])
+            self.assertEqual(store.get(queued["item_id"]).claim_token, first["claim_token"])
 
     def test_different_sessions_can_be_claimed_independently(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -244,6 +270,33 @@ class DurableSessionWorkQueueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
 
+    def test_locked_store_operation_is_retried_before_enqueue_fails(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            original_enqueue = store.enqueue
+            calls = 0
+
+            def enqueue_with_transient_lock(**kwargs):
+                nonlocal calls
+                calls += 1
+                if calls < 3:
+                    raise sqlite3.OperationalError("database is locked")
+                return original_enqueue(**kwargs)
+
+            queue = DurableSessionWorkQueue(store)
+            with patch.object(store, "enqueue", side_effect=enqueue_with_transient_lock):
+                queued = await queue.enqueue(
+                    **self._fields(session_key="profile\0session", event_id="locked-once"),
+                    schedule=False,
+                )
+
+            self.assertEqual(queued["status"], "queued")
+            self.assertEqual(calls, 3)
+            self.assertEqual(store.pending_count("profile\0session"), 1)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
     def test_unscheduled_item_can_be_claimed_as_active_turn_steer(self) -> None:
         async def exercise(database_path: Path) -> None:
             store = SessionInboxStore(database_path)
@@ -267,6 +320,54 @@ class DurableSessionWorkQueueTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             asyncio.run(exercise(Path(temp_dir) / "akane_memory_v01.db"))
+
+    def test_foreground_claim_is_renewed_and_cannot_be_reclaimed_mid_turn(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            clock = _Clock()
+            store = SessionInboxStore(database_path, clock=clock)
+            queue = DurableSessionWorkQueue(store, lease_seconds=1)
+            queued = await queue.enqueue(
+                **self._fields(session_key="profile\0session", event_id="long-turn"),
+                schedule=False,
+            )
+            claim = await queue.claim_for_active_turn("profile\0session", queued["item_id"])
+            async with queue.keep_claim_alive(claim["items"]):
+                clock.value += 0.8
+                deadline = asyncio.get_running_loop().time() + 2
+                while store.get(queued["item_id"]).lease_until <= 101:
+                    self.assertLess(asyncio.get_running_loop().time(), deadline)
+                    await asyncio.sleep(0.01)
+                clock.value += 0.4  # Beyond the original lease, still inside the renewed one.
+                competing = store.claim_next("profile\0session", worker_id="other-worker")
+                self.assertFalse(competing["ok"])
+                current = store.get(queued["item_id"])
+                self.assertEqual(current.status, "claimed")
+                self.assertEqual(current.claim_token, claim["claim_token"])
+                self.assertEqual(current.attempts, 1)
+            settled = await queue.commit_claim(queued["item_id"], claim_token=claim["claim_token"])
+            self.assertTrue(settled["ok"])
+            self.assertEqual(store.get(queued["item_id"]).status, "committed")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "inbox.db"))
+
+    def test_foreground_lease_loss_stops_work_and_keeps_the_failure_reason(self) -> None:
+        async def exercise(database_path: Path) -> None:
+            store = SessionInboxStore(database_path)
+            queue = DurableSessionWorkQueue(store, lease_seconds=1)
+            queued = await queue.enqueue(
+                **self._fields(session_key="profile\0session", event_id="lost-turn"),
+                schedule=False,
+            )
+            claim = await queue.claim_for_active_turn("profile\0session", queued["item_id"])
+            with self.assertRaisesRegex(RuntimeError, "session_claim_lease_lost"):
+                async with queue.keep_claim_alive(claim["items"]):
+                    await queue.requeue_claim(queued["item_id"], claim_token=claim["claim_token"], error="test-revoked")
+                    await asyncio.sleep(2)
+            self.assertEqual(asyncio.current_task().cancelling(), 0)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asyncio.run(exercise(Path(temp_dir) / "inbox.db"))
 
     def test_active_turn_can_claim_next_steer_while_runner_owns_current_item(self) -> None:
         async def exercise(database_path: Path) -> None:

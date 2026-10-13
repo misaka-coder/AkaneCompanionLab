@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image, UnidentifiedImageError
+from .model_image_inputs import attachment_image_source_metadata, image_source_metadata
 
 SUPPORTED_IMAGE_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 MAX_FILE_IMAGE_PIXELS = 40 * 1024 * 1024
@@ -70,6 +71,18 @@ class ResolvedImageMaterial:
     media_type: str
     path: Path
     file_size: int
+    source_sender_id: str = ""
+    source_sender_label: str = ""
+    source_message_id: str = ""
+
+    def source_metadata(self) -> dict[str, str]:
+        return image_source_metadata(
+            {
+                "source_sender_id": self.source_sender_id,
+                "source_sender_label": self.source_sender_label,
+                "source_message_id": self.source_message_id,
+            }
+        )
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +92,7 @@ class ResolvedImageMaterial:
             "title": self.title,
             "media_type": self.media_type,
             "file_size": self.file_size,
+            **self.source_metadata(),
         }
 
 
@@ -181,6 +195,7 @@ class SessionImageMaterialResolver:
                     "attachment_handle": effective_material.handle,
                     "title": effective_material.title,
                     "media_type": effective_material.media_type,
+                    **effective_material.source_metadata(),
                     "data_url": (
                         f"data:{effective_material.media_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
                     ),
@@ -244,6 +259,7 @@ class SessionImageMaterialResolver:
             title=str(item.get("summary_title") or item.get("origin_name") or "图片材料").strip(),
             media_type=str(item.get("mime_type") or "").strip(),
             path=path,
+            **attachment_image_source_metadata(item),
         )
 
     def _from_generated(self, item: Any) -> ResolvedImageMaterial | None:
@@ -272,6 +288,9 @@ class SessionImageMaterialResolver:
         title: str,
         media_type: str,
         path: Path,
+        source_sender_id: str = "",
+        source_sender_label: str = "",
+        source_message_id: str = "",
     ) -> ResolvedImageMaterial | None:
         target = Path(path)
         if not source_id or not handle or not target.is_file():
@@ -293,4 +312,7 @@ class SessionImageMaterialResolver:
             media_type=normalized_media_type,
             path=target,
             file_size=file_size,
+            source_sender_id=source_sender_id,
+            source_sender_label=source_sender_label,
+            source_message_id=source_message_id,
         )

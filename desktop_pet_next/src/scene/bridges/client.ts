@@ -56,7 +56,7 @@ export class SceneClient {
   }
 
   async request(path: string, payload?: unknown, signal?: AbortSignal): Promise<unknown> {
-    if (isTauri() && payload !== undefined && path !== "/scene/snapshot") {
+    if (isTauri() && payload !== undefined) {
       const result = await abortable(
         invoke<{ ok: boolean; status?: string; reason?: string; body: string }>("backend_admin_request", {
           request: { url: this.base + path, method: "POST", body: JSON.stringify(payload) },

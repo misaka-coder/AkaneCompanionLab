@@ -689,7 +689,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             include_capability_status=False,
         )
 
-        self.assertIn("请求中实际附带的工具定义", prompt)
+        self.assertNotIn("请求中实际附带的工具定义", prompt)
         self.assertNotIn("探针正在检查", prompt)
         self.assertNotIn("联网搜索暂不可用", prompt)
         self.assertNotIn("联网搜索当前可用", prompt)
@@ -734,7 +734,7 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             )
             self.assertEqual(context["native_tool_choice"], "auto")
             self.assertNotIn("retrieve_memory", context["system_prompt"])
-            self.assertIn("【本轮直接工具入口】", context["tool_prompt_context"])
+            self.assertNotIn("【本轮直接工具入口】", context["tool_prompt_context"])
             self.assertNotIn("retrieve_memory", context["tool_prompt_context"])
             self.assertNotIn("web_search", context["system_prompt"])
             self.assertIn("send_file", context["tool_prompt_context"])
@@ -1075,7 +1075,11 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             session_id="s",
         )
 
-        self.assertEqual(tool_calls, [{"type": "send_file", "target": "gen_049"}])
+        self.assertEqual(
+            {key: value for key, value in tool_calls[0].items() if not str(key).startswith("_tool_")},
+            {"type": "send_file", "target": "gen_049"},
+        )
+        self.assertTrue(tool_calls[0][TOOL_INVOCATION_ID_FIELD])
         self.assertEqual(final_output["tool_call"], {"type": "send_file", "target": "gen_049"})
         self.assertEqual(rejections, [])
 
@@ -1108,7 +1112,11 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             session_id="s",
         )
 
-        self.assertEqual(tool_calls, [{"type": "legacy_only", "value": "ok"}])
+        self.assertEqual(
+            {key: value for key, value in tool_calls[0].items() if not str(key).startswith("_tool_")},
+            {"type": "legacy_only", "value": "ok"},
+        )
+        self.assertTrue(tool_calls[0][TOOL_INVOCATION_ID_FIELD])
         self.assertEqual(rejections, [])
 
     def test_engine_accepts_native_carrier_for_native_schema_tool(self) -> None:
@@ -2052,16 +2060,10 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             module_names=("media_tools",),
             schema_tool_names=("separate_audio_stems",),
         )
-        captured: dict[str, object] = {}
+        def unexpected_business_normalization(*_args, **_kwargs):
+            self.fail("final output parsing must not normalize business arguments")
 
-        def normalize(value, **kwargs):
-            captured.update(kwargs)
-            return {
-                **dict(value or {}),
-                TOOL_CAPABILITY_SELECTION_FIELD: kwargs.get("capability_selection"),
-            }
-
-        engine._normalize_tool_call = normalize
+        engine._normalize_tool_call = unexpected_business_normalization
         normalized = normalize_final_output(
             engine,
             result={
@@ -2084,8 +2086,11 @@ class NativeWebSearchToolingTests(unittest.TestCase):
             capability_selection=selection,
         )
 
-        self.assertIs(captured["capability_selection"], selection)
         self.assertIs(normalized[TOOL_CAPABILITY_SELECTION_FIELD], selection)
+        self.assertEqual(
+            normalized["tool_call"],
+            {"type": "separate_audio_stems", "source_id": "file_031"},
+        )
         self.assertNotIn(TOOL_CAPABILITY_SELECTION_FIELD, normalized["tool_call"])
 
     def test_frozen_capability_selection_executes_json_tool_call_without_reresolution(self) -> None:
@@ -2344,7 +2349,6 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                 error="",
                 latest_emotion="",
                 latest_speech="",
-                latest_reply_medium="",
                 native_preface_text="我先查一下。",
             )
 
@@ -2403,7 +2407,6 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                         error="",
                         latest_emotion="",
                         latest_speech="",
-                        latest_reply_medium="",
                     )
                 yield {"type": "speech_segment", "text": "这是重试后的完整答复。"}
                 return SimpleNamespace(
@@ -2411,7 +2414,6 @@ class NativeWebSearchToolingTests(unittest.TestCase):
                     error="",
                     latest_emotion="",
                     latest_speech="",
-                    latest_reply_medium="",
                 )
 
             def record_metric(self, name):

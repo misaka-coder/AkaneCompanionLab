@@ -211,7 +211,9 @@ class InstanceDeploymentSecurityTests(unittest.TestCase):
     def test_app_resolves_security_before_engine_construction(self) -> None:
         root = Path(__file__).resolve().parents[1]
         app_source = (root / "companion_v01" / "app.py").read_text(encoding="utf-8")
-        runtime_source = (root / "companion_v01" / "bot_runtime.py").read_text(encoding="utf-8")
+        runtime_source = (
+            root / "companion_v01" / "bot_runtime_components" / "factory.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("BotRuntimeFactory(", app_source)
         self.assertNotIn("AkaneMemoryEngine(", app_source)
         self.assertLess(
@@ -259,17 +261,18 @@ class ManagementWriteAuthorizationTests(unittest.TestCase):
         app.include_router(build_control_center_router(admin_auth=self.auth))
         client = TestClient(app)
 
-        denied = client.post("/control-center/actions/noop", json={})
+        denied = client.post("/control-center/settings-catalog/DRIFT_PROBABILITY", json={})
         allowed = client.post(
-            "/control-center/actions/noop",
+            "/control-center/settings-catalog/DRIFT_PROBABILITY",
             json={},
             headers={"Authorization": "Bearer admin-secret"},
         )
 
         self.assertEqual(denied.status_code, 401)
         self.assertEqual(denied.json()["reason"], "admin_auth_required")
-        self.assertEqual(allowed.status_code, 200)
-        self.assertEqual(allowed.json()["status"], "not-implemented")
+        # Authorization passed; this isolated router has no settings store.
+        self.assertEqual(allowed.status_code, 503)
+        self.assertEqual(allowed.json()["status"], "not-available")
 
     def test_model_service_write_rejects_before_read_or_reload(self) -> None:
         store = Mock()
@@ -334,7 +337,7 @@ class ManagementWriteAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["reason"], "admin_auth_required")
-        engine.backfill_memcore_from_legacy_memory.assert_not_called()
+        self.assertEqual(len(engine.method_calls), 0)
 
 
 class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
@@ -472,10 +475,12 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
         )
 
     def test_every_onebot_request_site_uses_bound_headers(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "companion_v01" / "qq_gateway.py").read_text(encoding="utf-8")
+        backend = Path(__file__).resolve().parents[1] / "companion_v01"
+        paths = [backend / "qq_gateway.py", *(backend / "qq_gateway_runtime").glob("*.py")]
+        source = "\n".join(path.read_text(encoding="utf-8") for path in paths)
         request_sites = source.count("requests.get(") + source.count("requests.post(")
         self.assertEqual(request_sites, 0)
-        self.assertIn("self._onebot_transport.call(", source)
+        self.assertIn("_onebot_transport.call(", source)
 
     def test_attachment_onebot_lookup_uses_same_bound_token(self) -> None:
         class FakeResponse:
@@ -585,7 +590,6 @@ class NamedInstanceApplicationSmokeTests(unittest.TestCase):
                 "AKANE_ADMIN_TOKEN": "admin-secret",
                 "EMBEDDING_PROVIDER": "hashed",
                 "VISION_ENABLED": "false",
-                "MEMORY_BACKEND": "legacy",
                 "ENABLE_SEMANTIC_MEMORY": "false",
             }
         )
@@ -607,7 +611,7 @@ with TestClient(app) as client:
         'instance_id': 'finance-prod',
         'root_binding': 'valid',
     }
-    denied = client.post('/control-center/actions/noop', json={})
+    denied = client.post('/control-center/settings-catalog/DRIFT_PROBABILITY', json={})
     assert denied.status_code == 401
 """
             completed = subprocess.run(

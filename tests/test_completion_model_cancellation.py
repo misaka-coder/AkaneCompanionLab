@@ -32,6 +32,69 @@ def runtime_with_provider(create, *, responses=False):
 
 
 class CompletionModelCancellationTests(unittest.TestCase):
+    def test_inflight_request_cancellation_releases_the_turn_and_closes_its_stream(self):
+        for phase in ("headers", "body", "close", "nonstream"):
+            with self.subTest(phase=phase):
+                entered = threading.Event()
+                release = threading.Event()
+                revoked = threading.Event()
+                returned = threading.Event()
+                closed = threading.Event()
+                close_release = threading.Event()
+                errors = []
+
+                class WaitingStream:
+                    def __iter__(self):
+                        return self
+
+                    def __next__(self):
+                        entered.set()
+                        release.wait(5)
+                        raise StopIteration
+
+                    def close(self):
+                        if phase == "close":
+                            close_release.wait(5)
+                        closed.set()
+                        release.set()
+
+                response = WaitingStream()
+
+                def create(**payload):
+                    if phase in {"headers", "nonstream"}:
+                        entered.set()
+                        release.wait(5)
+                    return response
+
+                def run():
+                    try:
+                        with cancellation_scope(revoked.is_set):
+                            result = LLMRuntime._dispatch_provider(create, {"stream": phase != "nonstream"})
+                            if phase != "nonstream":
+                                list(result)
+                    except Exception as exc:
+                        errors.append(exc)
+                    finally:
+                        returned.set()
+
+                worker = threading.Thread(target=run)
+                worker.start()
+                try:
+                    self.assertTrue(entered.wait(2))
+                    revoked.set()
+                    self.assertTrue(returned.wait(2), "stopped turn waited for the provider response")
+                    self.assertEqual(len(errors), 1)
+                    self.assertIsInstance(errors[0], ModelRequestCancelled)
+                    # A late old response cannot occupy or cancel the next turn.
+                    with cancellation_scope(lambda: False):
+                        self.assertEqual(LLMRuntime._dispatch_provider(lambda **kw: "new reply", {}), "new reply")
+                finally:
+                    release.set()
+                    close_release.set()
+                    worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertTrue(closed.wait(2), "late provider response was not closed")
+
     def test_cache_hint_retry_checks_revocation_for_both_provider_protocols(self):
         for responses in (False, True):
             for error in (TypeError, RuntimeError):
@@ -136,7 +199,7 @@ class CompletionModelCancellationTests(unittest.TestCase):
                 self.assertEqual(len(calls), 1)
                 self.assertFalse(harness.store.eval_turns)
                 self.assertFalse(runtime.snapshot_metrics().get("chat_stream_nonstream_recoveries"))
-                self.assertEqual(runtime.snapshot_metrics().get("errors", 0), int(stream))
+                self.assertFalse(runtime.snapshot_metrics().get("errors"))
 
     def test_auxiliary_provider_cancel_returns_stopped_and_aborts_open_guard(self):
         for stream in (False, True):
@@ -145,7 +208,7 @@ class CompletionModelCancellationTests(unittest.TestCase):
                 aborted = []
                 harness.engine._abort_open_memcore_turn_guard = lambda **kwargs: aborted.append(kwargs)
                 runtime, _ = runtime_with_provider(lambda **kwargs: self.fail("provider called"))
-                harness.engine._run_pre_retrieval_pipeline = lambda **kwargs: runtime.call_chat_json_result(
+                harness.engine._load_turn_visible_memory = lambda **kwargs: runtime.call_chat_json_result(
                     system_prompt="system", user_prompt="user", fallback={})
                 with cancellation_scope(lambda: True):
                     if stream:

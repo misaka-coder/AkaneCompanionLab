@@ -571,7 +571,7 @@ assert.equal(viewModel.voice.controlsAvailable, true);
 assert.equal(viewModel.voice.tts.provider.name, "GPT-SoVITS");
 assert.equal(viewModel.voice.tts.volume, 82);
 assert.equal(viewModel.voice.asr.provider.status, "degraded");
-assert.equal(viewModel.voice.wakeSensitivity, "中等");
+assert.equal(Object.hasOwn(viewModel.voice, "wakeSensitivity"), false);
 assert.equal(viewModel.system.available, true);
 assert.equal(viewModel.system.overallTone, "warning");
 assert.equal(viewModel.system.issues.some((item) => item.title.includes("本地 ASR")), true);
@@ -638,9 +638,9 @@ const liveVoiceOverride = createControlCenterViewModel(rawSnapshot, {
 assert.equal(liveVoiceOverride.voice.tts.enabled, false);
 assert.equal(liveVoiceOverride.voice.asr.enabled, false);
 assert.equal(liveVoiceOverride.voice.tts.volume, 47);
-assert.equal(liveVoiceOverride.voice.tts.speed, "0.85x");
-assert.equal(liveVoiceOverride.voice.wakeWord, "灵梦");
-assert.equal(liveVoiceOverride.voice.wakeSensitivity, "低");
+assert.equal(Object.hasOwn(liveVoiceOverride.voice.tts, "speed"), false);
+assert.equal(Object.hasOwn(liveVoiceOverride.voice, "wakeWord"), false);
+assert.equal(Object.hasOwn(liveVoiceOverride.voice, "wakeSensitivity"), false);
 
 const runtimeOnly = createControlCenterRuntimeSnapshot({
   ...rawSnapshot,
@@ -867,7 +867,7 @@ assert.equal(isObservedActionConfirmation(
   { state: { wakeWord: "Akane" } },
   { state: { wakeWord: "灵梦" } },
   { value: "灵梦" }
-), true);
+), false);
 assert.equal(isObservedActionConfirmation(
   "advanced.setHitTestEnabled",
   { state: { hitTestEnabled: true } },
@@ -879,11 +879,6 @@ assert.equal(isObservedActionConfirmation(
   { state: { hitboxOverlay: false } },
   { state: { hitboxOverlay: true } },
   { value: true }
-), true);
-assert.equal(isObservedActionConfirmation(
-  "chat.new",
-  { state: { sessionId: "session-a" } },
-  { state: { sessionId: "session-b" } }
 ), true);
 assert.equal(isObservedActionConfirmation(
   "chat.stop",
@@ -906,11 +901,6 @@ assert.equal(isObservedActionConfirmation(
     music: { systemMedia: { playbackStatus: "paused", isPlaying: false } }
   }
 ), true);
-assert.equal(isObservedActionConfirmation(
-  "chat.new",
-  { state: { sessionId: "session-a" } },
-  { state: { sessionId: "session-a" } }
-), false);
 
 assert.equal(isObservedActionConfirmation(
   "character.selectPack",
@@ -1043,7 +1033,7 @@ assert.match(chatHtml, /今天一起做什么/);
 assert.match(chatHtml, /先把界面做舒服/);
 assert.match(chatHtml, /data-chat-viewport/);
 assert.match(chatHtml, /data-chat-form/);
-assert.match(chatHtml, /data-action="chat\.new"/);
+assert.doesNotMatch(chatHtml, /data-action="chat\.new"/);
 assert.match(chatHtml, /data-chat-load-older/);
 assert.match(chatHtml, /加载更早消息/);
 assert.match(chatHtml, /最近一次调用回执/);
@@ -1367,7 +1357,8 @@ assert.match(voiceHtml, /GPT-SoVITS/);
 assert.match(voiceHtml, /data-action="voice\.setTtsEnabled"/);
 assert.match(voiceHtml, /data-action-value-type="boolean"/);
 assert.match(voiceHtml, /data-voice-range="volume"/);
-assert.match(voiceHtml, /data-wake-word-form/);
+assert.doesNotMatch(voiceHtml, /data-wake-word-form|voice\.setSpeed|voice\.setWake/);
+assert.match(voiceHtml, /点击桌宠麦克风开始或结束语音输入/);
 assert.match(voiceHtml, /data-voice-preview-form/);
 assert.match(voiceHtml, /打开角色工坊/);
 assert.match(voiceHtml, /角色声线/);

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import socket
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from urllib.parse import urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -146,13 +148,24 @@ class EncryptedDnsTests(unittest.TestCase):
         session.__exit__ = Mock(return_value=False)
         session.get.return_value = response
         with patch("companion_v01.public_dns.requests.Session", return_value=session):
-            result = public_dns._query("media.example", kind)
+            result = public_dns._query("media.example", kind, public_dns.DOH_ENDPOINTS[0])
         return result, session
 
     def test_bootstrap_uses_numeric_tls_endpoint_no_redirect_proxy_or_user_url(self):
+        # Every candidate endpoint must keep the same properties as the original
+        # single one: numeric literal, TLS with verification, no redirect, no
+        # environment proxy.
+        self.assertGreaterEqual(len(public_dns.DOH_ENDPOINTS), 1)
+        for endpoint in public_dns.DOH_ENDPOINTS:
+            parsed = urlsplit(endpoint)
+            self.assertEqual(parsed.scheme, "https")
+            self.assertEqual(parsed.path, "/dns-query")
+            self.assertEqual(parsed.query, "")
+            ipaddress.ip_address(parsed.hostname)
+        self.assertEqual(public_dns.DOH_ENDPOINTS[0], "https://1.12.12.12/dns-query")
         result, session = self.query(self.response(self.answer()))
         self.assertEqual(result, ((PUBLIC,), 30))
-        self.assertEqual(session.get.call_args.args, ("https://1.1.1.1/dns-query",))
+        self.assertEqual(session.get.call_args.args, (public_dns.DOH_ENDPOINTS[0],))
         self.assertFalse(session.trust_env)
         kwargs = session.get.call_args.kwargs
         self.assertEqual(kwargs["params"], {"name": "media.example", "type": 1, "cd": "false"})
@@ -188,7 +201,7 @@ class EncryptedDnsTests(unittest.TestCase):
     def test_both_families_and_bounded_ttl_cache(self):
         clock = [100.0]
 
-        def query(host, kind):
+        def query(host, kind, _endpoint):
             self.assertEqual(host, "media.example")
             return ((PUBLIC,), 30) if kind == 1 else (("2606:4700:4700::1111",), 20)
 
@@ -205,7 +218,10 @@ class EncryptedDnsTests(unittest.TestCase):
             self.assertEqual(resolver.call_count, 4)
 
     def test_failure_is_not_cached_and_a_failed_family_is_not_hidden(self):
-        def query(_host, kind):
+        seen: list[str] = []
+
+        def query(_host, kind, endpoint):
+            seen.append(endpoint)
             if kind == 28:
                 raise public_dns.PublicDnsError()
             return ((PUBLIC,), 30)
@@ -213,6 +229,9 @@ class EncryptedDnsTests(unittest.TestCase):
         with patch("companion_v01.public_dns._query", side_effect=query):
             with self.assertRaises(public_dns.PublicDnsError):
                 public_dns.resolve_public_dns("media.example")
+        # The whole endpoint list is walked, then the list is retried once.
+        self.assertEqual(set(seen), set(public_dns.DOH_ENDPOINTS))
+        self.assertGreaterEqual(len(seen), 2 * len(public_dns.DOH_ENDPOINTS))
         self.assertEqual(len(public_dns._CACHE), 0)
 
 

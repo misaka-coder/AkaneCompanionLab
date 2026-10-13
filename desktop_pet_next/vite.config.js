@@ -26,7 +26,8 @@ export default defineConfig({
         settingsCompatibilityRedirect: resolve(__dirname, "settings.html"),
         shop: resolve(__dirname, "shop.html"),
         workshop: resolve(__dirname, "workshop.html"),
-        workspace: resolve(__dirname, "workspace.html")
+        workspace: resolve(__dirname, "workspace.html"),
+        gomoku: resolve(__dirname, "gomoku.html")
       }
     }
   }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from typing import Any
 
 import config
@@ -7,7 +9,6 @@ import config
 from .retrieval_types import RetrievalPipelineResult
 from .text_utils import detect_time_of_day_from_text, normalize_text
 from .tool_runtime import ToolExecutionResult, ToolFollowupEnvelope
-from .memcore_integration.diagnostics import build_shadow_payload
 
 
 EMPTY_RETRIEVAL_FOLLOWUP_GUIDANCE = (
@@ -19,6 +20,21 @@ EMPTY_RETRIEVAL_FOLLOWUP_GUIDANCE = (
     "（检索的过滤条件可能因角色标注等原因漏掉原文）。"
     "若核对后仍无明确证据，再自然说明目前无法确认，不要猜测或编造。"
 )
+
+
+def _memory_read_error(tool: str, error: dict[str, Any]) -> ToolExecutionResult:
+    status = str(error.get("status") or "forbidden")
+    reason = str(error.get("reason") or status)
+    feedback = f"记忆读取失败：status={status}；reason={reason}。"
+    return ToolExecutionResult(
+        tool_type=tool,
+        followup_context=feedback,
+        followup_envelope=ToolFollowupEnvelope(
+            content=feedback, producer_bounded=True, complete=True,
+            diagnostics={"status": status, "reason": reason},
+        ),
+        state_updates={"memory_retrieval": {"status": status, "reason": reason, "backend": "memcore"}},
+    )
 
 
 def collect_visible_context_source_ids(
@@ -49,51 +65,23 @@ def collect_visible_context_source_ids(
     return visible_ids
 
 
-def resolve_pre_retrieval_enabled(engine: Any, *, payload: dict[str, Any]) -> bool:
-    override = engine._coerce_bool(payload.get("pre_retrieval_enabled"))
-    if override is not None:
-        return bool(override)
-    return bool(getattr(config, "PRE_RETRIEVAL_DEFAULT_ENABLED", True))
+def resolve_pre_retrieval_enabled(engine: Any = None, *, payload: dict[str, Any] | None = None) -> bool:
+    return False
 
 
 def build_skipped_pre_retrieval_pipeline(
-    engine: Any,
+    engine: Any = None,
     *,
-    user_message: str,
-    now_ts: int,
-    reason: str,
-    use_legacy_service: bool = True,
+    user_message: str = "",
+    now_ts: int = 0,
+    reason: str = "memcore 模式下不运行旧前置检索；由模型按需调用 memcore 记忆工具。",
+    use_legacy_service: bool = False,
 ) -> RetrievalPipelineResult:
-    retrieval_service = engine._get_retrieval_service() if use_legacy_service else None
-    try:
-        time_hint = (
-            retrieval_service._extract_time_hint(user_message=user_message, now_ts=now_ts)
-            if retrieval_service is not None
-            else {
-                "date_label": None,
-                "time_of_day": detect_time_of_day_from_text(user_message),
-                "relative_time": None,
-            }
-        )
-    except Exception:
-        time_hint = {
-            "date_label": None,
-            "time_of_day": detect_time_of_day_from_text(user_message),
-            "relative_time": None,
-        }
-    if retrieval_service is not None:
-        router_timing = retrieval_service._build_shortcut_timing(
-            stage="router",
-            branch="pre_retrieval_disabled",
-            ready_event_type="decision",
-        )
-    else:
-        router_timing = {
-            "stage": "router",
-            "branch": "pre_retrieval_disabled",
-            "mode": "shortcut",
-            "ready_event_type": "decision",
-        }
+    time_hint = {
+        "date_label": None,
+        "time_of_day": detect_time_of_day_from_text(user_message),
+        "relative_time": None,
+    }
     return RetrievalPipelineResult(
         used_retrieval=False,
         confirmed_snippets=[],
@@ -102,12 +90,17 @@ def build_skipped_pre_retrieval_pipeline(
             "route": "pre_retrieval_disabled",
             "rewritten_query": "",
             "keywords": [],
-            "time_hint": dict(time_hint or {}),
-            "index_current_message": True,
+            "time_hint": time_hint,
+            "index_current_message": False,
             "reason": str(reason or "").strip(),
             "confidence": 1.0,
         },
-        router_timing=router_timing,
+        router_timing={
+            "stage": "router",
+            "branch": "pre_retrieval_disabled",
+            "mode": "shortcut",
+            "ready_event_type": "decision",
+        },
         retrieval_result={
             "filtered_candidate_count": 0,
             "time_filter": {
@@ -138,69 +131,39 @@ def build_skipped_pre_retrieval_pipeline(
 
 
 def run_pre_retrieval_pipeline(
-    engine: Any,
+    engine: Any = None,
     *,
-    payload: dict[str, Any],
-    profile_user_id: str,
+    payload: dict[str, Any] | None = None,
+    profile_user_id: str = "",
     character_pack_id: str | None = None,
-    user_message: str,
-    now_ts: int,
-    recent_raw: list[dict[str, Any]],
-    recent_episodic_summaries: list[dict[str, Any]],
-    recent_semantic_summaries: list[dict[str, Any]],
-    current_user_source_id: str,
-    verifier_debug_enabled: bool | None,
+    user_message: str = "",
+    now_ts: int = 0,
+    recent_raw: list[dict[str, Any]] | None = None,
+    recent_episodic_summaries: list[dict[str, Any]] | None = None,
+    recent_semantic_summaries: list[dict[str, Any]] | None = None,
+    current_user_source_id: str = "",
+    verifier_debug_enabled: bool | None = None,
 ) -> RetrievalPipelineResult:
-    if _memory_backend() == "memcore":
-        return build_skipped_pre_retrieval_pipeline(
-            engine,
-            user_message=user_message,
-            now_ts=now_ts,
-            reason="memcore 模式下不再运行旧前置检索；由模型按需调用 memcore 记忆工具。",
-            use_legacy_service=False,
-        )
-    if not resolve_pre_retrieval_enabled(engine, payload=payload):
-        return build_skipped_pre_retrieval_pipeline(
-            engine,
-            user_message=user_message,
-            now_ts=now_ts,
-            reason="本轮已关闭前置检索，直接基于当前可见上下文回复。",
-        )
-    return engine._get_retrieval_service().run_explicit(
-        profile_user_id=profile_user_id,
-        character_pack_id=character_pack_id,
-        original_query=user_message,
+    return build_skipped_pre_retrieval_pipeline(
+        engine,
+        user_message=user_message,
         now_ts=now_ts,
-        exclude_source_ids=collect_visible_context_source_ids(
-            recent_raw=recent_raw,
-            recent_episodic_summaries=recent_episodic_summaries,
-            recent_semantic_summaries=recent_semantic_summaries,
-            extra_source_ids=[current_user_source_id],
-        ),
-        verifier_debug_enabled=verifier_debug_enabled,
-        route="pre_retrieval",
+        reason="memcore 模式下不运行旧前置检索；由模型按需调用 memcore 记忆工具。",
+        use_legacy_service=False,
     )
 
 
-def should_index_user_record_in_vector(engine: Any, *, router_output: dict[str, Any]) -> bool:
-    if not bool(router_output.get("need_retrieval")):
-        return True
-    normalized = engine._coerce_bool(router_output.get("index_current_message"))
-    return True if normalized is None else bool(normalized)
+def should_index_user_record_in_vector(engine: Any = None, *, router_output: dict[str, Any] | None = None) -> bool:
+    return False
 
 
 def apply_user_vector_index_policy(
-    engine: Any,
+    engine: Any = None,
     *,
     user_record: dict[str, Any],
-    router_output: dict[str, Any],
+    router_output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    should_index = should_index_user_record_in_vector(engine, router_output=router_output)
-    if bool(user_record.get("index_in_vector", True)) != should_index:
-        user_record["index_in_vector"] = should_index
-        engine.store.update_message_index_in_vector(user_record["source_id"], should_index)
-    else:
-        user_record["index_in_vector"] = should_index
+    user_record["index_in_vector"] = False
     return user_record
 
 
@@ -210,6 +173,15 @@ def execute_retrieve_memory_tool(
     call: dict[str, Any],
     context: Any,
 ) -> ToolExecutionResult:
+    policy = getattr(engine, "memory_read_policy", None)
+    target = None
+    if policy is not None:
+        target, normalized_call, error = policy.prepare(context=context, call=call, tool="retrieve_memory")
+        if error is not None:
+            return _memory_read_error("retrieve_memory", error)
+        call = normalized_call
+    elif "cross_conversation" in call or call.get("conversation", "current") != "current":
+        return _memory_read_error("retrieve_memory", {"status": "forbidden", "reason": "forbidden"})
     query = normalize_text(str(call.get("query") or "")).strip()
     entity_anchors = [str(item).strip() for item in list(call.get("entity_anchors") or []) if str(item).strip()]
     topic_terms = [str(item).strip() for item in list(call.get("topic_terms") or []) if str(item).strip()]
@@ -233,163 +205,16 @@ def execute_retrieve_memory_tool(
     if isinstance(raw_extra_excludes, list):
         extra_excludes = [str(item).strip() for item in raw_extra_excludes if str(item).strip()]
     memcore_read_payload: dict[str, Any] | None = None
-    if _memory_backend() == "memcore":
-        exclude_source_ids = collect_visible_context_source_ids(
-            recent_raw=[],
-            recent_episodic_summaries=[],
-            recent_semantic_summaries=[],
-            extra_source_ids=[context.current_user_source_id, *extra_excludes],
-        )
-        memcore_read_payload = execute_memcore_retrieve_memory(
-            engine,
-            context=context,
-            current_user_record=current_user_record,
-            query=query,
-            entity_anchors=entity_anchors,
-            topic_terms=topic_terms,
-            time_hint=time_hint,
-            source_layers=source_layers,
-            memory_facets=memory_facets,
-            about_roles=about_roles,
-            within_memory_id=within_memory_id,
-            exclude_source_ids=exclude_source_ids,
-            include_explicit=include_explicit,
-            kind_patterns=kind_patterns,
-        )
-        if memcore_read_payload.get("ok"):
-            snippets = [str(item).strip() for item in memcore_read_payload.get("snippets", []) if str(item).strip()]
-            return _build_retrieve_memory_tool_result(
-                query=query,
-                entity_anchors=entity_anchors,
-                topic_terms=topic_terms,
-                time_hint=time_hint,
-                source_layers=source_layers,
-                memory_facets=memory_facets,
-                about_roles=about_roles,
-                within_memory_id=within_memory_id,
-                snippets=snippets,
-                retrieval_result=_build_memcore_retrieval_result(
-                    snippets=snippets,
-                    time_hint=time_hint,
-                    source_layers=source_layers,
-                    memory_facets=memory_facets,
-                    about_roles=about_roles,
-                    memcore_payload=memcore_read_payload,
-                ),
-                retrieval_backend="memcore",
-                memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
-                retrieval_diagnostics=_build_memcore_retrieval_diagnostics(memcore_read_payload),
-            )
-        return _build_retrieve_memory_tool_result(
-            query=query,
-            entity_anchors=entity_anchors,
-            topic_terms=topic_terms,
-            time_hint=time_hint,
-            source_layers=source_layers,
-            memory_facets=memory_facets,
-            about_roles=about_roles,
-            within_memory_id=within_memory_id,
-            snippets=[],
-            retrieval_result=_build_memcore_retrieval_result(
-                snippets=[],
-                time_hint=time_hint,
-                source_layers=source_layers,
-                memory_facets=memory_facets,
-                about_roles=about_roles,
-                memcore_payload=memcore_read_payload,
-            ),
-            retrieval_backend="memcore",
-            memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
-            retrieval_diagnostics=_build_memcore_retrieval_diagnostics(memcore_read_payload),
-        )
-    # Legacy/dual migration adapter. The model-facing contract remains the
-    # MemCore schema; old retrieval receives only a conservative projection.
-    keywords = list(dict.fromkeys([*entity_anchors, *topic_terms]))
-    subject_scopes = list(
-        dict.fromkeys(
-            "other" if role in {"third_party", "external"} else role
-            for role in about_roles
-            if role in {"user", "assistant", "third_party", "external"}
-        )
-    )
-    facet_to_legacy_category = {
-        "profile": "personal_profile",
-        "preference": "preference",
-        "relationship": "relationship",
-        "event": "life_event",
-        "state": "emotion_state",
-        "plan": "plan_goal",
-    }
-    categories = list(
-        dict.fromkeys(facet_to_legacy_category[facet] for facet in memory_facets if facet in facet_to_legacy_category)
-    )
-    importance_min = None
-    limit = None
-    episodic_limit = max(1, int(getattr(config, "EPISODIC_VISIBLE_MAX", 10)))
-    semantic_limit = max(1, int(getattr(config, "SEMANTIC_VISIBLE_LIMIT", 3)))
-    recent_raw = engine.store.get_unsummarized_messages(
-        context.session_id,
-        character_pack_id=character_pack_id,
-    )
-    recent_episodic_summaries = engine.store.get_visible_episodic_summaries(
-        context.profile_user_id,
-        limit=episodic_limit,
-        character_pack_id=character_pack_id,
-    )
-    recent_semantic_summaries = (
-        engine.store.get_recent_semantic_summaries(
-            context.profile_user_id,
-            limit=semantic_limit,
-            character_pack_id=character_pack_id,
-        )
-        if bool(getattr(config, "ENABLE_SEMANTIC_MEMORY", True))
-        else []
-    )
     exclude_source_ids = collect_visible_context_source_ids(
-        recent_raw=recent_raw,
-        recent_episodic_summaries=recent_episodic_summaries,
-        recent_semantic_summaries=recent_semantic_summaries,
+        recent_raw=[],
+        recent_episodic_summaries=[],
+        recent_semantic_summaries=[],
         extra_source_ids=[context.current_user_source_id, *extra_excludes],
     )
-    pipeline = engine._get_retrieval_service().run_explicit(
-        profile_user_id=context.profile_user_id,
-        character_pack_id=character_pack_id,
-        original_query=original_query,
-        now_ts=int(context.now_ts),
-        query=query,
-        keywords=keywords,
-        time_hint=time_hint,
-        source_layers=source_layers,
-        subject_scopes=subject_scopes,
-        categories=categories,
-        importance_min=importance_min,
-        limit=limit,
-        exclude_source_ids=exclude_source_ids,
-        verifier_debug_enabled=False,
-        route="post_retrieval",
-    )
-    snippets = [str(item).strip() for item in pipeline.confirmed_snippets if str(item).strip()]
-    result = _build_retrieve_memory_tool_result(
-        query=query,
-        entity_anchors=entity_anchors,
-        topic_terms=topic_terms,
-        time_hint=time_hint,
-        source_layers=source_layers,
-        memory_facets=memory_facets,
-        about_roles=about_roles,
-        within_memory_id=within_memory_id,
-        snippets=snippets,
-        retrieval_result=pipeline.retrieval_result,
-        verifier_output=pipeline.verifier_output,
-        verifier_timing=pipeline.verifier_timing,
-        retrieval_backend="legacy",
-        memcore_read=_sanitize_memcore_read_state(memcore_read_payload) if memcore_read_payload is not None else None,
-    )
-    memory_retrieval_state = result.state_updates["memory_retrieval"]
-    shadow_payload = execute_memcore_shadow_retrieve(
+    memcore_read_payload = execute_memcore_retrieve_memory(
         engine,
-        call=call,
         context=context,
+        target=target,
         current_user_record=current_user_record,
         query=query,
         entity_anchors=entity_anchors,
@@ -400,11 +225,59 @@ def execute_retrieve_memory_tool(
         about_roles=about_roles,
         within_memory_id=within_memory_id,
         exclude_source_ids=exclude_source_ids,
-        legacy_snippets=snippets,
+        include_explicit=include_explicit,
+        kind_patterns=kind_patterns,
     )
-    if shadow_payload is not None:
-        memory_retrieval_state["memcore_shadow"] = shadow_payload
-    return result
+    if policy is not None and target is not None:
+        memcore_read_payload = policy.project(
+            context=context, target=target, tool="retrieve_memory", result=memcore_read_payload,
+        )
+    if memcore_read_payload.get("ok"):
+        snippets = [str(item).strip() for item in memcore_read_payload.get("snippets", []) if str(item).strip()]
+        return _build_retrieve_memory_tool_result(
+            query=query,
+            entity_anchors=entity_anchors,
+            topic_terms=topic_terms,
+            time_hint=time_hint,
+            source_layers=source_layers,
+            memory_facets=memory_facets,
+            about_roles=about_roles,
+            within_memory_id=within_memory_id,
+            snippets=snippets,
+            retrieval_result=_build_memcore_retrieval_result(
+                snippets=snippets,
+                time_hint=time_hint,
+                source_layers=source_layers,
+                memory_facets=memory_facets,
+                about_roles=about_roles,
+                memcore_payload=memcore_read_payload,
+            ),
+            retrieval_backend="memcore",
+            memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
+            retrieval_diagnostics=_build_memcore_retrieval_diagnostics(memcore_read_payload),
+        )
+    return _build_retrieve_memory_tool_result(
+        query=query,
+        entity_anchors=entity_anchors,
+        topic_terms=topic_terms,
+        time_hint=time_hint,
+        source_layers=source_layers,
+        memory_facets=memory_facets,
+        about_roles=about_roles,
+        within_memory_id=within_memory_id,
+        snippets=[],
+        retrieval_result=_build_memcore_retrieval_result(
+            snippets=[],
+            time_hint=time_hint,
+            source_layers=source_layers,
+            memory_facets=memory_facets,
+            about_roles=about_roles,
+            memcore_payload=memcore_read_payload,
+        ),
+        retrieval_backend="memcore",
+        memcore_read=_sanitize_memcore_read_state(memcore_read_payload),
+        retrieval_diagnostics=_build_memcore_retrieval_diagnostics(memcore_read_payload),
+    )
 
 
 def _build_retrieve_memory_tool_result(
@@ -457,12 +330,22 @@ def _build_retrieve_memory_tool_result(
         scope_text = "当前授权记忆范围（未限定 within_memory_id）"
     truncated = bool(read_payload.get("truncated"))
     omitted_match_count = int(read_payload.get("omitted_match_count") or 0)
+    conversation = str(read_payload.get("conversation") or "")
+    provenance = {
+        "conversation": conversation,
+        "source_label": str(read_payload.get("source_label") or ""),
+        "navigation": [{key: value for key, value in item.items() if key in {
+            "memory_id", "source_id", "turn_id", "time", "timestamp", "match_index", "layer"
+        }} for item in navigation],
+    } if conversation else {}
     status_lines = [
         "【MemCore 语义检索状态】",
         f"- status={retrieval_status or 'unknown'}；returned={len(snippets)}",
         f"- scope={scope_text}",
         f"- pre-score candidates: {candidate_text}",
     ]
+    if provenance:
+        status_lines.insert(1, json.dumps(provenance, ensure_ascii=False, separators=(",", ":")))
     if bool(read_payload.get("entity_filter_relaxed")):
         status_lines.append("- entity filter: 严格实体候选为零后，仅实体条件被显式放宽；其余过滤仍生效。")
     if truncated:
@@ -477,14 +360,21 @@ def _build_retrieve_memory_tool_result(
             memory_id = str(nav.get("memory_id") or "").strip()
             source_id = str(nav.get("source_id") or "").strip()
             attributes = [f"命中 {index}", layer or "layer=unknown"]
-            if memory_id:
+            if memory_id and not provenance:
                 attributes.append(f"memory_id={memory_id}")
-            elif source_id:
+            elif source_id and not provenance:
                 attributes.append(f"source_id={source_id}")
             time_label = _memory_navigation_time_label(nav)
-            if time_label:
+            if time_label and not provenance:
                 attributes.append(f"time={time_label}")
             heading = "【" + "｜".join(attributes) + "】"
+            # Package-rendered summaries retain an ID for standalone context.
+            # Here the same selected ID is already in trusted navigation.
+            if memory_id and layer in {"summary", "semantic_summary"}:
+                id_line = "memory_id: " + json.dumps(memory_id, ensure_ascii=False)
+                summary_prefix = "【摘要回忆】" if layer == "summary" else "【长期语义记忆】"
+                if snippet.startswith(summary_prefix) and snippet.endswith("\n" + id_line):
+                    snippet = snippet[: -(len(id_line) + 1)]
             rendered_hits.append(f"{heading}\n{snippet}")
         followup_context = (
             "\n".join(status_lines)
@@ -505,23 +395,9 @@ def _build_retrieve_memory_tool_result(
                     )
                     for item in raw_anchors
                 )
-                if raw_anchors
+                if raw_anchors and not provenance
                 else ""
             )
-            + "\n\n可按实际缺口任选下一步，不要机械走固定流程：\n"
-            "- 用户点名了具体日期/时段，或需要逐字核对原话时：优先用 read_memory_timeline 按日期精确读取原始对话核对，"
-            "不要只凭检索命中的转述或片段下结论。\n"
-            "- 当前片段已足够：直接自然回答。\n"
-            "- summary/semantic_summary 只缺完整摘要正文：open_memory(view=content)。\n"
-            "- 摘要主题正确、只缺某个具体细节：用该 memory_id 再调用 retrieve_memory，"
-            '传 within_memory_id=<memory_id> 与 source_layers=["raw"]，只在它的精确来源内搜。\n'
-            "- 确实需要整棵原始来源或逐条原证据：open_memory(view=sources)。\n"
-            "- raw 已命中但缺相邻话轮：用 source_id 调 read_memory_timeline；跨会话锚点不可用时，"
-            "改用命中给出的可读时间调用精确 time_range。\n"
-            "- 已知精确时间直接用 read_memory_timeline；宽泛多日概览才用 browse_memory。\n"
-            "已有有效命中后不要只换同义词反复检索；仍无明确证据就如实说明，不要猜。"
-            "注意：命中不代表全库只有这些记录——角色标注等过滤条件可能把相关原文挡在候选池外；"
-            "命中与用户说法明显对不上且手上有时间线索时，用 read_memory_timeline 兜底核对。"
         )
     else:
         if read_payload and not bool(read_payload.get("ok")):
@@ -659,6 +535,7 @@ def execute_memcore_retrieve_memory(
     engine: Any,
     *,
     context: Any,
+    target: Any = None,
     current_user_record: dict[str, Any] | None,
     query: str,
     entity_anchors: list[str],
@@ -696,8 +573,8 @@ def execute_memcore_retrieve_memory(
         }
     try:
         return manager.retrieve_memory(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
+            profile_user_id=target.profile_user_id if target is not None else context.profile_user_id,
+            session_id=target.session_id if target is not None else context.session_id,
             character_pack_id=str(getattr(context, "character_pack_id", "") or "").strip(),
             current_user_record=current_user_record,
             query=query,
@@ -711,6 +588,7 @@ def execute_memcore_retrieve_memory(
             exclude_source_ids=exclude_source_ids,
             include_explicit=include_explicit,
             kind_patterns=list(kind_patterns or []),
+            external_target=bool(target is not None and target.external),
         )
     except Exception as exc:
         return {
@@ -782,76 +660,3 @@ def _build_memcore_retrieval_diagnostics(payload: dict[str, Any]) -> dict[str, A
         "omitted_match_count": int(payload.get("omitted_match_count") or 0),
         "latency_ms": int(payload.get("latency_ms") or 0),
     }
-
-
-def execute_memcore_shadow_retrieve(
-    engine: Any,
-    *,
-    call: dict[str, Any],
-    context: Any,
-    current_user_record: dict[str, Any] | None,
-    query: str,
-    entity_anchors: list[str],
-    topic_terms: list[str],
-    time_hint: dict[str, Any] | None,
-    source_layers: list[str],
-    memory_facets: list[str],
-    about_roles: list[str],
-    within_memory_id: str,
-    exclude_source_ids: list[str],
-    legacy_snippets: list[str],
-) -> dict[str, Any] | None:
-    if not bool(getattr(config, "MEMCORE_SHADOW_COMPARE", False)):
-        return None
-    manager = getattr(engine, "memcore_manager", None)
-    if manager is None or not getattr(manager, "enabled", False):
-        return build_shadow_payload(
-            legacy_snippets=legacy_snippets,
-            memcore_result={
-                "operation": "shadow_retrieve_memory",
-                "ok": False,
-                "status": "unavailable",
-                "reason": "memcore_manager_not_enabled",
-                "snippet_count": 0,
-                "snippet_hashes": [],
-            },
-        )
-    if not getattr(manager, "available", False):
-        status = manager.status() if hasattr(manager, "status") else {}
-        return build_shadow_payload(
-            legacy_snippets=legacy_snippets,
-            memcore_result={
-                "operation": "shadow_retrieve_memory",
-                "ok": False,
-                "status": "unavailable",
-                "reason": str((status or {}).get("reason") or "memcore_unavailable"),
-                "snippet_count": 0,
-                "snippet_hashes": [],
-            },
-        )
-    try:
-        result = manager.shadow_retrieve_memory(
-            profile_user_id=context.profile_user_id,
-            session_id=context.session_id,
-            character_pack_id=str(getattr(context, "character_pack_id", "") or "").strip(),
-            current_user_record=current_user_record,
-            query=query or str(call.get("query") or ""),
-            entity_anchors=entity_anchors,
-            topic_terms=topic_terms,
-            time_hint=time_hint,
-            source_layers=source_layers,
-            memory_facets=memory_facets,
-            about_roles=about_roles,
-            within_memory_id=within_memory_id,
-            exclude_source_ids=exclude_source_ids,
-        )
-    except Exception as exc:
-        result = {
-            "operation": "shadow_retrieve_memory",
-            "ok": False,
-            "status": "failed",
-            "reason": str(exc) or exc.__class__.__name__,
-            "snippet_count": 0,
-            "snippet_hashes": [],
-        }
-    return build_shadow_payload(legacy_snippets=legacy_snippets, memcore_result=result)

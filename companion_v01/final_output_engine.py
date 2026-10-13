@@ -11,24 +11,8 @@ from .tool_invocation import (
     NATIVE_TOOL_CALL_FIELD,
     NATIVE_TOOL_CALLS_FIELD,
     TOOL_CAPABILITY_SELECTION_FIELD,
+    invocation_to_legacy_tool_call,
 )
-
-_REPLY_MEDIUM_ALIASES = {
-    "text": "text",
-    "文字": "text",
-    "文本": "text",
-    "voice": "voice",
-    "audio": "voice",
-    "record": "voice",
-    "语音": "voice",
-    "both": "both",
-    "all": "both",
-    "text_voice": "both",
-    "voice_text": "both",
-    "文字语音": "both",
-    "双发": "both",
-}
-
 
 def _strip_internal_tool_metadata(tool_call: Any) -> dict[str, Any] | None:
     if not isinstance(tool_call, dict):
@@ -59,6 +43,8 @@ def normalize_final_output(
         else resource_manifest or engine.resource_manifest
     )
     raw_result = result if isinstance(result, dict) else {}
+    from .speech_units import project_speech_units
+    raw_result = project_speech_units(raw_result)
     if client_context.has_capability(ClientCapability.SCENE_PRESENTATION):
         from .scene.presentation.model_contract import normalize_scene_model_output
         raw_result = normalize_scene_model_output(raw_result)
@@ -67,7 +53,7 @@ def normalize_final_output(
     normalized = dict(raw_result or {})
     normalized.pop("_notification_suppressed", None)  # Host-only delivery decision.
     explicit_silence = (
-        (client_context.effective_mode == ClientMode.QQ_TEXT or allow_deliberate_silence)
+        (client_context.effective_mode == ClientMode.QQ_TEXT or allow_deliberate_silence or raw_result.get("utterances") == [])
         and "speech" in raw_result
         and isinstance(raw_result.get("speech"), str)
         and not str(raw_result.get("speech") or "").strip()
@@ -100,18 +86,20 @@ def normalize_final_output(
         normalized.pop("thought", None)
     normalized.setdefault("status", "final")
     normalized.setdefault("emotion", visual_defaults["emotion"])
-    normalized_tool_call = (
-        engine._normalize_tool_call(
+    if allow_tool_call:
+        from .tool_orchestration_engine import parse_tool_call
+
+        parsed_tool_call = parse_tool_call(
             normalized.get("tool_call"),
-            client_context=client_context,
-            profile_user_id=profile_user_id,
-            session_id=session_id,
-            domain_profile_id=domain_profile_id,
             capability_selection=capability_selection,
         )
-        if allow_tool_call
-        else None
-    )
+        normalized_tool_call = (
+            invocation_to_legacy_tool_call(parsed_tool_call)
+            if parsed_tool_call is not None
+            else None
+        )
+    else:
+        normalized_tool_call = None
     normalized["tool_call"] = _strip_internal_tool_metadata(normalized_tool_call)
     if capability_selection is not None and (
         normalized.get("tool_call")
@@ -119,15 +107,7 @@ def normalize_final_output(
         or normalized.get(NATIVE_TOOL_CALLS_FIELD)
     ):
         normalized[TOOL_CAPABILITY_SELECTION_FIELD] = capability_selection
-    if client_context.effective_mode == ClientMode.DESKTOP_PET and client_context.has_capability(
-        ClientCapability.AUDIO_PLAYBACK
-    ):
-        normalized["activity"] = normalize_activity_action(normalized.get("activity"))
-    else:
-        normalized.pop("activity", None)
-    # Media control is an execution result, not a best-effort inference from
-    # the user's wording. The model/tool or an explicit UI command must create
-    # the activity intent; final-output normalization only validates it.
+    normalized.pop("activity", None)
     # Model-visible output has one textual authority: ``speech``.  Keep
     # ``speech_segments`` only as a derived compatibility projection for
     # clients that still render or synthesize one sentence at a time.
@@ -148,14 +128,9 @@ def normalize_final_output(
         normalized["_deliberate_silence"] = True
     else:
         normalized.pop("_deliberate_silence", None)
-    if client_context.effective_mode == ClientMode.QQ_TEXT:
-        normalized["reply_medium"] = _normalize_reply_medium(
-            normalized.get("reply_medium"),
-            delivery=normalized.get("delivery"),
-            default="text",
-        )
-    else:
-        normalized.pop("reply_medium", None)
+    # Delivery belongs to the trusted ingress settings, including when older
+    # assistant history causes a provider to repeat the retired field.
+    normalized.pop("reply_medium", None)
     normalized.pop("delivery", None)
     if client_context.effective_mode in (ClientMode.SCENE_STATIC, ClientMode.SCENE_LIVE2D):
         normalized["code_snippet"] = normalize_code_snippet(normalized.get("code_snippet"))
@@ -215,19 +190,6 @@ def normalize_final_output(
             )
     normalized = engine._get_output_adapter_registry().normalize(normalized, client_context)
     return normalized
-
-
-def _normalize_reply_medium(
-    value: Any,
-    *,
-    delivery: Any = None,
-    default: str = "text",
-) -> str:
-    raw_value = value
-    if not str(raw_value or "").strip() and isinstance(delivery, dict):
-        raw_value = delivery.get("medium") or delivery.get("reply_medium")
-    text = str(raw_value or "").strip().lower().replace("-", "_")
-    return _REPLY_MEDIUM_ALIASES.get(text, default)
 
 
 def normalize_memory_metadata(

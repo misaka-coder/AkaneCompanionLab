@@ -29,6 +29,28 @@ def _sleep_command(seconds: float) -> str:
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
+def _detached_child_command(seconds: float) -> str:
+    """A command that leaves a child holding the stdout/stderr pipes it inherited.
+
+    ``stdout=sys.stdout`` hands the child the very pipe the executor gave the
+    command, which is what a Windows ``Start-Process`` launch does to a detached
+    grandchild: the command exits while the child keeps the write end open.
+    """
+
+    child = "\n".join(("import time", f"time.sleep({seconds})"))
+    outer = (
+        "import subprocess, sys; "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}], "
+        f'cwd=r"{Path(__file__).resolve().parent}", '
+        "stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr); "
+        "print('parent complete', flush=True)"
+    )
+    if os.name == "nt":
+        executable = str(sys.executable).replace("'", "''")
+        return f"& '{executable}' -c '{outer.replace(chr(39), chr(39) * 2)}'"
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(outer)}"
+
+
 def _context() -> ToolExecutionContext:
     return ToolExecutionContext(
         profile_user_id="profile-a",
@@ -180,6 +202,44 @@ class HostExecutionJobRuntimeTests(unittest.TestCase):
             published[0].payload["run_id"],
             result.state_updates["capability_execution"]["run_id"],
         )
+
+    def test_detached_child_run_notifies_success_with_the_open_stream_reason(self) -> None:
+        workspace = Path(self.temp.name) / "detached-workspace"
+        workspace.mkdir()
+        provider = TrustedLocalExecutor(
+            workspace_root=workspace,
+            run_log_dir=Path(self.temp.name) / "detached-runlogs",
+        )
+        self.addCleanup(provider.request_shutdown)
+        published = []
+        completed = threading.Event()
+        runtime = HostExecutionJobRuntime(
+            store=self.store,
+            conversation_ref_issuer=lambda _context: "signed-conversation-ref",
+            completion_publisher=lambda job: (published.append(job), completed.set()),
+        )
+        runtime.bind_provider(provider)
+        handler = ExecRunToolHandler(execution_provider=provider)
+        handler.bind_job_runtime(runtime)
+
+        result = handler._execute_command(
+            provider,
+            {
+                "type": "exec_run",
+                "command": _detached_child_command(10.0),
+                "initial_wait_seconds": 1,
+            },
+            _context(),
+        )
+
+        self.assertEqual(result.stream_events[0]["status"], "running")
+        self.assertTrue(completed.wait(timeout=15.0))
+        self.assertEqual(len(published), 1)
+        # A child holding the inherited pipe must not turn this into a failure
+        # notification: the command itself exited 0.
+        self.assertEqual(published[0].status, "succeeded")
+        self.assertIn("status=completed", published[0].result_summary)
+        self.assertIn("output_open_after_exit", published[0].result_summary)
 
 
 if __name__ == "__main__":

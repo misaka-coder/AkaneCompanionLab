@@ -491,7 +491,7 @@ class HostToolJobRuntimeTests(unittest.TestCase):
                 runner.close(timeout=2.0)
 
     def test_silent_long_task_settles_without_agent_completion(self) -> None:
-        from companion_v01.bot_runtime import _dispatch_host_job_completion
+        from companion_v01.bot_runtime_components.completion import _dispatch_host_job_completion
         from unittest.mock import AsyncMock
         started = threading.Event()
         release = threading.Event()
@@ -608,7 +608,7 @@ class HostToolJobRuntimeTests(unittest.TestCase):
                     capability_id="generate_image", invocation_id="call-a",
                     call={"type": "generate_image", "prompt": "moon"}, context=_context(),
                 )
-                self.assertIn("没有重复启动", duplicate.followup_context)
+                self.assertIn("duplicate=true", duplicate.followup_context)
                 self.assertEqual(duplicate.state_updates["capability_execution"]["job_status"], "succeeded")
                 self.assertEqual(len(handler.calls), 1)
             finally:

@@ -156,7 +156,8 @@ WORKSPACE_WRITE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_write",
     display_name="Write a project file atomically",
     description=(
-        "Create or replace one UTF-8 source file. Omitted cwd uses the selected project, or the trusted execution root when none is selected; "
+        "Create or replace one whole UTF-8 source file; for additions or local edits to an existing file, prefer workspace_patch. "
+        "Omitted cwd uses the selected project, or the trusted execution root when none is selected; "
         "cwd, an absolute host path, or an explicitly addressed persistent project may override it. Writes are atomic "
         "and may be guarded by the prior SHA-256; project registration is optional."
     ),
@@ -214,7 +215,7 @@ WORKSPACE_PATCH_TOOL_SPEC = CapabilityToolSpec(
     capability_id="workspace_patch",
     display_name="Apply a count-free source patch atomically",
     description=(
-        "Apply a count-free context patch atomically. Do not calculate unified-diff line ranges. Use exactly: "
+        "Apply additions or local edits with a count-free context patch atomically. Do not calculate unified-diff line ranges. Use exactly: "
         "*** Begin Patch, then one or more *** Update File: path / *** Add File: path / *** Delete File: path "
         "sections, then *** End Patch. Update sections contain @@ (or @@ followed by one unique existing anchor "
         "line), with unchanged lines prefixed by one space, removed lines by -, and added lines by +. A rename "

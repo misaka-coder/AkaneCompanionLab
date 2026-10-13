@@ -59,7 +59,7 @@ def build_desktop_context_prompt(
         clipboard_text = sanitize_desktop_context_text(clipboard_payload.get("text"), 500)
 
     lines = [
-        "【桌面上下文（临时，不写入长期记忆）】",
+        "【桌面线索】",
     ]
     if title or process_name:
         if source == "foreground":
@@ -74,11 +74,10 @@ def build_desktop_context_prompt(
         if process_name:
             window_text += f"（进程：{process_name}）"
         lines.append(f"- {window_label}：{window_text}")
-        lines.append("- 窗口标题只是环境线索；除非用户明确提到，不要把它当成必须回应的主题。")
     else:
-        lines.append("- 当前窗口：未知，勿猜测。")
+        lines.append("- 当前窗口：未知")
     if clipboard_included and clipboard_text:
-        lines.append(f"- 剪贴板文本（最多截断 500 字）：{clipboard_text}")
+        lines.append(f"- 剪贴板文本：{clipboard_text}")
     return "\n".join(lines)
 
 
@@ -106,17 +105,12 @@ def build_desktop_care_prompt(
 
     is_qq_text = client_context.effective_mode == ClientMode.QQ_TEXT
     scope = "qq_text" if is_qq_text else "desktop_pet"
-    scope_note = (
-        "饥饿/精力与桌宠共享；affection 为 QQ 独立好感"
-        if is_qq_text
-        else "affection 为桌宠好感"
-    )
     lines = [
         "【care.state｜宿主当前值】",
-        f"- scope: {scope}（{scope_note}）",
+        f"- scope: {scope}",
     ]
     if not is_qq_text and desktop_care.get("work_task_active") is True:
-        lines.append("- 你当前正在外出/打工；如果需要回应，要承认自己暂时不在桌面旁边。")
+        lines.append("- work_task=active")
 
     lines.extend(
         build_desktop_care_expression_lines(
@@ -166,12 +160,10 @@ def build_desktop_care_expression_lines(
     affection_bond: int = 88,
     now: Any = None,
 ) -> list[str]:
-    state_label = _vitals_state_label(hunger, energy, hunger_low, hunger_critical, energy_low, energy_critical)
     return [
-        f"- vitals: hunger={hunger}/100, hunger_level={_care_level(hunger, hunger_low, hunger_critical)}; "
-        f"energy={energy}/100, energy_level={_care_level(energy, energy_low, energy_critical)}; state={state_label}",
-        f"- affection: {affection}/100 (affection_tier={_care_affection_tier(affection, affection_familiar, affection_warm, affection_close, affection_bond)})",
-        f"- time_phase: {get_desktop_care_time_phase(now)}",
+        f"- hunger: {hunger}/100 ({_care_level(hunger, hunger_low, hunger_critical)}); "
+        f"energy: {energy}/100 ({_care_level(energy, energy_low, energy_critical)})",
+        f"- affection: {affection}/100 ({_care_affection_tier(affection, affection_familiar, affection_warm, affection_close, affection_bond)})",
     ]
 
 
@@ -205,7 +197,7 @@ def _build_anchor_lines(anchors: Any, now: Any = None) -> list[str]:
     """Format memory anchor hints for injection into the care prompt.
 
     Returns an empty list if not enough history exists yet (total_turns < 5).
-    Lines are phrased as soft suggestions — the LLM decides when to surface them.
+    These are relationship facts; the stable care rules guide their expression.
     """
     if not isinstance(anchors, dict):
         return []
@@ -232,11 +224,11 @@ def _build_anchor_lines(anchors: Any, now: Any = None) -> list[str]:
     if first_seen_ms > 0:
         days_known = max(0, (now_ms - first_seen_ms) // (1000 * 86400))
         if days_known >= 1:
-            detail_lines.append(f"你们认识已经 {days_known} 天，聊过 {total_turns} 次")
+            detail_lines.append(f"你们认识已经 {days_known} 天，聊过 {total_turns} 轮")
         else:
-            detail_lines.append(f"今天刚认识，聊过 {total_turns} 次")
+            detail_lines.append(f"今天刚认识，聊过 {total_turns} 轮")
     else:
-        detail_lines.append(f"聊过 {total_turns} 次")
+        detail_lines.append(f"聊过 {total_turns} 轮")
 
     first_fed = anchors.get("first_fed")
     if isinstance(first_fed, dict) and first_fed.get("name"):
@@ -244,7 +236,7 @@ def _build_anchor_lines(anchors: Any, now: Any = None) -> list[str]:
 
     late_night = int(anchors.get("late_night_turns") or 0)
     if late_night >= 3:
-        detail_lines.append(f"你经常深夜来找她（已有 {late_night} 次）")
+        detail_lines.append(f"其中深夜聊天 {late_night} 轮")
 
     max_streak = int(anchors.get("max_checkin_streak") or 0)
     if max_streak >= 3:
@@ -252,7 +244,7 @@ def _build_anchor_lines(anchors: Any, now: Any = None) -> list[str]:
 
     if not detail_lines:
         return []
-    return ["【关系记录——可自然带入，不必每次说】"] + [f"- {l}" for l in detail_lines]
+    return ["【关系记录】"] + [f"- {l}" for l in detail_lines]
 
 
 def get_desktop_care_time_phase(now: Any = None) -> str:
@@ -389,15 +381,11 @@ def build_desktop_activity_prompt(
             f"- 类型：{'视频' if activity_type == 'video_playback' else '浏览器或未分类媒体（未确认是音乐）'}",
             f"- 标题：{title}；状态：{status}",
             f"- 采样时进度：{progress or '未知'} / {duration or '未知'}；采样 Unix 秒：{captured_at:.3f}",
-            "- 这是播放器提供的位置快照，不是回复送达时的位置；拖动、倍速、暂停后以新快照为准。不要据此断言用户此刻精确看到哪一秒。",
-            "- 不按听歌处理，不查询歌词或套用共同听歌回忆。内容以本轮真实屏幕为准；无画面时不推断视频情节或声音。",
         ])
-    if activity_type not in {"audio_playback", "audio_recommendations", "vocal_performance"}:
+    if activity_type not in {"audio_playback", "vocal_performance"}:
         return ""
 
-    title = sanitize_desktop_context_text(activity.get("title"), 120) or (
-        "Akane 音乐推荐" if activity_type == "audio_recommendations" else "未命名音频"
-    )
+    title = sanitize_desktop_context_text(activity.get("title"), 120) or "未命名音频"
     source_id = sanitize_desktop_context_text(activity.get("source_id") or activity.get("handle"), 60)
     status = str(activity.get("status") or "").strip().lower() or "unknown"
     source_kind = str(activity.get("source_kind") or activity.get("sourceKind") or "").strip().lower()
@@ -416,18 +404,16 @@ def build_desktop_activity_prompt(
 
     lines = [
         "【当前桌宠活动】",
-        f"- 类型：{'角色表演/唱歌' if activity_type == 'vocal_performance' else '可播放音乐推荐' if activity_type == 'audio_recommendations' else '普通音频播放'}",
+        f"- 类型：{'角色表演/唱歌' if activity_type == 'vocal_performance' else '普通音频播放'}",
         f"- 音频：{title}" + (f"（{source_id}）" if source_id else ""),
         f"- 状态：{status_label}",
     ]
-    if status == "paused":
-        lines.append("- 当前已暂停，不代表用户正在听；除非用户提到或与本轮有关，无需主动谈起。")
     if progress:
         timing = f"进度 {progress}"
         if duration:
             timing += f" / {duration}"
         lines.append(f"- {timing}")
-    if activity_type in {"audio_playback", "audio_recommendations"}:
+    if activity_type == "audio_playback":
         queue_count = coerce_activity_int(activity.get("queue_count") or activity.get("queueCount"))
         queue_index = coerce_activity_int(activity.get("queue_index") or activity.get("queueIndex"))
         if queue_count > 1:
@@ -439,49 +425,6 @@ def build_desktop_activity_prompt(
             )
             if next_title:
                 lines.append(f"- 下一首：{next_title}")
-            raw_titles = activity.get("queue_titles") or activity.get("queueTitles") or []
-            if isinstance(raw_titles, list):
-                titles = [
-                    sanitize_desktop_context_text(item, 40)
-                    for item in raw_titles[:6]
-                    if sanitize_desktop_context_text(item, 40)
-                ]
-                if titles:
-                    lines.append(f"- 队列概况：{'；'.join(titles)}")
-        raw_recs = activity.get("recommendations") or []
-        if isinstance(raw_recs, list):
-            rec_lines = []
-            for rec in raw_recs[:3]:
-                if not isinstance(rec, dict):
-                    continue
-                rec_title = sanitize_desktop_context_text(rec.get("title"), 40)
-                reason = sanitize_desktop_context_text(rec.get("reason"), 30)
-                rec_source_id = sanitize_desktop_context_text(rec.get("source_id"), 60)
-                if rec_title:
-                    line = f"{rec_title}（{reason}）" if reason else rec_title
-                    if rec_source_id:
-                        line += f"，source_id: {rec_source_id}"
-                    rec_lines.append(line)
-            if rec_lines:
-                lines.append(f"- 当前 Akane 音乐推荐：{'；'.join(rec_lines)}")
-        raw_catalog = activity.get("catalog") or []
-        if isinstance(raw_catalog, list) and raw_catalog:
-            catalog_lines = []
-            for cat_item in raw_catalog[:12]:
-                if not isinstance(cat_item, dict):
-                    continue
-                cat_title = sanitize_desktop_context_text(cat_item.get("title"), 50)
-                cat_source = sanitize_desktop_context_text(cat_item.get("source_id"), 60)
-                cat_reason = sanitize_desktop_context_text(cat_item.get("reason"), 20)
-                if cat_title and cat_source:
-                    line = f"{cat_title}（source_id: {cat_source}）"
-                    if cat_reason:
-                        line += f" - {cat_reason}"
-                    catalog_lines.append(line)
-            if catalog_lines:
-                lines.append("【当前可播放音乐】")
-                for line in catalog_lines:
-                    lines.append(f"- {line}")
         lyric_current = sanitize_desktop_context_text(
             activity.get("lyric_current") or activity.get("lyricCurrent"),
             120,
@@ -502,38 +445,10 @@ def build_desktop_activity_prompt(
             lines.append(f"- 上一句歌词：{lyric_previous}")
         if lyric_next and lyric_current:
             lines.append(f"- 下一句歌词：{lyric_next}")
-    if activity_type == "audio_playback":
-        if is_external_system_media:
-            lines.append(
-                "- 系统媒体来自 Windows 当前媒体会话；你可以请求桌宠对当前系统播放器执行播放、暂停、停止、上一首或下一首。"
-            )
-        else:
-            lines.append(
-                "- 普通音频不会因为本轮消息自动暂停；如果你想控制播放，请输出 activity action。"
-            )
-    elif status == "interrupted":
-        lines.append(
-            "- 主人发消息时表演已暂停；如果你想继续表演，需要输出 activity action，而不是假装仍在继续。"
-        )
-    if is_external_system_media:
-        lines.append(
-            f'- 可选 activity 输出：{{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"{source_id}"}}；不需要控制时输出 null。'
-        )
-        lines.append(
-            "- activity 是给桌宠执行的系统媒体控制请求，不是执行成功回执；speech 里不要说已经播放、已经暂停或已经切歌，"
-            "可以自然说“我帮你试一下”“我去切一下”。如果播放器不支持系统媒体控制，前端会自己提示失败。"
-        )
-    else:
-        lines.append(
-            '- 可选 activity 输出：{"action":"play|pause|resume|stop|previous|next","target":"current","source_id":"可选 workspace:attachment:xxx / workspace:generated:xxx / file/audio/gen handle"}；不需要控制时输出 null。'
-        )
-        lines.append(
-            "- activity 是给桌宠执行的请求，不是执行成功回执；speech 里不要说已经播放、已经暂停或已经继续，"
-            "可以自然说“我来试试”“我帮你继续”。"
-        )
-        lines.append(
-            "- 切换到某个具体音频时，play 应尽量带 source_id（推荐列表中已有 source_id）；只继续当前音频时，用 resume + target=current。"
-        )
+    lines.append(
+        "- 来源：" + ("系统播放器；control_tool: system_media_control" if is_external_system_media
+                     else "桌宠播放器；control_tool: local_music_control")
+    )
     activity_prompt = "\n".join(lines)
     timeline_prompt = build_desktop_music_timeline_prompt(
         engine,
@@ -637,33 +552,20 @@ def build_desktop_music_timeline_prompt(
 
 
 def build_system_media_no_lyrics_prompt(activity: dict[str, Any]) -> str:
-    title = sanitize_desktop_context_text(activity.get("title"), 120) or "当前系统音乐"
     lyric_status = str(activity.get("lyric_status") or activity.get("lyricStatus") or "").strip().lower()
     lyric_reason = str(activity.get("lyric_reason") or activity.get("lyricReason") or "").strip().lower()
-    lines = [
-        "【当前音乐位置】",
-        f"- 正在播放：{title}",
-    ]
-    progress = format_activity_time(activity.get("progress_seconds"))
-    duration = format_activity_time(activity.get("duration_seconds"))
-    if progress:
-        timing = f"当前进度：{progress}"
-        if duration:
-            timing += f" / {duration}"
-        lines.append(f"- {timing}。")
+    lines = ["【当前音乐位置】"]
     if lyric_status == "low-confidence":
-        lines.append("- 在线歌词匹配可信度不够，当前不要引用歌词原文。")
+        lines.append("- 歌词：匹配可信度不足。")
     elif lyric_status == "not-found":
         lines.append("- 暂时没有找到这首歌的同步歌词。")
     elif lyric_status == "disabled":
         lines.append("- 在线歌词检索已关闭。")
     elif lyric_status == "unavailable":
         reason_hint = "provider 不可用" if lyric_reason else "歌词线索暂不可用"
-        lines.append(f"- {reason_hint}，当前不能确定唱到哪一句。")
+        lines.append(f"- 歌词：{reason_hint}。")
     else:
         lines.append("- 歌词线索还没准备好，当前还不能确定唱到哪一句。")
-    lines.append("- 你现在只知道系统正在播放的歌曲、播放状态和进度；不要编造歌词内容。")
-    lines.append("- 请把这理解成你自然注意到旁边正在播放的音乐，不要说自己在读文件。")
     return "\n".join(lines)
 
 

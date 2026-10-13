@@ -90,8 +90,8 @@ const els = {
   mcNext:        document.getElementById("mc-next"),
   progressFill:  document.getElementById("progress-fill"),
   progressTime:  document.getElementById("progress-time"),
-  btnNewSession: document.getElementById("btn-new-session"),
   btnWorkspace:  document.getElementById("btn-workspace"),
+  btnGomoku:     document.getElementById("btn-gomoku"),
   btnShop:       document.getElementById("btn-shop"),
   btnStop:       document.getElementById("btn-stop"),
   btnMute:       document.getElementById("btn-mute"),
@@ -276,11 +276,11 @@ function updateControllerBadge(controller) {
   const normalized = controller === "user" ? "user" : "model";
   state.musicController = normalized;
   if (!els.controllerBadge) return;
-  els.controllerBadge.textContent = normalized === "model" ? "Akane 控制" : "用户控制";
+  els.controllerBadge.textContent = normalized === "model" ? "可主动控歌" : "按请求控歌";
   els.controllerBadge.dataset.controller = normalized;
   els.controllerBadge.title = normalized === "model"
-    ? "Akane 可主动暂停、切歌或推荐；点击切回用户控制"
-    : "Akane 会先询问，不主动控制音乐；点击允许 Akane 控制";
+    ? "音乐偏好：允许主动暂停、切歌或推荐；点击改为按请求控歌，不会禁用工具"
+    : "音乐偏好：按你的请求控歌；点击允许主动控歌，不会禁用工具";
 }
 
 function renderSliders() {
@@ -410,12 +410,12 @@ function wireButtons() {
     appWindow?.close();
   });
 
-  els.btnNewSession.addEventListener("click", async () => {
-    await emitPanelAction({ action: "new-session" });
-  });
-
   els.btnWorkspace.addEventListener("click", async () => {
     await openPanelOwnedWindow("open_workspace_window", "open-workspace");
+  });
+
+  els.btnGomoku?.addEventListener("click", async () => {
+    await openPanelOwnedWindow("open_gomoku_window", "open-gomoku");
   });
 
   els.btnShop.addEventListener("click", async () => {

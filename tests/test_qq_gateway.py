@@ -517,16 +517,16 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(context.should_record)
         self.assertEqual(context.reason, "group_passive_observed")
 
-    def test_wake_word_prefix_can_trigger_fixed_commands(self) -> None:
+    def test_wake_word_prefix_does_not_trigger_retired_commands(self) -> None:
         gateway = NapCatQQGateway()
 
         buy = gateway.parse_economy_command("Akane 购买 三色团子")
         shop = gateway.parse_economy_command("Akane，商店")
         model = gateway.parse_chat_model_command("Akane 模型列表")
 
-        self.assertEqual(buy, {"action": "buy", "item_name": "三色团子", "quantity": 1})
-        self.assertEqual(shop, {"action": "shop_list"})
-        self.assertEqual(model, {"action": "list"})
+        self.assertIsNone(buy)
+        self.assertIsNone(shop)
+        self.assertIsNone(model)
 
     def test_economy_status_command_does_not_steal_natural_money_or_state_chat(self) -> None:
         gateway = NapCatQQGateway()
@@ -542,25 +542,27 @@ class QQGatewayTests(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertIsNone(gateway.parse_economy_command(message))
 
-    def test_economy_status_command_accepts_explicit_status_queries(self) -> None:
+    def test_economy_status_requires_formal_slash_command(self) -> None:
         gateway = NapCatQQGateway()
 
-        explicit_messages = [
+        self.assertEqual(gateway.parse_economy_command("/养成"), {"action": "status"})
+        retired_messages = [
             "养成状态",
             "Akane 金币多少",
             "查余额",
             "查看饥饿",
             "当前好感度",
         ]
-        for message in explicit_messages:
+        for message in retired_messages:
             with self.subTest(message=message):
-                self.assertEqual(gateway.parse_economy_command(message), {"action": "status"})
+                self.assertIsNone(gateway.parse_economy_command(message))
 
     def test_outfit_command_requires_clear_separator_for_wear_shortcut(self) -> None:
         gateway = NapCatQQGateway()
 
         self.assertIsNone(gateway.parse_outfit_command("穿上泳装好看吗"))
-        self.assertEqual(gateway.parse_outfit_command("穿上 泳装"), {"action": "switch", "outfit_id": "泳装"})
+        self.assertIsNone(gateway.parse_outfit_command("穿上 泳装"))
+        self.assertEqual(gateway.parse_outfit_command("/服装 泳装"), {"action": "switch", "outfit_id": "泳装"})
 
     def test_group_mention_does_not_steer_a_later_unaddressed_attachment(self) -> None:
         gateway = NapCatQQGateway()
@@ -759,7 +761,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["qq_delivery_context"]["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["qq_delivery_context"]["actor_profile_user_id"], f"qq_{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["qq_delivery_context"]["actor_display_name"], "休比")
-        self.assertIn("qq.reply_delivery: auto", payload["extra_context"])
+        self.assertIn("qq.reply_delivery: text", payload["extra_context"])
         self.assertIn(f"qq.master_qq: {QQ_MASTER_FIXTURE_ID}", payload["extra_context"])
         self.assertNotIn(str(QQ_USER_FIXTURE_ID), payload["extra_context"])
         self.assertNotIn(str(QQ_GROUP_FIXTURE_ID), payload["extra_context"])
@@ -807,9 +809,10 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(payload["message"], "刚才发生的互动：我在 QQ 里戳了戳你的头像。")
         self.assertNotIn("transient_user_message", payload)
         self.assertEqual(payload["client_mode"], "qq_text")
-        self.assertNotIn("actor_stable_id", payload)
+        self.assertEqual(payload["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
         self.assertEqual(payload["actor_profile_user_id"], f"qq_{QQ_USER_FIXTURE_ID}")
-        self.assertNotIn("actor_display_name", payload)
+        self.assertIn("actor_display_name", payload)
+        self.assertEqual(payload["qq_delivery_context"]["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
         self.assertIn("我就是本轮戳一戳的发送者", payload["extra_context"])
         self.assertIn("戳了戳你", payload["extra_context"])
 
@@ -1028,7 +1031,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "switch-character-1",
-                "raw_message": "切换角色 reimu",
+                "raw_message": "/角色 reimu",
             }
         )
 
@@ -1068,7 +1071,7 @@ class QQGatewayTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "switch-character-persist-1",
-                    "raw_message": "切换角色 reimu",
+                    "raw_message": "/角色 reimu",
                 }
             )
 
@@ -1140,7 +1143,7 @@ class QQGatewayTests(unittest.TestCase):
                     "message_id": "group-vision-disable-1",
                     "message": [
                         {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
-                        {"type": "text", "data": {"text": " /识图关"}},
+                        {"type": "text", "data": {"text": " /识图 关"}},
                     ],
                 }
             )
@@ -1169,7 +1172,7 @@ class QQGatewayTests(unittest.TestCase):
                     "message_id": "group-vision-enable-1",
                     "message": [
                         {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
-                        {"type": "text", "data": {"text": " /识图开"}},
+                        {"type": "text", "data": {"text": " /识图 开"}},
                     ],
                 }
             )
@@ -1191,7 +1194,7 @@ class QQGatewayTests(unittest.TestCase):
                 "message_id": "group-vision-forbidden-1",
                 "message": [
                     {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
-                    {"type": "text", "data": {"text": " /识图关"}},
+                    {"type": "text", "data": {"text": " /识图 关"}},
                 ],
             }
         )
@@ -1213,7 +1216,7 @@ class QQGatewayTests(unittest.TestCase):
                 "user_id": QQ_USER_FIXTURE_ID,
                 "group_id": QQ_GROUP_FIXTURE_ID,
                 "message_id": "group-vision-bare-ignored-1",
-                "raw_message": "/识图关",
+                "raw_message": "/识图 关",
             }
         )
 
@@ -1222,7 +1225,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(context.reason, "group_passive_observed")
         self.assertTrue(gateway.is_group_vision_enabled(QQ_GROUP_FIXTURE_ID))
 
-    def test_group_emotion_command_is_admitted_without_mention(self) -> None:
+    def test_group_emotion_command_requires_real_mention(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -1232,13 +1235,26 @@ class QQGatewayTests(unittest.TestCase):
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "group_id": QQ_GROUP_FIXTURE_ID,
                 "message_id": "group-emotion-off-bare-1",
-                "raw_message": "/emotion off",
+                "raw_message": "/表情 关",
             }
         )
 
-        self.assertTrue(context.should_respond)
-        self.assertEqual(context.reason, "qq_group_emotion_command")
-        self.assertEqual(gateway.parse_group_emotion_command("／emotion 关闭"), {"action": "off"})
+        self.assertFalse(context.should_respond)
+        self.assertTrue(context.should_record)
+        mentioned = gateway.build_message_context(
+            {
+                "post_type": "message", "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID, "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID, "message_id": "group-emotion-off-at-1",
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": " /表情 关"}},
+                ],
+            }
+        )
+        self.assertTrue(mentioned.should_respond)
+        self.assertEqual(mentioned.reason, "qq_group_emotion_command")
+        self.assertEqual(gateway.parse_group_emotion_command("／表情 关"), {"action": "off"})
 
     def test_group_emotion_command_persists_and_master_can_change_setting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1252,7 +1268,7 @@ class QQGatewayTests(unittest.TestCase):
                     "user_id": QQ_MASTER_FIXTURE_ID,
                     "group_id": QQ_GROUP_FIXTURE_ID,
                     "message_id": "group-emotion-off-1",
-                    "raw_message": "/emotion off",
+                    "raw_message": "/表情 关",
                 }
             )
 
@@ -1277,7 +1293,7 @@ class QQGatewayTests(unittest.TestCase):
                     "user_id": QQ_MASTER_FIXTURE_ID,
                     "group_id": QQ_GROUP_FIXTURE_ID,
                     "message_id": "group-emotion-on-1",
-                    "raw_message": "/emotion on",
+                    "raw_message": "/表情 开",
                 }
             )
             enabled = restored_gateway.handle_group_emotion_command(on_context, sender_role="member")
@@ -1295,7 +1311,7 @@ class QQGatewayTests(unittest.TestCase):
                 "user_id": QQ_OTHER_USER_FIXTURE_ID,
                 "group_id": QQ_GROUP_FIXTURE_ID,
                 "message_id": "group-emotion-forbidden-1",
-                "raw_message": "/emotion off",
+                "raw_message": "/表情 关",
             }
         )
 
@@ -1373,7 +1389,7 @@ class QQGatewayTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "character-builtin-persist-1",
-                    "raw_message": "切回Akane",
+                    "raw_message": "/角色 内置",
                 }
             )
 
@@ -1398,7 +1414,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-list-1",
-                "raw_message": "角色列表",
+                "raw_message": "/角色 列表",
             }
         )
         list_result = gateway.handle_character_command(list_context, character_resource_service=service)
@@ -1419,7 +1435,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-current-1",
-                "raw_message": "当前角色",
+                "raw_message": "/角色",
             }
         )
         current_result = gateway.handle_character_command(current_context, character_resource_service=service)
@@ -1436,7 +1452,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-reset-1",
-                "raw_message": "切回默认角色",
+                "raw_message": "/角色 默认",
             }
         )
         reset_result = gateway.handle_character_command(reset_context, character_resource_service=service)
@@ -1456,7 +1472,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-builtin-1",
-                "raw_message": "切回Akane",
+                "raw_message": "/角色 内置",
             }
         )
 
@@ -1477,7 +1493,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-unknown-1",
-                "raw_message": "切换角色 missing_pack",
+                "raw_message": "/角色 missing_pack",
             }
         )
         invalid_context = gateway.build_message_context(
@@ -1487,7 +1503,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "character-invalid-1",
-                "raw_message": "切换角色 ../bad",
+                "raw_message": "/角色 ../bad",
             }
         )
 
@@ -1515,7 +1531,7 @@ class QQGatewayTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_USER_FIXTURE_ID,
                     "message_id": "switch-outfit-1",
-                    "raw_message": "切换服装 水手服",
+                    "raw_message": "/服装 水手服",
                 }
             )
 
@@ -1551,7 +1567,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "outfit-list-1",
-                "raw_message": "服装列表",
+                "raw_message": "/服装 列表",
             }
         )
         current_context = gateway.build_message_context(
@@ -1561,7 +1577,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "outfit-current-1",
-                "raw_message": "当前服装",
+                "raw_message": "/服装",
             }
         )
         reset_context = gateway.build_message_context(
@@ -1571,7 +1587,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "outfit-reset-1",
-                "raw_message": "切回默认服装",
+                "raw_message": "/服装 默认",
             }
         )
         unknown_context = gateway.build_message_context(
@@ -1581,7 +1597,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "outfit-unknown-1",
-                "raw_message": "切换服装 不存在",
+                "raw_message": "/服装 不存在",
             }
         )
 
@@ -1629,7 +1645,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "switch-character-clears-outfit-1",
-                "raw_message": "切换角色 mika_sample",
+                "raw_message": "/角色 mika_sample",
             }
         )
 
@@ -1698,7 +1714,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_USER_FIXTURE_ID,
                 "message_id": "reply-mode-voice-1",
-                "raw_message": "语音模式",
+                "raw_message": "/回复 语音",
             }
         )
 
@@ -1735,7 +1751,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "chat-model-switch-1",
-                "raw_message": "切换模型 deepseek-v4-flash",
+                "raw_message": "/模型 deepseek-v4-flash",
             }
         )
 
@@ -1777,7 +1793,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "thinking-mode-enable-1",
-                "raw_message": "思考模式 开",
+                "raw_message": "/思考 开",
             }
         )
         applied: list[str] = []
@@ -1820,7 +1836,7 @@ class QQGatewayTests(unittest.TestCase):
             group_id=QQ_GROUP_FIXTURE_ID,
             session_id=profile_id,
             profile_user_id=profile_id,
-            clean_message="/approvals",
+            clean_message="/审批",
         )
         with patch("companion_v01.qq_gateway.config.MASTER_QQ", QQ_MASTER_FIXTURE_ID):
             listed = gateway.handle_capability_approval_command(context, approval_store=store)
@@ -1835,7 +1851,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(approved["status"], "approved")
         self.assertIn("自动续接", approved["reply"])
 
-    def test_group_capability_approval_command_bypasses_wake_word(self) -> None:
+    def test_group_capability_approval_command_requires_real_mention(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
             {
@@ -1845,12 +1861,24 @@ class QQGatewayTests(unittest.TestCase):
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "group_id": QQ_GROUP_FIXTURE_ID,
                 "message_id": "group-approval-control-1",
-                "raw_message": "/approve",
-                "message": [{"type": "text", "data": {"text": "/approve"}}],
+                "raw_message": "/批准",
+                "message": [{"type": "text", "data": {"text": "/批准"}}],
             }
         )
-        self.assertTrue(context.should_respond)
-        self.assertEqual(context.reason, "qq_capability_approval_command")
+        self.assertFalse(context.should_respond)
+        mentioned = gateway.build_message_context(
+            {
+                "post_type": "message", "message_type": "group",
+                "self_id": QQ_BOT_FIXTURE_ID, "user_id": QQ_MASTER_FIXTURE_ID,
+                "group_id": QQ_GROUP_FIXTURE_ID, "message_id": "group-approval-control-at-1",
+                "message": [
+                    {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
+                    {"type": "text", "data": {"text": " /批准"}},
+                ],
+            }
+        )
+        self.assertTrue(mentioned.should_respond)
+        self.assertEqual(mentioned.reason, "qq_capability_approval_command")
 
     def test_thinking_mode_command_rejects_unsupported_model_without_writing(self) -> None:
         gateway = NapCatQQGateway()
@@ -1861,7 +1889,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "thinking-mode-unsupported-1",
-                "raw_message": "开启思考模式",
+                "raw_message": "/思考 开",
             }
         )
         applied: list[str] = []
@@ -1887,7 +1915,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "chat-model-list-1",
-                "raw_message": "模型列表",
+                "raw_message": "/模型 列表",
             }
         )
 
@@ -1905,7 +1933,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertIn("\n  1. deepseek-chat\n", result["reply"])
         self.assertIn("\n  2. deepseek-v4-flash\n", result["reply"])
         self.assertIn("\n  3. qwen/qwen3-coder\n", result["reply"])
-        self.assertIn("切换模型 序号", result["reply"])
+        self.assertIn("/模型 序号", result["reply"])
 
     def test_chat_model_command_preserves_group_prefixed_provider_model(self) -> None:
         gateway = NapCatQQGateway()
@@ -1916,7 +1944,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "chat-model-prefixed-1",
-                "raw_message": "切换模型 [ruru20]gemini-2.5-flash",
+                "raw_message": "/模型 [ruru20]gemini-2.5-flash",
             }
         )
 
@@ -1950,7 +1978,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "chat-model-short-name-1",
-                "raw_message": "切换模型 gemini-2.5-flash",
+                "raw_message": "/模型 gemini-2.5-flash",
             }
         )
         available = [
@@ -1982,7 +2010,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "chat-model-number-1",
-                "raw_message": "切换模型 1",
+                "raw_message": "/模型 1",
             }
         )
         available = [
@@ -2011,6 +2039,31 @@ class QQGatewayTests(unittest.TestCase):
             "[渠道二-按量cli]gemini-3.5-flash",
         )
 
+    def test_chat_model_numbering_stays_stable_across_session_overrides(self) -> None:
+        gateway = NapCatQQGateway()
+        context = gateway.build_message_context({
+            "post_type": "message", "message_type": "private", "self_id": QQ_BOT_FIXTURE_ID,
+            "user_id": QQ_MASTER_FIXTURE_ID, "message_id": "stable-model-number",
+            "raw_message": "/模型 列表",
+        })
+        default = "gemini-3.1-pro-high"
+        available = ["gemini-2.5-pro", "gemini-3.8-flash", default]
+        gateway.set_session_chat_model_override(context.session_id, "gemini-3.8-flash")
+        listed = gateway.handle_chat_model_command(
+            context, command={"action": "list"}, default_model=default, available_models=available)
+        number = str(listed["available_models"].index("gemini-3.8-flash") + 1)
+        for override in ("gemini-3.8-flash", "gemini-2.5-pro"):
+            with self.subTest(override=override):
+                gateway.set_session_chat_model_override(context.session_id, override)
+                again = gateway.handle_chat_model_command(
+                    context, command={"action": "list"}, default_model=default, available_models=available)
+                self.assertEqual(again["available_models"], listed["available_models"])
+                switched = gateway.handle_chat_model_command(
+                    context, command={"action": "switch", "model": number},
+                    default_model=default, available_models=available)
+                self.assertTrue(switched["ok"])
+                self.assertEqual(switched["chat_model"], "gemini-3.8-flash")
+
     def test_chat_model_list_keeps_configured_default_missing_from_provider_catalog(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
@@ -2020,7 +2073,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "chat-model-missing-default-1",
-                "raw_message": "切换模型 1",
+                "raw_message": "/模型 1",
             }
         )
         available = [
@@ -2054,7 +2107,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_OTHER_USER_FIXTURE_ID,
                 "message_id": "chat-model-forbidden-1",
-                "raw_message": "切换模型 deepseek-v4-flash",
+                "raw_message": "/模型 deepseek-v4-flash",
             }
         )
 
@@ -2080,7 +2133,7 @@ class QQGatewayTests(unittest.TestCase):
                     "self_id": QQ_BOT_FIXTURE_ID,
                     "user_id": QQ_MASTER_FIXTURE_ID,
                     "message_id": "chat-model-persist-1",
-                    "raw_message": "model deepseek-v4-flash",
+                    "raw_message": "/模型 deepseek-v4-flash",
                 }
             )
 
@@ -2109,7 +2162,7 @@ class QQGatewayTests(unittest.TestCase):
                 "self_id": QQ_BOT_FIXTURE_ID,
                 "user_id": QQ_MASTER_FIXTURE_ID,
                 "message_id": "chat-model-default-1",
-                "raw_message": "切回默认模型",
+                "raw_message": "/模型 默认",
             }
         )
 
@@ -2564,7 +2617,7 @@ class QQGatewayTests(unittest.TestCase):
             "user_id": QQ_MASTER_FIXTURE_ID,
             "message_id": "mface-config-1",
             "message": [
-                {"type": "text", "data": {"text": "表情包配置 happy"}},
+                {"type": "text", "data": {"text": "/表情包 happy"}},
                 {
                     "type": "mface",
                     "data": {
@@ -2599,7 +2652,7 @@ class QQGatewayTests(unittest.TestCase):
             "message_id": "mface-config-image-1",
             "message": [
                 {"type": "at", "data": {"qq": str(QQ_BOT_FIXTURE_ID)}},
-                {"type": "text", "data": {"text": " 表情包配置 开心"}},
+                {"type": "text", "data": {"text": " /表情包 开心"}},
                 {
                     "type": "image",
                     "data": {
@@ -2631,7 +2684,7 @@ class QQGatewayTests(unittest.TestCase):
             "user_id": QQ_OTHER_USER_FIXTURE_ID,
             "message_id": "mface-config-forbidden-1",
             "message": [
-                {"type": "text", "data": {"text": "表情包配置 happy"}},
+                {"type": "text", "data": {"text": "/表情包 happy"}},
                 {
                     "type": "mface",
                     "data": {

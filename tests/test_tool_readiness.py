@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import threading
 import unittest
+from contextlib import contextmanager
 
 from companion_v01.capability_registry import (
     CapabilityModule,
     CapabilityRegistry,
+    CapabilitySelection,
     CapabilitySnapshot,
     ServerLocalOfferIndex,
 )
@@ -22,6 +25,26 @@ class _StatusHandler:
         if self.raises:
             raise RuntimeError("probe failed")
         return self.status_value
+
+
+class _BlockedFirstProbe:
+    def __init__(self, status, *, following_status=None) -> None:
+        self.status_value = status
+        self.following_status = following_status
+        self.calls: list[dict[str, str]] = []
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.completed = threading.Event()
+
+    def capability_status(self, **context):
+        self.calls.append(dict(context))
+        first = len(self.calls) == 1
+        captured = self.status_value if first or self.following_status is None else self.following_status
+        if first:
+            self.started.set()
+            if not self.release.wait(3):
+                raise RuntimeError("test probe was not released")
+        return captured
 
 
 class ServerLocalOfferIndexTests(unittest.TestCase):
@@ -158,6 +181,237 @@ class ServerLocalOfferIndexTests(unittest.TestCase):
         index.register("web_search", handler)
 
         self.assertFalse(index.is_offered("web_search"))
+
+    def test_ready_and_unavailable_results_expire_at_their_separate_deadlines(self) -> None:
+        now = [0.0]
+        handler = _StatusHandler(True)
+        index = ServerLocalOfferIndex(clock=lambda: now[0])
+        index.register("tool", handler)
+        self.assertTrue(index.is_offered("tool"))
+        handler.status_value = False
+        now[0] = 14.9
+        self.assertTrue(index.is_offered("tool"))
+        now[0] = 15.0
+        self.assertFalse(index.is_offered("tool"))
+        handler.status_value = True
+        now[0] = 19.9
+        self.assertFalse(index.is_offered("tool"))
+        now[0] = 20.0
+        self.assertTrue(index.is_offered("tool"))
+        self.assertEqual(len(handler.calls), 3)
+
+    def test_client_modes_have_independent_cache_entries(self) -> None:
+        class ModeHandler(_StatusHandler):
+            def capability_status(self, **context):
+                self.calls.append(dict(context))
+                return context["client_mode"] == "desktop_pet"
+
+        handler = ModeHandler(None)
+        index = ServerLocalOfferIndex()
+        index.register("tool", handler)
+        scope = {"profile_user_id": "owner", "session_id": "same-session"}
+        self.assertTrue(index.is_offered("tool", client_mode="desktop_pet", **scope))
+        self.assertFalse(index.is_offered("tool", client_mode="qq_text", **scope))
+        self.assertTrue(index.is_offered("tool", client_mode="desktop_pet", **scope))
+        self.assertEqual(len(handler.calls), 2)
+
+    def test_broken_probe_property_fails_closed(self) -> None:
+        class BrokenHandler:
+            @property
+            def capability_status(self):
+                raise RuntimeError("probe unavailable")
+
+        index = ServerLocalOfferIndex()
+        index.register("broken", BrokenHandler())
+        self.assertFalse(index.is_offered("broken"))
+
+
+class ServerLocalOfferConcurrencyTests(unittest.TestCase):
+    @contextmanager
+    def running_probe(self, index, handler, **scope):
+        results = []
+        errors = []
+
+        def probe():
+            try:
+                results.append(index.is_offered("tool", **scope))
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+            finally:
+                handler.completed.set()
+
+        thread = threading.Thread(target=probe, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(handler.started.wait(3), "first probe never started")
+            yield results
+        finally:
+            handler.release.set()
+            thread.join(3)
+            self.assertFalse(thread.is_alive(), "probe did not finish after release")
+            self.assertEqual(errors, [])
+
+    def test_late_ready_probe_cannot_reopen_a_replaced_disabled_handler(self) -> None:
+        old = _BlockedFirstProbe(True)
+        current = _StatusHandler(False)
+        index = ServerLocalOfferIndex()
+        index.register("tool", old)
+        with self.running_probe(index, old) as results:
+            index.register("tool", current)
+            self.assertFalse(index.is_offered("tool"))
+        self.assertEqual(results, [False])
+        self.assertFalse(index.is_offered("tool"))
+        self.assertEqual(len(current.calls), 1)
+
+    def test_late_unavailable_probe_cannot_hide_a_replacement_that_is_ready(self) -> None:
+        old = _BlockedFirstProbe(False)
+        current = _StatusHandler(True)
+        index = ServerLocalOfferIndex()
+        index.register("tool", old)
+        with self.running_probe(index, old) as results:
+            index.replace_handlers({"tool": current})
+            self.assertTrue(index.is_offered("tool"))
+        self.assertEqual(results, [False])
+        self.assertTrue(index.is_offered("tool"))
+        self.assertEqual(len(current.calls), 1)
+
+    def test_removing_a_handler_rejects_its_unfinished_probe(self) -> None:
+        old = _BlockedFirstProbe(True)
+        index = ServerLocalOfferIndex()
+        index.register("tool", old)
+        with self.running_probe(index, old) as results:
+            index.replace_handlers({})
+            self.assertFalse(index.is_offered("tool"))
+        self.assertEqual(results, [False])
+        self.assertFalse(index.is_offered("tool"))
+
+    def test_reinstalling_the_same_object_cannot_reuse_an_old_probe(self) -> None:
+        old = _BlockedFirstProbe(True)
+        index = ServerLocalOfferIndex()
+        index.register("tool", old)
+        with self.running_probe(index, old) as results:
+            index.replace_handlers({"tool": _StatusHandler(False)})
+            old.status_value = False
+            index.replace_handlers({"tool": old})
+        self.assertEqual(results, [False])
+        self.assertFalse(index.is_offered("tool"))
+
+    def test_explicit_reregistration_invalidates_a_probe_of_the_same_handler(self) -> None:
+        handler = _BlockedFirstProbe(True)
+        index = ServerLocalOfferIndex()
+        index.register("tool", handler)
+        with self.running_probe(index, handler) as results:
+            handler.status_value = False
+            index.register("tool", handler)
+        self.assertEqual(results, [False])
+        self.assertFalse(index.is_offered("tool"))
+
+    def test_unchanged_map_refresh_keeps_inflight_probes_and_cached_offers(self) -> None:
+        handler = _BlockedFirstProbe(True)
+        index = ServerLocalOfferIndex()
+        index.replace_handlers({"tool": handler})
+        with self.running_probe(index, handler) as results:
+            index.replace_handlers({"tool": handler, "other": object()})
+            self.assertTrue(index.is_offered("other"))
+        self.assertEqual(results, [True])
+        self.assertTrue(index.is_offered("tool"))
+        index.replace_handlers({"tool": handler, "other": object()})
+        self.assertTrue(index.is_offered("tool"))
+        self.assertEqual(len(handler.calls), 1)
+
+    def test_older_probe_cannot_overwrite_a_newer_result_for_the_same_scope(self) -> None:
+        for old_status, new_status in ((False, True), (True, False)):
+            with self.subTest(old=old_status, new=new_status):
+                handler = _BlockedFirstProbe(old_status, following_status=new_status)
+                index = ServerLocalOfferIndex()
+                index.register("tool", handler)
+                with self.running_probe(index, handler) as results:
+                    self.assertEqual(index.is_offered("tool"), new_status)
+                self.assertEqual(results, [new_status])
+                self.assertEqual(index.is_offered("tool"), new_status)
+                self.assertEqual(len(handler.calls), 2)
+
+    def test_superseded_probe_fails_closed_until_the_newer_probe_finishes(self) -> None:
+        first = _BlockedFirstProbe(True)
+        second = _BlockedFirstProbe(True)
+        pending = [first, second]
+        allocation_lock = threading.Lock()
+
+        class Handler:
+            def capability_status(self, **context):
+                with allocation_lock:
+                    probe = pending.pop(0)
+                return probe.capability_status(**context)
+
+        index = ServerLocalOfferIndex()
+        index.register("tool", Handler())
+        with self.running_probe(index, first) as first_results:
+            with self.running_probe(index, second) as second_results:
+                first.release.set()
+                self.assertTrue(first.completed.wait(3), "superseded probe did not finish")
+                self.assertEqual(first_results, [False])
+            self.assertEqual(second_results, [True])
+        self.assertTrue(index.is_offered("tool"))
+
+    def test_probes_in_other_profiles_sessions_and_modes_do_not_supersede_each_other(self) -> None:
+        scope = {"profile_user_id": "alice", "session_id": "session", "client_mode": "desktop_pet"}
+        for changed in ({"profile_user_id": "bob"}, {"session_id": "other"}, {"client_mode": "qq_text"}):
+            with self.subTest(changed=changed):
+                handler = _BlockedFirstProbe(False, following_status=True)
+                index = ServerLocalOfferIndex()
+                index.register("tool", handler)
+                other_scope = {**scope, **changed}
+                with self.running_probe(index, handler, **scope) as results:
+                    self.assertTrue(index.is_offered("tool", **other_scope))
+                self.assertEqual(results, [False])
+                self.assertFalse(index.is_offered("tool", **scope))
+                self.assertTrue(index.is_offered("tool", **other_scope))
+                self.assertEqual(len(handler.calls), 2)
+
+
+class CapabilityRegistryProfileTests(unittest.TestCase):
+    def test_excluded_browser_contract_does_not_probe_its_executor_receipt(self) -> None:
+        class Offers:
+            def __init__(self):
+                self.calls = []
+
+            def resolve_receipt(self, spec):
+                self.calls.append(spec.capability_id)
+                return None
+
+        for allowed, hidden in (((), ()), (("retrieve_memory",), ()),
+                                (("open_browser",), ("open_browser",))):
+            with self.subTest(allowed=allowed, hidden=hidden):
+                offers = Offers()
+                registry = CapabilityRegistry(offer_source=offers)
+                registry.select(CapabilitySnapshot(client_mode=ClientMode.QQ_TEXT),
+                                allowed_tool_names=allowed, hidden_tool_names=hidden)
+                self.assertEqual(offers.calls, [])
+
+    def test_hidden_browser_keeps_other_configured_executor_contracts(self) -> None:
+        calls = []
+
+        class Offers:
+            def resolve_receipt(self, spec):
+                calls.append(spec.capability_id)
+                return None
+
+        selection = CapabilityRegistry(offer_source=Offers()).select(
+            CapabilitySnapshot(client_mode=ClientMode.DESKTOP_PET), hidden_tool_names=("open_browser",),
+        )
+        self.assertNotIn("open_browser", calls)
+        self.assertNotIn("open_browser", selection.schema_tool_names)
+        self.assertTrue(calls)
+        self.assertEqual(calls, [spec.capability_id for spec in selection.tool_specs])
+
+    def test_explicit_empty_profile_does_not_restore_default_modules(self) -> None:
+        registry = CapabilityRegistry(modules=())
+        self.assertEqual(registry.modules, ())
+        for mode in ClientMode:
+            with self.subTest(mode=mode):
+                self.assertEqual(registry.tool_names_for_mode(mode), ())
+                selection = registry.select(CapabilitySnapshot(client_mode=mode))
+                self.assertEqual(selection, CapabilitySelection(light_hints=(), tool_names=(), module_names=()))
 
 
 if __name__ == "__main__":

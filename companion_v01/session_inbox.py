@@ -167,6 +167,7 @@ class SessionInboxStore:
         lease_seconds: float = 60.0,
         expected_item_id: Any = "",
         batch_key: Callable[[SessionInboxItem], str] | None = None,
+        can_yield_retry: Callable[[SessionInboxItem], bool] | None = None,
         max_batch_items: int = 32,
         max_batch_bytes: int = 65_536,
     ) -> dict[str, Any]:
@@ -181,10 +182,11 @@ class SessionInboxStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._release_expired_claims(connection, now=now)
-            # An expected item is an ordered steer reservation for the model
-            # turn that already owns the session. It may coexist with that
-            # turn's runner claim, but it still cannot jump an earlier queued
-            # item. Ordinary runner claims remain strictly single-owner.
+            # An expected item reserves input for the already-active turn.
+            # Steering is a control message, so ordinary queued work must not
+            # delay it. The caller checks the actor before accepting it; a
+            # rejected steer returns to its original FIFO position.
+            # Ordinary runner claims remain strictly single-owner.
             if not expected_id:
                 active = connection.execute(
                     """
@@ -196,30 +198,45 @@ class SessionInboxStore:
                 ).fetchone()
                 if active is not None:
                     return {"ok": False, "status": "busy", "reason": "session_item_already_claimed"}
-            row = connection.execute(
-                """
-                SELECT * FROM session_inbox_items
-                WHERE session_key = ? AND status = 'queued'
-                ORDER BY sequence ASC
-                LIMIT 1
-                """,
-                (normalized_key,),
-            ).fetchone()
+            if expected_id:
+                row = connection.execute(
+                    """SELECT * FROM session_inbox_items
+                       WHERE session_key = ? AND item_id = ? AND status = 'queued'""",
+                    (normalized_key, expected_id),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT * FROM session_inbox_items
+                    WHERE session_key = ? AND status = 'queued'
+                    ORDER BY sequence ASC
+                    LIMIT 1
+                    """,
+                    (normalized_key,),
+                ).fetchone()
             if row is None:
                 return {"ok": False, "status": "idle", "reason": "no_ready_session_item"}
+            retry_wait = None
+            if not expected_id and can_yield_retry is not None:
+                while row is not None and float(row["available_at"]) > now and can_yield_retry(self._row_to_item(row)):
+                    delay = float(row["available_at"]) - now
+                    retry_wait = delay if retry_wait is None else min(retry_wait, delay)
+                    row = connection.execute(
+                        """SELECT * FROM session_inbox_items
+                           WHERE session_key = ? AND status = 'queued' AND sequence > ?
+                           ORDER BY sequence LIMIT 1""",
+                        (normalized_key, row["sequence"]),
+                    ).fetchone()
+                if row is None:
+                    return {"ok": False, "status": "deferred", "reason": "session_retry_waiting",
+                            "retry_after": retry_wait}
             if float(row["available_at"]) > now:
                 return {
                     "ok": False,
                     "status": "deferred",
-                    "reason": "earlier_session_item_deferred",
-                    "retry_after": float(row["available_at"]) - now,
-                }
-            if expected_id and str(row["item_id"] or "") != expected_id:
-                return {
-                    "ok": False,
-                    "status": "blocked",
-                    "reason": "earlier_session_item_waiting",
-                    "next_item_id": str(row["item_id"] or ""),
+                    "reason": "session_item_deferred" if expected_id else "earlier_session_item_deferred",
+                    "retry_after": min(float(row["available_at"]) - now, retry_wait)
+                    if retry_wait is not None else float(row["available_at"]) - now,
                 }
             rows = [row]
             frozen_batch = str(row["batch_id"] or "")
@@ -561,9 +578,9 @@ class SessionInboxStore:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database_path, timeout=5.0)
+        connection = sqlite3.connect(self.database_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA busy_timeout = 30000")
         try:
             yield connection
             connection.commit()
@@ -575,6 +592,9 @@ class SessionInboxStore:
 
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
+            journal_mode = str(connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] or "").lower()
+            if journal_mode != "wal":
+                raise sqlite3.OperationalError("session_inbox_wal_unavailable")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS session_inbox_items (

@@ -170,6 +170,22 @@ class CoListenSummaryRouteTests(unittest.TestCase):
         self.assertEqual(len(payload["recent"]), 1)
         self.assertEqual(payload["recent"][0]["title"], "七里香")
 
+    def test_recent_limit_handles_invalid_input_and_preserves_valid_limits(self) -> None:
+        for index in range(6):
+            _seed(self.store, identity_key=f"track-{index}", display_title=f"track-{index}")
+        for body, expected in (
+            ({"recent_limit": "invalid"}, 5),
+            ({"recentLimit": ["invalid"]}, 5),
+            ({"recent_limit": "2"}, 2),
+            ({"recentLimit": -1}, 1),
+        ):
+            with self.subTest(body=body):
+                response = self._post(body)
+                self.assertEqual(response.status_code, 200)
+                payload = response.json()
+                self.assertTrue(payload["ok"])
+                self.assertEqual(len(payload["recent"]), expected)
+
     def test_query_path_is_read_only(self) -> None:
         """Asking the route never bumps the co-listen counter."""
         first = self._post(

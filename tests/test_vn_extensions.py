@@ -14,12 +14,9 @@ from companion_v01.embedding_provider import BaseEmbeddingProvider, CachedEmbedd
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
-from companion_v01.memory_compaction_service import MemoryCompactionService
-from companion_v01.memory_rendering import render_semantic_summary_timeline, render_summary_timeline
 from companion_v01.mode_profiles import ModeProfileRegistry
 from companion_v01.persona_config import PERSONA
 from companion_v01.prompt_builder import PromptBuilder, TOOL_CONTEXT_STABLE_RULES
-from companion_v01.retrieval_service import RetrievalService
 from companion_v01.store import MemoryStore
 from companion_v01.text_utils import render_chat_line, render_chat_timeline, resolve_speaker_name
 from companion_v01.artifact_system import ArtifactContainerService
@@ -58,6 +55,9 @@ class EngineExtensionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
         self.engine.resource_manifest = None
+        hybrid = patch.object(config, "MEMCORE_RETRIEVAL_MODE", "hybrid")
+        hybrid.start()
+        self.addCleanup(hybrid.stop)
 
     def test_build_retrieval_debug_payload_includes_selected_memory_snippets(self) -> None:
         payload = self.engine._build_retrieval_debug_payload(
@@ -86,53 +86,11 @@ class EngineExtensionTests(unittest.TestCase):
             ],
         )
 
-    def test_resolve_pre_retrieval_enabled_prefers_payload_override(self) -> None:
-        with patch.object(config, "PRE_RETRIEVAL_DEFAULT_ENABLED", True):
-            self.assertFalse(self.engine._resolve_pre_retrieval_enabled(payload={"pre_retrieval_enabled": False}))
-            self.assertTrue(self.engine._resolve_pre_retrieval_enabled(payload={"pre_retrieval_enabled": True}))
-            self.assertTrue(self.engine._resolve_pre_retrieval_enabled(payload={}))
-
-        with patch.object(config, "PRE_RETRIEVAL_DEFAULT_ENABLED", False):
-            self.assertFalse(self.engine._resolve_pre_retrieval_enabled(payload={}))
-            self.assertTrue(self.engine._resolve_pre_retrieval_enabled(payload={"pre_retrieval_enabled": "true"}))
-
-    def test_build_skipped_pre_retrieval_pipeline_returns_skip_defaults(self) -> None:
-        class StubRetrievalService:
-            def _extract_time_hint(self, *, user_message: str, now_ts: int) -> dict[str, object]:
-                return {"date_label": None, "time_of_day": "night", "relative_time": None}
-
-            def _build_shortcut_timing(
-                self, *, stage: str, branch: str, ready_event_type: str | None
-            ) -> dict[str, object]:
-                return {
-                    "stage": stage,
-                    "branch": branch,
-                    "mode": "shortcut",
-                    "ready_event_type": ready_event_type,
-                }
-
-        self.engine._retrieval_service = StubRetrievalService()
-        self.engine._get_retrieval_service = lambda: self.engine._retrieval_service
-
-        pipeline = self.engine._build_skipped_pre_retrieval_pipeline(
-            user_message="今天随便聊聊",
-            now_ts=123,
-            reason="本轮已关闭前置检索，直接基于当前可见上下文回复。",
-        )
-
-        self.assertFalse(pipeline.used_retrieval)
-        self.assertEqual(pipeline.router_output["route"], "pre_retrieval_disabled")
-        self.assertFalse(pipeline.router_output["need_retrieval"])
-        self.assertEqual(pipeline.router_timing["branch"], "pre_retrieval_disabled")
-        self.assertEqual(pipeline.verifier_output["match_result"], "skip")
-        self.assertEqual(pipeline.retrieval_result["fused_hits"], [])
-        self.assertEqual(pipeline.confirmed_snippets, [])
-
     def test_build_embedding_provider_falls_back_to_hashed_when_huggingface_unavailable(self) -> None:
         with (
             patch.object(config, "EMBEDDING_PROVIDER", "huggingface"),
             patch.object(config, "EMBEDDING_CACHE_SIZE", 0),
-            patch("companion_v01.engine.HuggingFaceEmbeddingProvider", side_effect=RuntimeError("missing deps")),
+            patch("companion_v01.engine_services.service_factories.HuggingFaceEmbeddingProvider", side_effect=RuntimeError("missing deps")),
         ):
             provider = self.engine._build_embedding_provider()
 
@@ -157,7 +115,7 @@ class EngineExtensionTests(unittest.TestCase):
             patch.object(config, "EMBEDDING_DEVICE", ""),
             patch.object(config, "EMBEDDING_LOCAL_FILES_ONLY", True),
             patch.object(config, "EMBEDDING_CACHE_FOLDER", "models/cache"),
-            patch("companion_v01.engine.HuggingFaceEmbeddingProvider", return_value=stub_provider) as provider_cls,
+            patch("companion_v01.engine_services.service_factories.HuggingFaceEmbeddingProvider", return_value=stub_provider) as provider_cls,
         ):
             provider = self.engine._build_embedding_provider()
 
@@ -168,6 +126,9 @@ class EngineExtensionTests(unittest.TestCase):
             device=None,
             local_files_only=True,
             cache_folder="models/cache",
+            precision=config.EMBEDDING_PRECISION,
+            batch_size=config.EMBEDDING_BATCH_SIZE,
+            idle_seconds=config.EMBEDDING_IDLE_CACHE_SECONDS,
         )
 
     def test_build_embedding_provider_uses_jina_without_hashed_fallback(self) -> None:
@@ -200,7 +161,7 @@ class EngineExtensionTests(unittest.TestCase):
             patch.object(config, "EMBEDDING_BASE_URL", "https://api.jina.ai/v1"),
             patch.object(config, "EMBEDDING_DIMENSION", 1024),
             patch.object(config, "EMBEDDING_TIMEOUT_SECONDS", 20.0),
-            patch("companion_v01.engine.JinaEmbeddingProvider", StubJinaProvider),
+            patch("companion_v01.engine_services.service_factories.JinaEmbeddingProvider", StubJinaProvider),
         ):
             provider = self.engine._build_embedding_provider()
 
@@ -539,20 +500,6 @@ class EngineExtensionTests(unittest.TestCase):
 
         self.assertEqual(normalized["speech"], "哼，知道了知道了。\n不就是这样分开说话嘛。\n看好了！")
         self.assertEqual(normalized["speech_segments"], ["哼，知道了知道了。", "不就是这样分开说话嘛。", "看好了！"])
-
-    def test_should_index_user_record_in_vector_defaults_to_true_for_non_retrieval(self) -> None:
-        self.assertTrue(
-            self.engine._should_index_user_record_in_vector(
-                router_output={"need_retrieval": False, "index_current_message": False}
-            )
-        )
-
-    def test_should_index_user_record_in_vector_respects_false_on_retrieval_branch(self) -> None:
-        self.assertFalse(
-            self.engine._should_index_user_record_in_vector(
-                router_output={"need_retrieval": True, "index_current_message": False}
-            )
-        )
 
     def test_build_assistant_dialogue_turn_keeps_preface(self) -> None:
         turn = self.engine._build_assistant_dialogue_turn("我帮你问问摊主。")
@@ -1451,458 +1398,6 @@ class EngineExtensionTests(unittest.TestCase):
         )
 
 
-    def test_build_memory_snippets_can_render_semantic_summary_records(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            semantic = store.add_semantic_summary(
-                profile_user_id="user-1",
-                session_id="session-1",
-                timestamp=int(datetime(2026, 4, 10, 20, 0).timestamp()),
-                period_start_ts=int(datetime(2026, 4, 1, 8, 0).timestamp()),
-                period_end_ts=int(datetime(2026, 4, 10, 20, 0).timestamp()),
-                date_label="2026-04-10",
-                time_of_day="night",
-                importance=0.85,
-                semantic_summary="主人最近反复提到课程安排，我记住他这段时间确实在忙学习。",
-                stable_facts=["最近课程很多"],
-                recurring_topics=["上课", "复习"],
-                important_people=["老师"],
-                open_loops=["还要继续复习"],
-                semantic_tags=["课程", "学习"],
-                source_summary_ids=["summary::1"],
-                memory_metadata={
-                    "keywords": ["课程", "学习"],
-                    "subject_scopes": ["user"],
-                    "categories": ["plan_goal"],
-                    "mood_tags": ["warm", "proud"],
-                    "importance": 0.85,
-                    "confidence": 0.8,
-                },
-            )
-            service = RetrievalService(
-                store=store,
-                vector_store=object(),
-                llm=object(),
-                prompt_builder=PromptBuilder(PERSONA),
-            )
 
-            snippets = service._build_memory_snippets([{"source_id": semantic["semantic_id"]}])
-
-            self.assertEqual(len(snippets), 1)
-            self.assertIn("长期语义记忆", snippets[0])
-            self.assertIn("反复提到课程安排", snippets[0])
-            self.assertIn("记忆情绪：warm / proud", snippets[0])
-            self.assertIn("相对时间锚点", snippets[0])
-            self.assertIn("2026-04-01 08:00 ~ 2026-04-10 20:00", snippets[0])
-
-    def test_build_memory_snippets_can_render_raw_memory_mood(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            raw = store.add_message(
-                profile_user_id="user-1",
-                session_id="session-1",
-                role="user",
-                content="我今天其实有点累，但还是想继续推进项目。",
-                timestamp=int(datetime(2026, 4, 10, 20, 0).timestamp()),
-                memory_metadata={
-                    "keywords": ["项目", "疲惫"],
-                    "subject_scopes": ["user"],
-                    "categories": ["emotion_state", "project_work"],
-                    "mood_tags": ["worried", "determined"],
-                    "importance": 0.76,
-                    "confidence": 0.8,
-                },
-            )
-            service = RetrievalService(
-                store=store,
-                vector_store=object(),
-                llm=object(),
-                prompt_builder=PromptBuilder(PERSONA),
-            )
-
-            snippets = service._build_memory_snippets([{"source_id": raw["source_id"]}])
-
-            self.assertEqual(len(snippets), 1)
-            self.assertIn("原始对话回忆", snippets[0])
-            self.assertIn("记忆情绪：worried / determined", snippets[0])
-            self.assertIn("继续推进项目", snippets[0])
-
-    def test_visible_summary_timelines_render_memory_mood(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            raw = store.add_message(
-                profile_user_id="user-1",
-                session_id="session-1",
-                role="user",
-                content="我喜欢喝可乐。",
-                timestamp=int(datetime(2026, 4, 10, 20, 0).timestamp()),
-            )
-            summary = store.add_summary(
-                profile_user_id="user-1",
-                session_id="session-1",
-                timestamp=int(datetime(2026, 4, 10, 20, 5).timestamp()),
-                date_label="2026-04-10",
-                time_of_day="night",
-                period_label="偏好片段",
-                event_type="偏好",
-                importance=0.72,
-                diary_summary="今天主人说自己喜欢喝可乐，我顺手记了下来。",
-                key_events=["今天主人说喜欢喝可乐"],
-                core_facts=["用户喜欢喝可乐"],
-                semantic_tags=["可乐", "饮料"],
-                source_start_seq=raw["seq_no"],
-                source_end_seq=raw["seq_no"],
-                source_ids=[raw["source_id"]],
-                memory_metadata={
-                    "keywords": ["可乐", "饮料"],
-                    "subject_scopes": ["user"],
-                    "categories": ["preference"],
-                    "mood_tags": ["warm", "playful"],
-                    "importance": 0.72,
-                    "confidence": 0.8,
-                },
-            )
-            semantic = store.add_semantic_summary(
-                profile_user_id="user-1",
-                session_id="session-1",
-                timestamp=int(datetime(2026, 4, 10, 20, 10).timestamp()),
-                period_start_ts=int(datetime(2026, 4, 10, 20, 0).timestamp()),
-                period_end_ts=int(datetime(2026, 4, 10, 20, 10).timestamp()),
-                date_label="2026-04-10",
-                time_of_day="night",
-                importance=0.8,
-                semantic_summary="主人有一条稳定的饮料偏好：喜欢可乐。",
-                stable_facts=["用户喜欢可乐"],
-                recurring_topics=["饮料偏好"],
-                important_people=[],
-                open_loops=[],
-                semantic_tags=["可乐", "饮料"],
-                source_summary_ids=[summary["summary_id"]],
-                memory_metadata={
-                    "keywords": ["可乐", "饮料"],
-                    "subject_scopes": ["user"],
-                    "categories": ["preference"],
-                    "mood_tags": ["warm"],
-                    "importance": 0.8,
-                    "confidence": 0.84,
-                },
-            )
-
-            summary_text = render_summary_timeline([summary], store=store)
-            semantic_text = render_semantic_summary_timeline([semantic], store=store)
-
-            self.assertIn("记忆情绪：warm / playful", summary_text)
-            self.assertIn("记忆情绪：warm", semantic_text)
-            self.assertIn("相对时间锚点", summary_text)
-            self.assertIn("2026-04-10 20:00 ~ 20:00", summary_text)
-
-    def test_summary_compaction_passes_persona_perspective_to_llm(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-            previous_raw = store.add_message(
-                profile_user_id="user-1",
-                session_id="session-1",
-                character_pack_id="mika",
-                role="user",
-                content="我最近在推进复习计划。",
-                timestamp=int(datetime(2026, 4, 10, 20, 0).timestamp()),
-            )
-            store.add_summary(
-                profile_user_id="user-1",
-                session_id="session-1",
-                character_pack_id="mika",
-                timestamp=int(datetime(2026, 4, 10, 20, 5).timestamp()),
-                date_label="2026-04-10",
-                time_of_day="night",
-                period_label="复习片段",
-                event_type="学习",
-                importance=0.72,
-                diary_summary="2026-04-10 晚上，主人提到自己在推进复习计划。",
-                key_events=["2026-04-10 晚上主人提到复习计划"],
-                core_facts=["用户在 2026-04-10 晚上推进复习计划"],
-                semantic_tags=["复习", "学习计划"],
-                source_start_seq=previous_raw["seq_no"],
-                source_end_seq=previous_raw["seq_no"],
-                source_ids=[previous_raw["source_id"]],
-            )
-            captured_prompts: list[dict[str, str]] = []
-
-            class StubLLM:
-                def call_aux_json(self, **kwargs):
-                    captured_prompts.append(
-                        {
-                            "system": str(kwargs.get("system_prompt") or ""),
-                            "user": str(kwargs.get("user_prompt") or ""),
-                        }
-                    )
-                    return {
-                        "diary_summary": "主人提到自己喜欢喝可乐，我顺手记下来了。",
-                        "period_label": "偏好片段",
-                        "event_type": "偏好",
-                        "importance": 0.72,
-                        "key_events": ["主人说喜欢喝可乐"],
-                        "core_facts": ["用户喜欢喝可乐"],
-                    }
-
-            service = MemoryCompactionService(
-                store=store,
-                vector_store=object(),
-                llm=StubLLM(),
-                prompt_builder=PromptBuilder(PERSONA),
-                persona_context_provider=lambda **_kwargs: {
-                    "system_context": "角色设定：Mika 会认真记住主人的偏好。",
-                    "reference_context": "表达侧面：温柔吐槽。",
-                },
-            )
-            try:
-                service._summarize_batch(
-                    [
-                        {
-                            "role": "user",
-                            "content": "我喜欢喝可乐。",
-                            "timestamp": 1712400000,
-                        }
-                    ],
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    character_pack_id="mika",
-                )
-            finally:
-                service.close()
-
-            self.assertEqual(len(captured_prompts), 1)
-            self.assertIn("[CURRENT CHARACTER MEMORY SELF]", captured_prompts[0]["system"])
-            self.assertIn("Mika", captured_prompts[0]["system"])
-            self.assertIn("温柔吐槽", captured_prompts[0]["system"])
-            self.assertIn("不是这段对话发生过的事实", captured_prompts[0]["system"])
-            self.assertIn("可参考的既有阶段摘要", captured_prompts[0]["user"])
-            self.assertIn("主人提到自己在推进复习计划", captured_prompts[0]["user"])
-            self.assertIn("不要把参考摘要里出现", captured_prompts[0]["user"])
-
-    def test_run_semantic_summary_cycle_creates_semantic_memory_and_marks_sources(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-
-            class StubVectorStore:
-                def __init__(self) -> None:
-                    self.upserts: list[dict[str, str]] = []
-
-                def upsert_entry(self, *, source_id, text, metadata):
-                    self.upserts.append(
-                        {
-                            "source_id": source_id,
-                            "text": text,
-                            "entry_type": metadata.get("entry_type", ""),
-                        }
-                    )
-
-                def upsert_entries(self, entries):
-                    for entry in entries:
-                        self.upsert_entry(
-                            source_id=entry.get("source_id"),
-                            text=entry.get("text"),
-                            metadata=entry.get("metadata") or {},
-                        )
-
-            class StubLLM:
-                def call_aux_json(self, **kwargs):
-                    return {
-                        "semantic_summary": "主人这段时间一直围绕课程和复习安排来回确认，我记住这是近期最稳定的主线。",
-                        "importance": 0.82,
-                        "stable_facts": ["最近在上课", "复习安排很重要"],
-                        "recurring_topics": ["课程", "复习"],
-                        "important_people": ["老师"],
-                        "open_loops": ["还要继续准备考试"],
-                    }
-
-            service = MemoryCompactionService(
-                store=store,
-                vector_store=StubVectorStore(),
-                llm=StubLLM(),
-                prompt_builder=PromptBuilder(PERSONA),
-            )
-
-            for idx in range(5):
-                store.add_summary(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    timestamp=1000 + idx * 100,
-                    date_label="2026-04-10",
-                    time_of_day="afternoon",
-                    period_label=f"阶段{idx + 1}",
-                    event_type="日常",
-                    importance=0.6,
-                    diary_summary=f"第{idx + 1}段摘要，主人提到课程安排。",
-                    key_events=[f"事件{idx + 1}"],
-                    core_facts=["课程", "复习"],
-                    semantic_tags=["课程", "复习"],
-                    source_start_seq=idx * 2 + 1,
-                    source_end_seq=idx * 2 + 2,
-                    source_ids=[f"msg-{idx}"],
-                )
-
-            old_enable = getattr(config, "ENABLE_SEMANTIC_MEMORY", True)
-            old_trigger = getattr(config, "EPISODIC_COMPACT_TRIGGER_COUNT", 10)
-            old_batch = getattr(config, "EPISODIC_COMPACT_BATCH_SIZE", 5)
-            try:
-                config.ENABLE_SEMANTIC_MEMORY = True
-                config.EPISODIC_COMPACT_TRIGGER_COUNT = 5
-                config.EPISODIC_COMPACT_BATCH_SIZE = 5
-
-                service._run_semantic_summary_cycle_with_generation(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    generation=0,
-                )
-            finally:
-                config.ENABLE_SEMANTIC_MEMORY = old_enable
-                config.EPISODIC_COMPACT_TRIGGER_COUNT = old_trigger
-                config.EPISODIC_COMPACT_BATCH_SIZE = old_batch
-                service.close()
-
-            semantic_records = store.get_recent_semantic_summaries("user-1", limit=3)
-            visible_episodic = store.get_visible_episodic_summaries("user-1", limit=10)
-            all_summaries = store.get_recent_summaries("user-1", limit=10)
-
-            self.assertEqual(len(semantic_records), 1)
-            self.assertEqual(visible_episodic, [])
-            self.assertTrue(all(item["is_semanticized"] == 1 for item in all_summaries))
-            self.assertEqual(len(service.vector_store.upserts), 1)
-            self.assertEqual(service.vector_store.upserts[0]["entry_type"], "semantic_summary")
-            self.assertTrue(service.vector_store.upserts[0]["source_id"].startswith("semantic::"))
-
-    def test_run_semantic_summary_cycle_reinforces_existing_semantic_memory_when_overlap_is_high(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = MemoryStore(Path(temp_dir))
-
-            class StubVectorStore:
-                def __init__(self) -> None:
-                    self.upserts: list[dict[str, str]] = []
-
-                def upsert_entry(self, *, source_id, text, metadata):
-                    self.upserts.append(
-                        {
-                            "source_id": source_id,
-                            "text": text,
-                            "entry_type": metadata.get("entry_type", ""),
-                        }
-                    )
-
-                def upsert_entries(self, entries):
-                    for entry in entries:
-                        self.upsert_entry(
-                            source_id=entry.get("source_id"),
-                            text=entry.get("text"),
-                            metadata=entry.get("metadata") or {},
-                        )
-
-            class StubLLM:
-                def call_aux_json(self, **kwargs):
-                    prompt = str(kwargs.get("user_prompt") or "")
-                    if "已有长期语义记忆" in prompt:
-                        return {
-                            "semantic_summary": "主人最近持续在围绕课程和复习安排来回确认，这条学习主线比之前更明确了。",
-                            "importance": 0.9,
-                            "stable_facts": ["最近课程很多", "复习安排很重要"],
-                            "recurring_topics": ["课程", "复习"],
-                            "important_people": ["老师"],
-                            "open_loops": ["还要继续准备考试"],
-                        }
-                    return {
-                        "semantic_summary": "主人最近一直在围绕课程和复习安排打转，我记住这条学习主线还在继续。",
-                        "importance": 0.82,
-                        "stable_facts": ["最近课程很多", "复习安排很重要"],
-                        "recurring_topics": ["课程", "复习"],
-                        "important_people": [],
-                        "open_loops": ["还要继续准备考试"],
-                    }
-
-            existing = store.add_semantic_summary(
-                profile_user_id="user-1",
-                session_id="session-1",
-                timestamp=900,
-                period_start_ts=700,
-                period_end_ts=900,
-                date_label="2026-04-01",
-                time_of_day="night",
-                importance=0.78,
-                semantic_summary="主人最近一直在聊课程和复习安排，我记住学习是这段时间最稳定的主线。",
-                stable_facts=["最近课程很多"],
-                recurring_topics=["课程", "复习"],
-                important_people=[],
-                open_loops=["还要继续复习"],
-                semantic_tags=["课程", "复习", "学习"],
-                source_summary_ids=["summary::old"],
-            )
-
-            service = MemoryCompactionService(
-                store=store,
-                vector_store=StubVectorStore(),
-                llm=StubLLM(),
-                prompt_builder=PromptBuilder(PERSONA),
-            )
-
-            for idx in range(5):
-                store.add_summary(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    timestamp=1000 + idx * 100,
-                    date_label="2026-04-10",
-                    time_of_day="afternoon",
-                    period_label=f"阶段{idx + 1}",
-                    event_type="学习",
-                    importance=0.7,
-                    diary_summary=f"第{idx + 1}段摘要，主人继续提到课程和复习安排。",
-                    key_events=[f"复习事件{idx + 1}"],
-                    core_facts=["课程", "复习"],
-                    semantic_tags=["课程", "复习"],
-                    source_start_seq=idx * 2 + 1,
-                    source_end_seq=idx * 2 + 2,
-                    source_ids=[f"msg-{idx}"],
-                )
-
-            old_enable = getattr(config, "ENABLE_SEMANTIC_MEMORY", True)
-            old_reinforce = getattr(config, "ENABLE_SEMANTIC_REINFORCEMENT", True)
-            old_trigger = getattr(config, "EPISODIC_COMPACT_TRIGGER_COUNT", 10)
-            old_batch = getattr(config, "EPISODIC_COMPACT_BATCH_SIZE", 5)
-            old_lookback = getattr(config, "SEMANTIC_REINFORCEMENT_LOOKBACK", 8)
-            old_overlap = getattr(config, "SEMANTIC_REINFORCEMENT_MIN_OVERLAP", 2)
-            try:
-                config.ENABLE_SEMANTIC_MEMORY = True
-                config.ENABLE_SEMANTIC_REINFORCEMENT = True
-                config.EPISODIC_COMPACT_TRIGGER_COUNT = 5
-                config.EPISODIC_COMPACT_BATCH_SIZE = 5
-                config.SEMANTIC_REINFORCEMENT_LOOKBACK = 5
-                config.SEMANTIC_REINFORCEMENT_MIN_OVERLAP = 2
-
-                service._run_semantic_summary_cycle_with_generation(
-                    profile_user_id="user-1",
-                    session_id="session-1",
-                    generation=0,
-                )
-            finally:
-                config.ENABLE_SEMANTIC_MEMORY = old_enable
-                config.ENABLE_SEMANTIC_REINFORCEMENT = old_reinforce
-                config.EPISODIC_COMPACT_TRIGGER_COUNT = old_trigger
-                config.EPISODIC_COMPACT_BATCH_SIZE = old_batch
-                config.SEMANTIC_REINFORCEMENT_LOOKBACK = old_lookback
-                config.SEMANTIC_REINFORCEMENT_MIN_OVERLAP = old_overlap
-                service.close()
-
-            semantic_records = store.get_recent_semantic_summaries("user-1", limit=5)
-            visible_episodic = store.get_visible_episodic_summaries("user-1", limit=10)
-            updated_existing = store.get_semantic_summary_by_id(existing["semantic_id"])
-
-            self.assertEqual(len(semantic_records), 1)
-            self.assertEqual(visible_episodic, [])
-            self.assertEqual(updated_existing["semantic_id"], existing["semantic_id"])
-            self.assertEqual(updated_existing["reinforcement_count"], 2)
-            self.assertGreaterEqual(updated_existing["period_end_ts"], 1400)
-            self.assertIn("老师", updated_existing["important_people"])
-            self.assertEqual(len(updated_existing["source_summary_ids"]), 6)
-            self.assertEqual(len(service.vector_store.upserts), 1)
-            self.assertEqual(service.vector_store.upserts[0]["source_id"], existing["semantic_id"])
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

@@ -1,18 +1,9 @@
 // Feed a real backend-produced file-only frame to the existing desktop renderer.
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import vm from "node:vm";
+import vm, { petFunctions } from "./pet-production-functions.mjs";
 
 const frame = JSON.parse(fs.readFileSync(0, "utf8"));
-const source = fs.readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-function declaration(name) {
-  const start = source.indexOf(`function ${name}(`);
-  assert(start >= 0, name);
-  const end = source.indexOf("\nfunction ", start + 10);
-  return source.slice(start, end);
-}
-const fileStart = source.indexOf("async function handleDesktopFileDeliveryEvent(event)");
-const fileEnd = source.indexOf("function normalizeSegments(value)", fileStart);
 const effects = [], statuses = [];
 let refreshes = 0;
 const context = vm.createContext({
@@ -28,8 +19,9 @@ const context = vm.createContext({
   setRuntimeStatus: (...args) => statuses.push(args),
   normalizeSegments: (value) => value || [],
 });
-vm.runInContext(["renderPayload", "applyPayloadEmotion", "applyPayloadActivity", "applyPayloadFileDeliveries"]
-  .map(declaration).join("\n") + source.slice(fileStart, fileEnd), context);
+vm.runInContext(petFunctions([
+  "renderPayload", "applyPayloadEmotion", "applyPayloadFileDeliveries", "handleDesktopFileDeliveryEvent"
+]), context);
 assert.equal(context.renderPayload(frame), false);
 await new Promise(setImmediate);
 assert.equal(refreshes, 1);

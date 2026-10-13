@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 import unittest
 
 from companion_v01.capability_adapters import (
@@ -54,6 +56,51 @@ def build_adapter(*, caller=None, low_risk_allowlist=None, risk="low", prompt_ex
 
 
 class McpStdioCapabilityAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_known_declarations_do_not_probe_on_reads_or_disappear_after_failed_refresh(self):
+        adapter = build_adapter()
+        calls = []
+        def offline(**kwargs):
+            calls.append(kwargs)
+            raise McpStdioDiscoveryError("mcp_tools_list_timeout")
+        adapter._liveness_probe = offline
+        initial = adapter.current_tool_configs()
+        descriptor = adapter.descriptor_for_tool(initial[0])
+        for _ in range(30):
+            self.assertEqual(adapter.current_tool_configs(), initial)
+            self.assertTrue(adapter.is_live(descriptor.id))
+        self.assertEqual(calls, [])
+        self.assertEqual(adapter.current_tool_configs(refresh=True), initial)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(adapter._discovery_reason, "mcp_tools_list_timeout")
+        self.assertTrue(adapter.is_live(descriptor.id))
+        adapter.server_config["enabled"] = False
+        self.assertFalse(adapter.is_live(descriptor.id))
+
+    async def test_first_discovery_is_shared_and_failed_unknown_metadata_stays_unconfirmed(self):
+        entered, release = Event(), Event()
+        calls = []
+        def probe(**kwargs):
+            calls.append(kwargs)
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError("test wait timeout")
+            return {"tools": [{"name": "echo", "description": "Confirmed echo"}]}
+        adapter = McpStdioCapabilityAdapter(provider_id="provider.mcp.demo", server_id="demo",
+            server_config={"enabled": True, "command": "python"}, tool_configs=(), liveness_probe=probe)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(adapter.current_tool_configs)
+            self.assertTrue(entered.wait(2))
+            second = pool.submit(adapter.current_tool_configs)
+            release.set()
+            self.assertEqual(first.result(), second.result())
+        self.assertEqual(len(calls), 1)
+        unknown = McpStdioCapabilityAdapter(provider_id="provider.mcp.unknown", server_id="unknown",
+            server_config={"enabled": True, "command": "python"}, tool_configs=(),
+            liveness_probe=lambda **kwargs: (_ for _ in ()).throw(McpStdioDiscoveryError("offline")))
+        self.assertEqual(unknown.current_tool_configs(), ())
+        self.assertFalse(unknown._metadata_confirmed)
+        self.assertEqual(unknown._discovery_reason, "offline")
+
     async def test_streamable_http_config_uses_same_descriptor_and_caller_contract(self) -> None:
         caller = FakeCaller({"content": [{"type": "text", "text": "http-ok"}]})
         adapter = McpStdioCapabilityAdapter(

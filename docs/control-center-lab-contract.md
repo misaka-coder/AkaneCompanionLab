@@ -19,16 +19,33 @@ backend snapshot + Tauri live state
         ↓
 src/control-center/data-sources.js
         ↓
-src/control-center-v2/bridge.js
+src/control-center-v2/bridge.js → bridge/* host, requests and lifecycle
+        ↓
+src/control-center-v2/view-model.js → view-model/* domain projections
         ↓
 src/control-center-v2/store.js
         ↓
-src/control-center-v2/view-model.js
+src/control-center-v2/app/render.js + app/* interaction controllers
         ↓
 src/control-center-v2/components/*
 ```
 
 There is no mock-first page model, snapshot adapter, or parallel Tauri data source.
+
+The view-model facade keeps four public exports and composes pure domain projections. Settings dispatch
+and observed-result matching share `src/control-center/settings-command-contract.js`; acknowledgements
+with operation IDs must match the current command before the UI reports its outcome.
+See [the view-model split record](control_center_view_model_split_v1.md) for owners and regression checks.
+
+The entry assembles controllers in `app/` for requests, forms, chat, presentation, rendering and lifecycle.
+Controllers use the injected bridge; asynchronous UI results and draft updates retain their initiating scope.
+See [the application split record](control_center_app_split_v1.md) for module owners and interaction checks.
+
+The bridge facade retains two public exports and assembles host, subscriptions, snapshots, chat and action controllers.
+Chat reads and history pages retain the initiating backend, Bot, user, character and session scope. Required snapshots
+and optional plugin reads also retain the source binding and window lifetime. Closing releases subscriptions,
+preview URLs, debounce timers and action confirmation waits, including registrations that finish after close.
+See [the bridge split record](control_center_bridge_split_v1.md) for owners and race regression checks.
 
 ### Backend facts
 

@@ -10,7 +10,6 @@ Python, npm, and Cargo dependencies are declared in:
 
 - `requirements.txt`
 - `requirements-ml.txt`
-- `desktop_pet/package-lock.json`
 - `desktop_pet_next/package-lock.json`
 - `desktop_pet_next/src-tauri/Cargo.lock`
 
@@ -26,11 +25,10 @@ under Apache-2.0.
 
 The supported public Alpha export excludes:
 
-- `web/vendor/live2d/`
 - `web/assets/live2d/`
 
-Users who want Live2D support must obtain the required runtime and model files
-from an authorized source and comply with the applicable Live2D terms.
+The old Web Live2D preview and its bundled runtime have been removed. Any retained
+local sample model data remains subject to the applicable Live2D terms.
 
 Official terms:
 
@@ -39,9 +37,8 @@ Official terms:
 
 ## PixiJS
 
-The private development tree may contain a bundled PixiJS build licensed under
-the MIT License. The public Alpha export excludes the bundled Live2D vendor
-directory; users should prefer package-managed or authorized upstream copies.
+The current Tauri scene uses package-managed PixiJS under the MIT License.
+The old Web preview's bundled vendor build has been removed.
 
 ## Media and Character IP
 

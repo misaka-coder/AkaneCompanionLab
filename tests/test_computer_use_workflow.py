@@ -75,7 +75,7 @@ class ComputerUseWorkflowTests(unittest.TestCase):
         ask = (ToolExecutionResult(tool_type="computer_use", followup_context="approval"), SimpleNamespace(data={}))
         with patch("companion_v01.capcore_runtime.resolve_permission_for_profile",
                    side_effect=lambda request, **_: Decision(allowed=not request.required, requires_user_decision=request.required)), \
-             patch("companion_v01.tool_orchestration_engine._satellite_ask_result", return_value=ask):
+             patch("companion_v01.tool_orchestration.permissions._satellite_ask_result", return_value=ask):
             result, stopped = dispatch(engine, broker=SimpleNamespace(execute=execute), spec=COMPUTER_USE_TOOL_SPEC,
                 invocation=ToolInvocation(id="batch", name="computer_use", arguments=self.plan()),
                 profile_user_id="owner", session_id="s", client_context=None, request_context={})

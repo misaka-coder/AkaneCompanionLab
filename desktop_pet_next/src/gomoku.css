@@ -1,0 +1,313 @@
+:root {
+  --wood-bg-gradient: linear-gradient(135deg, #e8c490 0%, #d8ae72 50%, #c49a5e 100%);
+  --wood-border: #8b5a2b;
+  --line-color: rgba(92, 53, 17, 0.65);
+  --grid-size: 21px;
+  --board-padding: 12px;
+  --header-bg: rgba(60, 40, 20, 0.88);
+  --footer-bg: rgba(60, 40, 20, 0.75);
+  --text-main: #f5eedc;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+}
+
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: transparent;
+}
+
+.gomoku-app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+
+.gomoku-window {
+  width: 380px;
+  height: 500px;
+  display: flex;
+  flex-direction: column;
+  background: var(--wood-bg-gradient);
+  border: 2px solid var(--wood-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  overflow: hidden;
+  backdrop-filter: blur(16px);
+}
+
+/* 顶部栏 */
+.gomoku-header {
+  height: 42px;
+  background: var(--header-bg);
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  cursor: grab;
+}
+
+.header-title-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.header-icon {
+  font-size: 16px;
+}
+
+.header-title {
+  font-size: 14px;
+  letter-spacing: 0.5px;
+}
+
+.mode-select {
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #fff;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+
+.color-select {
+  padding: 2px 4px;
+}
+
+.mode-select option {
+  background: #3c2814;
+  color: #fff;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-size: 14px;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tool-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.close-btn:hover {
+  background: #e63946;
+}
+
+/* 棋盘主体 */
+.board-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+}
+
+.board-frame {
+  display: flex;
+  flex-direction: column;
+}
+
+.col-labels {
+  display: flex;
+  margin-left: 18px;
+  height: 16px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #5c3511;
+  width: calc(var(--grid-size) * 14);
+  transform: translateX(calc(var(--grid-size) / -2));
+}
+
+.col-labels span {
+  width: var(--grid-size);
+  flex: 0 0 var(--grid-size);
+  text-align: center;
+}
+
+.board-inner {
+  display: flex;
+}
+
+.row-labels {
+  display: flex;
+  flex-direction: column;
+  width: 18px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #5c3511;
+  height: calc(var(--grid-size) * 14);
+  transform: translateY(calc(var(--grid-size) / -2));
+}
+
+.row-labels span {
+  height: var(--grid-size);
+  flex: 0 0 var(--grid-size);
+  line-height: var(--grid-size);
+  text-align: center;
+}
+
+.board-grid {
+  position: relative;
+  width: calc(var(--grid-size) * 14);
+  height: calc(var(--grid-size) * 14);
+  background: #dfb278;
+  outline: 1px solid var(--line-color);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}
+
+/* 内部网格线与星位 */
+.grid-lines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image:
+    linear-gradient(to right, var(--line-color) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--line-color) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  pointer-events: none;
+}
+
+/* 棋子层 */
+.pieces-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.stone {
+  position: absolute;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  transition: transform 0.1s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+.stone.black {
+  background: radial-gradient(circle at 35% 35%, #4a4a4a 0%, #151515 70%, #000 100%);
+  box-shadow: 1px 3px 5px rgba(0, 0, 0, 0.65);
+}
+
+.stone.white {
+  background: radial-gradient(circle at 35% 35%, #ffffff 0%, #f0f0f0 60%, #d8d8d8 100%);
+  box-shadow: 1px 3px 5px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* 最新一手光环 */
+.stone.last-move::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e63946;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 4px #e63946;
+}
+
+/* 悬停准星 */
+.hover-reticle {
+  position: absolute;
+  width: 17px;
+  height: 17px;
+  border: 2px dashed rgba(230, 57, 70, 0.7);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  animation: pulse-reticle 1s infinite alternate;
+}
+
+@keyframes pulse-reticle {
+  from { transform: translate(-50%, -50%) scale(0.9); opacity: 0.6; }
+  to { transform: translate(-50%, -50%) scale(1.15); opacity: 1; }
+}
+
+/* 底部状态 */
+.gomoku-footer {
+  height: 44px;
+  background: var(--footer-bg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.status-capsule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.status-stone {
+  font-size: 14px;
+}
+
+.status-capsule { min-width: 0; }
+.status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-help-btn { flex-shrink: 0; margin-left: 6px; }
+button:disabled, select:disabled { opacity: 0.5; cursor: default; }
+
+.ask-help-btn {
+  background: linear-gradient(135deg, #f39c12, #d35400);
+  border: none;
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.ask-help-btn:hover {
+  opacity: 0.9;
+  transform: scale(1.02);
+}
+
+.thinking-dot {
+  display: inline-block;
+  animation: blink 1.2s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 1; }
+}

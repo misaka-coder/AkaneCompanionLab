@@ -18,7 +18,7 @@ class WindowsBootstrapContractTests(unittest.TestCase):
     def test_bootstrap_prepares_core_and_keeps_auto_mode_on_desktop(self) -> None:
         source = (ROOT / "scripts" / "bootstrap_akane_windows.ps1").read_text(encoding="utf-8")
 
-        self.assertIn('[ValidateSet("Auto", "Desktop", "Web")]', source)
+        self.assertIn('[ValidateSet("Auto", "Desktop", "Backend")]', source)
         self.assertIn("python_dependency_install_failed", source)
         self.assertIn("Copy-Item -LiteralPath $examplePath -Destination $envPath", source)
         self.assertIn("No model service is configured yet", source)
@@ -57,7 +57,9 @@ class WindowsBootstrapContractTests(unittest.TestCase):
         self.assertIn("silently switch", source)
         self.assertIn("ForcePythonInstall", source)
         self.assertIn("only an incomplete environment or the", source)
-        self.assertIn("Start-WebMode", source)
+        self.assertIn("Start-BackendMode", source)
+        self.assertNotIn("Start-WebMode", source)
+        self.assertNotIn("Start-Process $url", source)
         self.assertIn("Start-DesktopMode", source)
         self.assertIn('[ValidateSet("Start", "Status", "Stop", "Restart", "Doctor")]', source)
         self.assertIn("lifecycle_action_requires_local_backend", source)

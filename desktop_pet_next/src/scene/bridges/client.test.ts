@@ -1,9 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SceneClient } from "./client";
+import { invoke } from "@tauri-apps/api/core";
 
-afterEach(() => vi.unstubAllGlobals());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.clearAllMocks();
+});
 
 describe("SceneClient", () => {
+  it("uses the native authenticated bridge for private snapshot and story reads", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const client = new SceneClient({ backend: "http://127.0.0.1:12001", botId: "main",
+      profileId: "master", sessionId: "owner", characterId: "akane_v1", instanceId: "" });
+    vi.mocked(invoke).mockResolvedValue({ ok: true, body: JSON.stringify({ private: "fixture" }) });
+    for (const path of ["/scene/snapshot", "/scene/story/catalog"]) {
+      expect(await client.request(path, client.identity)).toEqual({ private: "fixture" });
+      expect(invoke).toHaveBeenLastCalledWith("backend_admin_request", {
+        request: { url: client.base + path, method: "POST", body: JSON.stringify(client.identity) },
+      });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("trims connection identifiers to prevent pydantic validation errors", () => {
     const client = new SceneClient({
       backend: "http://127.0.0.1:9999",

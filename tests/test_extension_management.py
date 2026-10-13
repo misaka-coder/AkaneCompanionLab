@@ -322,6 +322,7 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_install_stage_removes_new_artifact_when_activation_fails(self) -> None:
         plugin_runtime = SimpleNamespace(
             selections=(),
+            status_snapshot=Mock(return_value={"ok": True, "status": "inactive", "plugins": []}),
             reconfigure=AsyncMock(
                 side_effect=(
                     {
@@ -376,7 +377,36 @@ class ExtensionManagementLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reason"], "plugin_probe_failed")
         artifact_store.remove_plugin.assert_called_once_with(PLUGIN_ID)
         selection_store.save.assert_called_once_with(())
-        self.assertEqual(plugin_runtime.reconfigure.await_count, 2)
+        self.assertEqual(plugin_runtime.reconfigure.await_count, 1)
+
+    async def test_rejected_update_preserves_live_generation_without_restarting_it(self) -> None:
+        previous = (PluginSelection(PLUGIN_ID, True),)
+        live = {"ok": True, "status": "active", "generation": 7, "plugins": [
+            {"plugin_id": PLUGIN_ID, "enabled": True, "status": "active"},
+        ]}
+        runtime = SimpleNamespace(
+            selections=previous,
+            status_snapshot=Mock(return_value=live),
+            reconfigure=AsyncMock(side_effect=(
+                {"ok": False, "published": False, "status": "candidate_rejected", "reason": "ffmpeg_not_found", "plugins": []},
+                RuntimeError("retained_generation_must_not_restart"),
+            )),
+        )
+        selections = Mock()
+        selections.load.return_value = previous
+        artifacts = Mock()
+        artifacts.publish_stage.return_value = {"ok": True, "plugin_id": PLUGIN_ID}
+        artifacts.rollback_to_last_good.return_value = {"ok": True}
+        service = ExtensionManagementService(plugin_runtime=runtime, selection_store=selections, artifact_store=artifacts)
+
+        result = await service.install_stage(stage_id="candidate", approved_permissions=())
+
+        self.assertEqual(result["status"], "activation_failed")
+        self.assertEqual(result["reason"], "ffmpeg_not_found")
+        runtime.reconfigure.assert_awaited_once_with(previous)
+        artifacts.rollback_to_last_good.assert_called_once_with(PLUGIN_ID)
+        selections.save.assert_called_once_with(previous)
+        artifacts.reconcile_runtime.assert_any_call(live["plugins"])
 
     async def test_install_stage_restores_runtime_when_selection_persistence_fails(self) -> None:
         plugin_runtime = SimpleNamespace(

@@ -39,6 +39,7 @@ from companion_v01.tool_orchestration_engine import (
     validate_tool_invocation,
 )
 from companion_v01.tool_runtime import OpenBrowserToolHandler
+from companion_v01.tool_scheduling import scheduled_tool_spec
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +94,58 @@ def _execution_message(
 
 
 class CapabilityFabricM66Tests(unittest.TestCase):
+    def test_music_search_waits_for_device_browser_result_and_preserves_failure(self) -> None:
+        from companion_v01.tool_invocation import ToolInvocation
+        from companion_v01.tool_orchestration.results import server_local_broker_result
+        from companion_v01.tool_runtime import OpenMusicSearchToolHandler, ToolExecutionContext
+
+        service = DesktopSatelliteService(instance_id="instance-a", token="test-device")
+        broker = ExecutorBroker(service)
+        handler = OpenMusicSearchToolHandler(offer_source=service, executor_broker=broker)
+        call = handler.normalize_call({"type": "open_music_search", "title": "搁浅", "artist": "周杰伦", "platform": "netease_music"})
+        with TestClient(self._app(service)) as client:
+            with client.websocket_connect("/capabilities/satellite/ws", headers={"Authorization": "Bearer test-device"}) as websocket:
+                websocket.receive_json()
+                websocket.send_json(_registration("instance-a"))
+                registered = websocket.receive_json()
+                for terminal in ("succeeded", "failed"):
+                    invocation_id = f"music-{terminal}"
+                    context = ToolExecutionContext(profile_user_id="owner", session_id="music-session", now_ts=1,
+                                                   visual_payload={}, client_mode="desktop_pet", invocation_id=invocation_id)
+                    results = []
+                    def execute():
+                        results.append(broker.execute_server_local(
+                            tool_id="open_music_search", invocation_id=invocation_id,
+                            ledger_scope="owner\x1fmusic-session", request_data={"arguments": call},
+                            dispatch=lambda: handler.execute(call=call, context=context),
+                        ))
+                    worker = threading.Thread(target=execute, daemon=True)
+                    worker.start()
+                    message = websocket.receive_json()
+                    child_id = f"{invocation_id}:music_search_browser"
+                    self.assertEqual(message["tool_id"], "open_browser")
+                    self.assertEqual(message["invocation_id"], child_id)
+                    self.assertIn("music.163.com/#/search/m/", message["arguments"]["url"])
+                    websocket.send_json(_execution_message("accepted", registered, child_id))
+                    self.assertTrue(worker.is_alive())
+                    self.assertEqual(results, [])
+                    completion = _execution_message("result", registered, child_id, status=terminal)
+                    if terminal == "failed":
+                        completion["reason"] = "os_open_failed"
+                    websocket.send_json(completion)
+                    worker.join(5)
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(results[0].status, "succeeded")
+                    result, envelope = server_local_broker_result(
+                        invocation=ToolInvocation("open_music_search", {"title": "搁浅"}, id=invocation_id),
+                        broker_result=results[0],
+                    )
+                    self.assertEqual(result.state_updates["music_request_status"], terminal)
+                    self.assertEqual(envelope.status, "ok" if terminal == "succeeded" else "error")
+                    self.assertFalse(any(event["type"] == "browser_open_requested" for event in result.stream_events))
+                    if terminal == "failed":
+                        self.assertEqual(result.state_updates["capability_execution"]["reason"], "os_open_failed")
+
     def _app(self, service: DesktopSatelliteService) -> FastAPI:
         app = FastAPI()
         app.include_router(
@@ -227,7 +280,10 @@ class CapabilityFabricM66Tests(unittest.TestCase):
                     allowed_tool_names={"open_browser"},
                 )
                 self.assertEqual(native[0]["function"]["description"], OPEN_BROWSER_TOOL_SPEC.description)
-                self.assertEqual(native[0]["function"]["parameters"], OPEN_BROWSER_TOOL_SPEC.input_schema)
+                self.assertEqual(
+                    native[0]["function"]["parameters"],
+                    scheduled_tool_spec(OPEN_BROWSER_TOOL_SPEC).input_schema,
+                )
 
         clock.value += 31
         self.assertEqual(browser_status()["status"], "unavailable")

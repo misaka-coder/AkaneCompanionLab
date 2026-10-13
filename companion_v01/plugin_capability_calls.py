@@ -290,7 +290,8 @@ class EnginePluginCapabilityProvider:
                     invocation.delivery_allowed = getattr(handler.adapter, "delivery_allowed", None)
                     invocation.origin = {
                         "plugin_id": str(getattr(handler.adapter, "plugin_id", "")),
-                        "generation_id": str(getattr(handler.adapter, "contract_revision", "")),
+                        "generation_id": str(getattr(handler.adapter, "runtime_revision", "") or
+                                             getattr(handler.adapter, "contract_revision", "")),
                         "capability_id": handler.tool_type,
                     }
                 capability_id = handler.tool_type

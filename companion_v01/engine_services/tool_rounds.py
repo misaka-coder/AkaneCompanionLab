@@ -183,7 +183,9 @@ def resolve_capability_selection(
 ) -> CapabilitySelection:
     from ..capability_registry import CapabilityRegistry
 
-    handlers = getattr(engine, "tool_handlers", {}) or {}
+    from ..dialogue_targets import is_service_domain
+    handlers = {name: handler for name, handler in (getattr(engine, "tool_handlers", {}) or {}).items()
+                if not getattr(handler, "service_only", False) or is_service_domain(character_pack_id)}
     domain_profile = DomainProfileRegistry().get(domain_profile_id)
     domain_profile_id = domain_profile.id
     authorization_profile_user_id = str(authorization_profile_user_id or profile_user_id)
@@ -439,14 +441,35 @@ def _freeze_or_project_capability_selection(
     authorization_profile_user_id: str,
     raw_selection: bool,
 ) -> CapabilitySelection:
+    from ..dialogue_targets import is_service_domain, registry_for
+    allowed = None
+    if is_service_domain(character_pack_id):
+        registry = registry_for(engine)
+        target = registry.from_domain(character_pack_id)
+        registry.validate(target)
+        from ..capability_discovery import CAPABILITY_DISCOVERY_TOOL_IDS
+        # Host discovery entries see only this service's restricted catalog.
+        allowed = frozenset(registry.services[target.speaker_id].tools) | CAPABILITY_DISCOVERY_TOOL_IDS
+        # Scoped built-ins are registered here, without adding schemas or hints
+        # to the ordinary companion's provider prefix.
+        additions = tuple(name for name, handler in handlers.items()
+                          if name in allowed and getattr(handler, "service_only", False)
+                          and name not in selection.tool_names)
+        selection = replace(selection, tool_names=(*selection.tool_names, *additions),
+                            schema_tool_names=(*(selection.schema_tool_names or selection.tool_names), *additions))
+        selection = restrict_capability_selection(_freeze_capability_selection(selection, handlers),
+                                                   allowed_tool_names=allowed)
+        handlers = selection.resolved_handlers
     if raw_selection or (client_context is None and not profile_user_id and not session_id):
         return _freeze_capability_selection(selection, handlers)
     from ..capability_exposure import project_selection
-    return project_selection(
+    projected = project_selection(
         engine, selection, handlers, profile_user_id=profile_user_id, session_id=session_id,
         client_context=client_context, client_mode=client_mode, domain_profile_id=domain_profile_id,
         character_pack_id=character_pack_id, authorization_profile_user_id=authorization_profile_user_id,
     )
+    return (restrict_capability_selection(projected, allowed_tool_names=allowed)
+            if allowed is not None else projected)
 
 
 def restrict_capability_selection(
@@ -746,6 +769,15 @@ def build_mcp_adapter_tool_handlers(
         if not configured:
             continue
         tools = [tool for tool in server_config.get("tools") or [] if isinstance(tool, dict)]
+        manager = getattr(engine, "mcp_host_manager", None)
+        metadata_reader = getattr(manager, "confirmed_tools", None)
+        if callable(metadata_reader):
+            confirmed = metadata_reader(profile_user_id=str(profile_user_id), server_id=str(server_id), server_config=server_config)
+            if confirmed is not None:
+                overrides = {str(tool.get("name") or ""): tool for tool in tools}
+                tools = [{**tool, **{key: overrides.get(str(tool.get("name") or ""), {})[key]
+                         for key in ("risk", "confirm", "effects", "modelVisible", "promptExposed")
+                         if key in overrides.get(str(tool.get("name") or ""), {})}} for tool in confirmed]
         prompt_tools = sorted(
             # Previously promptExposed described native-schema injection, and
             # load/invoke already allowed these enabled server tools. Present
@@ -754,8 +786,7 @@ def build_mcp_adapter_tool_handlers(
             ({**tool, "promptExposed": True} for tool in tools if tool.get("modelVisible") is not False),
             key=lambda tool: str(tool.get("name") or ""),
         )
-        adapter_config = {**server_config, "serverId": str(server_id)}
-        manager = getattr(engine, "mcp_host_manager", None)
+        adapter_config = {**server_config, "serverId": str(server_id), "tools": tools}
         revision_reader = getattr(manager, "contract_revision", None)
         runtime_revision = revision_reader(profile_user_id=str(profile_user_id), server_id=str(server_id)) if callable(revision_reader) else ""
         fingerprint = hashlib.sha256(
@@ -827,7 +858,8 @@ def build_mcp_adapter_tool_handlers(
                 # Include declared metadata/semantic revisions even when the
                 # input JSON Schema and accepted argument values are identical.
                 from ..capability_contracts import digest
-                handler.contract_revision = digest({"connection": adapter.contract_revision, "tool": tool})
+                handler.contract_revision = digest({key: tool.get(key) for key in
+                    ("name", "description", "inputSchema", "outputSchema", "annotations")})
                 handlers[descriptor.id] = handler
     try:
         setattr(engine, "_mcp_capability_adapter_cache", adapter_cache)
@@ -840,7 +872,7 @@ def resolve_unloaded_mcp_native_aliases(
     engine: Any, *, model_tool_names, profile_user_id, client_context,
     domain_profile_id, capability_selection,
 ):
-    """Historical names identify targets; undisclosed contracts never execute."""
+    """Historical aliases identify targets without adding native declarations."""
     del engine, profile_user_id, client_context, domain_profile_id
     if capability_selection is None:
         return {}, capability_selection
@@ -862,9 +894,8 @@ def resolve_unloaded_mcp_native_aliases(
         aliases[model_name] = target
         if target not in capability_selection.schema_tool_names:
             snapshot = current.snapshot(target)
-            snapshot["contract_ref"] = ""
             resolved[target] = ContractBoundHandler(candidates[target], snapshot,
-                current_contract=catalog.current_snapshot)
+                current_handler=catalog.current_handler, native_declared=False)
     return aliases, replace(capability_selection, resolved_handlers=MappingProxyType(resolved),
         tool_names=tuple(dict.fromkeys((*capability_selection.tool_names, *aliases.values()))))
 

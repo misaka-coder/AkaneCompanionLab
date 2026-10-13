@@ -7,6 +7,7 @@ import threading
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -129,6 +130,29 @@ class MusicControlPermissionsRouteTests(unittest.TestCase):
         # Re-enable with a truthy string
         resp = self._post({"controls": {"next": "yes"}})
         self.assertTrue(resp.json()["controls"]["next"])
+
+    def test_false_strings_disable_and_persist_controls(self) -> None:
+        for value in ("false", " FALSE ", "0", "off", "no", "disabled"):
+            with self.subTest(value=value):
+                self._post({"controls": {"next": True}})
+                response = self._post({"controls": {"next": value}})
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(response.json()["controls"]["next"])
+                self.assertFalse(self._get().json()["controls"]["next"])
+
+    def test_storage_errors_keep_details_private_and_report_failure(self) -> None:
+        sentinel = "private-db-path-and-credential-fixture"
+        with patch.object(self.store, "_connect", side_effect=RuntimeError(sentinel)):
+            for method, status in (("GET", "query_failed"), ("POST", "update_failed")):
+                with self.subTest(method=method):
+                    response = self._get() if method == "GET" else self._post({"controls": {"next": False}})
+                    self.assertEqual(response.status_code, 503)
+                    self.assertNotIn(sentinel, response.text)
+                    payload = response.json()
+                    self.assertFalse(payload["ok"])
+                    self.assertEqual(payload["status"], status)
+                    self.assertEqual(payload["error"], "RuntimeError")
+                    self.assertEqual(payload["reason"], "music_control_" + status)
 
     # ------------------------------------------------------------------
     # Profile isolation

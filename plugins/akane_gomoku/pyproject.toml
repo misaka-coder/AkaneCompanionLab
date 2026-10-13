@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akane-gomoku"
+version = "0.1.0"
+description = "Gomoku companion game plugin for Akane"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "akane-plugin>=0.14.0",
+]
+
+[project.entry-points."akane.plugins.v1"]
+"akane.gomoku" = "akane_gomoku:create_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

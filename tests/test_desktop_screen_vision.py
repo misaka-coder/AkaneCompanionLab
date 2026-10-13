@@ -35,7 +35,7 @@ class DesktopScreenDirectVisionTests(unittest.TestCase):
         engine = memory_tests._PromptContextEngine(memcore_manager=manager)
         for mode, transient, expected in [(ClientMode.DESKTOP_PET, True, True),
                 (ClientMode.DESKTOP_PET, False, False), (ClientMode.SCENE_STATIC, True, False)]:
-            with self.subTest(mode=mode, transient=transient), patch.object(response_builder, "_memory_backend", return_value="legacy"):
+            with self.subTest(mode=mode, transient=transient), patch("config.MEMORY_BACKEND", "legacy"):
                 context = response_builder.prepare_context(engine, session_id="s1", profile_user_id="u1",
                     user_message="观察当前画面", recent_raw=[], recent_episodic_summaries=[],
                     recent_semantic_summaries=[], confirmed_snippets=[], now_ts=100,
@@ -193,7 +193,7 @@ class DesktopScreenDirectVisionTests(unittest.TestCase):
                     yield
                 return SimpleNamespace(parsed={"speech": ""}, raw_text='{"speech":""}',
                     error="", fallback_used=False, latest_emotion="", latest_speech="",
-                    latest_reply_medium="", native_preface_text="")
+                    native_preface_text="")
 
         runner = recovery.FinalRecoveryTests()
         for stream in (False, True):

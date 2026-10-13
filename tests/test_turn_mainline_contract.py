@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -9,7 +10,7 @@ from companion_v01.client_protocol import ClientMode
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.tool_invocation import NATIVE_TOOL_CALL_FIELD, NATIVE_TOOL_CALLS_FIELD
 from companion_v01.tool_runtime import ToolExecutionResult, ToolFollowupEnvelope
-from companion_v01.turn_coordination import SteeringInput
+from companion_v01.turn_coordination import SteeringInput, TurnCoordinator
 
 
 def _tool_call(kind: str, call_id: str) -> dict[str, object]:
@@ -197,7 +198,6 @@ class _Harness:
         engine._abort_memcore_input_turn = record("abort_memcore_input_turn")
         engine._schedule_memcore_compaction = record("schedule_memcore_compaction")
         engine._append_memcore_standalone_assistant = record("append_memcore_standalone_assistant")
-        engine._schedule_summary_cycle = record("schedule_summary_cycle")
         engine._schedule_visual_observations_for_payload = record(
             "schedule_visual_observations_for_payload"
         )
@@ -294,11 +294,107 @@ class _Harness:
 
 
 class TurnMainlineContractTests(unittest.TestCase):
+    def test_sync_and_stream_tool_execution_marks_the_active_turn(self) -> None:
+        async def exercise(streaming):
+            harness = _Harness(self._two_round_script())
+            coordinator = TurnCoordinator()
+            harness.engine.turn_coordinator = coordinator
+            original = harness.engine._execute_tool_call
+            async with coordinator.hold("u1", "s1", actor_id="qq:1", channel="qq") as token:
+                def execute(*args, **kwargs):
+                    result = coordinator.offer_steer(
+                        profile_user_id="u1", session_id="s1", actor_id="qq:owner",
+                        content="调整当前任务", allow_other_actor=True, require_tool_activity=True,
+                    )
+                    self.assertTrue(result["ok"], result)
+                    self.assertEqual(coordinator.drain(token)["steers"][0].content, "调整当前任务")
+                    return original(*args, **kwargs)
+
+                harness.engine._execute_tool_call = execute
+                run = harness.run_stream if streaming else harness.run_sync
+                run(harness.payload(_turn_control_id=token))
+                self.assertEqual(coordinator.begin_finalization(token)["status"], "finalizing")
+
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                asyncio.run(exercise(streaming))
+
+    def test_ordinary_reply_does_not_mark_tool_activity(self) -> None:
+        async def exercise():
+            harness = _Harness([_speech_output("普通回复")])
+            coordinator = TurnCoordinator()
+            harness.engine.turn_coordinator = coordinator
+            async with coordinator.hold("u1", "s1", actor_id="qq:1", channel="qq") as token:
+                with patch.object(coordinator, "mark_tool_activity", wraps=coordinator.mark_tool_activity) as marker:
+                    harness.run_stream(harness.payload(_turn_control_id=token))
+                marker.assert_not_called()
+
+        asyncio.run(exercise())
+
     def _two_round_script(self) -> list[dict[str, object]]:
         return [
             _tool_round_output("我查一下资料。", "load_material", "call-1"),
             _speech_output("查到了，是一份 PDF。"),
         ]
+
+    def test_unstarted_stream_has_no_input_or_provider_side_effects(self) -> None:
+        harness = _Harness([_speech_output("准备好了。")])
+        resolve_client = _Recorder(SimpleNamespace(effective_mode=ClientMode.SCENE_STATIC))
+        harness.engine._resolve_client_protocol_context = resolve_client
+        payload = harness.payload(finance_mode=True, prompt_scope="untrusted")
+        original_payload = dict(payload)
+
+        stream = harness.engine.process_turn_stream(payload)
+        self.assertEqual(resolve_client.calls, [])
+        self.assertEqual(harness.store.messages, [])
+        self.assertEqual(harness.script.generation_calls, [])
+        stream.close()
+
+        self.assertEqual(resolve_client.calls, [])
+        self.assertEqual(harness.rec["begin_memcore_input_turn"].calls, [])
+        self.assertEqual(harness.store.messages, [])
+        self.assertEqual(harness.script.generation_calls, [])
+        self.assertEqual(payload, original_payload)
+
+    def test_close_during_actual_provider_round_aborts_input_and_closes_provider(self) -> None:
+        harness = _Harness([_speech_output("不应到达收尾。")])
+        engine = harness.engine
+        begin = harness.rec["begin_memcore_input_turn"]
+        abort = _Recorder({"ok": True, "status": "aborted"})
+        engine._abort_memcore_input_turn = abort
+        provider_closed: list[bool] = []
+
+        def begin_tracked(**kwargs: object) -> dict[str, object]:
+            opened = begin(**kwargs)
+            engine._track_open_memcore_turn_for_guard(
+                turn_id=opened["turn_id"],
+                profile_user_id=kwargs["profile_user_id"],
+                session_id=kwargs["session_id"],
+                character_pack_id=kwargs["character_pack_id"],
+            )
+            return opened
+
+        def suspended_provider(**kwargs: object):
+            try:
+                yield {"type": "turn_start"}
+                return _speech_output("不应到达收尾。")
+            finally:
+                provider_closed.append(True)
+
+        engine._begin_memcore_input_turn = begin_tracked
+        engine._stream_final_response = suspended_provider
+        stream = engine.process_turn_stream(harness.payload())
+        self.assertEqual(next(stream), {"type": "turn_start"})
+        self.assertEqual(provider_closed, [])
+        stream.close()
+
+        self.assertEqual(provider_closed, [True])
+        self.assertEqual(len(abort.calls), 1)
+        self.assertEqual(abort.calls[0][1]["turn_id"], "turn-generated-1")
+        self.assertEqual(abort.calls[0][1]["reason"], "turn_stream_scope_exited_open")
+        self.assertEqual(harness.rec["finalize_memcore_input_turn_for_delivery"].calls, [])
+        self.assertEqual([record["role"] for record in harness.store.messages], ["user"])
+        self.assertEqual(harness.store.eval_turns, [])
 
     def test_sync_and_stream_final_outputs_match(self) -> None:
         sync = _Harness(self._two_round_script())
@@ -320,16 +416,84 @@ class TurnMainlineContractTests(unittest.TestCase):
         self.assertIn("_debug", stream_final)
         self.assertIn("_debug", sync_result)
 
+    def test_sync_and_stream_forward_the_same_generation_context(self) -> None:
+        sync = _Harness(self._two_round_script())
+        stream = _Harness(self._two_round_script())
+        for harness in (sync, stream):
+            harness.engine._pop_user_memory_source_id = lambda *args, **kwargs: "input-same"
+
+        sync.run_sync(sync.payload(trace_id="same-turn"))
+        stream.run_stream(stream.payload(trace_id="same-turn"))
+
+        self.assertEqual(len(sync.script.generation_kwargs), 2)
+        self.assertEqual(sync.script.generation_kwargs, stream.script.generation_kwargs)
+
+    def test_interleaved_streams_keep_tool_evidence_and_stimulus_separate(self) -> None:
+        harness = _Harness([
+            _tool_round_output("查 A。", "inspect_a", "call-a"),
+            _tool_round_output("查 B。", "inspect_b", "call-b"),
+            _speech_output("B 的结果。"),
+            _speech_output("A 的结果。"),
+        ])
+        stream_a = harness.engine.process_turn_stream(harness.payload(user_id="a", message="输入 A"))
+        stream_b = harness.engine.process_turn_stream(harness.payload(user_id="b", message="输入 B"))
+        try:
+            self.assertEqual(next(stream_a)["type"], "turn_start")
+            self.assertEqual(next(stream_b)["type"], "turn_start")
+            events_b = list(stream_b)
+            events_a = list(stream_a)
+        finally:
+            stream_a.close()
+            stream_b.close()
+
+        final_a = next(event["payload"] for event in events_a if event["type"] == "final")
+        final_b = next(event["payload"] for event in events_b if event["type"] == "final")
+        self.assertEqual(final_a["speech"], "A 的结果。")
+        self.assertEqual(final_b["speech"], "B 的结果。")
+        self.assertEqual([event["tool_type"] for event in final_a["tool_events"]], ["inspect_a"])
+        self.assertEqual([event["tool_type"] for event in final_b["tool_events"]], ["inspect_b"])
+        calls = harness.script.generation_kwargs
+        self.assertEqual([call["user_message"] for call in calls], ["输入 A", "输入 B", "输入 B", "输入 A"])
+        self.assertIsNot(calls[0]["request_projection_state"], calls[1]["request_projection_state"])
+        self.assertIs(calls[0]["request_projection_state"], calls[3]["request_projection_state"])
+        self.assertIs(calls[1]["request_projection_state"], calls[2]["request_projection_state"])
+
+    def test_rejected_decisions_do_not_consume_executed_tool_budget(self) -> None:
+        harness = _Harness([
+            _speech_output("无效决策一。"),
+            _speech_output("无效决策二。"),
+            _tool_round_output("实际工具一。", "inspect_one", "call-1"),
+            _tool_round_output("实际工具二。", "inspect_two", "call-2"),
+            _speech_output("两批工具都已执行。"),
+        ])
+        harness.engine._max_tool_rounds = lambda **kwargs: 2
+        harness.engine._tool_round_warning_remaining = lambda **kwargs: 0
+
+        def decisions(**kwargs: object):
+            output = kwargs["final_output"]
+            if str(output.get("speech") or "").startswith("无效决策"):
+                return output, [], ["工具协议不合法，请修正后重试。"]
+            return harness.script.decisions(**kwargs)
+
+        harness.engine._prepare_tool_round_decisions = decisions
+        with patch.object(config, "CHAT_MODEL_DECISION_MAX_ATTEMPTS", 3):
+            result = harness.run_sync(harness.payload())
+
+        self.assertEqual(result["speech"], "两批工具都已执行。")
+        self.assertEqual(len(harness.rec["record_memcore_tool_batch"].calls), 2)
+        self.assertEqual([call["allow_tool_call"] for call in harness.script.generation_kwargs],
+                         [True, True, True, True, False])
+
     def test_qq_actor_relation_is_frozen_into_each_current_request(self) -> None:
         cases = (
-            ("qq:1906243651", "owner"),
+            ("qq:987654321", "owner"),
             ("qq:2660153472", "participant"),
         )
         for actor_stable_id, expected_relation in cases:
             with self.subTest(actor_stable_id=actor_stable_id):
                 harness = _Harness([_speech_output("收到。")], client_mode=ClientMode.QQ_TEXT)
                 harness.engine._resolve_turn_actor = lambda _payload, actor=actor_stable_id: (actor, "群成员")
-                with patch.object(config, "MASTER_QQ", "1906243651"):
+                with patch.object(config, "MASTER_QQ", "987654321"):
                     harness.run_sync(harness.payload(message="戳一戳"))
 
                 projection_state = harness.script.generation_kwargs[0]["request_projection_state"]
@@ -588,6 +752,9 @@ class TurnMainlineContractTests(unittest.TestCase):
 
         class Coordinator:
             polls = 0
+
+            def mark_tool_activity(self, _token: str) -> bool:
+                return True
 
             def drain(self, _token: str) -> dict[str, object]:
                 self.polls += 1
@@ -984,7 +1151,7 @@ class TurnMainlineContractTests(unittest.TestCase):
         rec = harness.rec
         self.assertEqual(len(rec["apply_persona_state_to_final_output"].calls), 0)
         self.assertEqual(len(rec["apply_care_state_request"].calls), 0)
-        self.assertEqual(len(rec["schedule_summary_cycle"].calls), 0)
+        self.assertEqual(len(rec["schedule_memcore_compaction"].calls), 0)
         self.assertEqual(harness.store.messages, [])
         self.assertEqual(harness.store.eval_turns, [])
 
@@ -1062,7 +1229,6 @@ class TurnMainlineContractTests(unittest.TestCase):
         rec = harness.rec
         self.assertEqual(len(rec["apply_persona_state_to_final_output"].calls), 1)
         self.assertGreaterEqual(len(rec["apply_care_state_request"].calls), 1)
-        self.assertGreaterEqual(len(rec["schedule_summary_cycle"].calls), 1)
         self.assertEqual(len(harness.store.eval_turns), 1)
 
     def test_precommitted_memcore_turn_reuses_original_id(self) -> None:
@@ -1187,7 +1353,7 @@ class StreamFallbackContractTests(unittest.TestCase):
                     return
 
         drive()
-        self.assertEqual([str(event.get("type")) for event in events], ["turn_start"])
+        self.assertEqual([str(event.get("type")) for event in events], ["turn_start", "turn_progress"])
         self.assertEqual(result.get("speech"), "降级后的答复")
         self.assertEqual(result.get("_provider_output_raw"), "raw-fallback")
 

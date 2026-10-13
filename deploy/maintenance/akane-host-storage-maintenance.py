@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -137,6 +138,65 @@ def collect_expired_targets(
     ]
 
 
+def prune_expired_qq_media(
+    bot_root: Path, *, older_than_epoch: float, dry_run: bool,
+) -> tuple[dict[str, object] | None, int]:
+    """Prune only old downloaded QQ image and emoji originals, not message DBs."""
+    removed_count = 0
+    reclaimed = 0
+    for bot in _direct_children(bot_root):
+        napcat_root = bot / "napcat"
+        if napcat_root.is_symlink() or not napcat_root.is_dir():
+            continue
+        qq_root = napcat_root / "qq"
+        if qq_root.is_symlink() or not qq_root.is_dir():
+            continue
+        for account in _direct_children(qq_root):
+            if re.fullmatch(r"nt_qq_[0-9a-f]{32}", account.name) is None:
+                continue
+            data_root = account / "nt_data"
+            if data_root.is_symlink() or not data_root.is_dir():
+                continue
+            emoji_root = data_root / "Emoji"
+            media_roots = [data_root / "Pic"]
+            if not emoji_root.is_symlink() and emoji_root.is_dir():
+                media_roots.append(emoji_root / "emoji-recv")
+            for media_root in media_roots:
+                if media_root.is_symlink() or not media_root.is_dir():
+                    continue
+                for month in _direct_children(media_root):
+                    if re.fullmatch(r"\d{4}-\d{2}", month.name) is None:
+                        continue
+                    originals = month / "Ori"
+                    if originals.is_symlink() or not originals.is_dir():
+                        continue
+                    for walk_root, dirs, files in os.walk(originals, followlinks=False):
+                        dirs[:] = [name for name in dirs if not (Path(walk_root) / name).is_symlink()]
+                        for name in files:
+                            candidate = Path(walk_root) / name
+                            try:
+                                if candidate.is_symlink() or not candidate.is_file():
+                                    continue
+                                stat = candidate.stat()
+                                if stat.st_mtime >= older_than_epoch:
+                                    continue
+                                if not dry_run:
+                                    candidate.unlink()
+                            except FileNotFoundError:
+                                continue
+                            removed_count += 1
+                            reclaimed += stat.st_size
+    if not removed_count:
+        return None, 0
+    return {
+        "category": "qq_media_cache",
+        "name": "expired_image_and_emoji_originals",
+        "file_count": removed_count,
+        "bytes_before": reclaimed,
+        "dry_run": dry_run,
+    }, 0 if dry_run else reclaimed
+
+
 def remove_targets(targets: Iterable[RetentionTarget], *, dry_run: bool) -> tuple[list[dict[str, object]], int]:
     removed: list[dict[str, object]] = []
     reclaimed = 0
@@ -251,7 +311,9 @@ def main() -> int:
     parser.add_argument("--keep-releases", type=int, default=3)
     parser.add_argument("--keep-code-backups", type=int, default=2)
     parser.add_argument("--keep-data-backups", type=int, default=2)
-    parser.add_argument("--deploy-backup-days", type=int, default=30)
+    parser.add_argument("--deploy-backup-days", type=int, default=14)
+    parser.add_argument("--bot-root", type=Path, default=Path("/var/lib/akane-host/bots"))
+    parser.add_argument("--qq-media-days", type=int, default=10)
     parser.add_argument("--audit-days", type=int, default=7)
     parser.add_argument("--transport-cache-hours", type=int, default=12)
     parser.add_argument("--artifact-days", type=int, default=7)
@@ -323,6 +385,14 @@ def main() -> int:
         ),
     ]
     removed, reclaimed = remove_targets(targets, dry_run=args.dry_run)
+    media_summary, media_reclaimed = prune_expired_qq_media(
+        args.bot_root,
+        older_than_epoch=now - max(1, args.qq_media_days) * 86400,
+        dry_run=args.dry_run,
+    )
+    if media_summary is not None:
+        removed.append(media_summary)
+    reclaimed += media_reclaimed
     health = disk_health(
         Path("/"),
         warning_free_bytes=max(1, int(args.warning_free_gib * GIB)),

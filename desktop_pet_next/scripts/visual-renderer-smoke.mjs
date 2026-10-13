@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import vm from "node:vm";
+import vm, { petRuntimeSource, petFunctionSource, petFunctions } from "./pet-production-functions.mjs";
 import { createVisualRenderer } from "../src/visual-renderer.js";
 import { observeBubbleLayout } from "../src/bubble-layout.js";
 
@@ -104,12 +104,12 @@ assert.equal(syncs, 3, "cleanup removes the transition listener");
 
 // Execute the actual main-window collector: an interactive bubble must also
 // exist in the native hit region list, and disappear from it when hidden.
-const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-const collector = source.slice(source.indexOf("function collectHitRegions()"), source.indexOf("function buildPetHitRegion()"));
+const source = petRuntimeSource();
+const collector = petFunctionSource("collectHitRegions");
 let visible = true;
 const context = vm.createContext({
   els: { bubble: { classList: { contains: () => visible } }, chatForm: { hidden: true }, menu: { hidden: true } },
-  buildPetHitRegion: () => ({ kind: "pet" }),
+  buildPetHitRegions: () => [{ kind: "pet" }],
   addElementHitRegion: (regions, el, kind) => { if (el) regions.push({ kind }); }
 });
 vm.runInContext(collector, context);

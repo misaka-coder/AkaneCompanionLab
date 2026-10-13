@@ -121,16 +121,15 @@ _LLM_RESULT_NO_ACTIVITY: dict[str, Any] = {k: v for k, v in _LLM_RESULT_WITH_ACT
 class TestLayer1PromptSchema:
     """desktop_pet 的 final prompt 必须允许 activity 字段。"""
 
-    def test_desktop_pet_prompt_contains_activity(self):
+    def test_desktop_pet_prompt_does_not_request_activity(self):
         registry = PromptProfileRegistry()
         profile = registry.get(ClientMode.DESKTOP_PET)
         fast = profile.fast_mode_prompt
         debug = profile.debug_mode_prompt
         combined = "\n".join((profile.system_prompt_override, fast, debug))
-        assert "activity" in combined, f"desktop_pet 协议应说明 activity:\n{combined}"
+        assert "activity" not in combined
         assert '"activity":null' not in fast
         assert '"memory_metadata":{}' not in fast
-        assert "其它回合省略" in profile.system_prompt_override
         assert "没有作用的字段省略" in fast
         assert "memory_tags" not in fast
         assert "memory_tags" not in debug
@@ -307,7 +306,7 @@ class TestLayer3NormalizeFinalOutput:
             "bgm": "",
         }
 
-    def test_desktop_pet_preserves_activity(self, engine_desktop):
+    def test_desktop_pet_discards_model_activity(self, engine_desktop):
         """Layer 3A: LLM 输出 activity → desktop_pet 模式下保留。"""
         result = normalize_final_output(
             engine_desktop,
@@ -320,9 +319,7 @@ class TestLayer3NormalizeFinalOutput:
             user_message="放歌",
         )
         act = result.get("activity")
-        assert act is not None, f"desktop_pet 应保留 activity, keys={list(result.keys())}"
-        assert act["action"] == "play"
-        assert act["source_id"] == "workspace:attachment:audio_001"
+        assert act is None
 
     def test_non_desktop_strips_activity(self, engine_static, engine_qq):
         """Layer 3B: web/QQ 模式下删除 activity。"""
@@ -432,7 +429,7 @@ class TestLayer3NormalizeFinalOutput:
 class TestLayer4Serialization:
     """最终 JSON 序列化不应丢 activity。"""
 
-    def test_final_json_serialization_preserves_activity(self, engine_desktop):
+    def test_final_json_serialization_discards_activity(self, engine_desktop):
         """模拟 engine.py process_turn_stream 最终 yield 前的 payload。"""
         result = normalize_final_output(
             engine_desktop,
@@ -458,11 +455,7 @@ class TestLayer4Serialization:
         serialized = json.dumps(final_payload, ensure_ascii=False)
         deserialized = json.loads(serialized)
 
-        assert "activity" in deserialized, "序列化后 activity 字段应存在"
-        act = deserialized["activity"]
-        assert act["action"] == "play"
-        assert act["source_id"] == "workspace:attachment:audio_001"
-        assert act["target"] == "current"
+        assert "activity" not in deserialized
 
     def test_desktop_pet_output_adapter_preserves_activity(self):
         """DesktopPetOutputAdapter 不应移 activity。"""

@@ -9,7 +9,7 @@ from memcore import build_native_memory_tool_specs
 from capcore import CapabilityToolSpec, SchemaDefinitionError
 
 from companion_v01.capability_adapters import CapabilityDescriptor, CapabilityIOSlot
-from companion_v01 import capability_registry
+from companion_v01.capability_registry_runtime import memory_contracts
 from companion_v01.capability_registry import (
     BROWSE_MEMORY_TOOL_SPEC,
     OPEN_MEMORY_TOOL_SPEC,
@@ -31,7 +31,7 @@ from companion_v01.tool_handlers.catalog import build_builtin_tool_handlers
 class NativeToolSchemaTests(unittest.TestCase):
     def test_missing_memcore_native_contract_has_actionable_error(self) -> None:
         with patch.object(
-            capability_registry,
+            memory_contracts,
             "build_native_memory_tool_specs",
             return_value=[{"name": "retrieve_for_turn"}],
         ):
@@ -41,7 +41,7 @@ class NativeToolSchemaTests(unittest.TestCase):
                         RuntimeError,
                         rf"^memcore_native_tool_contract_missing:{tool_name}$",
                     ):
-                        capability_registry._memcore_tool_contract(tool_name, tool_name)
+                        memory_contracts._memcore_tool_contract(tool_name, tool_name)
 
     def test_build_openai_native_tool_specs_from_handlers(self) -> None:
         class FakeHandler:
@@ -126,12 +126,28 @@ class NativeToolSchemaTests(unittest.TestCase):
             for name, handler in handlers.items()
             if not isinstance(handler.tool_spec(), CapabilityToolSpec)
         ]
-        self.assertEqual(len(handlers), 41)
+        self.assertEqual(len(handlers), 46)
         self.assertNotIn("cover_song", handlers)
         self.assertNotIn("generate_image", handlers)
         self.assertNotIn("convert_media_file", handlers)
         self.assertNotIn("separate_audio_stems", handlers)
         self.assertEqual(missing, [])
+
+    def test_metadata_projection_tracks_tool_spec_semantics(self) -> None:
+        from companion_v01.tool_handlers.core import _project_tool_metadata_from_spec
+
+        updated_spec = replace(
+            TOOL_SPEC_BY_TYPE["web_search"],
+            risk="high",
+            confirm="first_time",
+        )
+
+        metadata = _project_tool_metadata_from_spec(updated_spec)
+
+        self.assertEqual(metadata.family, "web_research")
+        self.assertEqual(metadata.input_schema, updated_spec.input_schema)
+        self.assertEqual(metadata.risk, updated_spec.risk)
+        self.assertTrue(metadata.requires_confirmation)
 
     def test_retired_tools_are_absent_and_sticker_has_one_exact_contract(self) -> None:
         from companion_v01.capability_registry import CapabilityRegistry, SEND_STICKER_TOOL_SPEC
@@ -209,7 +225,7 @@ class NativeToolSchemaTests(unittest.TestCase):
             function["parameters"]["properties"]["targets"]["description"],
         )
 
-    def test_memory_capability_properties_are_package_owned(self) -> None:
+    def test_memory_capability_properties_preserve_package_contract_and_host_scope(self) -> None:
         aliases = {
             "retrieve_for_turn": "retrieve_memory",
             "read_timeline": "read_memory_timeline",
@@ -240,9 +256,32 @@ class NativeToolSchemaTests(unittest.TestCase):
         ):
             with self.subTest(package_name=package_name):
                 package_spec = package_specs[package_name]
+                product_properties = dict(product_spec.input_schema["properties"])
+                package_properties = project_names(package_spec["parameters"]["properties"])
+                # QQ scope is selected and authorized by the host, while the
+                # underlying query, cursor and evidence parameters stay package-owned.
+                self.assertNotIn("cross_conversation", product_properties)
+                conversation = product_properties.pop("conversation")
+                self.assertEqual(conversation["type"], "string")
+                self.assertEqual(conversation["maxLength"], 48)
+                for selector in ('"current"', '"master"', '"group:123456"', "list_memory_conversations"):
+                    self.assertIn(selector, conversation["description"])
+                package_properties.pop("cross_conversation", None)
+                if package_name == "retrieve_for_turn":
+                    # Akane clarifies this pair's coupling in its descriptions;
+                    # the native rendering test above checks that guidance.
+                    for field in ("include_explicit", "kind_patterns"):
+                        product_properties[field] = {
+                            key: value for key, value in product_properties[field].items()
+                            if key != "description"
+                        }
+                        package_properties[field] = {
+                            key: value for key, value in package_properties[field].items()
+                            if key != "description"
+                        }
                 self.assertEqual(
-                    product_spec.input_schema["properties"],
-                    project_names(package_spec["parameters"]["properties"]),
+                    product_properties,
+                    package_properties,
                 )
                 self.assertEqual(
                     product_spec.input_schema["required"],
@@ -381,8 +420,14 @@ class NativeToolSchemaTests(unittest.TestCase):
             ("send_file", send),
         ):
             native = build_openai_native_tool_specs({tool_name: handler})[0]["function"]
+            properties = dict(native["parameters"]["properties"])
+            # Host scheduling is added to the native schema, outside the
+            # file handler's business arguments.
+            background = properties.pop("background")
+            self.assertEqual(background["type"], "boolean")
+            self.assertNotIn("background", native["parameters"].get("required", []))
             self.assertEqual(
-                native["parameters"]["properties"],
+                properties,
                 TOOL_SPEC_BY_TYPE[tool_name].input_schema["properties"],
             )
             self.assertNotIn("格式为", native["description"])

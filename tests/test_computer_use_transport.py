@@ -131,7 +131,7 @@ class ComputerUseTransportTests(unittest.TestCase):
                     self.assertNotIn("computer_use",selection.schema_tool_names)
                     load=normalize_tool_invocation(engine,{"type":"capability_load","capability_ids":["computer_use"]},profile_user_id="owner",session_id="s",capability_selection=selection)
                     result,_=execute_tool_invocation(engine,invocation=load,profile_user_id="owner",session_id="s",visual_payload={},now_ts=1)
-                    reference=json.loads(result.followup_context.split("\n",1)[1])["capabilities"][0]["contract_ref"]
+                    self.assertNotIn("contract_ref",json.loads(result.followup_context.split("\n",1)[1])["capabilities"][0])
                     # Reject through the real loaded route before touching the
                     # live broker, then prove a corrected call can still run.
                     from unittest.mock import patch
@@ -142,7 +142,7 @@ class ComputerUseTransportTests(unittest.TestCase):
                     with patch.object(engine.executor_broker, "execute", side_effect=AssertionError("bad args reached broker")):
                         for carrier in ("computer_use", "capability_invoke"):
                             raw = ({"type":carrier, **bad} if carrier == "computer_use" else
-                                   {"type":carrier,"capability_id":"computer_use","contract_ref":reference,"arguments":bad})
+                                   {"type":carrier,"capability_id":"computer_use","arguments":bad})
                             raw[TOOL_SOURCE_FIELD] = NATIVE_OPENAI
                             if carrier == "capability_invoke":
                                 raw, selected = route_invocation(raw, selection)
@@ -150,14 +150,14 @@ class ComputerUseTransportTests(unittest.TestCase):
                                 # Direct native calls need the same disclosed
                                 # contract binding, not an unloaded placeholder.
                                 _, selected = route_invocation({"type":"capability_invoke", "capability_id":"computer_use",
-                                    "contract_ref":reference,"arguments":bad}, selection)
+                                    "arguments":bad}, selection)
                             invalid = normalize_tool_invocation(engine, raw, capability_selection=selected)
                             rejected, error = execute_tool_invocation(engine, invocation=invalid,
                                 profile_user_id="owner",session_id="s",visual_payload={},now_ts=1)
                             self.assertEqual(error.data["code"], "bad_args")
                             self.assertEqual(error.data["validation"]["error"]["path"], "actions[1].text")
                             self.assertIn("unsupported_text_character_LF", rejected.followup_context)
-                    call,bound=route_invocation({"type":"capability_invoke","capability_id":"computer_use","contract_ref":reference,"arguments":{"action":"list_windows"}},selection)
+                    call,bound=route_invocation({"type":"capability_invoke","capability_id":"computer_use","arguments":{"action":"list_windows"}},selection)
                     invocation=normalize_tool_invocation(engine,call,profile_user_id="owner",session_id="s",capability_selection=bound)
                     results={}
                     worker=threading.Thread(target=lambda:results.update(value=execute_tool_invocation(engine,invocation=invocation,profile_user_id="owner",session_id="s",visual_payload={},now_ts=1)),daemon=True)

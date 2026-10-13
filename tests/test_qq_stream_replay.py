@@ -9,6 +9,62 @@ from tests.test_qq_voice_delivery import FakeQQGateway
 
 
 class QQStreamReplayTests(unittest.TestCase):
+    def test_tool_sent_body_is_reconciled_with_stream_and_final_once(self):
+        for streaming in (True, False):
+            for extra in ("", "这是新的补充。"):
+                with self.subTest(streaming=streaming, extra=extra):
+                    gateway = FakeQQGateway()
+                    receipt = {"type": "qq_visible_action_receipt", "action": "send_group_msg",
+                               "ok": True, "status": "success", "message_id": 77,
+                               "current_conversation_text": "（站起身）\n第一句。第二句！"}
+                    class Engine:
+                        def process_turn_stream(self, payload):
+                            yield {"type": "assistant_stage_decision", "has_tool_call": True}
+                            yield receipt
+                            for text in ["（站起身）\n第一句。", "第二句！", extra]:
+                                if text:
+                                    yield {"type": "speech_segment", "text": text}
+                            yield {"type": "assistant_stage_decision", "has_tool_call": False}
+                            yield {"type": "final_ui", "payload": {
+                                "speech_segments": ["（站起身）\n第一句。第二句！" + extra],
+                                "tool_events": [receipt]}}
+                    _process_qq_turn_streaming(engine=Engine(), qq_gateway=gateway,
+                        context=SimpleNamespace(session_id="group", profile_user_id="owner",
+                                                character_pack_id="", reply_mode="text"),
+                        turn_payload={"message": "测试"},
+                        config_module=SimpleNamespace(QQ_STREAM_REPLIES_ENABLED=streaming))
+                    expected = extra if streaming else extra.rstrip("。")
+                    self.assertEqual(gateway.text_sends, [[expected]] if extra else [])
+
+    def test_final_only_tool_receipt_prevents_replayed_delivery(self):
+        gateway = FakeQQGateway()
+        class Engine:
+            def process_turn_stream(self, payload):
+                yield {"type": "final_ui", "payload": {"speech": "已发出的正文。", "tool_events": [{
+                    "type": "qq_visible_action_receipt", "action": "send_group_msg", "ok": True,
+                    "status": "success", "message_id": 77, "current_conversation_text": "已发出的正文。"}]}}
+        _process_qq_turn_streaming(engine=Engine(), qq_gateway=gateway,
+            context=SimpleNamespace(session_id="group", profile_user_id="owner", character_pack_id="", reply_mode="text"),
+            turn_payload={"message": "测试"}, config_module=SimpleNamespace(QQ_STREAM_REPLIES_ENABLED=False))
+        self.assertEqual(gateway.text_sends, [])
+
+    def test_failed_or_other_chat_tool_receipt_keeps_normal_reply(self):
+        for receipt in (
+            {"ok": False, "status": "failed", "current_conversation_text": "第一句。"},
+            {"ok": True, "status": "success"},
+        ):
+            gateway = FakeQQGateway()
+            event = {"type": "qq_visible_action_receipt", "action": "send_group_msg", **receipt}
+            class Engine:
+                def process_turn_stream(self, payload):
+                    yield event
+                    yield {"type": "speech_segment", "text": "第一句。"}
+                    yield {"type": "final_ui", "payload": {"speech": "第一句。", "tool_events": [event]}}
+            _process_qq_turn_streaming(engine=Engine(), qq_gateway=gateway,
+                context=SimpleNamespace(session_id="group", profile_user_id="owner", character_pack_id="", reply_mode="text"),
+                turn_payload={"message": "测试"}, config_module=SimpleNamespace(QQ_STREAM_REPLIES_ENABLED=True))
+            self.assertEqual(gateway.text_sends, [["第一句。"]])
+
     def test_plugin_progress_reaches_qq_before_model_turn_finishes(self):
         gateway = FakeQQGateway()
         case = self

@@ -3,10 +3,13 @@ from __future__ import annotations
 import re
 from collections import Counter
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Iterable
 
 
 TOKEN_RE = re.compile(r"[\u4e00-\u9fff]+|[A-Za-z0-9_]+")
+_CJK_RUN_RE = re.compile(r"[\u4e00-\u9fff]+")
+_TOKEN_ESTIMATE_CACHE_MAX_CHARS = 4096
 _HASHED_EMBEDDING_PROVIDERS: dict[int, Any] = {}
 
 STOPWORDS = {
@@ -34,6 +37,26 @@ STOPWORDS = {
     "现在",
     "一下",
 }
+
+
+def _count_prompt_tokens(raw: str) -> int:
+    cjk_chars = sum(map(len, _CJK_RUN_RE.findall(raw)))
+    return cjk_chars + (len(raw) - cjk_chars + 3) // 4
+
+
+@lru_cache(maxsize=1024)
+def _estimate_cached_prompt_tokens(raw: str) -> int:
+    return _count_prompt_tokens(raw)
+
+
+def estimate_prompt_tokens(text: str) -> int:
+    """Reuse short text counts while preserving the original estimate exactly."""
+    raw = str(text or "")
+    # Histories reuse individual records; whole prompts and large schemas must
+    # not accumulate in this bounded, process-local numeric cache.
+    if len(raw) <= _TOKEN_ESTIMATE_CACHE_MAX_CHARS:
+        return _estimate_cached_prompt_tokens(raw)
+    return _count_prompt_tokens(raw)
 
 
 def normalize_text(text: str) -> str:

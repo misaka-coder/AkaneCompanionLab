@@ -57,7 +57,6 @@ def instance_env(root: Path, instance_id: str, token: str, port: int) -> dict[st
             "QQ_BRIDGE_ENABLED": "false",
             "EMBEDDING_PROVIDER": "hashed",
             "VISION_ENABLED": "false",
-            "MEMORY_BACKEND": "legacy",
             "ENABLE_SEMANTIC_MEMORY": "false",
         }
     )
@@ -166,12 +165,14 @@ def main() -> int:
                 wait_health(port, instance_id)
 
             for instance_id, _data_root, token, port in specs:
-                denied_status, denied = request_json(f"http://127.0.0.1:{port}/control-center/actions/noop", body={})
+                denied_status, denied = request_json(
+                    f"http://127.0.0.1:{port}/control-center/settings-catalog/DRIFT_PROBABILITY", body={"value": 0.2}
+                )
                 allowed_status, allowed = request_json(
-                    f"http://127.0.0.1:{port}/control-center/actions/noop", token=token, body={}
+                    f"http://127.0.0.1:{port}/control-center/settings-catalog/DRIFT_PROBABILITY", token=token, body={"value": 0.2}
                 )
                 assert denied_status == 401 and denied.get("reason") == "admin_auth_required"
-                assert allowed_status == 200 and allowed.get("status") == "not-implemented"
+                assert allowed_status == 200 and allowed.get("ok") is True
                 assert wait_health(port, instance_id)["instance_id"] == instance_id
 
             matching = run_launcher("instance-a", specs[0][1], specs[0][3])

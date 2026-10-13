@@ -474,7 +474,7 @@ class CapabilityFabricRepairTests(unittest.TestCase):
             finally:
                 background.close(timeout=2.0)
 
-    def test_mcp_offer_requires_real_tool_list_probe_and_caches_lease(self) -> None:
+    def test_known_mcp_offer_uses_declarations_and_failed_refresh_retains_them(self) -> None:
         calls: list[dict[str, Any]] = []
 
         def live_probe(*, server: dict[str, Any]) -> dict[str, Any]:
@@ -503,6 +503,8 @@ class CapabilityFabricRepairTests(unittest.TestCase):
 
         self.assertTrue(adapter.is_live(descriptor.id))
         self.assertTrue(adapter.is_live(descriptor.id))
+        self.assertEqual(len(calls), 0)
+        self.assertTrue(adapter.is_live(descriptor.id, refresh=True))
         self.assertEqual(len(calls), 1)
         self.assertEqual(handler.tool_spec().capability_id, descriptor.id)
         self.assertEqual(handler.tool_metadata().input_schema, handler.tool_spec().input_schema)
@@ -519,6 +521,9 @@ class CapabilityFabricRepairTests(unittest.TestCase):
             liveness_probe=failed_probe,
         )
         offline_descriptor = offline.descriptor_for_tool(tool)
+        self.assertTrue(offline.is_live(offline_descriptor.id, refresh=True))
+        self.assertEqual(offline._discovery_reason, "offline")
+        offline.server_config["enabled"] = False
         self.assertFalse(offline.is_live(offline_descriptor.id))
 
 

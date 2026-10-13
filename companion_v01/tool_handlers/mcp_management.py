@@ -52,7 +52,7 @@ class LoadMcpToolHandler(BaseToolHandler):
         return {"enabled": self.service is not None, "status": "ready" if self.service is not None else "unavailable"}
 
     def build_prompt_instruction(self) -> str:
-        return "- load_mcp：按 server_id 返回当前可见工具的完整契约与 contract_ref；使用 capability_invoke 执行。"
+        return "- load_mcp：按 server_id 返回当前可见工具的用法和参数；使用 capability_invoke 执行。"
 
     def normalize_call(self, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, dict) or str(value.get("type") or "").strip() != self.tool_type:
@@ -99,8 +99,8 @@ class InvokeMcpToolHandler(BaseToolHandler):
 
     def build_prompt_instruction(self) -> str:
         return (
-            "- invoke_mcp：旧名称兼容入口，需要精确 server_id、tool_name、仍有效的 contract_ref 和业务参数；"
-            "缺少当前契约时用 capability_load 或 load_mcp 读取，再通过 capability_invoke 执行。"
+            "- invoke_mcp：兼容入口，需要精确 server_id、tool_name 和业务参数；"
+            "不清楚用法时用 capability_load 或 load_mcp 读取。"
             "历史结果不授予权限；调用沿用目标工具的校验、权限和审批。"
         )
 
@@ -117,7 +117,6 @@ class InvokeMcpToolHandler(BaseToolHandler):
             "server_id": server_id,
             "tool_name": tool_name,
             "arguments": dict(arguments),
-            "contract_ref": str(value.get("contract_ref") or ""),
         }
 
     def execute(self, *, call: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
@@ -127,7 +126,7 @@ class InvokeMcpToolHandler(BaseToolHandler):
                 "ok": False,
                 "status": "unavailable",
                 "reason": "invoke_mcp_target_not_resolved",
-                "recommendedAction": "Use capability_list to find an available exact ID, then capability_load and capability_invoke with its current contract_ref.",
+                "recommendedAction": "Use capability_list to find an available exact ID, then capability_invoke with its business arguments. capability_load provides usage if needed.",
             },
             ensure_ascii=False,
             separators=(",", ":"),

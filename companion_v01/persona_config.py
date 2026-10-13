@@ -17,30 +17,30 @@ class PersonaConfig:
     user_label: str
     trace_prefix: str
     surprise_memory_reason: str
-    router_system_prompt: str
-    router_fast_mode_prompt: str
-    router_debug_mode_prompt: str
-    verifier_system_prompt: str
-    verifier_fast_mode_prompt: str
-    verifier_debug_mode_prompt: str
     final_fast_mode_prompt: str
     final_debug_mode_prompt: str
     final_fallback_thought: str
     final_fallback_speech: str
-    summary_fallback_diary_template: str
-    summary_system_prompt: str
-    summary_user_prompt_template: str
-    semantic_summary_fallback_template: str
-    semantic_summary_system_prompt: str
-    semantic_summary_user_prompt_template: str
-    semantic_reinforcement_system_prompt: str
-    semantic_reinforcement_user_prompt_template: str
+    router_system_prompt: str = ""
+    router_fast_mode_prompt: str = ""
+    router_debug_mode_prompt: str = ""
+    verifier_system_prompt: str = ""
+    verifier_fast_mode_prompt: str = ""
+    verifier_debug_mode_prompt: str = ""
+    summary_fallback_diary_template: str = ""
+    summary_system_prompt: str = ""
+    summary_user_prompt_template: str = ""
+    semantic_summary_fallback_template: str = ""
+    semantic_summary_system_prompt: str = ""
+    semantic_summary_user_prompt_template: str = ""
+    semantic_reinforcement_system_prompt: str = ""
+    semantic_reinforcement_user_prompt_template: str = ""
 
     def build_summary_fallback_diary(self, tags: str) -> str:
-        return self.summary_fallback_diary_template.format(tags=tags)
+        return self.summary_fallback_diary_template.format(tags=tags) if self.summary_fallback_diary_template else ""
 
     def build_semantic_fallback_summary(self, tags: str) -> str:
-        return self.semantic_summary_fallback_template.format(tags=tags)
+        return self.semantic_summary_fallback_template.format(tags=tags) if self.semantic_summary_fallback_template else ""
 
 
 def _resolve_persona_profile_path(path: str | Path | None = None) -> Path:
@@ -104,67 +104,36 @@ def load_persona_config(
     variant_payload = _read_table(variants, selected_variant, context=f"{resolved_path} variants")
 
     meta = _read_table(variant_payload, "meta", context=f"{resolved_path}:{selected_variant}")
-    router = _read_table(variant_payload, "router", context=f"{resolved_path}:{selected_variant}")
-    verifier = _read_table(variant_payload, "verifier", context=f"{resolved_path}:{selected_variant}")
     final = _read_table(variant_payload, "final", context=f"{resolved_path}:{selected_variant}")
-    summary = _read_table(variant_payload, "summary", context=f"{resolved_path}:{selected_variant}")
-    semantic_summary = _read_table(variant_payload, "semantic_summary", context=f"{resolved_path}:{selected_variant}")
-    semantic_reinforcement = _read_table(variant_payload, "semantic_reinforcement", context=f"{resolved_path}:{selected_variant}")
+    router = _read_table(variant_payload, "router", context=f"{resolved_path}:{selected_variant}") if "router" in variant_payload else {}
+    verifier = _read_table(variant_payload, "verifier", context=f"{resolved_path}:{selected_variant}") if "verifier" in variant_payload else {}
+    summary = _read_table(variant_payload, "summary", context=f"{resolved_path}:{selected_variant}") if "summary" in variant_payload else {}
+    semantic_summary = _read_table(variant_payload, "semantic_summary", context=f"{resolved_path}:{selected_variant}") if "semantic_summary" in variant_payload else {}
+    semantic_reinforcement = _read_table(variant_payload, "semantic_reinforcement", context=f"{resolved_path}:{selected_variant}") if "semantic_reinforcement" in variant_payload else {}
 
     return PersonaConfig(
         assistant_name=_read_string(meta, "assistant_name", context="meta"),
         user_label=_read_string(meta, "user_label", context="meta"),
         trace_prefix=_read_string(meta, "trace_prefix", context="meta"),
         surprise_memory_reason=_read_string(meta, "surprise_memory_reason", context="meta"),
-        router_system_prompt=_read_string(router, "system", context="router"),
-        router_fast_mode_prompt=_read_string(router, "fast_mode", context="router"),
-        router_debug_mode_prompt=_read_string(router, "debug_mode", context="router"),
-        verifier_system_prompt=_read_string(verifier, "system", context="verifier"),
-        verifier_fast_mode_prompt=_read_string(verifier, "fast_mode", context="verifier"),
-        verifier_debug_mode_prompt=_read_string(verifier, "debug_mode", context="verifier"),
         final_fast_mode_prompt=_read_string(final, "fast_mode", context="final"),
         final_debug_mode_prompt=_read_string(final, "debug_mode", context="final"),
         final_fallback_thought=_read_string(final, "fallback_thought", context="final"),
         final_fallback_speech=_read_string(final, "fallback_speech", context="final"),
-        summary_fallback_diary_template=_read_string(summary, "fallback_diary_template", context="summary"),
-        summary_system_prompt=_read_string(summary, "system", context="summary"),
-        summary_user_prompt_template=_read_string_or_default(
-            summary,
-            "user_prompt_template",
-            context="summary",
-            default=(
-                "请总结下面这段较早的{batch_size}条对话：\n"
-                "{transcript}\n\n"
-                "要求：简洁、连贯、适合后续记忆检索。\n"
-                "再次强调：importance 只能是数字，不要写成高、中、低。"
-            ),
-        ),
-        semantic_summary_fallback_template=_read_string(semantic_summary, "fallback_template", context="semantic_summary"),
-        semantic_summary_system_prompt=_read_string(semantic_summary, "system", context="semantic_summary"),
-        semantic_summary_user_prompt_template=_read_string_or_default(
-            semantic_summary,
-            "user_prompt_template",
-            context="semantic_summary",
-            default=(
-                "请把下面这组更早的阶段摘要，再压缩成一条长期语义记忆：\n"
-                "{source_text}\n\n"
-                "要求：保留长期稳定事实、反复话题、重要人物和未完成线索；不要写成流水账。\n"
-                "再次强调：importance 只能是 0 到 1 之间的数字。"
-            ),
-        ),
-        semantic_reinforcement_system_prompt=_read_string(semantic_reinforcement, "system", context="semantic_reinforcement"),
-        semantic_reinforcement_user_prompt_template=_read_string_or_default(
-            semantic_reinforcement,
-            "user_prompt_template",
-            context="semantic_reinforcement",
-            default=(
-                "已有长期语义记忆：\n"
-                "{existing_text}\n\n"
-                "新的阶段摘要压缩结果：\n"
-                "{incoming_text}\n\n"
-                "请输出融合后的长期记忆，尽量保留旧的稳定信息，同时吸收新的重复线索。"
-            ),
-        ),
+        router_system_prompt=_read_string_or_default(router, "system", context="router", default=""),
+        router_fast_mode_prompt=_read_string_or_default(router, "fast_mode", context="router", default=""),
+        router_debug_mode_prompt=_read_string_or_default(router, "debug_mode", context="router", default=""),
+        verifier_system_prompt=_read_string_or_default(verifier, "system", context="verifier", default=""),
+        verifier_fast_mode_prompt=_read_string_or_default(verifier, "fast_mode", context="verifier", default=""),
+        verifier_debug_mode_prompt=_read_string_or_default(verifier, "debug_mode", context="verifier", default=""),
+        summary_fallback_diary_template=_read_string_or_default(summary, "fallback_diary_template", context="summary", default=""),
+        summary_system_prompt=_read_string_or_default(summary, "system", context="summary", default=""),
+        summary_user_prompt_template=_read_string_or_default(summary, "user_prompt_template", context="summary", default=""),
+        semantic_summary_fallback_template=_read_string_or_default(semantic_summary, "fallback_template", context="semantic_summary", default=""),
+        semantic_summary_system_prompt=_read_string_or_default(semantic_summary, "system", context="semantic_summary", default=""),
+        semantic_summary_user_prompt_template=_read_string_or_default(semantic_summary, "user_prompt_template", context="semantic_summary", default=""),
+        semantic_reinforcement_system_prompt=_read_string_or_default(semantic_reinforcement, "system", context="semantic_reinforcement", default=""),
+        semantic_reinforcement_user_prompt_template=_read_string_or_default(semantic_reinforcement, "user_prompt_template", context="semantic_reinforcement", default=""),
     )
 
 

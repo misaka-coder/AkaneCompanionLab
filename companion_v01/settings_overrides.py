@@ -1,27 +1,15 @@
-"""Runtime overrides for editable config switches (Settings Catalog · slice B1).
+"""Typed, atomic per-Bot overrides, without editing environment files.
 
-Lets the control center change a *runtime-scope, non-secret* switch without
-editing .env, following the model-service pattern (store + apply + load on
-startup + local-request gate). The store is a small JSON file under
-DATA_DIR/_local; on save we both persist the override and apply it live by
-setting the attribute on the config module (runtime-scope switches are read
-per-use via getattr/config.X, so the change takes effect immediately).
-
-Hard gates (mirrors settings_catalog.is_runtime_editable):
-- only scope=runtime, non-sensitive keys owned by the settings catalog may be
-  set — restart / restart_client switches, secrets, and fields managed by
-  another surface are rejected;
-- values are coerced to the field's declared type, invalid input is rejected
-  with a structured reason rather than written.
-
-Editing is intentionally NOT for secrets, restart-scoped settings, or fields
-managed elsewhere; those stay read-only in the catalog with a link to the owner.
+Runtime keys apply live. The two explicitly allowed private-memory restart
+keys persist desired values and apply only during Bot construction. Secrets,
+other restart keys, and settings owned by other surfaces remain read-only.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -46,6 +34,15 @@ class SettingOverrideError(ValueError):
 class SettingsOverrideStore:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
+        self._lock = threading.RLock()
+
+    def update(self, key: str, value: Any) -> None:
+        # Serialize read/modify/replace so simultaneous settings saves cannot
+        # lose each other's keys or share an in-flight temporary file.
+        with self._lock:
+            overrides = self.load()
+            overrides[key] = value
+            self.save(overrides)
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -147,34 +144,16 @@ def set_override(
     key: str,
     raw_value: Any,
 ) -> Any:
-    """Validate, persist and apply one override. Returns the applied value.
+    """Validate and persist; apply live only for runtime keys. Returns desired value.
     Raises SettingOverrideError (not_editable / invalid_value / unsupported_type)
     without writing anything on failure."""
-    if not settings_catalog.is_runtime_editable(key):
+    if not settings_catalog.is_setting_editable(key):
         raise SettingOverrideError("not_editable")
     value = coerce_value(key, raw_value)
-    overrides = store.load()
-    overrides[key] = value
-    store.save(overrides)
-    setattr(config_module, key, value)
+    store.update(key, value)
+    if settings_catalog.is_runtime_editable(key):
+        setattr(config_module, key, value)
     return value
-
-
-def load_and_apply_saved_overrides(
-    config_module: Any,
-    store: SettingsOverrideStore,
-    *,
-    on_error: Callable[[Exception], None] | None = None,
-) -> dict[str, Any]:
-    """At startup, re-apply saved overrides over the .env-loaded config. Skips
-    any key that is no longer runtime-editable (catalog may have changed) or
-    fails coercion — those are reported via on_error, never crash startup."""
-    overrides = load_saved_overrides(store, on_error=on_error)
-    applied: dict[str, Any] = {}
-    for key, coerced in overrides.items():
-        setattr(config_module, key, coerced)
-        applied[key] = coerced
-    return applied
 
 
 def load_saved_overrides(
@@ -190,13 +169,13 @@ def load_saved_overrides(
         if on_error is not None:
             on_error(exc)
         return {}
-    applied: dict[str, Any] = {}
+    validated: dict[str, Any] = {}
     for key, value in overrides.items():
-        if not settings_catalog.is_runtime_editable(key):
+        if not settings_catalog.is_setting_editable(key):
             continue
         try:
-            applied[key] = coerce_value(key, value)
+            validated[key] = coerce_value(key, value)
         except SettingOverrideError as exc:
             if on_error is not None:
                 on_error(exc)
-    return applied
+    return validated

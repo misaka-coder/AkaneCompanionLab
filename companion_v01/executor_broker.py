@@ -247,10 +247,14 @@ class ExecutorBroker:
                 model_feedback="当前桌面动作没有有效的执行凭据，不能执行。",
             )
         if receipt.offer_expires_at <= float(self._clock()):
+            refresh = getattr(self.offer_source, "refresh_receipt", None)
+            if callable(refresh):
+                receipt = refresh(spec, receipt) or receipt
+        if receipt.offer_expires_at <= float(self._clock()):
             return BrokerExecutionResult(
                 status="unavailable_before_dispatch",
                 reason="offer_expired",
-                model_feedback="当前无法连接桌面执行器，请直接说明这次暂时不能打开网页。",
+                model_feedback="当前桌面执行器不可用，这次桌面操作未执行。",
             )
         clean_invocation_id = str(invocation_id or "").strip()
         if not clean_invocation_id:
@@ -308,7 +312,7 @@ class ExecutorBroker:
             result = BrokerExecutionResult(
                 status="unavailable_before_dispatch",
                 reason="executor_unavailable",
-                model_feedback="当前无法连接桌面执行器，请直接说明这次暂时不能打开网页。",
+                model_feedback="当前桌面执行器不可用，这次桌面操作未执行。",
             )
         else:
             reason = source.validate_receipt(spec, receipt)
@@ -316,7 +320,7 @@ class ExecutorBroker:
                 result = BrokerExecutionResult(
                     status="unavailable_before_dispatch",
                     reason=reason,
-                    model_feedback="当前无法连接桌面执行器，请直接说明这次暂时不能打开网页。",
+                    model_feedback="当前桌面执行器不可用，这次桌面操作未执行。",
                 )
             else:
                 try:
@@ -333,7 +337,7 @@ class ExecutorBroker:
                     result = BrokerExecutionResult(
                         status="execution_unknown",
                         reason="executor_dispatch_failed",
-                        model_feedback="桌面动作的执行结果暂时无法确认，请不要声称网页已经打开。",
+                        model_feedback="桌面动作的执行结果暂时无法确认，请不要声称动作已完成。",
                     )
         with self._lock:
             # Screenshots may be several MB. Keep at most one private image for

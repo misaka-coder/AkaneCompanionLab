@@ -42,9 +42,9 @@ class ComputerUsePermissionTests(unittest.TestCase):
             return SimpleNamespace(status="succeeded", data={"ok": True, "action_state": "executed"})
         invocation = ToolInvocation(id="fixture", name="computer_use", arguments={"action": action},
                                     execution_receipt={"instance_id": "fixture-device"})
-        with patch("companion_v01.tool_orchestration_engine._create_satellite_approval_request", return_value="fixture-approval") as create, \
-             patch("companion_v01.tool_orchestration_engine._satellite_ask_result", return_value=("ask", "envelope")) as ask, \
-             patch("companion_v01.tool_orchestration_engine._satellite_blocked_result", side_effect=lambda spec, call, reason: ("blocked", reason)):
+        with patch("companion_v01.tool_orchestration.permissions._create_satellite_approval_request", return_value="fixture-approval") as create, \
+             patch("companion_v01.tool_orchestration.permissions._satellite_ask_result", return_value=("ask", "envelope")) as ask, \
+             patch("companion_v01.tool_orchestration.permissions._satellite_blocked_result", side_effect=lambda spec, call, reason: ("blocked", reason)):
             result, stopped = dispatch(self.engine, broker=SimpleNamespace(execute=execute), spec=COMPUTER_USE_TOOL_SPEC,
                 invocation=invocation, profile_user_id="qq_group_shared_fixture", session_id="s", client_context=None,
                 request_context={} if actor is None else {"actor_profile_user_id": actor})

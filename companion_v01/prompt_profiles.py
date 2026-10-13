@@ -6,6 +6,7 @@ from typing import Any
 
 from .client_protocol import ClientMode, ClientProtocolContext, normalize_client_mode
 from .prompt_blocks import (
+    CURRENT_ASSISTANT_STATE_MARKER,
     DESKTOP_PET_SYSTEM_BLOCKS,
     QQ_TEXT_SYSTEM_BLOCKS,
     SCENE_LIVE2D_SYSTEM_BLOCKS,
@@ -43,14 +44,11 @@ SCENE_STATIC_PROMPT_MODULES = (
 QQ_TEXT_MODE_PROMPT = """
 当前模式：qq_text。
 常规回复：
-{"emotion":"normal","reply_medium":"text","speech":"主人，我在哦。"}
+{"emotion":"normal","speech":"主人，我在哦。"}
 
 字段含义：
 - emotion：当前表达情绪。
-- reply_medium：QQ 自动投递偏好，可填 text、voice 或 both。代码、长解释、列表和文件说明使用 text；适合朗读的短句可使用 voice 或 both。`qq.reply_delivery` 已固定为 text、voice 或 both 时遵循宿主设置。
 - speech：发送给用户的完整消息正文。
-
-整条响应只输出 JSON 对象；要发送的话只写在 speech 字段内，不要直接输出裸文本。
 
 不需要文字时输出：
 {"speech":""}
@@ -87,6 +85,45 @@ class PromptProfile:
             "fallback_profile_id": self.fallback_profile_id,
             "supports_thought_debug": self.supports_thought_debug,
         }
+
+
+def configure_qq_conversation_prompt(
+    profile: PromptProfile, *, session_id: str, current_actor_relation: str,
+) -> PromptProfile:
+    """Select stable QQ rules without changing the shared base profile."""
+    if getattr(profile, "mode", None) != ClientMode.QQ_TEXT:
+        return profile
+    conversation = str(session_id or "")
+    block_id = (
+        "qq_group_context" if conversation.startswith("qq_group_")
+        else "qq_non_owner_private_relation"
+        if conversation.startswith("qq_pri_") and current_actor_relation == "participant"
+        else ""
+    )
+    scoped_ids = {"qq_group_context", "qq_non_owner_private_relation"}
+    blocks = tuple(key for key in profile.system_block_ids if key not in scoped_ids)
+    if block_id:
+        position = blocks.index("current_assistant_state") if "current_assistant_state" in blocks else len(blocks)
+        blocks = (*blocks[:position], block_id, *blocks[position:])
+    if blocks == profile.system_block_ids:
+        return profile
+    system = profile.system_prompt_override
+    for key in profile.system_block_ids:
+        if key in scoped_ids:
+            system = system.replace(build_system_prompt(key), "").strip()
+    if block_id:
+        text = build_system_prompt(block_id)
+        if CURRENT_ASSISTANT_STATE_MARKER in system:
+            system = system.replace(CURRENT_ASSISTANT_STATE_MARKER, text + "\n\n" + CURRENT_ASSISTANT_STATE_MARKER, 1)
+        else:
+            system = "\n\n".join(part for part in (system, text) if part)
+    # A format example must not address a verified non-owner as the owner.
+    non_owner_private = block_id == "qq_non_owner_private_relation"
+    return replace(
+        profile, system_block_ids=blocks, system_prompt_override=system,
+        fast_mode_prompt=profile.fast_mode_prompt.replace("主人，我在哦。", "你好，我在哦。") if non_owner_private else profile.fast_mode_prompt,
+        debug_mode_prompt=profile.debug_mode_prompt.replace("主人，我在哦。", "你好，我在哦。") if non_owner_private else profile.debug_mode_prompt,
+    )
 
 
 class PromptProfileRegistry:
@@ -131,14 +168,12 @@ class PromptProfileRegistry:
                     "当前模式：desktop_pet。\n"
                     "常规回复：\n"
                     '{"emotion":"normal","speech":"主人，我在哦。"}\n'
-                    '需要明确控制本地或系统音乐时，才追加 activity，例如 {"action":"next","target":"current"}；不要根据用户措辞在宿主侧猜测动作。\n'
                     "其它字段仅在有真实作用时按上文定义追加；没有作用的字段省略。"
                 ),
                 debug_mode_prompt=(
                     "当前模式：desktop_pet（调试输出）。\n"
                     "常规回复：\n"
                     '{"thought":"用户只是和我打招呼，我应该自然回应。","emotion":"normal","speech":"主人，我在哦。"}\n'
-                    '需要明确控制本地或系统音乐时，才追加 activity，例如 {"action":"next","target":"current"}；不要根据用户措辞在宿主侧猜测动作。\n'
                     "其它字段仅在有真实作用时按上文定义追加；没有作用的字段省略。"
                 ),
             ),

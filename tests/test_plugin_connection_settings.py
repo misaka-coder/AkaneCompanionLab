@@ -94,7 +94,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_corrupt_store_and_io_failure_are_structured_and_do_not_overwrite(self):
         self.assertTrue(self.save()["ok"])
-        with patch("companion_v01.local_capability_config._write_capability_config", side_effect=OSError("private-path")):
+        with patch("companion_v01.local_capabilities.storage._write_capability_config", side_effect=OSError("private-path")):
             failed = self.save(expected_revision=1, values={"credential": "replacement"})
         self.assertEqual(failed["reason"], "connection_settings_io_failed")
         self.assertNotIn("private-path", json.dumps(failed))

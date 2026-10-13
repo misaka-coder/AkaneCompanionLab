@@ -187,7 +187,8 @@ class DevelopmentHarness(unittest.TestCase):
             if item["capabilityId"] == "exec_run":
                 command = payload.get("command","").strip()
                 directory_create = re.fullmatch(r"(?:New-Item -ItemType Directory -Path [\w/\\-]+ -Force(?: \| Out-Null)?|mkdir(?: -p)? [\w/\\-]+)",command)
-                self.assertTrue(command in {"Get-Location","(Get-Location).Path","pwd"} or directory_create,
+                directory_inspect = re.fullmatch(r"(?:Get-Location;\s*)?Get-ChildItem(?: -Force)?(?: \| Select-Object Mode,Name)?",command)
+                self.assertTrue(command in {"Get-Location","(Get-Location).Path","pwd"} or directory_create or directory_inspect,
                     "The acceptance owner approves cwd checks and relative project directories; source checks use test_source.")
             if item["capabilityId"] == "manage_extension":
                 self.assertIn(payload.get("action"),{"test_source","stage_source","install","list","discard_stage"})

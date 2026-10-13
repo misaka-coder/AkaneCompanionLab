@@ -75,7 +75,9 @@ class CapabilityExposureTests(unittest.TestCase):
         loaded_result = self.execute(selection, {"type": "capability_load", "capability_ids": ["demo.beta"]})
         loaded = json.loads(loaded_result.followup_context.split("\n", 1)[1])["capabilities"][0]
         self.assertEqual(loaded_result.state_updates, {})
-        call = {"type": "capability_invoke", "capability_id": "demo.beta", "contract_ref": loaded["contract_ref"], "arguments": {"text": "deferred"}}
+        self.assertNotIn("contract_ref", loaded)
+        self.assertNotIn("native_schema", loaded)
+        call = {"type": "capability_invoke", "capability_id": "demo.beta", "arguments": {"text": "deferred"}}
         self.assertEqual(self.execute(selection, call).followup_context, "deferred")
         after_selection = self.select()
         self.assertEqual(before, build_openai_native_tool_specs(after_selection.resolved_handlers, allowed_tool_names=after_selection.schema_tool_names))
@@ -83,55 +85,66 @@ class CapabilityExposureTests(unittest.TestCase):
         self.assertEqual(len(self.beta.calls), 1)
         self.assertEqual(self.execute(after_selection, call).followup_context, "deferred")
 
-    def test_same_schema_new_semantics_rejects_old_native_then_load_invoke_recovers(self):
+    def test_compatible_upgrade_uses_current_handler_and_keeps_published_schema(self):
         initial = self.select()
         published = published_contracts(initial)
         updated = CountingTool("demo.alpha", revision="2")
         self.assertEqual(self.alpha.tool_spec(), updated.tool_spec())
         self.engine.tool_handlers["demo.alpha"] = updated
         current = apply_published_contracts(self.select(), published)
-        failure = self.execute(current, {"type": "demo.alpha", "text": "10"})
-        self.assertEqual(json.loads(failure.followup_context)["reason"], "capability_contract_stale")
-        self.assertEqual(updated.calls, [])
-        loaded = current.capability_catalog.current().load(["demo.alpha"])["capabilities"][0]
-        self.execute(current, {"type": "capability_invoke", "capability_id": "demo.alpha", "contract_ref": loaded["contract_ref"], "arguments": {"text": "10"}})
+        result = self.execute(current, {"type": "demo.alpha", "text": "10"})
+        self.assertEqual(result.followup_context, "10")
         self.assertEqual(len(updated.calls), 1)
-        # Loading the new contract did not change the old native binding.
-        self.assertFalse(json.loads(self.execute(current, {"type": "demo.alpha", "text": "10"}).followup_context)["executed"])
-        new_boundary = self.select()
-        self.assertEqual(self.execute(new_boundary, {"type": "demo.alpha", "text": "10"}).followup_context, "10")
+        self.assertEqual(published_contracts(current), published)
+        self.execute(current, {"type": "capability_invoke", "capability_id": "demo.alpha", "arguments": {"text": "10"}})
         self.assertEqual(len(updated.calls), 2)
 
-    def test_load_then_upgrade_or_revoke_never_executes_stale_binding(self):
+    def test_identical_contract_rebinds_to_fresh_handler_without_reloading(self):
+        initial = self.select()
+        published = published_contracts(initial)
+        updated = CountingTool("demo.alpha", revision="1")
+        self.engine.tool_handlers["demo.alpha"] = updated
+        # Even a selection constructed before replacement must resolve the new executor.
+        frozen = apply_published_contracts(initial, published)
+        self.assertEqual(self.execute(frozen, {"type": "demo.alpha", "text": "new runtime"}).followup_context,
+                         "new runtime")
+        self.assertEqual(len(updated.calls), 1)
+        self.assertEqual(self.alpha.calls, [])
+        self.assertEqual(published_contracts(self.select()), published)
+
+    def test_legacy_carrier_reference_is_ignored_but_live_removal_blocks_execution(self):
         selection = self.select()
-        reference = selection.capability_catalog.load(["demo.alpha"])["capabilities"][0]["contract_ref"]
-        call = {"type": "capability_invoke", "capability_id": "demo.alpha", "contract_ref": reference, "arguments": {"text": "x"}}
+        call = {"type": "capability_invoke", "capability_id": "demo.alpha", "contract_ref": "old-public-reference", "arguments": {"text": "x"}}
         self.alpha.contract_revision = "2"
         result = self.execute(selection, call)
-        self.assertIn("capability_contract_stale", result.followup_context)
-        self.assertEqual(self.alpha.calls, [])
+        self.assertEqual(result.followup_context, "x")
+        self.assertEqual(len(self.alpha.calls), 1)
         self.engine.tool_handlers.pop("demo.alpha")
         result = self.execute(selection, {"type": "demo.alpha", "text": "x"})
         self.assertIn("capability_not_available", result.followup_context)
-        self.assertEqual(self.alpha.calls, [])
+        self.assertEqual(len(self.alpha.calls), 1)
 
-    def test_contract_reference_does_not_cross_session_or_character(self):
+    def test_reference_is_not_authority_or_a_cross_scope_requirement(self):
         selection = self.select()
-        reference = selection.capability_catalog.load(["demo.alpha"])["capabilities"][0]["contract_ref"]
         for other in (self.select(session="other"), self.select(character="other")):
-            result = self.execute(other, {"type": "capability_invoke", "capability_id": "demo.alpha", "contract_ref": reference, "arguments": {"text": "x"}})
-            self.assertIn("capability_contract_stale", result.followup_context)
-        self.assertEqual(self.alpha.calls, [])
+            result = self.execute(other, {"type": "capability_invoke", "capability_id": "demo.alpha", "arguments": {"text": "x"}})
+            self.assertEqual(result.followup_context, "x")
+        self.assertEqual(len(self.alpha.calls), 2)
 
-    def test_actual_execution_rechecks_after_admission(self):
+    def test_admitted_call_pins_implementation_but_still_obeys_removal(self):
         selection = self.select()
-        bound = selection.resolved_handlers["demo.alpha"]
+        bound = selection.resolved_handlers["demo.alpha"].bind_for_execution()
         ctx = ToolExecutionContext(profile_user_id="alice", session_id="s", now_ts=1, visual_payload={})
         admission = bound.admit_execution(call={"type": "demo.alpha", "text": "x"}, context=ctx)
-        self.alpha.contract_revision = "2"
+        updated = CountingTool("demo.alpha", revision="2")
+        self.engine.tool_handlers["demo.alpha"] = updated
         result = bound.execute_admitted(call=admission.call, context=ctx)
-        self.assertIn("capability_contract_stale", result.followup_context)
-        self.assertEqual(self.alpha.calls, [])
+        self.assertEqual(result.followup_context, "x")
+        self.assertEqual(len(self.alpha.calls), 1)
+        self.assertEqual(updated.calls, [])
+        self.engine.tool_handlers.pop("demo.alpha")
+        self.assertIn("capability_not_available", bound.execute_admitted(call=admission.call, context=ctx).followup_context)
+        self.assertEqual(len(self.alpha.calls), 1)
 
     def test_preferences_use_cas_and_old_settings_writers_cannot_undo_them(self):
         stale_settings = load_capability_config(base_dir=self.root, profile_user_id="alice")
@@ -165,23 +178,109 @@ class CapabilityExposureTests(unittest.TestCase):
     def test_child_ceiling_restricts_directory_load_and_invoke_together(self):
         from companion_v01.engine_services.tool_rounds import restrict_capability_selection
         parent = self.select()
-        reference = parent.capability_catalog.load(["demo.beta"])["capabilities"][0]["contract_ref"]
         child = restrict_capability_selection(parent,allowed_tool_names=("demo.alpha","capability_list","capability_load","capability_invoke"))
         result = self.execute(child,{"type":"capability_list"})
         self.assertNotIn("demo.beta",result.followup_context)
         result = self.execute(child,{"type":"capability_load","capability_ids":["demo.beta"]})
         self.assertIn("capability_not_available",result.followup_context)
         result = self.execute(child,{"type":"capability_invoke","capability_id":"demo.beta",
-                                     "contract_ref":reference,"arguments":{"text":"forbidden"}})
+                                     "arguments":{"text":"forbidden"}})
         self.assertEqual(self.beta.calls,[])
         self.assertNotEqual(result.followup_context,"forbidden")
 
-    def test_contract_ref_changes_with_authorization_actor(self):
-        old = self.select()
-        reference = old.capability_catalog.load(["demo.alpha"])["capabilities"][0]["contract_ref"]
-        other = resolve_capability_selection(self.engine,profile_user_id="alice",session_id="s",
-            character_pack_id="a",authorization_profile_user_id="other-actor")
-        result = self.execute(other,{"type":"capability_invoke","capability_id":"demo.alpha",
-                                     "contract_ref":reference,"arguments":{"text":"forbidden"}})
-        self.assertIn("capability_contract_stale",result.followup_context)
-        self.assertEqual(self.alpha.calls,[])
+    def test_execution_does_not_hash_catalog_for_admission_or_dispatch(self):
+        from unittest.mock import patch
+        selection = self.select()
+        with patch("companion_v01.capability_discovery.contract_snapshot", side_effect=AssertionError("no execution snapshots")):
+            result = self.execute(selection, {"type":"demo.alpha", "text":"one"})
+            invoked = self.execute(selection, {"type":"capability_invoke", "capability_id":"demo.alpha", "arguments":{"text":"two"}})
+        self.assertEqual(result.followup_context, "one")
+        self.assertEqual(invoked.followup_context, "two")
+
+    def test_removed_target_returns_a_paired_rejected_envelope(self):
+        selection = self.select()
+        self.engine.tool_handlers.pop("demo.alpha")
+        invocation = normalize_tool_invocation(self.engine, {"type":"demo.alpha", "text":"gone",
+            "_tool_invocation_id":"removed-call"}, profile_user_id="alice", session_id="s", capability_selection=selection)
+        result, envelope = execute_tool_invocation(self.engine, invocation=invocation,
+            profile_user_id="alice", session_id="s", character_pack_id="a", visual_payload={}, now_ts=1)
+        self.assertEqual(envelope.invocation_id, "removed-call")
+        self.assertEqual(envelope.status, "rejected")
+        self.assertFalse(envelope.data["executed"])
+        self.assertTrue(result.capability_result.is_error)
+        self.assertEqual(self.alpha.calls, [])
+
+    def test_current_schema_and_risk_apply_while_display_is_frozen(self):
+        from unittest.mock import patch
+        from capcore import validate_tool_spec_args
+        from companion_v01.capability_registry import ExecutorBroker
+        original = self.select()
+        published = published_contracts(original)
+
+        class CurrentTool(CountingTool):
+            def tool_spec(self):
+                return replace(super().tool_spec(), risk="high", confirm="always", schema_hash="",
+                    input_schema={"type":"object", "additionalProperties":False,
+                        "properties":{"text":{"type":"string"}, "count":{"type":"integer"}},
+                        "required":["text","count"]})
+
+            def normalize_call(self, value):
+                args = self.call_arguments(value)
+                return dict(value) if validate_tool_spec_args(self.tool_spec(), args).ok else None
+
+        current = CurrentTool("demo.alpha", revision="2")
+        self.engine.tool_handlers["demo.alpha"] = current
+        frozen = apply_published_contracts(original, published)
+        rejected = self.execute(frozen, {"type":"demo.alpha", "text":"missing count"})
+        self.assertIn("count", rejected.followup_context)
+        self.assertEqual(current.calls, [])
+        broker = ExecutorBroker(None)
+        self.engine.executor_broker = broker
+        with patch.object(broker, "execute_server_local", wraps=broker.execute_server_local) as dispatch:
+            result = self.execute(frozen, {"type":"demo.alpha", "text":"valid", "count":1})
+        self.assertEqual(result.followup_context, "valid")
+        spec = dispatch.call_args.kwargs["policy_spec"]
+        self.assertEqual((spec.risk, spec.confirm), ("high", "always"))
+        self.assertEqual(published_contracts(frozen), published)
+
+    def test_public_reference_removal_preserves_same_named_business_argument(self):
+        class BusinessTool(CountingTool):
+            def tool_spec(self):
+                spec = super().tool_spec()
+                schema = {**spec.input_schema, "properties":{**spec.input_schema["properties"],
+                    "contract_ref":{"type":"string"}}}
+                return replace(spec, input_schema=schema, schema_hash="")
+
+            def normalize_call(self, value):
+                normalized = super().normalize_call(value)
+                if normalized is not None:
+                    normalized["contract_ref"] = value["contract_ref"]
+                return normalized
+
+        handler = BusinessTool("demo.alpha")
+        self.engine.tool_handlers["demo.alpha"] = handler
+        result = self.execute(self.select(), {"type":"capability_invoke", "capability_id":"demo.alpha",
+            "contract_ref":"obsolete-public-reference", "arguments":{"text":"ok", "contract_ref":"business-17"}})
+        self.assertEqual(result.followup_context, "ok")
+        self.assertEqual(handler.calls[0]["contract_ref"], "business-17")
+
+    def test_scheduling_uses_current_schema_and_preserves_new_business_background(self):
+        original = self.select()
+
+        class BusinessBackground(CountingTool):
+            def tool_spec(self):
+                spec = super().tool_spec()
+                return replace(spec, schema_hash="", input_schema={**spec.input_schema,
+                    "properties":{**spec.input_schema["properties"], "background":{"type":"string"}},
+                    "required":["text", "background"]})
+
+            def normalize_call(self, value):
+                return dict(value)
+
+        current = BusinessBackground("demo.alpha", revision="2")
+        self.engine.tool_handlers["demo.alpha"] = current
+        result = self.execute(original, {"type":"demo.alpha", "text":"ok",
+            "background":"business value", "host_background":False})
+        self.assertEqual(result.followup_context, "ok")
+        self.assertEqual(current.calls[0]["background"], "business value")
+        self.assertNotIn("host_background", current.calls[0])

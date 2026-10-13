@@ -10,6 +10,22 @@ from companion_v01.store import MessageSourceIdCollisionError, MemoryStore
 
 
 class MemoryStoreEvalTurnTests(unittest.TestCase):
+    def test_database_uses_wal_and_allows_writer_while_reader_is_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            with store._connect() as connection:
+                self.assertEqual(connection.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
+                self.assertEqual(connection.execute("PRAGMA busy_timeout").fetchone()[0], 30000)
+                connection.execute("CREATE TABLE wal_probe (value INTEGER NOT NULL)")
+
+            with closing(sqlite3.connect(store.db_path, timeout=0.1)) as reader:
+                reader.execute("BEGIN")
+                reader.execute("SELECT value FROM wal_probe").fetchall()
+                with store._connect() as writer:
+                    writer.execute("PRAGMA busy_timeout = 100")
+                    writer.execute("INSERT INTO wal_probe (value) VALUES (1)")
+                reader.rollback()
+
     def test_attachment_private_source_expires_and_purges_raw_locator(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MemoryStore(Path(temp_dir))

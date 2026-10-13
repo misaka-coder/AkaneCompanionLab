@@ -1,19 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import vm from "node:vm";
+import vm, { petFunctionSource } from "./pet-production-functions.mjs";
 
 // Execute the actual main-window handlers with observational UI/transport ports.
-const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-function handler(name, nextName) {
-  const start = source.indexOf(`function ${name}(`);
-  const next = new RegExp(`\\n(?:async )?function ${nextName}\\(`).exec(source.slice(start));
-  const end = next ? start + next.index : -1;
-  assert.ok(start >= 0 && end > start, `${name} handler boundary`);
-  return source.slice(start, end);
-}
-const endpointStart = source.indexOf("async function handleRealtimeVoiceCallEndpoint(");
-const endpointEnd = source.indexOf("\nfunction showFirstRealtimeVoicePlaybackText(", endpointStart);
-assert.ok(endpointStart >= 0 && endpointEnd > endpointStart);
+const handler = petFunctionSource;
 const effects = [];
 const scope = {
   state: { currentEmotion: "normal" },
@@ -44,7 +33,7 @@ const scope = {
 };
 vm.createContext(scope);
 vm.runInContext([
-  source.slice(endpointStart, endpointEnd),
+  petFunctionSource("handleRealtimeVoiceCallEndpoint"),
   handler("applyRealtimeVoicePresentation", "buildRealtimeVoiceCallCallbacks"),
   handler("buildRealtimeVoiceCallCallbacks", "isActiveRealtimeVoiceCall"),
   handler("buildRealtimeVoiceCallbacks", "markRealtimeVoiceFailure"),
@@ -102,16 +91,19 @@ const beforePresentation = effects.length;
 speakingCallbacks.onPresentation(presentation);
 assert.equal(effects.length, beforePresentation, "Queued audio must not apply actions yet");
 speakingCallbacks.onPlaybackStarted({});
-assert.equal(effects.filter(([kind]) => kind === "activity").length, 1);
+assert.equal(effects.filter(([kind]) => kind === "activity").length, 0, "Reply metadata does not execute retired activity actions");
 assert.equal(effects.filter(([kind]) => kind === "replyEmotion").length, 1);
+assert.equal(speaking.presentationApplied, true);
 speakingCallbacks.onPresentation(presentation);
 speakingCallbacks.onPlaybackStarted({});
-assert.equal(effects.filter(([kind]) => kind === "activity").length, 1, "Later segments must not replay actions");
+assert.equal(effects.filter(([kind]) => kind === "activity").length, 0, "Later segments must not execute retired actions");
+assert.equal(effects.filter(([kind]) => kind === "replyEmotion").length, 2, "Each playing segment can restore the speaking emotion");
 
 const stale = { call, closed: false, hasShownSpeech: true };
 call.turns.add(stale);
+const beforeStale = effects.length;
 scope.buildRealtimeVoiceCallCallbacks(stale).onPresentation(presentation);
-assert.equal(effects.filter(([kind]) => kind === "activity").length, 1, "Old reply cannot override the speaking reply");
+assert.equal(effects.length, beforeStale, "Old reply cannot override the speaking reply");
 speaking.closed = true;
 const afterClose = effects.length;
 speakingCallbacks.onPresentation(presentation);
@@ -119,12 +111,13 @@ speakingCallbacks.onPlaybackStarted({});
 assert.equal(effects.length, afterClose, "Closed turns ignore late UI and audio");
 
 const legacy = { closed: false };
+const beforeLegacy = effects.filter(([kind]) => kind === "replyEmotion").length;
 scope.realtimeVoiceTurn = legacy;
 const legacyCallbacks = scope.buildRealtimeVoiceCallbacks(legacy);
 legacyCallbacks.onPlaybackStarted({});
 legacyCallbacks.onPresentation(presentation);
 legacyCallbacks.onPresentation(presentation);
-assert.equal(effects.filter(([kind]) => kind === "activity").length, 2, "Legacy protocol applies one action");
+assert.equal(effects.filter(([kind]) => kind === "replyEmotion").length, beforeLegacy + 1, "Legacy protocol applies its presentation once");
 scope.realtimeVoiceTurn = {};
 const afterSwitch = effects.length;
 legacyCallbacks.onPlaybackStarted({});
@@ -135,7 +128,8 @@ const textCallbacks = scope.buildRealtimeVoiceCallbacks(textOnly);
 textCallbacks.onPresentation(presentation);
 assert.equal(effects.length, afterSwitch);
 textCallbacks.onResponseCompleted({ speech: "好的。", delivery_status: "text_only" });
-assert.equal(effects.filter(([kind]) => kind === "activity").length, 3);
+assert.equal(effects.filter(([kind]) => kind === "replyEmotion").length, beforeLegacy + 2);
+assert.equal(effects.filter(([kind]) => kind === "activity").length, 0);
 assert.equal(effects.filter(([kind]) => kind === "bubble").at(-1)[1], "好的。");
 const afterTextOnly = effects.length;
 textCallbacks.onResponseCompleted({ speech: "好的。", delivery_status: "text_only" });

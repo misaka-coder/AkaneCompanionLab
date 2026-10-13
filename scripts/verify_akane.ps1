@@ -310,7 +310,7 @@ function Get-AkaneVerificationStages {
             -Command (Add-AkaneCommandArguments -Command $Context.PowerShell -Arguments @(
                 "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                 (Join-Path $ProjectRoot "scripts\bootstrap_akane_windows.ps1"),
-                "-CheckOnly", "-Mode", "Web", "-EnvFile", $verificationEnvFile
+                "-CheckOnly", "-Mode", "Backend", "-EnvFile", $verificationEnvFile
             )) `
             -TimeoutSeconds 300))
         $stages.Add((New-AkaneStage `
@@ -327,6 +327,25 @@ function Get-AkaneVerificationStages {
                 "--prefix", "desktop_pet_next", "run", "smoke:instance-storage"
             )) `
             -TimeoutSeconds 300))
+        $desktopChecks = @(
+            @{ Name = "desktop-pet-boundaries"; Script = "check:pet-runtime"; Description = "Desktop pet module boundaries and unused ports" }
+            @{ Name = "desktop-pet-runtime"; Script = "smoke:pet-runtime"; Description = "Desktop pet composed runtime smoke" }
+            @{ Name = "desktop-workspace-import"; Script = "smoke:workspace-import"; Description = "Desktop workspace import and audio boundaries" }
+            @{ Name = "desktop-window-physics"; Script = "smoke:desktop-window-physics"; Description = "Desktop window physics smoke" }
+            @{ Name = "desktop-workshop-modules"; Script = "smoke:workshop-modules"; Description = "Character workshop module boundaries" }
+            @{ Name = "desktop-workshop-state"; Script = "smoke:workshop-state"; Description = "Character workshop state races" }
+            @{ Name = "desktop-scene-contracts"; Script = "scene:check"; Description = "Scene contracts, module boundaries and TypeScript" }
+            @{ Name = "desktop-scene-tests"; Script = "scene:test"; Description = "Scene component and state tests" }
+        )
+        foreach ($check in $desktopChecks) {
+            $stages.Add((New-AkaneStage `
+                -Name $check.Name `
+                -Description $check.Description `
+                -Command (Add-AkaneCommandArguments -Command $Context.Npm -Arguments @(
+                    "--prefix", "desktop_pet_next", "run", $check.Script
+                )) `
+                -TimeoutSeconds 300))
+        }
         $stages.Add((New-AkaneStage `
             -Name "tauri-tests" `
             -Description "Tauri Rust tests" `

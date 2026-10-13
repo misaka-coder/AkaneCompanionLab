@@ -201,6 +201,160 @@ class ProviderContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "projection_changed"):
             _overlay_ephemeral_provider_evidence([], [message])
 
+    def test_sanitized_tool_arguments_are_aligned_before_the_signed_batch_gate(self):
+        """Host scrubbing of stored arguments must not break signed replay."""
+
+        carrier = {
+            "route": state.route(self.bundle("openai")),
+            "calls": [{"id": "c1", "name": "exec_run",
+                       "arguments": {"command": "echo hello", "apiKey": "opaque-value"}}],
+            "data": {"openai": {"c1": {"google": {"thought_signature": "private"}}}},
+        }
+        durable = {"role": "assistant", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "exec_run", "arguments": '{"command":"echo hello"}'}}]}
+        with self.assertRaisesRegex(ValueError, "batch_changed"):
+            state.overlay(durable, {"c1": carrier})
+        aligned = state.align(carrier, lambda value: {k: v for k, v in value.items() if k.lower() != "apikey"})
+        self.assertNotIn("apiKey", aligned["calls"][0]["arguments"])
+        self.assertEqual(aligned["wire_calls"], carrier["calls"])
+        overlaid = state.overlay(durable, {"c1": aligned})
+        self.assertIn(state.FIELD, overlaid)
+        self.assertEqual(overlaid[state.FIELD]["data"], carrier["data"])
+
+    def test_real_argument_drift_is_still_rejected_after_alignment(self):
+        carrier = {
+            "route": state.route(self.bundle("openai")),
+            "calls": [{"id": "c1", "name": "exec_run",
+                       "arguments": {"command": "echo hello", "apiKey": "opaque-value"}}],
+            "data": {"openai": {"c1": {"google": {"thought_signature": "private"}}}},
+        }
+        aligned = state.align(carrier, lambda value: {k: v for k, v in value.items() if k.lower() != "apikey"})
+        drifted = {"role": "assistant", "tool_calls": [{
+            "id": "c1", "type": "function",
+            "function": {"name": "exec_run", "arguments": '{"command":"echo other"}'}}]}
+        with self.assertRaisesRegex(ValueError, "batch_changed"):
+            state.overlay(drifted, {"c1": aligned})
+
+    def test_scrubbed_openai_replay_restores_original_arguments_only_on_wire(self):
+        original = {"q": "x", "apiKey": "fixture-call-secret"}
+        extra = {"google": {"thought_signature": "fixture-signature"}}
+        bundle = self.bundle("openai")
+        carrier = {"route": state.route(bundle),
+                   "calls": [{"id": "c1", "name": "lookup", "arguments": original}],
+                   "data": {"openai": {"c1": extra}}}
+        aligned = state.align(carrier, lambda value: {k: v for k, v in value.items() if k != "apiKey"})
+        message = state.overlay({"role": "assistant", "tool_calls": [call()]}, {"c1": aligned})
+        sent = []
+        bundle.client.chat = NS(completions=NS(create=lambda **kwargs: sent.append(kwargs)))
+        turns = [message, {"role": "tool", "tool_call_id": "c1", "content": "done"}]
+        payload = self.runtime._build_completion_kwargs(bundle=bundle, system_prompt="system", user_prompt="lookup",
+            temperature=1, post_user_turns=turns, native_tools=self.tools)
+        persistent = self.runtime._persistent_turn_messages_from_payload(payload=payload, bundle=bundle,
+            history_turns=None, ephemeral_turns=None, post_user_turns=turns)
+        observed = []
+        self.runtime._observe_completion_request(bundle=bundle, payload=payload, observer=observed.append,
+            persistent_turn_messages=persistent)
+        self.runtime._create_completion(bundle=bundle, payload=payload)
+        wire_message = next(item for item in sent[0]["messages"] if item.get("tool_calls"))
+        wire_call = wire_message["tool_calls"][0]
+        self.assertEqual(json.loads(wire_call["function"]["arguments"]), original)
+        self.assertEqual(wire_call["extra_content"], extra)
+        self.assertNotIn(state.FIELD, wire_message)
+        self.assertNotIn("fixture-call-secret", json.dumps(state.public_message(message)))
+        self.assertNotIn("fixture-call-secret", json.dumps(observed))
+        self.assertNotIn("fixture-signature", json.dumps(observed))
+        self.assertEqual(carrier["calls"][0]["arguments"], original)
+
+    def test_scrubbed_native_replay_keeps_original_blocks_for_each_adapter(self):
+        arguments = {"q": "x", "apiKey": "fixture-call-secret"}
+        parts = [{"functionCall": {"id": "c1", "name": "lookup", "args": arguments},
+                  "thoughtSignature": "fixture-signature"}]
+        blocks = [{"type": "thinking", "thinking": "checking", "signature": "fixture-signature"},
+                  {"type": "tool_use", "id": "c1", "name": "lookup", "input": arguments}]
+        output = [{"type": "reasoning", "id": "r1", "summary": [], "encrypted_content": "fixture-signature"},
+                  {"type": "function_call", "id": "f1", "call_id": "c1", "name": "lookup",
+                   "arguments": json.dumps(arguments)}]
+        for protocol, data in (("gemini", parts), ("anthropic", blocks), ("responses", output)):
+            with self.subTest(protocol=protocol):
+                bundle = self.bundle(protocol)
+                carrier = {"route": state.route(bundle),
+                           "calls": [{"id": "c1", "name": "lookup", "arguments": arguments}],
+                           "data": {protocol: data}}
+                message = {"role": "assistant", "tool_calls": [call()]}
+                if protocol == "anthropic":
+                    message = {"role": "assistant", "content": [{"type": "tool_use", "id": "c1",
+                        "name": "lookup", "input": {"q": "x"}}]}
+                message = state.overlay(message, {"c1": carrier},
+                    sanitize=lambda value: {k: v for k, v in value.items() if k != "apiKey"})
+                self.assertNotIn("wire_calls", message[state.FIELD])
+                normalized = self.runtime._normalize_post_user_turn_for_payload(message, bundle=bundle)
+                if protocol == "gemini":
+                    self.assertEqual(_build_gemini_payload({"model": "test-model", "messages": [normalized]})
+                                     ["contents"][0]["parts"], parts)
+                elif protocol == "anthropic":
+                    self.assertEqual(_build_anthropic_payload({"model": "test-model", "messages": [normalized]})
+                                     ["messages"][0]["content"], blocks)
+                else:
+                    wire = self.runtime._responses_input_from_messages([normalized,
+                        {"role": "tool", "tool_call_id": "c1", "content": "done"}])
+                    self.assertEqual(wire[:2], output)
+                    self.assertEqual(wire[2]["type"], "function_call_output")
+                self.assertNotIn("fixture-call-secret", json.dumps(state.public_message(normalized)))
+
+    def test_parallel_replay_aligns_shared_carrier_once_across_history_refreshes(self):
+        calls = [{"id": identity, "name": "lookup", "arguments": {"q": identity, "apiKey": "fixture-secret"}}
+                 for identity in ("c1", "c2")]
+        carrier = {"route": state.route(self.bundle("openai")), "calls": calls,
+                   "data": {"openai": {"c1": {"google": {"thought_signature": "fixture-signature"}}}}}
+        states = {item["id"]: carrier for item in calls}
+        message = {"role": "assistant", "tool_calls": [{"id": item["id"], "type": "function",
+            "function": {"name": "lookup", "arguments": json.dumps({"q": item["id"]})}} for item in calls]}
+        sanitized = []
+        def scrub(value):
+            sanitized.append(value)
+            return {k: v for k, v in value.items() if k != "apiKey"}
+
+        for _ in range(3):
+            overlaid = state.overlay(message, states, sanitize=scrub)
+            wire = state.chat_wire_message(overlaid)
+            self.assertEqual([json.loads(item["function"]["arguments"]) for item in wire["tool_calls"]],
+                             [item["arguments"] for item in calls])
+        self.assertEqual(len(sanitized), 2)
+        self.assertIs(states["c1"], states["c2"])
+        self.assertNotIn("fixture-secret", json.dumps(state.public_message(overlaid)))
+
+    def test_host_tool_trace_projection_survives_credential_scrubbing(self):
+        """The real durable path must reproduce a scrubbed signed batch."""
+
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        projection = {"ok": True, "messages": [
+            {"turn_id": "turn",
+             "payload": {"role": "assistant", "tool_calls": [{
+                 "id": "c1", "type": "function",
+                 "function": {"name": "exec_run", "arguments": '{"command":"echo hello"}'}}]},
+             "source_ids": ["0"]},
+            {"turn_id": "turn",
+             "payload": {"role": "tool", "tool_call_id": "c1", "content": "done"},
+             "source_ids": ["1"]},
+        ]}
+        engine.memcore_manager = NS(build_open_turn_projection=lambda **kwargs: deepcopy(projection))
+        carrier = {
+            "route": state.route(self.bundle("openai")),
+            "calls": [{"id": "c1", "name": "exec_run",
+                       "arguments": {"command": "echo hello", "apiKey": "opaque-value"}}],
+            "data": {"openai": {"c1": {"google": {"thought_signature": "private"}}}},
+        }
+        history = []
+        result = engine._append_tool_history_batch(
+            tool_history_turns=history,
+            items=[({"type": "exec_run", "_tool_source": "native_openai"}, ToolExecutionResult(tool_type="exec_run"), "done")],
+            trace_source_ids=["0", "1"], provider_profile="openai", profile_user_id="u", session_id="s",
+            character_pack_id="p", memcore_turn_id="turn", provider_continuations={"c1": carrier})
+        self.assertTrue(result["ok"], result)
+        self.assertIn(state.FIELD, history[0])
+        self.assertNotIn("apikey", json.dumps(state.public_message(history[0])).lower())
+
     def test_parallel_batch_through_real_memcore_retains_only_private_wire_state(self):
         from tests.test_memcore_integration import _FakeLLM, _FakeEmbeddingProvider
         from companion_v01.memcore_integration.manager import MemcoreManager

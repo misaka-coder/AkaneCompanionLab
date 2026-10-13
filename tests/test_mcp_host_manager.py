@@ -405,7 +405,7 @@ class McpManagementServiceTests(unittest.TestCase):
             context=ToolExecutionContext(profile_user_id="owner", session_id="s", now_ts=1,
                 visual_payload={}, client_mode="qq", capability_selection=selection))
         self.assertIn('"input_schema"', result.followup_context)
-        self.assertIn('"contract_ref"', result.followup_context)
+        self.assertNotIn('"contract_ref"', result.followup_context)
         self.assertEqual(result.state_updates, {})
         self.assertEqual(before, selection.schema_tool_names)
 
@@ -449,6 +449,15 @@ class McpManagementServiceTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["options"]["items"]["enum"], ["open", "closed"])
         self.assertEqual(schema["required"], ["field_29", "options"])
         self.assertFalse(schema["additionalProperties"])
+
+    def test_discovery_preserves_standard_annotations_and_output_schema(self) -> None:
+        hints = {"title":None, "readOnlyHint":True, "destructiveHint":False,
+                 "idempotentHint":None, "openWorldHint":False}
+        output = {"type":"object", "properties":{"count":{"type":"integer"}}, "required":["count"]}
+        payload = normalize_mcp_tool_discovery_payload("demo", {"tools":[{
+            "name":"count", "inputSchema":{"type":"object"}, "annotations":hints, "outputSchema":output}]})
+        self.assertEqual(payload["tools"][0]["annotations"], hints)
+        self.assertEqual(payload["tools"][0]["outputSchema"], output)
 
     def test_prompt_catalog_is_stable_until_config_changes(self) -> None:
         self.service.configure(

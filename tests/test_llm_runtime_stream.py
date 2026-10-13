@@ -2,11 +2,62 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from companion_v01.llm_runtime import LLMRuntime, _TopLevelJSONStreamTap
+from companion_v01.model_request_control import ModelRequestCancelled
 
 
 class TopLevelJSONStreamTapTests(unittest.TestCase):
+    def test_stream_timing_separates_preparation_reasoning_and_text_without_logging_content(self) -> None:
+        for cancelled in (False, True):
+            with self.subTest(cancelled=cancelled):
+                runtime = LLMRuntime.__new__(LLMRuntime)
+                clock = [10.0]
+                def build_request(**_kwargs):
+                    clock[0] = 15.0
+                    return {"extra_body": {"thinking": {"type": "enabled"}, "reasoning_effort": "max"},
+                        "messages": [{"role": "user", "content": "private user prompt"}]}
+                def chunks():
+                    clock[0] = 17.0
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=""))])
+                    clock[0] = 18.0
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+                        content="", reasoning_content="private provider reasoning"))])
+                    if cancelled:
+                        clock[0] = 20.0
+                        raise ModelRequestCancelled("test cancellation")
+                    clock[0] = 19.0
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+                        content='{"speech":"private reply","tool_call":null}'))])
+                    clock[0] = 20.0
+                runtime._build_completion_kwargs = build_request
+                runtime._observe_completion_request = lambda **_kwargs: None
+                runtime._persistent_turn_messages_from_payload = lambda **_kwargs: []
+                runtime._create_completion = lambda **_kwargs: chunks()
+                runtime._record_stream_cache_metrics = lambda *_args, **_kwargs: None
+                runtime._close_stream = Mock()
+                runtime._record_metric = lambda *_args, **_kwargs: None
+                generator = runtime._stream_chat_json(bundle=SimpleNamespace(model="deepseek-flash"),
+                    system_prompt="system", user_prompt="user", fallback={"speech": "fallback"},
+                    temperature=0.0, early_tool_call_validator=None, prompt_cache_key="test:timing")
+                with patch("time.perf_counter", side_effect=lambda: clock[0]), \
+                     patch("companion_v01.model_runtime.stream_calls.logger.info") as info:
+                    if cancelled:
+                        with self.assertRaises(ModelRequestCancelled):
+                            list(generator)
+                    else:
+                        list(generator)
+                runtime._close_stream.assert_called_once()
+                info.assert_called_once()
+                message = info.call_args.args[0] % info.call_args.args[1:]
+                self.assertIn("thinking=enabled effort=max", message)
+                self.assertIn("first_chunk_ms=2000.0 first_reasoning_ms=3000.0", message)
+                self.assertIn("first_text_ms=None" if cancelled else "first_text_ms=4000.0", message)
+                self.assertIn("stream_ms=5000.0", message)
+                self.assertIn("status=cancelled" if cancelled else "status=completed", message)
+                self.assertNotIn("private", message)
+
     def test_closed_sentence_reaches_delivery_before_metadata(self) -> None:
         tap = _TopLevelJSONStreamTap()
         events = tap.feed('{"speech":"\\uD83D')
@@ -51,6 +102,37 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertEqual(result.metadata_status, "missing")
         self.assertFalse(result.metadata_present)
         self.assertNotEqual(result.raw_text, '{"speech": "在的。", "emotion": "happy"}')
+
+    def test_sync_native_tool_progress_keeps_plain_and_current_format_text(self) -> None:
+        calls = [{"type": "project_inspect", "query": "alpha"},
+                 {"type": "project_inspect", "query": "beta"}]
+        for raw_text in (
+            "我先查一下。",
+            '{"utterances":[{"text":"我先查一下。","say":"確認します。"}],'
+            '"memory_metadata":{"topic_terms":["只供入库"]}}',
+        ):
+            with self.subTest(raw_text=raw_text):
+                runtime = self._sync_runtime(raw_text)
+                runtime._extract_native_tool_calls = lambda *_args, **_kwargs: calls
+                result = runtime._call_json_result(
+                    bundle=SimpleNamespace(), system_prompt="system", user_prompt="user",
+                    fallback={"speech": "fallback"}, temperature=0.0, prompt_cache_key="",
+                )
+
+                self.assertEqual(result.parsed["speech"], "我先查一下。")
+                self.assertEqual(result.parsed["_native_tool_calls"], calls)
+                self.assertEqual(result.raw_text, raw_text)
+                self.assertIsNone(result.parsed["tool_call"])
+                self.assertNotIn("memory_metadata", result.parsed)
+                self.assertFalse(result.fallback_used)
+
+    def test_structured_native_progress_uses_display_text_and_keeps_complete_sentences(self) -> None:
+        raw_text = (
+            '{"utterances":[{"text":"我先查一下。后半","say":"不要展示的配音。"}],'
+            '"speech":"旧投影。","memory_metadata":{"topic_terms":["不要展示的标注。"]}}'
+        )
+        self.assertEqual(LLMRuntime._native_preface_text_from_content(raw_text), "我先查一下。")
+        self.assertEqual(LLMRuntime._native_preface_text_from_content('{"utterances":[]}'), "")
 
     def test_sync_model_metadata_object_is_accepted_even_when_empty(self) -> None:
         runtime = self._sync_runtime('{"speech":"在的。","memory_metadata":{}}')
@@ -125,16 +207,14 @@ class TopLevelJSONStreamTapTests(unittest.TestCase):
         self.assertEqual(tap.latest_speech, "")
         self.assertEqual(tap.finish(), [])
 
-    def test_emits_delivery_hint_before_speech_when_reply_medium_closes(self) -> None:
+    def test_retired_delivery_field_does_not_control_streaming(self) -> None:
         tap = _TopLevelJSONStreamTap()
 
         events = tap.feed('{"emotion":"happy","reply_medium":"voice","speech":"第一句。')
 
-        self.assertIn({"type": "delivery_hint", "medium": "voice"}, events)
-        self.assertEqual(tap.latest_reply_medium, "voice")
-        delivery_index = events.index({"type": "delivery_hint", "medium": "voice"})
-        first_speech_index = next(index for index, event in enumerate(events) if event.get("type") == "speech_chunk")
-        self.assertLess(delivery_index, first_speech_index)
+        self.assertFalse(any(event.get("type") == "delivery_hint" for event in events))
+        self.assertTrue(any(event.get("type") == "speech_chunk" for event in events))
+        self.assertEqual(tap.latest_speech, "第一句。")
 
     def test_legacy_array_cannot_override_speech_field(self) -> None:
         tap = _TopLevelJSONStreamTap()

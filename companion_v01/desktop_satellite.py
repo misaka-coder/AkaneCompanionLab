@@ -8,7 +8,7 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping
 
 from fastapi import WebSocket
@@ -181,6 +181,14 @@ class DesktopSatelliteService:
                 schema_version=spec.schema_version,
                 schema_hash=spec.schema_hash,
             )
+
+    def refresh_receipt(self, spec: CapabilityToolSpec, receipt: ExecutionReceipt) -> ExecutionReceipt | None:
+        """Renew time on the same live offer, never bind a frozen call to a new device."""
+        with self._lock:
+            current = self.resolve_receipt(spec)
+            if current is None or replace(current, offer_expires_at=receipt.offer_expires_at) != receipt:
+                return None
+            return current
 
     def validate_receipt(self, spec: CapabilityToolSpec, receipt: ExecutionReceipt) -> str:
         with self._lock:
@@ -807,6 +815,12 @@ class BotScopedDesktopSatelliteOfferSource:
             schema_version=receipt.schema_version,
             schema_hash=receipt.schema_hash,
         )
+
+    def refresh_receipt(self, spec: CapabilityToolSpec, receipt: ExecutionReceipt) -> ExecutionReceipt | None:
+        if receipt.instance_id != self.instance_id:
+            return None
+        current = self.service.refresh_receipt(spec, self._host_receipt(receipt))
+        return replace(current, instance_id=self.instance_id) if current is not None else None
 
     def validate_receipt(self, spec: CapabilityToolSpec, receipt: ExecutionReceipt) -> str:
         if receipt.instance_id != self.instance_id:

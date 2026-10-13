@@ -584,7 +584,6 @@ class LLMClientConfigTests(unittest.TestCase):
                 error="",
                 latest_emotion="",
                 latest_speech="主动推送已恢复",
-                latest_reply_medium="text",
                 fallback_used=False,
             )
 
@@ -2874,6 +2873,111 @@ class ResponseTruncationDetectionTests(unittest.TestCase):
         self.assertEqual(result.error, "response_truncated")
         self.assertEqual(result.finish_reason, "length")
         self.assertIn("半截", result.raw_text)
+
+
+class ProviderFinishReasonDiagnosticsTests(unittest.TestCase):
+    def _runtime(self, response):
+        runtime = LLMRuntime.__new__(LLMRuntime)
+        runtime._metrics = {}
+        runtime._metrics_lock = threading.Lock()
+        runtime._last_error = {}
+        runtime._last_error_lock = threading.Lock()
+        runtime._build_completion_kwargs = lambda **_kwargs: {}
+        runtime._observe_completion_request = lambda **_kwargs: None
+        runtime._record_cache_metrics = lambda *_args, **_kwargs: None
+        runtime._close_stream = lambda *_args, **_kwargs: None
+        runtime._create_completion = lambda **_kwargs: response
+        return runtime
+
+    def _call(self, runtime, *, stream=False):
+        kwargs = dict(
+            bundle=ModelBundle(client=SimpleNamespace(), model="test"),
+            system_prompt="system", user_prompt="user",
+            fallback={"speech": "host fallback"}, temperature=0.0, prompt_cache_key="",
+        )
+        if not stream:
+            return runtime._call_json_result(**kwargs)
+        iterator = runtime._stream_chat_json(**kwargs, early_tool_call_validator=None)
+        while True:
+            try:
+                next(iterator)
+            except StopIteration as stopped:
+                return stopped.value
+
+    def test_nonstream_retains_upstream_failure_without_transport_error(self):
+        response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="stop",
+            native_finish_reason="MALFORMED_FUNCTION_CALL",
+        )])
+        runtime = self._runtime(response)
+        with self.assertLogs("akane.llm_runtime", level="WARNING") as logs:
+            result = self._call(runtime)
+        self.assertEqual(result.finish_reason, "stop")
+        self.assertEqual(result.native_finish_reason, "malformed_function_call")
+        self.assertEqual(result.error, "")  # Keep the existing invalid-decision retry path.
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(result.parsed, {"speech": "host fallback"})
+        self.assertEqual(runtime.snapshot_last_error()["type"], "ProviderMalformedFunctionCall")
+        self.assertEqual(runtime.snapshot_metrics()["provider_malformed_function_call"], 1)
+        self.assertIn("native_finish_reason=malformed_function_call", " ".join(logs.output))
+
+    def test_stream_usage_tail_does_not_erase_native_reason(self):
+        from openai.types.chat import ChatCompletionChunk
+
+        chunk = ChatCompletionChunk(
+            id="diagnostic", created=0, model="test", object="chat.completion.chunk",
+            choices=[{"index": 0, "delta": {"content": ""}, "finish_reason": "stop",
+                      "native_finish_reason": "malformed_function_call"}],
+        )
+        runtime = self._runtime([chunk, SimpleNamespace(choices=[], usage=None)])
+        with self.assertLogs("akane.llm_runtime", level="WARNING"):
+            result = self._call(runtime, stream=True)
+        self.assertEqual(result.finish_reason, "stop")
+        self.assertEqual(result.native_finish_reason, "malformed_function_call")
+        self.assertEqual(result.error, "")
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(runtime.snapshot_last_error()["type"], "ProviderMalformedFunctionCall")
+        self.assertEqual(runtime.snapshot_metrics()["provider_malformed_function_call"], 1)
+
+    def test_normal_reply_and_empty_reply_keep_existing_diagnostics(self):
+        for content in ('{"speech":"ok"}', ""):
+            with self.subTest(content=content):
+                runtime = self._runtime(SimpleNamespace(choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=content), finish_reason="stop",
+                    native_finish_reason="stop",
+                )]))
+                result = self._call(runtime)
+                self.assertEqual(result.native_finish_reason, "stop")
+                self.assertNotIn("provider_malformed_function_call", runtime.snapshot_metrics())
+                if content:
+                    self.assertFalse(result.fallback_used)
+                    self.assertEqual(result.parsed["speech"], "ok")
+                else:
+                    self.assertTrue(result.fallback_used)
+                    self.assertEqual(runtime.snapshot_last_error()["type"], "ChatJSONFallback")
+
+    def test_reason_reader_handles_dicts_missing_fields_and_untrusted_text(self):
+        cases = [
+            ({"choices": [{"native_finish_reason": "MALFORMED_FUNCTION_CALL"}]},
+             "malformed_function_call"),
+            ({"choices": [{"finish_reason": "stop"}]}, ""),
+            ({"choices": None}, ""),
+            (None, ""),
+            ({"choices": [{"native_finish_reason": "stop\nAuthorization: sk-secret"}]}, ""),
+            ({"choices": [{"native_finish_reason": "x" * 1000}]}, ""),
+        ]
+        for response, expected in cases:
+            with self.subTest(response=response):
+                self.assertEqual(LLMRuntime._response_finish_reason(response, native=True), expected)
+
+    def test_standard_malformed_reason_is_also_identified(self):
+        runtime = self._runtime(SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=""), finish_reason="malformed_function_call",
+        )]))
+        with self.assertLogs("akane.llm_runtime", level="WARNING"):
+            result = self._call(runtime)
+        self.assertEqual(result.native_finish_reason, "")
+        self.assertEqual(runtime.snapshot_last_error()["type"], "ProviderMalformedFunctionCall")
 
 
 class ChatJSONFallbackSampleTests(unittest.TestCase):

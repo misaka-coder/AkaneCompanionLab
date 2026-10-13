@@ -1,0 +1,15 @@
+# Pure text/API backend. Optional vector, document, media and browser packages
+# remain in requirements-runtime.txt; local ML remains in requirements-ml.txt.
+fastapi
+python-multipart
+uvicorn
+openai
+requests
+PyYAML
+mcp>=1.27,<2
+pydantic-settings
+# Image contracts are shared by the host even when no image model is enabled.
+Pillow>=10,<13
+tzdata
+json-repair
+regex>=2024.11,<2027

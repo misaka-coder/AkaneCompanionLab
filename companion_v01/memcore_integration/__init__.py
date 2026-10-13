@@ -1,8 +1,8 @@
 """Akane -> memcore bridge.
 
-memcore is Akane's primary dialogue memory backend. The bridge stays lazy so
-tests and explicit ``MEMORY_BACKEND=legacy`` runs can still boot without loading
-the sibling package.
+MemCore is Akane's authoritative host dialogue memory. Package imports remain
+lazy for isolated tests and programmatic migration adapters; legacy memory
+selection is not a supported host environment setting.
 """
 
 from __future__ import annotations

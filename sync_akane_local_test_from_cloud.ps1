@@ -35,7 +35,6 @@ $allowlist = @(
     "VISION_MODEL_NAME",
     "CHAT_SUPPORTS_IMAGES",
     "EXECUTION_ENABLED",
-    "MEMORY_BACKEND",
     "MEMCORE_OPERATION_PROJECTION_POLICY"
 )
 $allowlistJson = $allowlist | ConvertTo-Json -Compress
@@ -85,7 +84,7 @@ try {
 
 $required = @(
     "VISION_API_KEY", "VISION_API_PROTOCOL", "VISION_BASE_URL", "VISION_ENABLED", "VISION_MODEL_NAME",
-    "EXECUTION_ENABLED", "MEMORY_BACKEND"
+    "EXECUTION_ENABLED"
 )
 foreach ($name in $required) {
     $property = $payload.PSObject.Properties[$name]

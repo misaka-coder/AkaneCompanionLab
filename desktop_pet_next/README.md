@@ -1,243 +1,100 @@
 # Akane Desktop Pet Next
 
-This is an isolated Tauri/WebView2 prototype line for the Akane desktop pet. It does not replace or import the stable Electron implementation in `desktop_pet/`.
+Tauri/WebView2 是唯一桌宠主线；旧 Electron、后端提供的旧 Web 聊天与预览页已移除。开发仍使用本目录的 Vite、浏览器测试与 Tauri。清理范围见 [前置清理记录](../docs/frontend_cleanup_preparation_v1.md)。
+先看 [开发入口](../docs/DEVELOPMENT.md)，交互插件参考 [五子棋完整链路](../examples/desktop_features/gomoku/README.md)。
 
 ## Quick Start
 
+普通用户使用根目录 `启动_Akane.bat`。本目录命令用于源码开发：
+
 ```powershell
-# 1. From the repository root, start the Python backend (separate terminal)
+# 仓库根目录；另一个终端运行后端
 python launch_akane_memory_v01.py
 
-# 2. Enter the Next prototype and install Node dependencies
 cd desktop_pet_next
 npm install
-
-# 3. Launch the desktop pet (dev mode with hot reload)
 npm run tauri -- dev
 ```
 
-Default backend URL: `http://127.0.0.1:9999`. Change it from the right-click menu or settings window.
+独立源码后端默认 `http://127.0.0.1:9999`。已运行的命名实例使用自己的端口，开发前确认连接的后端与当前实例/Bot 一致。
+`npm run doctor` 检查 Node、Rust、WebView2 和后端可达性；具体功能接线检查见下文。
 
-For release builds or packaging smoke tests, see the [Commands](#commands) and [Daily Smoke Test](#daily-smoke-test) sections below.
+## 当前入口
 
-## Scope
+| 需要修改什么 | 实现 |
+|---|---|
+| 主窗口初始化、控制器组合 | `src/main.js` → `src/pet/application.js` |
+| 聊天、流式回复、工具轮 | `src/pet/chat.js` |
+| 气泡、表情、语音表现 | `src/pet/bubble.js`、`voice.js`、`tts.js`、`src/visual-renderer.js` |
+| 客户端状态、切换与旧响应 | `src/pet/state.js`、`scope.js`、`lifecycle.js` |
+| 设置 | `control-center-lab.html` → `src/control-center-v2/`；主窗口命令在 `src/pet/settings.js` |
+| 工作区 | `workspace.html` → `src/workspace/` |
+| 菜单、独立面板 | `src/pet/ui.js`、`panel.js`、`src/panel.js` |
+| 五子棋 | `gomoku.html`、`src/gomoku.js`、`src/pet/gomoku.js`、`plugins/akane_gomoku/` |
+| 原生窗口、命令和桥接 | `src-tauri/src/main.rs`、`pet_windows/`、`backend/` |
+| 多页打包、窗口权限 | `vite.config.js`、`src-tauri/capabilities/*.json` |
 
-- Transparent, frameless, always-on-top Tauri window using the Electron pet's 340x560 base size.
-- Creator Kit character metadata is loaded from `../desktop_pet_creator_kit/characters/` at build time and refreshed from disk at runtime in the Tauri app.
-- Catgirl Akane static portraits are copied into this prototype package.
-- Dragging is limited to an approximate portrait hit region.
-- Window position and size are persisted through Rust-side app config storage.
-- The right-click menu in the pet window is now a compact quick menu for input, settings, new session, character-resource reload, and exit, so it no longer covers the portrait.
-- Scale, opacity, outfit, backend check, always-on-top, taskbar visibility, reset, close, WebGL probe, and temporary click-through probe are exposed from an independent Tauri settings window.
-- The settings window is now a wider anime-style control center with left navigation for overview, character, voice, music, desktop sensing, abilities, and advanced/debug controls.
-- The settings window can install Creator Kit exported character-pack zip files into `desktop_pet_creator_kit/characters/`, refresh the runtime pack list, apply the imported pack, open that folder, and copy the last installed pack path.
-- Scale and opacity have Electron-style quick presets in addition to sliders.
-- The settings window includes a resource panel that lists current character-pack outfits, active outfit, resource source, backend status, emotion count, and missing required/recommended expressions.
-- Outfit cards can switch the active outfit; switching reloads `/resource-manifest` and persists the selected outfit.
-- Windows native hit-test is available behind the `Hit-Test: on/off` menu switch. It uses an approximate portrait polygon plus control rectangles so blank transparent areas can pass through to windows underneath.
-- `Hitbox: on/off` draws the current hit regions for tuning the portrait polygon and menu/input regions.
-- A visible close button is also available in the top-right corner of the prototype window.
-- Character resources are loaded from `/resource-manifest` when the backend is available. Desktop-pet requests include the active Creator Kit `character_pack_id`, so the backend resource prompt and the visible pet use the same character-pack outfit/emotion list. Bundled catgirl assets remain the offline fallback.
-- The menu shows resource source, active outfit, expression count, session suffix, and a character-pack-driven emotion preview grid.
-- Emotion preview is temporary and non-persistent; it restores the previous expression and does not change the dialogue state.
-- Backend offline or manifest failures are surfaced in the settings window, with bundled catgirl assets used as the visible fallback and a quiet reconnect retry while the Tauri app stays open.
-- Backend health now prefers `/desktop-pet/health`, falls back to legacy `/health`, and surfaces the desktop-pet contract version plus TTS/ASR endpoint status in settings.
-- The settings window can refresh `/desktop-pet/diagnostics` as a read-only capability panel, showing the active character pack, resource count, tool exposure, workspace counts, and safety boundaries for the current desktop-pet mode.
-- `/resource-manifest` desktop-pet metadata (`clients.desktop_pet`) is used for default outfit/emotion hints when available, while Web resources continue to live under `web/assets`.
-- Minimal `/think` dialogue loop with `client_mode = desktop_pet`, `speech_segments`/`tts` capabilities, and optional `desktop_context` when the context toggle is enabled.
-- Single-click the portrait to show a local line without calling the backend. Local reactions can refresh themselves immediately, while active backend replies and TTS are still protected.
-- Local single-click reactions temporarily switch expression and then return to `正常`, so they do not restore the previous backend reply expression.
-- Double-click the portrait to open chat input. Enter sends, Escape hides.
-- The chat input, speech bubble, light menu theme, idle/click/thinking/speaking motion, and bottom-right default placement are aligned with the stable Electron pet direction.
-- Enter sending is IME-aware, so Chinese composition will not accidentally submit the input.
-- Sent text is kept in a lightweight in-memory input history; use Up/Down in the input to recall or return to the current draft.
-- If `/think` fails or times out, the submitted text is restored into the input box for retry/editing.
-- Speech bubbles are compact head-top bubbles with a small tail, and they stay non-interactive so they do not block the menu/settings buttons.
-- Minimal TTS output is available from the settings window: replies can be read aloud through the existing `/tts` endpoint, with enable/disable, volume, test, and stop controls.
-- Realtime voice calling is available from the chat input: click `麦` (or press `Ctrl+Shift+Space`) once to start a call. A stable ASR checkpoint plus silence ends each input turn automatically; Akane replies, then the same microphone resumes listening for the next turn. Click `挂`, press Escape, disable voice, or close the pet to end the call. Environments without the realtime audio path retain the single-turn `/asr` fallback.
-- Minimal local music queue playback is available: drag one or more `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `opus`, or `webm` files onto Akane to play them from the Tauri cache. The quick menu, settings window, and hand-tray window can go previous/next, pause/resume, stop, and manage queue items; the portrait switches to `听歌中` while playing.
-- Same-name `.lrc` lyrics are picked up automatically when a local music file is dragged in, and dragging audio plus matching `.lrc` together also works. If there is no `.lrc`, the Next shell uploads the local audio to the existing backend music-timeline pipeline so vocal separation/ASR can prepare nearby lyric lines in the background. Settings and hand-tray windows show the current lyric line while playback progresses.
-- Current local music status is attached to `/think` while a track is loaded, including title, queue position, next track, play/pause state, progress, duration, and the current/nearby lyric lines from either local `.lrc` or backend timeline. Akane can naturally refer to the song queue, and simple current-track `activity` actions can pause, resume, stop, previous, next, or switch by `source_id`.
-- Minimal desktop context is available behind settings toggles: foreground-window sensing is on by default, clipboard text is off by default, and both are only attached transiently to `/think`.
-- Experimental screen vision is available behind the `看屏幕` settings toggle. Summary mode asks WebView2 for screen-share permission, compresses a few frames into a short clip, sends them to `/desktop-pet/vision/clip`, and lets `/think` read only the latest short-term screen impressions.
-- Direct screen-vision mode keeps only the latest 1-5 compressed screenshots in the Tauri pet and sends them temporarily with proactive `/think`; new frames replace old frames, and the images are not persisted as memory.
-- Proactive wake is available behind the `主动搭话` settings toggle. Wake interval, screen-vision interval, and screen frame count are numeric settings; the settings window also shows a recommended vision interval based on the wake interval.
-- A read-only Workspace/hand-tray window is available from the compact menu and settings window. It fetches `/desktop-pet/workspace/summary`, shows files/generated outputs/tasks, has manual refresh, and records the latest refresh time without running file actions yet.
-- Replies can be interrupted from the compact menu or the settings window. Stopping a reply aborts/invalidates the active `/think` turn, clears queued TTS, and returns the portrait motion to idle; local click bubbles no longer make the stop control look active.
-- Long plain `speech` replies are split client-side into smaller bubble segments when the backend does not provide `speech_segments`.
-- The settings window exposes a startup restore toggle for `latest_final_json`, so daily testing can choose whether to restore the previous reply on launch.
-- The settings window shows enough active state to disable stop controls while Akane is idle.
-- Startup session ensure restores `latest_final_json` as history: it can restore text and backend emotion, but it does not trigger the speaking motion.
-- Live `/think` replies can use the CSS-only speaking motion on the current expression image. It never switches to a separate speaking sprite.
-- Local single-click lines temporarily change expression and then restore the previous expression without persisting the local expression.
-- `新对话` creates a fresh independent `sessionId` while keeping `profileUserId = master`.
-- `speech_segments` are displayed one segment at a time and take precedence over `speech`.
-- The menu displays backend/resource status, and `重载资源` rechecks health plus `/resource-manifest`.
-- The WebGL probe only verifies transparent Canvas/WebGL viability. It is not a Live2D integration yet.
-- The visual renderer now goes through a thin adapter (`src/visual-renderer.js`): today's mode is static portrait images plus CSS motion, while future Live2D can plug into the same expression/motion boundary without rewiring dialogue, voice, or resource loading.
+`settings.html` 和 `control-center-v2.html` 是兼容跳转，设置功能只进入 `control-center-lab.html`。
+程序调用插件服务可用 `src/pet/plugin-service.js`；小型无边框窗口可用 `src-tauri/src/pet_windows/docked.rs`。
 
-## Deferred
+## 现有能力与边界
 
-- Full Electron feature migration.
-- Large backend protocol rewrites beyond the lightweight desktop-pet contract.
-- Live2D renderer integration.
-- Activity runtime, global ASR shortcut, task reminders, and full debug/workbench panels.
-- Web scene Tauri wrapper.
-- Per-pixel alpha-mask hit testing. The current native `WM_NCHITTEST` hook is a coarse polygon/bounding-box probe.
-
-## Electron Daily Parity Checklist
-
-| Area | Status | Notes |
-| --- | --- | --- |
-| Transparent always-on-top pet shell | Done | Tauri/WebView2 transparent frameless window with persisted position/size. |
-| Coarse blank-area click-through | Done | Windows `WM_NCHITTEST` polygon/rect regions; per-pixel alpha mask remains deferred. |
-| Static portrait resources | Done | `/resource-manifest` first, bundled catgirl fallback. |
-| Outfit/emotion switching | Done | Manifest-driven emotion list with alias fallback and temporary preview. |
-| Single-click local reaction | Done | Can refresh local lines immediately; active `/think` replies and TTS remain protected. |
-| Double-click text input | Done | IME-aware Enter send, Escape hide, empty blur auto-hide. |
-| Input reliability | Done | Failed sends restore the submitted text; Up/Down recalls recent sent lines. |
-| `/think` dialogue | Done | Uses `client_mode = desktop_pet` and `speech_segments`/`tts` capabilities. |
-| Bubble presentation | Done | `speech_segments` take priority; long `speech` is split client-side; bubbles stay compact near the portrait head. |
-| Reply interrupt | Done | Stops active turn, queued TTS, and current voice playback. |
-| Minimal TTS | Done | Reply read-aloud toggle, volume, test, stop. |
-| Local music playback | Done | Drag one or more audio files onto Akane to play as a queue; matching `.lrc` lyrics are shown in settings/hand tray, and songs without `.lrc` can use the backend vocal timeline/ASR pipeline; quick menu/settings/hand tray can previous/next, pause/resume, stop, play queue items, and remove queue items; queue and lyric state are available to `/think`. |
-| Session controls | Done | Independent session ID, new session, startup restore toggle, session ID copy. |
-| Settings/resource panel | Partial | Daily settings, resource diagnostics, backend contract/TTS/ASR status, connection check, appearance reset, and status separation are present; full debug panel remains deferred. |
-| Voice input / ASR | Partial | Focused-window recording button/shortcut calls `/asr` and fills the input box. Global shortcut and richer recorder panel are deferred. |
-| Desktop context | Partial | Foreground-window context is cached through a lightweight native probe and attached to `/think`; clipboard text is optional and off by default. |
-| Screen vision | Partial | Optional `看屏幕` toggle supports summary mode through `/desktop-pet/vision/clip` and direct mode that sends only the latest 1-5 screenshots with proactive `/think`; neither path writes long-term memory. |
-| Proactive wake | Partial | Optional `主动搭话` toggle wakes Akane on a numeric interval and routes the final line through the main `/think` chain with transient visual context. |
-| Workspace / hand tray | Partial | Independent read-only Tauri window lists files, generated outputs, tasks, empty states, and latest refresh time from `/desktop-pet/workspace/summary`. File actions and Activity Runtime remain deferred. |
-| Activity runtime / BGM / file actions | Deferred | Not part of the current Next daily baseline. |
-| Task reminders | Deferred | Keep out until background/runtime behavior is settled. |
-| Live2D | Deferred | Canvas/WebGL probe only; full renderer later. |
+主窗口通过既有后端聊天链路处理文本、工具、语音、表情和记忆；当前模型输出由后端解析后交给表现层。
+静态透明立绘配合 CSS 动效。角色资源优先由当前角色包提供，资源入口以 `src/pet/character.js` 为准。
+实时语音、音乐与歌词、屏幕观察、主动搭话、工作区、商店和五子棋各有自己的控制器，新增交互复用这些入口。
+浏览器预览能检查页面布局；原生权限、桌面操作、窗口和实际模型链路在 Tauri 中验收。
 
 ## Commands
 
 ```powershell
-npm install
 npm run doctor
 npm run build
-```
-
-`npm run smoke:control-center-actions` validates control-center action bridge mappings, exception hardening, and `not-implemented` behavior.
-
-`npm run probe:control-center-runtime` validates the control-center unified snapshot data pipeline: happy-path hydration from a complete backend snapshot, partial degradation when a single provider fails, fallback to legacy endpoints when the snapshot is broken, graceful null return when all backends are unavailable, action contract inertness (backend POST is never treated as a desktop action execution boundary), and surface contract consistency (all bridged actions are catalogued, all deferred surfaces are not bridged).
-
-`npm run verify:control-center` runs the full control-center verification matrix: smoke actions + runtime probe + build, with a required-file existence gate before execution.
-
-The settings window has one implementation: `control-center-lab.html`. The
-`settings.html` path is only a compatibility redirect for stale links and must
-not own features. `control-center-v2.html` is also a compatibility redirect;
-the canonical page loads `src/control-center-v2/index.js` directly. Settings and workspace windows are
-non-topmost so the pet keeps its always-on-top priority.
-
-### Control Center Verification Matrix
-
-| Command | Scope |
-|---------|-------|
-| `npm run smoke:control-center-actions` | Action bridge mappings, `not-implemented` + `refresh:false` contract, exception hardening, surface contract consistency |
-| `npm run probe:control-center-runtime` | Unified snapshot data pipeline: happy-path hydration, partial degradation, bad-snapshot fallback, all-unavailable null, action inertness, surface contract |
-| `npm run verify:control-center` | Required-file existence gate + smoke actions + runtime probe + build |
-| `python -m unittest tests.test_backend_route_modules` (from repo root) | Backend control-center route contract: snapshot endpoint, action endpoint, provider failure resilience, no sensitive content |
-| `git diff --check` (from repo root) | Whitespace and syntax hygiene |
-
-After Rust is installed and `cargo` is available in PATH:
-
-```powershell
-cargo check --manifest-path src-tauri/Cargo.toml
 npm run tauri -- dev
-```
-
-`npm run tauri -- dev` also injects `%USERPROFILE%\.cargo\bin` into the process PATH, so it still works from an older VS Code terminal that has not refreshed the Rust PATH yet.
-
-The default backend URL is `http://127.0.0.1:9999`. Start the existing backend before testing replies:
-
-```powershell
-# From the repository root:
-python launch_akane_memory_v01.py
-
-# Or, if this terminal is already in desktop_pet_next:
-python ..\launch_akane_memory_v01.py
-```
-
-You can change the backend URL from the right-click/debug menu.
-
-For release-candidate packaging verification:
-
-```powershell
-npm run tauri -- build
-```
-
-The build command is only a packaging smoke test for the Next prototype. It does not replace the Electron stable app.
-
-Launch the release build through the guarded launcher:
-
-```powershell
+npm run tauri -- build --no-bundle
 npm run start:release
 ```
 
-Or run the script by itself:
+`npm run build` 生成前端。发布 EXE 用 Tauri 构建，把前端页面嵌入程序；单独 Cargo 编译仅适合 Rust 检查。
+`start:release` 对缺失或早于源码的发布 EXE 自动重建，`-Rebuild` 可显式重建，`-NoBuild` 保留现有产物。
+根目录普通启动器会复用已有产物，其更新行为与这个开发脚本不同。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-next.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-next.ps1 -Rebuild
 ```
 
-The launcher automatically builds when the release exe is missing. A normal
-start does not rebuild solely because source files are newer; use `-Rebuild`
-explicitly when updating the desktop client:
+源码目录、构建目录和运行目录可能是三处；诊断运行 EXE 与发布产物是否一致后，再确认进程是否重启。
+修改插件后在设置中源码安装更新已安装版本。
+
+## 按改动选择验证
+
+| 范围 | 命令 |
+|---|---|
+| 控制器边界、组合运行时 | `npm run check:pet-runtime`、`npm run smoke:pet-runtime` |
+| 主窗口浏览器交互 | `npm run smoke:pet-browser` |
+| 五子棋与服务身份绑定 | `npm run test:gomoku` |
+| 工作区 | `npm run test:workspace`、`npm run smoke:workspace-browser` |
+| 实时语音 | `npm run test:realtime-voice`、`npm run test:pet-voice` |
+| 音乐 | `npm run test:pet-music`、`npm run smoke:pet-music-browser` |
+| 设置页面 | `npm run verify:control-center` |
+| 原生编译 | `npm run tauri -- build --no-bundle` |
+
+新交互窗口的只读诊断（仓库根目录）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-next.ps1 -Rebuild
+python scripts/check_desktop_feature.py gomoku
+python scripts/check_desktop_feature.py gomoku --backend-url http://127.0.0.1:12001 --running
 ```
 
-Use `-NoBuild` only when you intentionally want to launch an existing exe even
-after local source changes. The legacy `-BuildIfMissing` flag is still accepted
-for old commands, but it is no longer required.
+多 Bot 追加 `--bot-id`。不指定后端时只检查源码/产物，运行状态显示 SKIP。
 
 ## Daily Smoke Test
 
-Use this quick pass after changing the Next prototype:
+按本次改动检查实际状态：
 
-```powershell
-cd desktop_pet_next
-npm run build
-npm run doctor
-cargo check --manifest-path src-tauri\Cargo.toml
-npm run tauri -- dev
-```
+- 启动后立绘、菜单、输入和资源正常，连接到预期后端/Bot。
+- 发消息后文本、表情与语音沿正常链路到达；工具操作以实际结果为准。
+- 窗口能打开、拖动、关闭；重新打开显示当前状态。
+- 慢请求、重复点击、失败、切换角色/会话时，旧响应不覆盖新界面。
+- 修改原生或嵌入页面后，实际运行 EXE 已更新。
 
-Manual checks:
-
-- Window starts transparent, frameless, always on top, and still restores position/scale.
-- Blank-area hit-test still lets clicks through more than the Electron rectangle.
-- Right-click menu opens without covering the portrait; `设置` and `手边` open only one window each.
-- Double-click opens input; Enter sends; Escape hides; empty blur hides.
-- Repeated single-clicks refresh local lines and expressions immediately without enabling `停止`.
-- Input Up/Down recalls recent sent messages; a failed send restores the submitted text for retry.
-- `/think` replies display segments without duplicating `speech`.
-- Head-top bubbles stay non-interactive and do not block menu/settings controls.
-- `停止` interrupts text, queued TTS, and current voice playback.
-- Drag one or more local audio files onto Akane; music starts, expression switches to `听歌中`, auto-next works, and menu/settings/hand-tray previous/next/pause/resume/stop plus queue item controls work.
-- Put a same-name `.lrc` beside a local audio file, then drag the audio in; settings and hand tray show the current lyric as playback moves.
-- Ask or wait for a reply while music is loaded; Akane can reference the current track, queue state, and nearby lyrics without needing the full Activity Runtime.
-- `麦` records, `/asr` fills text into the input box, and does not auto-send.
-- Settings changes for backend/session/voice/context are reflected in the Workspace window after refresh or snapshot sync.
-- Import a Creator Kit exported character-pack zip from settings; it installs into `desktop_pet_creator_kit/characters/`, refreshes the runtime pack list, and applies the imported pack without restarting the desktop pet.
-- Workspace manual refresh updates counts, empty states, and latest refresh/attempt time.
-- With `主动搭话` enabled, Akane can wake on the configured interval and speak through `/think` while using recent short-term screen impressions.
-- Backend offline state shows a light local-standby message, keeps local click reactions working, and retries quietly while the app stays open.
-- `退出` closes the pet plus settings/workspace child windows.
-- `npm run doctor` reports Node/npm/Rust/WebView2/backend readiness without changing the machine.
-- `npm run tauri -- build` completes or reports a clear local packaging dependency issue.
-
-## Hold List
-
-Keep these out of the daily baseline until the shell stays comfortable for longer testing:
-
-- Full Activity Runtime and BGM controls.
-- File actions in Workspace such as open location, clear, delete, or play.
-- Task reminder polling.
-- Full debug/health workbench parity.
-- Global system-wide ASR shortcut.
-- Live2D renderer integration.
+`git diff --check` 与相关检查通过后再交付。全套仓库验证使用 `scripts/verify_akane.ps1`，具体范围遵循当前任务与 AGENTS.md。

@@ -8,7 +8,7 @@ from companion_v01.execution_input import InputChannel
 from companion_v01.execution_local import TrustedLocalExecutor
 from companion_v01.execution_run import ExecutionRunOwner
 from companion_v01.tool_handlers.execution import ExecInputToolHandler
-from tests.test_execution_local import _python_command
+from tests.test_execution_local import _python_command, _shutdown_executor
 from tests.test_execution_wiring import _context
 
 
@@ -75,7 +75,15 @@ class ExecutionInputTests(unittest.TestCase):
                                  interactive=True, initial_wait_seconds=3, timeout_seconds=12)
             try:
                 self.assertEqual(start.status, "running")
-                self.assertIn("ready", start.stdout)
+                # Interactive runs return immediately; startup output can arrive
+                # after the initial receipt even when the command flushes it.
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    ready = provider.status(owner=owner, run_id=start.run_id)
+                    if "ready" in ready.tail or ready.status != "running": break
+                    time.sleep(.05)
+                self.assertEqual(ready.status, "running")
+                self.assertIn("ready", ready.tail)
                 denied = provider.input(owner=ExecutionRunOwner("other", "s1", "local"), run_id=start.run_id)
                 self.assertEqual(denied["reason"], "run_not_found")
                 result = provider.input(owner=owner, run_id=start.run_id, action="write", sequence=1, text="synthetic-audit\n", close=True)
@@ -92,7 +100,7 @@ class ExecutionInputTests(unittest.TestCase):
                 duplicate = provider.input(owner=owner, run_id=start.run_id, action="write", sequence=1, text="synthetic-audit\n", close=True)
                 self.assertEqual(duplicate["status"], "written")
             finally:
-                provider.cancel(owner=owner, run_id=start.run_id)
+                _shutdown_executor(provider)
 
     def test_write_uses_existing_command_permission(self):
         with tempfile.TemporaryDirectory() as directory:

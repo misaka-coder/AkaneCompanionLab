@@ -59,7 +59,7 @@ class ComputerUseRefinementTests(unittest.TestCase):
         from companion_v01.tool_invocation import ToolInvocation
         broker=SimpleNamespace(execute=lambda **_:self.fail('must not dispatch'))
         call=ToolInvocation(name='computer_use',arguments=dict(action='click',context_ref='ctx-test',x=1,y=2))
-        with patch('companion_v01.tool_orchestration_engine._satellite_blocked_result',side_effect=lambda s,i,r:('blocked',r)):
+        with patch('companion_v01.tool_orchestration.permissions._satellite_blocked_result',side_effect=lambda s,i,r:('blocked',r)):
             result, stopped=dispatch(SimpleNamespace(),broker=broker,spec=COMPUTER_USE_TOOL_SPEC,invocation=call,
                 profile_user_id='p',session_id='s',client_context=None,request_context={})
         self.assertIsNone(result);self.assertEqual(stopped,('blocked','coordinate_requires_visual_model'))

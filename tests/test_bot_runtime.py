@@ -14,7 +14,8 @@ from unittest.mock import Mock
 import config
 from companion_v01.bot_registry import BotRegistry, BotRegistryError
 from companion_v01.bot_profile import BotConfig, BotQQChannelConfig
-from companion_v01.bot_runtime import BotRuntime, BotRuntimeFactory, _host_job_completion_request
+from companion_v01.bot_runtime import BotRuntime, BotRuntimeFactory
+from companion_v01.bot_runtime_components.completion import _host_job_completion_request
 from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_tool_jobs import HostToolJobRuntime
@@ -558,6 +559,26 @@ class BotRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.settings.vision_model_name, "bot-vision")
         self.assertIs(engine.reloaded_settings, runtime.settings)
 
+    async def test_model_reload_default_thinking_uses_deployment_not_previous_profile(self) -> None:
+        for default_mode, previous_mode in (("enabled", "disabled"), ("disabled", "enabled")):
+            with self.subTest(default_mode=default_mode):
+                runtime, _plugin_host, engine, _followups = _runtime()
+                other, *_ = _runtime("other-bot")
+                other_settings = other.settings
+                runtime.config_module = SimpleNamespace(LLM_THINKING_MODE=default_mode)
+                runtime.settings = replace(runtime.settings, llm_thinking_mode=default_mode)
+                model_settings = SimpleNamespace(
+                    api_key="bot-key", base_url="https://bot.example/v1", chat_model="deepseek-flash",
+                    protocol="openai", chat_thinking_mode=previous_mode, chat_reasoning_effort="max",
+                )
+                runtime.reload_model_services(model_settings)
+                self.assertEqual(engine.reloaded_settings.llm_thinking_mode, previous_mode)
+                model_settings.chat_thinking_mode = ""
+                runtime.reload_model_services(model_settings)
+                self.assertEqual(engine.reloaded_settings.llm_thinking_mode, default_mode)
+                self.assertEqual(engine.reloaded_settings.llm_chat_reasoning_effort, "max")
+                self.assertIs(other.settings, other_settings)
+
     async def test_model_provider_change_clears_qq_session_model_overrides(self) -> None:
         runtime, _plugin_host, _engine, _followups = _runtime()
         gateway = SimpleNamespace(clear_all_chat_model_overrides=lambda: True)
@@ -939,7 +960,7 @@ class AppBootstrapContractTests(unittest.TestCase):
             self.assertNotIn(constructor, source)
 
     def test_bot_factory_captures_saved_model_settings_without_mutating_global_config(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "companion_v01" / "bot_runtime.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "companion_v01" / "bot_runtime_components" / "factory.py").read_text(encoding="utf-8")
 
         self.assertIn("saved_model_settings = model_store.load()", source)
         self.assertIn("settings.with_model_service(saved_model_settings)", source)

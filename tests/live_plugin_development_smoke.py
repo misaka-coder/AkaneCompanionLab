@@ -17,13 +17,14 @@ from unittest.mock import patch
 import config
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD
+from companion_v01.native_tool_schema import build_openai_native_tool_from_spec
 from tests.tool_exposure_development_harness import DevelopmentHarness
 
 REQUEST = """请从零开发并安装一个 Akane 插件，统计整数列表的 count、sum 和 squares（平方和）。
 插件 ID 使用 example.live-statistics，函数名 summarize，参数名 values，返回上述三个整数键。
-请先阅读现有 plugin-development Skill 和当前公开 SDK 样例文档，用现有工作区工具在新建独立项目里编写源码与普通 unittest。
+请先阅读现有 plugin-development Skill 和当前公开 SDK 样例文档，用 manage_project_workspace 新建并选择独立项目，再在其中编写源码与普通 unittest。
 测试至少覆盖 [3,4]、空列表和负数；经正式插件管理工具检查、暂存、按返回的完整权限安装并确认 active。
-安装后在当前会话读取新能力通知，直接加载该精确工具 ID 的契约，经固定调用入口真正计算 [3,4] 并报告实际结果。
+安装后在当前会话读取新能力通知，直接加载该精确工具 ID 的用法，经固定调用入口真正计算 [3,4] 并报告实际结果。
 新插件应即时可用，不重启、不另开会话、不改宿主配置或内部文件、不使用命令行自行安装。无需联网和第三方依赖。
 源码和测试文件请直接用 workspace_write/workspace_patch 创建，工作区工具会创建父目录；检查用 test_source，无需调用 Shell 创建目录或安装依赖。
 本次只在验收临时工作区开发，不修改已有项目。若产生精确审批，我会随后批准并发送续接消息；依据真实工具失败修正，不模拟成功。"""
@@ -114,7 +115,9 @@ async def run(h,settings,max_rounds):
             h.assertTrue(row["pending"],row)
             before = h.requests[-1]
             user_turn += 1
-            h.begin(user_turn,"我已在控制中心把新工具选为常驻。请直接调用本轮原生 summarize 工具计算 [5,-2]，报告实际结果。")
+            spec = h.last_prepared[TOOL_CAPABILITY_SELECTION_FIELD].capability_catalog.current_handler(cap).tool_spec()
+            native_name = build_openai_native_tool_from_spec(spec)["function"]["name"]
+            h.begin(user_turn,f"我已在控制中心把新工具选为常驻。请直接调用本轮工具声明里的 {native_name} 计算 [5,-2]，报告实际结果。")
             count = len(h.trace)
             await loop(until_native=True)
             final = h.last_prepared

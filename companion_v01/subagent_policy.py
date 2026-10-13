@@ -11,10 +11,11 @@ _PARENT_FAMILIES = frozenset({
     "file_handoff", "qq_audio_delivery", "qq_music_delivery",
 })
 _PARENT_TOOLS = frozenset({
-    "spawn_subagent", "onebot_action", "open_browser",
+    "spawn_subagent", "manage_subagents", "onebot_action", "open_browser",
     "manage_project_workspace",  # Mutates the parent's selected project.
     "clear_attachment_focus",  # Mutates the parent's current attachment focus.
 })
+CHILD_MEMORY_READ_TOOLS = frozenset({"retrieve_memory", "read_memory_timeline", "browse_memory", "open_memory"})
 
 
 def task_capability_selection(selection):
@@ -27,6 +28,6 @@ def task_capability_selection(selection):
         handler = selection.resolved_handlers.get(name)
         getter = getattr(handler, "tool_metadata", None)
         metadata = getter() if callable(getter) else TOOL_METADATA_BY_TYPE.get(name)
-        if getattr(metadata, "family", "") not in _PARENT_FAMILIES:
+        if name in CHILD_MEMORY_READ_TOOLS or getattr(metadata, "family", "") not in _PARENT_FAMILIES:
             allowed.append(name)
     return restrict_capability_selection(selection, allowed_tool_names=allowed)

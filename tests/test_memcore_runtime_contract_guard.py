@@ -19,6 +19,14 @@ class MemcoreRuntimeContractGuardTests(unittest.TestCase):
         with patch("memcore.PROJECTION_VERSION", 4):
             self.assertEqual(check_runtime()["reason"], "chat_authorship_v6_required")
 
+    def test_old_wheel_without_atomic_history_import_is_rejected(self) -> None:
+        with patch("memcore.MemorySystem.import_completed_turn", None):
+            self.assertEqual(check_runtime()["reason"], "completed_history_import_required")
+
+    def test_old_wheel_without_navigation_mode_is_rejected(self) -> None:
+        with patch("memcore.MemoryConfig", lambda: None):
+            self.assertEqual(check_runtime()["reason"], "memory_retrieval_mode_required")
+
     def test_version_number_cannot_hide_timestamp_injection(self) -> None:
         def polluted(_adapter, entry, *, provider_profile):
             return {"role": "assistant", "content": "[time] Assistant: " + entry.payload["provider_output_raw"]}

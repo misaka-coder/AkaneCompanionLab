@@ -16,3 +16,33 @@ dialog{width:min(470px,calc(100vw - 28px));border:1px solid #ddd0b8;border-radiu
 .section-actions{display:flex;align-items:center;gap:9px}.section-actions button{min-height:30px;font-size:11px;padding:0 11px}
 .name-field{margin-top:20px}.note-field{margin-top:18px}#food-form input[type="text"]{font-size:14px}
 #food-form .check-field{display:flex;align-items:center;gap:9px;cursor:pointer}#food-form .check-field input{width:18px;height:18px;padding:0;flex:none;font-size:14px;accent-color:#8c9c72}
+
+/* Shared shop palette: fresh paper, sage and berry. Artwork stays independent of text. */
+:root{color:#40534b;background:#fbfdfb;font-size:14px}
+body{background:radial-gradient(ellipse at 95% 0%,#e9f2e980,transparent 45%),#fbfdfb}
+body:before{height:4px;background:#a9c5a1}
+.shop-shell{max-width:1140px;gap:23px}
+.shop-header h1{color:#647f69}.store-stamp{background:#f1f6ef;border-color:#c4d6c4}
+.shop-intro,.shop-footer{border-color:#dfe9df}.shop-intro{color:#647f69}
+.shop-item{grid-template-columns:110px minmax(0,1fr);border:0;border-radius:0;background:transparent;box-shadow:none;padding:20px 8px;gap:16px;align-items:start}
+.item-grid{gap:12px 28px}.item-mark{width:110px;height:110px;background:transparent;border-radius:0}
+.item-mark img{width:100%;height:100%;object-fit:contain}
+.item-topline{flex-wrap:wrap}.item-topline h3{font-size:17px;color:#40534b}
+.item-topline>span{color:#aa7085;font-size:13px}.item-body p{font-size:13px;color:#687e71}
+.item-actions button{font-size:12px;min-height:34px}.effect-badges span{background:#edf3eb;color:#647b69}
+.primary-button{background:#78967b;border-color:#78967b}.primary-button:hover:not(:disabled){background:#627f66}
+.metric{background:#f5f8f3;border-color:#dfe8dc}.metric:first-child{background:#f8eef2;border-color:#ecd9e1}
+.metric span,.shop-header p,.shop-footer,.section-header p{color:#6e8075}.metric strong{color:#657e69}
+.work-panel,.allowance-panel{background:#f1f6ee;border-color:#dce7d8}
+.empty-state{background:#f6f9f5;color:#6f8376;border-color:#d1dfce}
+button{border-color:#d3dfd0;background:#fff;color:#536b58}button:hover:not(:disabled){background:#edf4e9}
+.shop-alert{background:#eef5e9;border-color:#d1e0c9}
+dialog{background:#fcfefb;border-color:#dce7d8;width:min(520px,calc(100vw - 28px))}
+.artwork-editor{display:flex;align-items:center;gap:16px;margin-top:18px}
+.artwork-editor img{flex:none;object-fit:contain;border:1px dashed #c5d8c2;border-radius:14px;background:#f4f8f1}
+.artwork-editor>div{min-width:0}.artwork-editor .field-hint{margin:7px 0}
+#food-form input,#food-form select{background:#f6f9f4;border-color:#d3dfce;color:#40534b}
+#food-form input[type=file]{height:auto;font-size:12px;padding:6px;max-width:100%}
+#food-form select{min-height:38px;border:1px solid #d3dfce;border-radius:9px;padding:6px;font:inherit}
+.field-hint,#editor-description{color:#718277}#food-image-remove{font-size:12px;min-height:30px}
+@media(max-width:620px){.shop-header{align-items:flex-start}.header-actions{flex-wrap:wrap;justify-content:flex-end}.shop-item{grid-template-columns:86px minmax(0,1fr)}.item-mark{width:86px;height:86px}.artwork-editor{align-items:flex-start}}

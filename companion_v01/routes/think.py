@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from anyio import CancelScope
 
 import config
 from ..client_protocol import ClientMode, default_capabilities_for_mode
@@ -31,6 +32,8 @@ from ..session_inbox import SessionInboxItem
 from ..plugin_api import DIRECT_CONVERSATION_EVENT, PluginInvocationContext
 from ..plugin_text_presentation import apply_plugin_text_presentation_policy
 from ..turn_coordination import TurnCoordinator
+from .think_stream import iterate_turn_events
+from .desktop_turn_events import DesktopTurnEventRelay, process_background_desktop_turn
 
 logger = logging.getLogger("akane.think")
 
@@ -43,6 +46,8 @@ _DESKTOP_AGENT_EVENT_PRESENTATION_FIELDS = (
     "emotion",
     "speech",
     "speech_segments",
+    "speech_protocol",
+    "utterances",
     "activity",
     "care_state",
     "character",
@@ -120,12 +125,41 @@ def build_think_router(
     plugin_event_broker_provider: Callable[[], Any] | None = None,
     plugin_agent_event_handler_registrar: Callable[[str, Any], None] | None = None,
     desktop_agent_frame_delivery: Callable[[dict[str, Any]], Any] | None = None,
+    desktop_agent_event_delivery: Callable[[dict[str, Any]], Any] | None = None,
     desktop_agent_event_available: Callable[[], bool] | None = None,
     plugin_turn_router: Any = None,
     plugin_conversation_ref_issuer: Callable[..., str] | None = None,
+    admin_auth: Any = None,
 ) -> APIRouter:
     router = APIRouter()
     turn_coordinator = turn_coordinator or TurnCoordinator()
+
+    def _stamp_desktop_origin(request, payload):
+        policy = getattr(engine, "owner_private_policy", None)
+        payload.pop("_memory_desktop_ref", None)
+        payload.pop("_memory_qq_ref", None)
+        payload.pop("memory_channel", None)
+        if policy is None:
+            return
+        from ..deployment_security import AdminWriteAuth
+        decision = (admin_auth or AdminWriteAuth.local_compatibility()).authorize(request)
+        if policy.enabled and not decision.ok:
+            raise HTTPException(status_code=decision.status_code, detail=decision.reason)
+        character = engine._resolve_payload_character_pack_id(payload)
+        policy.stamp_desktop(payload, owner_authenticated=decision.ok, character=character)
+        payload["character_pack_id"] = character
+
+    def _coordination_identity(payload):
+        profile, session, actor = _turn_identity(payload)
+        policy = getattr(engine, "owner_private_policy", None)
+        if policy is not None:
+            character = engine._resolve_payload_character_pack_id(payload)
+            profile, session = policy.resolve(payload, character=character).memory_identity
+        return profile, session, actor
+
+    def _session_key(payload):
+        profile, session, _ = _coordination_identity(payload)
+        return f"{profile}\0{session}"
 
     def _turn_identity(payload: dict[str, Any]) -> tuple[str, str, str]:
         session_id = str(payload.get("user_id") or payload.get("session_id") or "default_session")
@@ -136,8 +170,8 @@ def build_think_router(
     def _plugin_context(payload):
         profile, session, _ = _turn_identity(payload)
         character = str(payload.get("character_pack_id") or "").strip()
-        reference = plugin_conversation_ref_issuer(profile_user_id=profile,
-            session_id=session, character_pack_id=character) if plugin_conversation_ref_issuer else ""
+        reference = payload.get("_memory_desktop_ref") or (plugin_conversation_ref_issuer(profile_user_id=profile,
+            session_id=session, character_pack_id=character) if plugin_conversation_ref_issuer else "")
         return PluginInvocationContext(profile, session, "desktop_pet",
             character_pack_id=character, conversation_ref=reference)
 
@@ -195,8 +229,8 @@ def build_think_router(
         ).strip()
         try:
             character = str(payload.get("character_pack_id") or "").strip()
-            reference = plugin_conversation_ref_issuer(profile_user_id=profile_user_id,
-                session_id=session_id, character_pack_id=character) if plugin_conversation_ref_issuer else ""
+            reference = payload.get("_memory_desktop_ref") or (plugin_conversation_ref_issuer(profile_user_id=profile_user_id,
+                session_id=session_id, character_pack_id=character) if plugin_conversation_ref_issuer else "")
             receipt = await broker.emit(DIRECT_CONVERSATION_EVENT, {
                 "conversation_kind": "direct",
                 "conversation_id": session_id,
@@ -234,14 +268,17 @@ def build_think_router(
         except Exception:
             return False
 
-    async def _deliver_desktop_frame(frame: dict[str, Any]) -> dict[str, Any]:
+    async def _deliver_desktop_frame(frame: dict[str, Any], relay: DesktopTurnEventRelay | None = None) -> dict[str, Any]:
         if cancellation_requested():
             return {"ok": False, "status": "cancelled", "reason": "turn_scope_revoked"}
         if _desktop_tool_completion_frame(frame).get("_deliberate_silence"):
+            if relay is not None:
+                await relay.end()
             return {"ok": True, "status": "not_requested"}
         if desktop_agent_frame_delivery is None:
             return {"ok": False, "status": "unavailable", "reason": "desktop_client_unavailable"}
-        delivered = desktop_agent_frame_delivery(_desktop_frame_presentation(frame))
+        presentation = _desktop_frame_presentation(frame)
+        delivered = desktop_agent_frame_delivery(relay.final_presentation(presentation) if relay else presentation)
         if hasattr(delivered, "__await__"):
             delivered = await delivered
         return delivered if isinstance(delivered, dict) else {
@@ -271,13 +308,16 @@ def build_think_router(
                 else "partial" if any_ok else "failed", "count": len(results), "results": results}
 
     async def _reserve_desktop_turn(payload: dict[str, Any]) -> dict[str, Any]:
+        policy = getattr(engine, "owner_private_policy", None)
+        if policy is not None:
+            policy.note_input(payload, source_id=payload.get("source_message_id") or "")
         if not isinstance(session_work_queue, DurableSessionWorkQueue):
             return {"ok": True, "status": "unmanaged"}
         profile_user_id, session_id, _actor_id = _turn_identity(payload)
         source_event_id = str(payload.get("source_message_id") or f"desktop:{uuid.uuid4().hex}").strip()
         payload["source_message_id"] = source_event_id
         persisted = await session_work_queue.enqueue(
-            session_key=f"{profile_user_id}\0{session_id}",
+            session_key=_session_key(payload),
             profile_user_id=profile_user_id,
             session_id=session_id,
             kind="turn",
@@ -300,7 +340,7 @@ def build_think_router(
             }
         if persisted.get("status") == "duplicate" and existing_status == "failed":
             return {"ok": False, "status": "failed", "reason": "source_event_previously_failed"}
-        session_key = f"{profile_user_id}\0{session_id}"
+        session_key = _session_key(payload)
         claim = await session_work_queue.claim_for_active_turn(session_key, item_id)
         if not claim.get("ok"):
             await session_work_queue.schedule_session(session_key)
@@ -319,6 +359,7 @@ def build_think_router(
             "item_id": item_id,
             "claim_token": str(claim.get("claim_token") or ""),
             "session_key": session_key,
+            "items": list(claim.get("items") or [claim["item"]]),
         }
 
     async def _settle_desktop_turn(reservation: dict[str, Any], *, completed: bool, reason: str = "") -> None:
@@ -394,9 +435,15 @@ def build_think_router(
             "memory_message": message,
             "timestamp": timestamp,
             "client_mode": ClientMode.DESKTOP_PET.value,
-            "client_capabilities": list(default_capabilities_for_mode(ClientMode.DESKTOP_PET)),
+            "_memory_desktop_ref": event_request.conversation_ref,
+            "client_capabilities": list(resolved_reference.get("client_capabilities"))
+                if isinstance(resolved_reference.get("client_capabilities"), list)
+                else list(default_capabilities_for_mode(ClientMode.DESKTOP_PET)),
             "character_pack_id": character_pack_id,
             "turn_kind": "plugin_event",
+            "plugin_text_delivery": getattr(event_request, "presentation_mode", "default"),
+            "plugin_text_prefix": getattr(event_request, "presentation_prefix", ""),
+            "plugin_text_suffix": getattr(event_request, "presentation_suffix", ""),
             "transient_user_message": getattr(event_request, "memory_mode", "current_turn") == "current_turn",
             "plugin_external_event": event_request.event_payload(),
             "memory_idempotency_key": str(getattr(event_request, "idempotency_key", "") or "").strip(),
@@ -417,7 +464,7 @@ def build_think_router(
                 getattr(event_request, "idempotency_key", "") or event_request.trace_id or ""
             ).strip()
             queued = await session_work_queue.enqueue(
-                session_key=f"{profile_user_id}\0{session_id}",
+                session_key=_session_key(payload),
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 kind="turn",
@@ -445,43 +492,52 @@ def build_think_router(
             return HostTurnResult(True, "accepted", "", delivery_status, str(getattr(queued_item, "item_id", "")))
         if not _desktop_delivery_is_available():
             return HostTurnResult(False, "host_unavailable", "desktop_client_unavailable")
-        try:
-            async with turn_coordinator.hold(
-                profile_user_id,
-                session_id,
-                actor_id="host:plugin_event",
-                channel="desktop_pet",
-                turn_kind="plugin_event",
-            ) as turn_control_id:
-                payload["_turn_control_id"] = turn_control_id
-                frame = await asyncio.to_thread(engine.process_turn, payload)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("desktop plugin Agent event failed")
-            return HostTurnResult(False, "failed", "agent_event_turn_failed", "not_sent")
-        if not isinstance(frame, dict) or bool(frame.get("_transient_final_failure")):
-            return HostTurnResult(False, "failed", "agent_event_turn_incomplete", "not_sent")
+        relay = DesktopTurnEventRelay(payload, desktop_agent_event_delivery,
+                                     suppress_text=getattr(event_request, "presentation_mode", "default") == "single_message")
+        profile_user_id, session_id, _ = _coordination_identity(payload)
+        async with relay, turn_coordinator.hold(
+            profile_user_id,
+            session_id,
+            actor_id="host:plugin_event",
+            channel="desktop_pet",
+            turn_kind="plugin_event",
+            memory_domain=character_pack_id,
+        ) as turn_control_id:
+            payload["_turn_control_id"] = turn_control_id
+            try:
+                frame = await process_background_desktop_turn(engine, payload, relay)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("desktop plugin Agent event failed")
+                await relay.end(failed=True)
+                return HostTurnResult(False, "failed", "agent_event_turn_failed", "not_sent")
+            if not isinstance(frame, dict) or bool(frame.get("_transient_final_failure")):
+                await relay.end(failed=True)
+                return HostTurnResult(False, "failed", "agent_event_turn_incomplete", "not_sent")
+            if frame.get("status") == "stopped" or cancellation_requested():
+                await relay.end(stopped=True)
+                return HostTurnResult(False, "stopped", "agent_event_turn_stopped", "not_sent")
 
-        presentation = _desktop_agent_event_presentation(frame, event_request)
-        try:
-            delivered = desktop_agent_frame_delivery(presentation)
-            if hasattr(delivered, "__await__"):
-                delivered = await delivered
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("desktop plugin Agent frame delivery failed")
-            return HostTurnResult(False, "failed", "agent_event_delivery_failed", "not_sent")
-        delivery_result = delivered if isinstance(delivered, dict) else {}
-        if delivery_result.get("ok") is not True:
-            return HostTurnResult(
-                False,
-                "failed",
-                str(delivery_result.get("reason") or "agent_event_delivery_failed"),
-                str(delivery_result.get("status") or "not_sent"),
-            )
-        return HostTurnResult(True, "completed", "", str(delivery_result.get("status") or "queued"))
+            presentation = _desktop_agent_event_presentation(frame, event_request)
+            try:
+                delivered = desktop_agent_frame_delivery(relay.final_presentation(presentation))
+                if hasattr(delivered, "__await__"):
+                    delivered = await delivered
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("desktop plugin Agent frame delivery failed")
+                return HostTurnResult(False, "failed", "agent_event_delivery_failed", "not_sent")
+            delivery_result = delivered if isinstance(delivered, dict) else {}
+            if delivery_result.get("ok") is not True:
+                return HostTurnResult(
+                    False,
+                    "failed",
+                    str(delivery_result.get("reason") or "agent_event_delivery_failed"),
+                    str(delivery_result.get("status") or "not_sent"),
+                )
+            return HostTurnResult(True, "completed", "", str(delivery_result.get("status") or "queued"))
 
     if plugin_agent_event_handler_registrar is not None:
         plugin_agent_event_handler_registrar("desktop_pet", _submit_plugin_agent_event)
@@ -499,6 +555,7 @@ def build_think_router(
         profile_user_id, session_id, actor_id = _turn_identity(payload)
         if profile_user_id != item.profile_user_id or session_id != item.session_id:
             raise ValueError("desktop_session_work_identity_mismatch")
+        profile_user_id, session_id, actor_id = _coordination_identity(payload)
         if not _desktop_delivery_is_available():
             raise RetryableSessionWorkError(
                 "desktop_client_unavailable",
@@ -509,17 +566,21 @@ def build_think_router(
             "client_capabilities",
             list(default_capabilities_for_mode(ClientMode.DESKTOP_PET)),
         )
+        relay = DesktopTurnEventRelay(payload, desktop_agent_event_delivery,
+                                     phase="resuming" if item.attempts > 1 else "queued",
+                                     defer_start=bool(completion_batch_key(item)))
         if not completion_batch_key(item) and not request_id:
             payload["memory_idempotency_key"] = f"session-inbox:{item.item_id}"
         with _inbound_scope(payload) if payload.get("turn_kind") != "plugin_event" else nullcontext("") as inbound:
             if payload.get("turn_kind") != "plugin_event":
                 await _publish_plugin_direct_event(None, payload)
-            async with turn_coordinator.hold(
+            async with relay, turn_coordinator.hold(
                 profile_user_id,
                 session_id,
                 actor_id=f"desktop:{profile_user_id}" if request_id else actor_id,
                 channel="desktop_pet",
                 turn_kind=str(payload.get("turn_kind") or ""),
+                memory_domain=str(payload.get("character_pack_id") or ""),
             ) as turn_control_id:
                 if completion_batch_key(item) or request_id:
                     await session_work_queue.begin_processing(items)
@@ -540,15 +601,17 @@ def build_think_router(
                         elif cancellation_requested():
                             frame, model_status = {"status": "stopped", "speech": ""}, "not_requested"
                         else:
-                            frame = await asyncio.to_thread(engine.process_turn, payload)
+                            frame = await process_background_desktop_turn(engine, payload, relay)
                             model_status = "stopped" if isinstance(frame, dict) and frame.get("status") == "stopped" else "completed"
                     if cancellation_requested():
                         frame = {"status": "stopped", "speech": ""}
                     if prepared_frame is not None and not completion.direct_events():
+                        await relay.end()
                         record_completion_delivery(engine, items, ok=True, model_status="not_requested",
                             delivery_status="not_requested")
                         return
                     if isinstance(frame, dict) and frame.get("status") == "stopped":
+                        await relay.end(stopped=True)
                         record_completion_delivery(engine, items, ok=False, model_status=model_status,
                             delivery_status="not_sent", reason="host_completion_stopped")
                         _finish_inbound(inbound, frame=frame)
@@ -561,7 +624,7 @@ def build_think_router(
                             raise SessionWorkError("host_completion_turn_incomplete")
                         raise RuntimeError("desktop_session_turn_incomplete")
                     try:
-                        model_delivery = await _deliver_desktop_frame(frame)
+                        model_delivery = await _deliver_desktop_frame(frame, relay)
                         files = (await _deliver_completion_files(completion)
                                  if completion and model_delivery.get("ok") else None)
                         delivery_result = model_delivery
@@ -651,6 +714,7 @@ def build_think_router(
                 status_code=400,
                 headers={"Cache-Control": "no-store"},
             )
+        _stamp_desktop_origin(request, payload)
         return payload
 
     @router.post("/think/steer")
@@ -658,7 +722,7 @@ def build_think_router(
         payload = await _control_payload(request)
         if isinstance(payload, JSONResponse):
             return payload
-        profile_user_id, session_id, actor_id = _turn_identity(payload)
+        profile_user_id, session_id, actor_id = _coordination_identity(payload)
         if not isinstance(session_work_queue, DurableSessionWorkQueue) or not turn_coordinator.is_busy(
             profile_user_id,
             session_id,
@@ -672,6 +736,7 @@ def build_think_router(
                 actor_display_name=payload.get("actor_display_name"),
                 channel="desktop_pet",
                 current_attachment_ids=payload.get("current_attachment_ids"),
+                memory_domain=str(payload.get("character_pack_id") or ""),
             )
             status_code = 202 if result.get("ok") else (409 if result.get("status") == "finalizing" else 404)
             return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
@@ -691,6 +756,7 @@ def build_think_router(
             actor_display_name=payload.get("actor_display_name"),
             channel="desktop_pet",
             source_id=f"steer_{item_id}",
+            memory_domain=str(payload.get("character_pack_id") or ""),
             receipt_item_id=item_id,
             receipt_claim_token=str(reservation.get("claim_token") or ""),
             current_attachment_ids=payload.get("current_attachment_ids"),
@@ -711,12 +777,28 @@ def build_think_router(
             headers={"Cache-Control": "no-store"},
         )
 
+    @router.post("/think/presence")
+    async def private_presence(request: Request):
+        payload = await _control_payload(request)
+        if isinstance(payload, JSONResponse):
+            return payload
+        policy = getattr(engine, "owner_private_policy", None)
+        scope = policy.resolve(payload, character=engine._resolve_payload_character_pack_id(payload)) if policy else None
+        result = {"ok": True, "shared": bool(scope and scope.shared), "busy": False,
+                  "last_user_at": 0, "last_reply_at": 0}
+        if scope and scope.shared:
+            profile, session = scope.memory_identity
+            result.update(await asyncio.to_thread(policy.activity, scope.character))
+            result["busy"] = turn_coordinator.is_busy(profile, session) or bool(
+                session_work_queue and session_work_queue.has_work(f"{profile}\0{session}"))
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     @router.post("/think/stop")
     async def stop_turn(request: Request):
         payload = await _control_payload(request)
         if isinstance(payload, JSONResponse):
             return payload
-        profile_user_id, session_id, actor_id = _turn_identity(payload)
+        profile_user_id, session_id, actor_id = _coordination_identity(payload)
         result = turn_coordinator.request_stop(
             profile_user_id=profile_user_id,
             session_id=session_id,
@@ -749,6 +831,7 @@ def build_think_router(
                 status_code=400,
                 headers={"Cache-Control": "no-store"},
             )
+        _stamp_desktop_origin(request, payload)
         guard_decision = public_guard.try_acquire()
         if not guard_decision.allowed:
             runtime_metrics.incr("public_guard_blocked_total", 1)
@@ -781,12 +864,6 @@ def build_think_router(
                 headers={"Cache-Control": "no-store", "X-Akane-Contract": DESKTOP_PET_CONTRACT_VERSION},
             )
 
-        def _advance_stream(stream: Any) -> tuple[bool, Any]:
-            try:
-                return True, next(stream)
-            except StopIteration:
-                return False, None
-
         stream_outcome = {"ok": False, "disconnected": False}
 
         async def _stream_active(inbound, turn_control_id):
@@ -796,17 +873,10 @@ def build_think_router(
                 "speech": "",
                 "event_count": 0,
             }
-            turn_stream = None
+            turn_events = None
             ok = False
             disconnected = False
             final_frame = None
-            yield json.dumps(
-                {
-                    "type": "stream_start",
-                    "contract_version": DESKTOP_PET_CONTRACT_VERSION,
-                },
-                ensure_ascii=False,
-            ) + "\n"
             with _inbound_processing(inbound, turn_control_id):
                 try:
                     # Keep an explicit handle so a client-side abort closes the
@@ -814,11 +884,8 @@ def build_think_router(
                     # generator garbage collection can inject GeneratorExit into
                     # the inner stream from a different context, leaving an open
                     # MemCore turn behind for the next desktop-pet message.
-                    turn_stream = engine.process_turn_stream(payload)
-                    while True:
-                        has_event, event = await asyncio.to_thread(_advance_stream, turn_stream)
-                        if not has_event:
-                            break
+                    turn_events = iterate_turn_events(lambda: engine.process_turn_stream(payload))
+                    async for event in turn_events:
                         partial["event_count"] = int(partial.get("event_count", 0)) + 1
                         event_type = str(event.get("type") or "")
                         if event_type == "ui":
@@ -860,12 +927,9 @@ def build_think_router(
                     ) + "\n"
                     log_event("think_stream_error", session_id=str(payload.get("user_id") or ""), message=str(exc), partial=partial)
                 finally:
-                    close_stream = getattr(turn_stream, "close", None)
-                    if callable(close_stream):
-                        try:
-                            close_stream()
-                        except Exception as exc:
-                            logger.warning("think stream cleanup failed: %s", type(exc).__name__)
+                    if turn_events is not None:
+                        with CancelScope(shield=True):
+                            await turn_events.aclose()
                     _finish_inbound(inbound, frame=final_frame,
                         delivery_status="disconnected" if disconnected else "streamed" if ok else "failed",
                         reason="client_disconnected" if disconnected else "" if ok and final_frame is not None else "think_stream_incomplete")
@@ -883,27 +947,42 @@ def build_think_router(
                         ) + "\n"
 
         async def _stream():
+            lease = session_work_queue.keep_claim_alive(reservation["items"]) if reservation.get("items") else nullcontext()
             with _inbound_scope(payload) as inbound:
                 try:
-                    await _publish_plugin_direct_event(request, payload)
-                    profile_user_id, session_id, actor_id = _turn_identity(payload)
-                    async with turn_coordinator.hold(
-                        profile_user_id, session_id, actor_id=actor_id, channel="desktop_pet",
-                    ) as turn_control_id:
-                        payload["_turn_control_id"] = turn_control_id
-                        active_stream = _stream_active(inbound, turn_control_id)
-                        try:
-                            async for chunk in active_stream:
-                                yield chunk
-                        finally:
-                            await active_stream.aclose()
+                    async with lease:
+                        # Receipt precedes plugin publication and session-lock waits.
+                        # It confirms delivery without claiming generation has begun.
+                        yield json.dumps({
+                            "type": "stream_start",
+                            "contract_version": DESKTOP_PET_CONTRACT_VERSION,
+                            "phase": "received",
+                        }, ensure_ascii=False) + "\n"
+                        await _publish_plugin_direct_event(request, payload)
+                        profile_user_id, session_id, actor_id = _coordination_identity(payload)
+                        async with turn_coordinator.hold(
+                            profile_user_id, session_id, actor_id=actor_id, channel="desktop_pet",
+                            memory_domain=str(payload.get("character_pack_id") or ""),
+                        ) as turn_control_id:
+                            payload["_turn_control_id"] = turn_control_id
+                            active_stream = _stream_active(inbound, turn_control_id)
+                            try:
+                                async for chunk in active_stream:
+                                    yield chunk
+                            finally:
+                                with CancelScope(shield=True):
+                                    await active_stream.aclose()
+                except (GeneratorExit, asyncio.CancelledError):
+                    stream_outcome["disconnected"] = True
+                    raise
                 finally:
                     # One cleanup owner, including cancellation while waiting
                     # for the normal session lock or at stream_start.
-                    await _settle_desktop_turn(reservation, completed=stream_outcome["ok"],
-                        reason="client_disconnected" if stream_outcome["disconnected"] else "think_stream_failed")
-                    if guard_decision.acquired:
-                        public_guard.release()
+                    with CancelScope(shield=True):
+                        await _settle_desktop_turn(reservation, completed=stream_outcome["ok"],
+                            reason="client_disconnected" if stream_outcome["disconnected"] else "think_stream_failed")
+                        if guard_decision.acquired:
+                            public_guard.release()
 
         return StreamingResponse(
             _stream(),
@@ -944,6 +1023,7 @@ def build_think_router(
                 status_code=400,
                 headers={"Cache-Control": "no-store"},
             )
+        _stamp_desktop_origin(request, payload)
         guard_decision = public_guard.try_acquire()
         if not guard_decision.allowed:
             runtime_metrics.incr("public_guard_blocked_total", 1)
@@ -998,15 +1078,19 @@ def build_think_router(
                 if guard_decision.acquired:
                     public_guard.release()
                 raise
-            profile_user_id, session_id, actor_id = _turn_identity(payload)
+            profile_user_id, session_id, actor_id = _coordination_identity(payload)
             completed = False
             try:
-                async with turn_coordinator.hold(
-                    profile_user_id,
-                    session_id,
-                    actor_id=actor_id,
-                    channel="desktop_pet",
-                ) as turn_control_id:
+                async with (
+                    session_work_queue.keep_claim_alive(reservation["items"]) if reservation.get("items") else nullcontext(),
+                    turn_coordinator.hold(
+                        profile_user_id,
+                        session_id,
+                        actor_id=actor_id,
+                        channel="desktop_pet",
+                        memory_domain=str(payload.get("character_pack_id") or ""),
+                    ) as turn_control_id,
+                ):
                     payload["_turn_control_id"] = turn_control_id
                     with _inbound_processing(inbound, turn_control_id):
                         frame = await asyncio.to_thread(engine.process_turn, payload)

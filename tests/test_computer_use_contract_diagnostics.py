@@ -87,7 +87,9 @@ class ComputerUseContractDiagnosticsTests(unittest.TestCase):
         self.broker.execute.assert_not_called()
 
     def test_offline_valid_call_is_not_a_parameter_error(self):
-        _, result, envelope = self.execute({"action": "list_windows"})
+        with patch.object(contracts, "argument_error", wraps=contracts.argument_error) as validator:
+            _, result, envelope = self.execute({"action": "list_windows"})
+        self.assertEqual(validator.call_count, 1)
         self.assertEqual(envelope.data["code"], "not_available")
         self.assertNotIn("bad_args", result.followup_context)
         self.broker.execute.assert_not_called()
@@ -98,19 +100,20 @@ class ComputerUseContractDiagnosticsTests(unittest.TestCase):
         self.assertEqual(envelope.data["validation"]["error"]["path"], "actions[0].element_id")
         self.assertNotIn("private-value", envelope.model_feedback)
 
-    def test_stale_contract_precedes_argument_validation(self):
+    def test_old_display_reference_does_not_hide_current_argument_diagnostics(self):
         current = contract_snapshot(self.handler, scope="synthetic-scope")
         old = {**current, "contract_ref": "synthetic-old-contract"}
-        self.engine.tool_handlers["computer_use"] = ContractBoundHandler(self.handler, old, current_contract=lambda _: current)
-        with patch.object(contracts, "argument_error", side_effect=AssertionError("must not interpret old arguments")) as validator:
+        self.engine.tool_handlers["computer_use"] = ContractBoundHandler(self.handler, old, current_handler=lambda _: self.handler)
+        with patch.object(contracts, "argument_error", wraps=contracts.argument_error) as validator:
             _, result, envelope = self.execute({"action": "old-action"})
-        self.assertEqual(envelope.data["code"], "capability_contract_stale")
-        self.assertIn("capability_load", result.followup_context)
-        validator.assert_not_called()
+        self.assertEqual(envelope.data["code"], "bad_args")
+        self.assertIn("action", result.followup_context)
+        validator.assert_called()
         self.broker.execute.assert_not_called()
 
     def test_provider_schema_preserves_action_rules_without_conditional_dialect(self):
         schema = build_openai_native_tool_from_spec(contracts.COMPUTER_USE_TOOL_SPEC)["function"]["parameters"]
+        self.assertEqual(schema["properties"].pop("background")["type"], "boolean")
         self.assertEqual(schema, contracts.INPUT_SCHEMA)
         for action in contracts.ACTIONS:
             self.assertIn(action + ":", schema["properties"]["action"]["description"])

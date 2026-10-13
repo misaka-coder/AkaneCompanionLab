@@ -1019,6 +1019,8 @@ class WebSearchToolHandlerTests(unittest.TestCase):
             self.assertEqual(result.state_updates["web_search_reason"], "extract_fetch_failed")
             self.assertIn("fetch failed: unable to retrieve the page", result.followup_context)
             self.assertIn("不代表整个搜索服务不可用", result.followup_context)
+            self.assertNotIn("连接正常", result.followup_context)
+            self.assertIn("browser_page", result.followup_context)
             self.assertNotIn("provider-secret", result.followup_context)
             self.assertIn("Authorization: Bearer [redacted]", result.followup_context)
             self.assertTrue(status["enabled"])
@@ -1467,7 +1469,33 @@ class OpenMusicSearchToolHandlerTests(unittest.TestCase):
             now_ts=1712400000,
             visual_payload={},
             client_mode="desktop_pet",
+            invocation_id="music-search",
         )
+
+    def _handler(self, *, status="succeeded", reason="", dispatch_hook=None):
+        from types import SimpleNamespace
+        from companion_v01.capability_registry import OPEN_BROWSER_TOOL_SPEC
+        from companion_v01.executor_broker import BrokerExecutionResult, ExecutionReceipt, ExecutorBroker
+
+        receipt = ExecutionReceipt(
+            instance_id="music-test", tool_id="open_browser", offer_id="browser-offer",
+            lease_epoch="music-lease", offer_expires_at=time.time() + 60,
+            spec_version=OPEN_BROWSER_TOOL_SPEC.spec_version,
+            schema_version=OPEN_BROWSER_TOOL_SPEC.schema_version,
+            schema_hash=OPEN_BROWSER_TOOL_SPEC.schema_hash,
+        )
+        dispatched = []
+        def dispatch(**kwargs):
+            dispatched.append(kwargs)
+            if dispatch_hook is not None:
+                dispatch_hook()
+            return BrokerExecutionResult(status=status, reason=reason)
+        source = SimpleNamespace(
+            resolve_receipt=lambda spec: receipt,
+            validate_receipt=lambda spec, value: "",
+            dispatch=dispatch,
+        )
+        return OpenMusicSearchToolHandler(offer_source=source, executor_broker=ExecutorBroker(source)), dispatched
 
     def test_prompt_instruction_frames_search_as_not_playback(self) -> None:
         instruction = OpenMusicSearchToolHandler().build_prompt_instruction()
@@ -1507,8 +1535,8 @@ class OpenMusicSearchToolHandlerTests(unittest.TestCase):
         self.assertIsNone(handler.normalize_call({"type": "open_music_search", "query": "https://example.com/song"}))
         self.assertIsNone(handler.normalize_call({"type": "open_music_search", "query": "token=secret"}))
 
-    def test_execute_emits_browser_open_request_without_claiming_playback(self) -> None:
-        handler = OpenMusicSearchToolHandler()
+    def test_execute_waits_for_browser_receipt_without_claiming_playback(self) -> None:
+        handler, dispatched = self._handler()
         call = handler.normalize_call(
             {
                 "type": "open_music_search",
@@ -1523,16 +1551,104 @@ class OpenMusicSearchToolHandlerTests(unittest.TestCase):
         result = handler.execute(call=call, context=self._context())
 
         self.assertEqual(result.tool_type, "open_music_search")
-        self.assertEqual(result.stream_events[0]["type"], "browser_open_requested")
-        self.assertIn("y.qq.com", result.stream_events[0]["url"])
-        self.assertFalse(result.stream_events[0]["requires_confirmation"])
-        self.assertEqual(result.state_updates["music_request_status"], "requested_open")
+        self.assertEqual(result.stream_events[0]["type"], "capability_execution_result")
+        self.assertEqual(result.stream_events[0]["status"], "succeeded")
+        self.assertEqual(dispatched[0]["spec"].capability_id, "open_browser")
+        self.assertIn("y.qq.com", dispatched[0]["arguments"]["url"])
+        self.assertEqual(result.state_updates["music_request_status"], "succeeded")
         self.assertEqual(result.state_updates["music_request_platform"], "qq_music")
-        self.assertIn("不代表歌曲已经开始播放", result.followup_context)
-        self.assertIn("尚未确认", result.followup_context)
+        self.assertIn("尚未确认页面加载或歌曲播放", result.followup_context)
+
+    def test_browser_failure_unknown_and_offline_remain_errors_in_outer_tool_result(self) -> None:
+        from companion_v01.executor_broker import ServerLocalBrokerResult
+        from companion_v01.tool_invocation import ToolInvocation
+        from companion_v01.tool_orchestration.results import server_local_broker_result
+
+        for status, reason in [("failed", "os_open_failed"), ("execution_unknown", "result_timeout"),
+                               ("unavailable_before_dispatch", "satellite_offline")]:
+            with self.subTest(status=status):
+                handler, _ = self._handler(status=status, reason=reason)
+                call = handler.normalize_call({"type": "open_music_search", "title": "搁浅", "platform": "netease_music"})
+                result = handler.execute(call=call, context=self._context())
+                _, envelope = server_local_broker_result(
+                    invocation=ToolInvocation("open_music_search", {"title": "搁浅"}, id="music-search"),
+                    broker_result=ServerLocalBrokerResult(status="succeeded", result=result),
+                )
+                self.assertEqual(result.state_updates["music_request_status"], status)
+                self.assertEqual(result.state_updates["capability_execution"]["reason"], reason)
+                self.assertEqual(envelope.status, "error")
+                self.assertNotIn("系统已接收", result.followup_context)
+                self.assertFalse(any(event["type"] == "browser_open_requested" for event in result.stream_events))
+
+    def test_unconfigured_executor_does_not_emit_a_browser_open_request(self) -> None:
+        handler = OpenMusicSearchToolHandler()
+        call = handler.normalize_call({"type": "open_music_search", "title": "搁浅"})
+        result = handler.execute(call=call, context=self._context())
+        self.assertNotEqual(result.state_updates["music_request_status"], "succeeded")
+        self.assertEqual(result.state_updates["capability_execution"]["reason"], "missing_execution_receipt")
+        self.assertFalse(any(event["type"] == "browser_open_requested" for event in result.stream_events))
+
+    def test_duplicate_request_does_not_open_twice_and_new_request_can_repeat_song(self) -> None:
+        from dataclasses import replace
+
+        handler, dispatched = self._handler()
+        call = handler.normalize_call({"type": "open_music_search", "title": "搁浅", "artist": "周杰伦", "platform": "netease_music"})
+        first = handler.execute(call=call, context=self._context())
+        replay = handler.execute(call=call, context=self._context())
+        self.assertEqual(first.state_updates, replay.state_updates)
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(dispatched[0]["invocation_id"], "music-search:music_search_browser")
+        self.assertEqual(dispatched[0]["arguments"]["url"],
+                         "https://music.163.com/#/search/m/?s=%E6%90%81%E6%B5%85+%E5%91%A8%E6%9D%B0%E4%BC%A6&type=1")
+        handler.execute(call=call, context=replace(self._context(), invocation_id="music-search-again"))
+        self.assertEqual(len(dispatched), 2)
+
+    def test_slow_executor_has_no_success_result_before_terminal_receipt(self) -> None:
+        started, release = threading.Event(), threading.Event()
+        def wait_for_receipt():
+            started.set()
+            self.assertTrue(release.wait(3))
+        handler, _ = self._handler(dispatch_hook=wait_for_receipt)
+        call = handler.normalize_call({"type": "open_music_search", "title": "搁浅"})
+        results = []
+        worker = threading.Thread(target=lambda: results.append(handler.execute(call=call, context=self._context())))
+        worker.start()
+        try:
+            self.assertTrue(started.wait(2))
+            self.assertEqual(results, [])
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(results[0].state_updates["music_request_status"], "succeeded")
+
+    def test_non_owner_qq_sender_cannot_use_composed_browser_execution(self) -> None:
+        from dataclasses import replace
+
+        handler, dispatched = self._handler()
+        call = handler.normalize_call({"type": "open_music_search", "title": "搁浅"})
+        context = replace(self._context(), request_context={"qq_delivery_context": {"is_group": True, "user_id": "222"}})
+        with patch("config.MASTER_QQ", "111"):
+            result = handler.execute(call=call, context=context)
+        self.assertEqual(result.state_updates["music_request_status"], "blocked")
+        self.assertEqual(dispatched, [])
 
 
 class BrowserPageToolHandlerTests(unittest.TestCase):
+    def test_missing_download_reports_no_task_without_claiming_browser_failed(self) -> None:
+        class EmptyDownloads:
+            def run(self, **_kwargs):
+                return BrowserPageResult(ok=False, status="not_found", action="download_status", reason="download_not_found")
+
+        handler = BrowserPageToolHandler(browser_runner=EmptyDownloads())
+        result = handler.execute(call={"type": "browser_page", "action": "download_status"}, context=self._context())
+
+        self.assertEqual(result.state_updates["browser_page_status"], "not_found")
+        self.assertEqual(result.state_updates["browser_page_reason"], "download_not_found")
+        self.assertIn("未找到所查询的下载任务", result.followup_context)
+        self.assertNotIn("浏览器页面暂时不可用", result.followup_context)
+        self.assertNotIn("已下载", result.followup_context.split("不等于")[0])
+
     def _context(self) -> ToolExecutionContext:
         return ToolExecutionContext(
             profile_user_id="master",

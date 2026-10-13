@@ -445,7 +445,8 @@ class CoListenPromptTests(unittest.TestCase):
             co_listen_count=2,
         )
         prompt = build_co_listen_memory_prompt(ctx, now_ts=1_700_000_000 + 60)
-        self.assertIn("不要", prompt)
+        self.assertIn("播放器：未知", prompt)
+        self.assertNotIn("speech", prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +570,7 @@ class ControlsProviderAssemblerTests(unittest.TestCase):
 
 
 class PermissionPromptTests(unittest.TestCase):
-    """T4 §7.4: build_co_listen_memory_prompt emits correct permission text."""
+    """Control permissions stay visible as current data in the short tail."""
 
     def _make_context(self, **overrides) -> MusicContext:
         defaults = dict(
@@ -606,9 +607,10 @@ class PermissionPromptTests(unittest.TestCase):
             enabled_music_controls=frozenset({MusicControl.PAUSE})
         )
         prompt = build_co_listen_memory_prompt(ctx, now_ts=1_700_000_060)
-        self.assertIn("没让你主动切下一首", prompt)
-        self.assertIn("没让你回到上一首", prompt)
-        self.assertIn("没让你主动推歌", prompt)
+        self.assertIn("proactive_controls: pause", prompt)
+        self.assertNotIn("next", prompt)
+        self.assertNotIn("prev", prompt)
+        self.assertNotIn("recommend", prompt)
 
     def test_all_enabled_no_permission_section(self) -> None:
         ctx = self._make_context(
@@ -620,20 +622,19 @@ class PermissionPromptTests(unittest.TestCase):
             })
         )
         prompt = build_co_listen_memory_prompt(ctx, now_ts=1_700_000_060)
-        self.assertNotIn("她现在能做什么", prompt)
+        self.assertIn("proactive_controls: next, pause, prev, recommend", prompt)
+        self.assertNotIn("先问", prompt)
 
-    def test_each_disabled_control_produces_its_own_line(self) -> None:
+    def test_control_permissions_do_not_include_disabled_actions(self) -> None:
         ctx = self._make_context(
             enabled_music_controls=frozenset({MusicControl.PAUSE, MusicControl.NEXT})
         )
         prompt = build_co_listen_memory_prompt(ctx, now_ts=1_700_000_060)
-        self.assertIn("没让你回到上一首", prompt)
-        self.assertIn("没让你主动推歌", prompt)
-        # Enabled controls must NOT appear as restrictions
-        self.assertNotIn("没让你主动切下一首", prompt)
-        self.assertNotIn("没让你主动暂停", prompt)
+        self.assertIn("proactive_controls: next, pause", prompt)
+        self.assertNotIn("prev", prompt)
+        self.assertNotIn("recommend", prompt)
 
-    def test_recommend_enabled_nudge_appears_in_prompt(self) -> None:
+    def test_recommend_enabled_appears_in_permission_data(self) -> None:
         ctx = self._make_context(
             enabled_music_controls=frozenset({
                 MusicControl.PAUSE, MusicControl.NEXT,
@@ -641,16 +642,21 @@ class PermissionPromptTests(unittest.TestCase):
             })
         )
         prompt = build_co_listen_memory_prompt(ctx, now_ts=1_700_000_060)
-        self.assertIn("主动提议", prompt)
+        self.assertIn("recommend", prompt)
 
-    def test_recommend_disabled_no_nudge(self) -> None:
+    def test_recommend_disabled_is_omitted_from_permission_data(self) -> None:
         ctx = self._make_context(
             enabled_music_controls=frozenset({
                 MusicControl.PAUSE, MusicControl.NEXT, MusicControl.PREV,
             })
         )
         prompt = build_co_listen_memory_prompt(ctx, now_ts=1_700_000_060)
-        self.assertNotIn("可以主动提议推荐", prompt)
+        self.assertNotIn("recommend", prompt)
+
+    def test_revoking_all_controls_remains_explicit(self) -> None:
+        ctx = self._make_context(enabled_music_controls=frozenset())
+        prompt = build_co_listen_memory_prompt(ctx, now_ts=1_700_000_060)
+        self.assertIn("proactive_controls: none", prompt)
 
 
 if __name__ == "__main__":

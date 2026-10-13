@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 from akane_plugin import Plugin, Result
 from companion_v01.background_tasks import BackgroundTaskRunner
-from companion_v01.bot_runtime import _dispatch_host_job_completion
+from companion_v01.bot_runtime_components.completion import _dispatch_host_job_completion
 from companion_v01.capability_registry import ExecutorBroker
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
@@ -385,7 +385,7 @@ class DesktopCompletionDeliveryTests(unittest.IsolatedAsyncioTestCase):
         from companion_v01.durable_session_queue import DurableSessionWorkQueue
         from companion_v01.session_inbox import SessionInboxStore
         from companion_v01.routes.think import build_think_router
-        from companion_v01.bot_runtime import _host_job_completion_request
+        from companion_v01.bot_runtime_components.completion import _host_job_completion_request
         from tests.test_plugin_events import _RouteEngine
 
         with tempfile.TemporaryDirectory() as directory:

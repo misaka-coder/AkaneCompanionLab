@@ -33,7 +33,7 @@ class _FakeTimeline:
             "source_id": source_id,
         }
 
-    def import_legacy_message(
+    def append_standalone_message(
         self, record: dict[str, Any], *, role: str, **scope: Any
     ) -> dict[str, Any]:
         return self._record(role, record, scope)

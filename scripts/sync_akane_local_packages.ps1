@@ -40,7 +40,9 @@ function Get-AkaneLocalPackageFingerprint {
     }
     $ignoredParts = @(".git", ".venv", ".claude", ".agents", ".vscode", ".ruff_cache", ".pytest_cache", "build", "dist", "__pycache__")
     foreach ($packageName in $packageNames) {
-        $packageRoot = Join-Path $SourceRoot $packageName
+        # memcore-kernel is the distribution; its repository and import remain memcore.
+        $sourceName = if ($packageName -eq "memcore-kernel") { "memcore" } else { $packageName }
+        $packageRoot = Join-Path $SourceRoot $sourceName
         if (-not (Test-Path -LiteralPath (Join-Path $packageRoot "pyproject.toml") -PathType Leaf)) {
             throw "local_package_source_missing:$packageName"
         }
@@ -51,7 +53,7 @@ function Get-AkaneLocalPackageFingerprint {
                 $packageFiles.Add((Get-Item -LiteralPath $metadataPath))
             }
         }
-        $moduleRoot = Join-Path $packageRoot $packageName.Replace("-", "_")
+        $moduleRoot = Join-Path $packageRoot $sourceName.Replace("-", "_")
         if (-not (Test-Path -LiteralPath $moduleRoot -PathType Container)) {
             throw "local_package_module_missing:$packageName"
         }

@@ -1,6 +1,6 @@
 # Board observations and explicit decisions
 
-Install this independent Python project with `akane-plugin` 0.5. Enable
+Install this independent Python project with `akane-plugin>=0.14,<0.15`. Enable
 `example.board` through the host's normal plugin admission process. It uses
 only the public SDK; it does not provide a game engine or choose legal moves.
 

@@ -21,9 +21,9 @@ from .bot_http_routes import build_bot_runtime_routers
 from .bot_runtime import BotRuntimeFactory
 from .host_bot_bootstrap import build_host_bot_registry
 from .routes.bots import build_bots_router
+from .routes.backend_restart import build_backend_restart_router
 from .routes.qq import build_qq_router
 from .routes.satellite import build_satellite_router
-from .routes.web_static import build_web_static_router
 
 if config.RUNTIME_MEMORY_TRACING_ENABLED:
     tracemalloc.start()
@@ -53,8 +53,6 @@ PROJECT_DIR = APP_DIR.parent
 
 WEB_DIR = PROJECT_DIR / "web"
 ASSETS_DIR = WEB_DIR / "assets"
-MODULES_DIR = WEB_DIR / "modules"
-VENDOR_DIR = WEB_DIR / "vendor"
 bot_runtime_factory = BotRuntimeFactory(
     config_module=config,
     assets_dir=ASSETS_DIR,
@@ -92,6 +90,7 @@ settings_override_store = bot_runtime.settings_override_store
 deployment_security = bot_runtime.deployment_security
 qq_channel_config = bot_runtime.qq_channel_config
 admin_write_auth = bot_runtime.admin_write_auth
+app.include_router(build_backend_restart_router(registry=bot_registry, admin_auth=admin_write_auth))
 desktop_satellite_service = bot_runtime.desktop_satellite_service
 plugin_runtime = bot_runtime.plugin_runtime
 plugin_capability_source = bot_runtime.plugin_capability_source
@@ -264,12 +263,5 @@ app.include_router(
     build_satellite_router(
         satellite_service=desktop_satellite_service,
         admin_auth=admin_write_auth,
-    )
-)
-app.include_router(
-    build_web_static_router(
-        web_dir=WEB_DIR,
-        modules_dir=MODULES_DIR,
-        vendor_dir=VENDOR_DIR,
     )
 )

@@ -54,7 +54,8 @@ assert.doesNotMatch(awaitingHtml, /待压缩合并/);
 const upgraded = data();
 upgraded.tools[0] = { ...upgraded.tools[0], pending: true, pendingReason: "compaction", nativeContractValid: false };
 assert.match(renderToolExposure({ phase: "ready", data: upgraded }), /声明待压缩合并/);
-assert.match(renderToolExposure({ phase: "ready", data: upgraded }), /契约已失效/);
+assert.match(renderToolExposure({ phase: "ready", data: upgraded }), /展示说明待更新/);
+assert.doesNotMatch(renderToolExposure({ phase: "ready", data: upgraded }), /契约已失效/);
 controller.stop();
 
 const requests = [];

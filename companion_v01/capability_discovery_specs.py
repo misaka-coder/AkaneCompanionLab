@@ -68,13 +68,9 @@ CAPABILITY_LOAD_TOOL_SPEC = CapabilityToolSpec(
     capability_id="capability_load",
     display_name="Load capability schemas",
     description=(
-        "Load the complete current contract for exact ids from the visible directory or history. "
-        "No search prerequisite. Contracts and scoped contract_refs are returned in this tool result; "
-        "loading does not change native tools or grant permission. Invoke a loaded contract through "
-        "capability_invoke with its contract_ref. After a resident contract becomes stale, use this "
-        "load/invoke path until its native declaration is refreshed at the context boundary. "
-        "Each available id is returned independently; missing ids do not discard usable contracts. "
-        "Repeated ids are returned once. A partial result can be used immediately."
+        "Load current usage and input schema for exact capability ids. Search is optional. "
+        "Use capability_invoke with the capability_id and business arguments; loading does not "
+        "grant permission or add native tools. Available ids in a partial result remain usable."
     ),
     input_schema={
         "type": "object",
@@ -141,21 +137,18 @@ CAPABILITY_LIST_TOOL_SPEC = CapabilityToolSpec(
 
 CAPABILITY_INVOKE_TOOL_SPEC = CapabilityToolSpec(
     capability_id="capability_invoke",
-    display_name="Invoke a loaded capability",
+    display_name="Invoke a capability",
     description=(
-        "Execute one exact capability using the contract_ref disclosed by capability_load. "
-        "A still-valid contract from this conversation can be reused without reloading. "
-        "The target's validation, permissions, approval, execution policies and result handling apply. "
-        "If the contract is stale, this attempt is not executed: load the current contract and retry "
-        "through this entry point. Never retry an action whose completion is unknown."
+        "Execute an exact capability_id with its business arguments inside one arguments object. "
+        "Use capability_load if its current usage is unclear. Current validation and permissions apply. "
+        "Never retry an action whose completion is unknown."
     ),
     input_schema={
         "type": "object", "additionalProperties": False,
         "properties": {
             "capability_id": {"type": "string", "minLength": 1},
-            "contract_ref": {"type": "string", "minLength": 1},
             "arguments": {"type": "object", "additionalProperties": True},
-        }, "required": ["capability_id", "contract_ref", "arguments"],
+        }, "required": ["capability_id", "arguments"],
     },
     risk="medium", confirm="never", effects=(), visible_in=("desktop", "qq", "web"),
     spec_version="1.0.0", schema_version=1, execution_class="sync", idempotency="effectful",

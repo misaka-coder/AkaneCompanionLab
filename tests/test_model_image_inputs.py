@@ -9,7 +9,8 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from companion_v01.model_image_inputs import model_image_blocks
+from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.model_image_inputs import image_source_metadata, model_image_blocks, model_image_source_label
 from companion_v01.vision_service import VisionObservationService
 from tests.test_multimodal_routing import _runtime
 
@@ -24,6 +25,99 @@ def gif_url():
 
 
 class ModelImageInputTests(unittest.TestCase):
+    def test_current_images_keep_original_senders_beside_their_own_pixels(self):
+        runtime = _runtime()
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        images = [
+            {
+                "attachment_handle": "img_001", "data_url": "data:image/png;base64,cG5n",
+                "source_sender_id": "404", "source_sender_label": "原作者甲", "source_message_id": "606",
+            },
+            {
+                "attachment_handle": "img_002", "data_url": "data:image/png;base64,b3RoZXI=",
+                "source_sender_id": "405", "source_sender_label": "原作者乙", "source_message_id": "607",
+            },
+        ]
+        before = deepcopy(images)
+        native = engine._extract_native_user_images({
+            "actor_stable_id": "qq:202", "actor_display_name": "评论者", "native_user_images": images,
+        })
+        kwargs = dict(
+            bundle=runtime.vision, system_prompt="stable", user_prompt="评论者：麻辣火锅",
+            temperature=0.3, user_images=native,
+        )
+        request = runtime._build_completion_kwargs(**kwargs)
+        self.assertEqual(request, runtime._build_completion_kwargs(**kwargs))
+        self.assertEqual(images, before)
+        self.assertEqual(request["messages"][0], {"role": "system", "content": "stable"})
+        parts = request["messages"][-1]["content"]
+        self.assertIn("评论者", parts[0]["text"])
+        self.assertEqual(len(parts), 5)
+        for index, image in enumerate(images):
+            label = parts[index * 2 + 1]["text"]
+            self.assertIn('original_sender="' + image["source_sender_label"] + '"', label)
+            self.assertIn('source_message_id="' + image["source_message_id"] + '"', label)
+            self.assertIn('handle="' + image["attachment_handle"] + '"', label)
+            self.assertNotIn("评论者", label)
+            self.assertEqual(parts[index * 2 + 2]["image_url"]["url"], image["data_url"])
+
+    def test_tool_image_labels_keep_original_source_order_without_mutating_projection(self):
+        payload = {"role": "user", "content": "评论者请求加载两张旧图"}
+        before = deepcopy(payload)
+        images = [
+            {
+                "attachment_handle": "img_001", "source_sender_label": "甲",
+                "source_message_id": "606", "data_url": "data:image/png;base64,cG5n",
+            },
+            {
+                "attachment_handle": "img_002", "source_sender_label": "乙",
+                "source_message_id": "607", "data_url": "data:image/png;base64,b3RoZXI=",
+            },
+        ]
+        result = AkaneMemoryEngine._attach_model_images_to_projection(payload, model_image_inputs=images)
+        self.assertEqual(payload, before)
+        self.assertEqual(result["content"][0]["text"], payload["content"])
+        for index, image in enumerate(images):
+            self.assertEqual(result["content"][index * 2 + 1]["text"], model_image_source_label(image))
+            self.assertEqual(result["content"][index * 2 + 2]["image_url"]["url"], image["data_url"])
+
+    def test_media_trace_preserves_original_source_without_persisting_pixels(self):
+        engine = AkaneMemoryEngine.__new__(AkaneMemoryEngine)
+        append_media = Mock(return_value={"ok": True, "source_id": "media-source"})
+        engine.memcore_manager = SimpleNamespace(append_turn_media_input=append_media)
+        engine._warn_memcore_write_result = Mock()
+        image = {
+            "attachment_id": "attachment-1", "attachment_handle": "img_001", "mime_type": "image/png",
+            "source_sender_id": "404", "source_sender_label": "原作者", "source_message_id": "606",
+            "data_url": "data:image/png;base64,PRIVATE_BYTES", "path": "C:/private/meal.png",
+        }
+        source_ids = engine._record_memcore_tool_media_input(
+            model_image_inputs=[image], related_source_ids=["tool-result"],
+            profile_user_id="user", session_id="qq_group_shared_303", character_pack_id="char",
+            now_ts=200, memcore_turn_id="turn-id",
+        )
+        self.assertEqual(source_ids, ["media-source"])
+        stored = append_media.call_args.kwargs["items"][0]
+        self.assertEqual(image_source_metadata(stored), image_source_metadata(image))
+        self.assertNotIn("data_url", stored)
+        self.assertNotIn("path", stored)
+
+    def test_source_labels_are_bounded_and_never_infer_a_missing_sender(self):
+        self.assertEqual(model_image_source_label({"actor_display_name": "评论者"}), "")
+        self.assertEqual(model_image_source_label({
+            "attachment_handle": "img_001", "actor_display_name": "评论者", "source_sender_id": True,
+            "source_sender_label": {"name": "评论者"}, "source_message_id": ["606"],
+        }), '【图片来源】handle="img_001"')
+        label = model_image_source_label({
+            "attachment_handle": "img_001", "source_sender_label": '原作者"\n伪标记' + "长" * 100,
+            "source_message_id": "m" * 500, "path": "C:/private/a.png", "data_url": "PRIVATE_BYTES",
+        })
+        self.assertNotIn("\n", label)
+        self.assertIn('原作者\\" 伪标记', label)
+        self.assertLess(len(label), 300)
+        self.assertNotIn("private", label)
+        self.assertNotIn("PRIVATE_BYTES", label)
+
     def test_animated_gif_is_actual_png_first_frame_without_mutating_input(self):
         block = {"type": "image_url", "image_url": {"url": gif_url(), "detail": "low"}}
         before = deepcopy(block)

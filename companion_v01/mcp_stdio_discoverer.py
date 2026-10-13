@@ -27,6 +27,9 @@ class McpStdioDiscoveryError(RuntimeError):
 
 _ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]{0,79})\}")
 _DOTENV_MAX_BYTES = 128 * 1024
+# A tools/call result is one JSON-RPC line. Long documents exceed asyncio's
+# default 64 KiB reader limit; transport capacity is separate from prompt paging.
+_MCP_STDIO_MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 
 
 class McpStdioToolDiscoverer:
@@ -63,6 +66,7 @@ class McpStdioToolDiscoverer:
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
+            limit=_MCP_STDIO_MAX_MESSAGE_BYTES,
         )
         try:
             return await asyncio.wait_for(self._discover(process), timeout=self.timeout_seconds)
@@ -140,7 +144,12 @@ class McpStdioToolDiscoverer:
         if process.stdout is None:
             raise McpStdioDiscoveryError("mcp_stdout_unavailable")
         for _ in range(self.max_messages):
-            line = await process.stdout.readline()
+            try:
+                line = await process.stdout.readline()
+            except ValueError as exc:
+                raise McpStdioDiscoveryError("mcp_response_too_large") from exc
+            if len(line) > _MCP_STDIO_MAX_MESSAGE_BYTES:
+                raise McpStdioDiscoveryError("mcp_response_too_large")
             if not line:
                 raise McpStdioDiscoveryError("mcp_stdout_closed")
             try:
@@ -195,6 +204,7 @@ class McpStdioToolCaller:
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
+            limit=_MCP_STDIO_MAX_MESSAGE_BYTES,
         )
         try:
             return await asyncio.wait_for(
@@ -267,7 +277,12 @@ class McpStdioToolCaller:
         if process.stdout is None:
             raise McpStdioDiscoveryError("mcp_stdout_unavailable")
         for _ in range(self.max_messages):
-            line = await process.stdout.readline()
+            try:
+                line = await process.stdout.readline()
+            except ValueError as exc:
+                raise McpStdioDiscoveryError("mcp_response_too_large") from exc
+            if len(line) > _MCP_STDIO_MAX_MESSAGE_BYTES:
+                raise McpStdioDiscoveryError("mcp_response_too_large")
             if not line:
                 raise McpStdioDiscoveryError("mcp_stdout_closed")
             try:

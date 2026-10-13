@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import hashlib
 import io
 import json
 import shutil
@@ -16,12 +17,14 @@ from akane_plugin import (
 from capcore_adapter_speech import (
     EdgeTTSClient, GptSovitsTTSClient, OpenAICompatTTSAdapter, resolve_emotion_voice_profile,
 )
+from .irodori import IrodoriTTSClient, IrodoriClientError, CAPTION_MAX_CHARS, CAPTION_CFG_SCALE
 
 PLUGIN_ID = "akane.tts"
 CAPABILITY_ID = "akane.tts.service.tts.v1.synthesize"
 PERMISSIONS = ("service.provide", "resource.read", "artifact.write", "network.read", "connection.tts.read")
 EDGE = "provider.tts.edge"
 GPT = "provider.tts.gpt_sovits.local"
+IRODORI = "provider.tts.irodori.local"
 MAX_AUDIO = 16 * 1024 * 1024
 OUTPUT_SCHEMA = {"type": "object", "additionalProperties": False,
     "required": ["provider_id", "voice_profile_id", "emotion", "emotion_voice_id", "profile_fingerprint", "media_type"],
@@ -38,7 +41,8 @@ def descriptor():
                 "required": ["provider", "profile_id"], "properties": {
                     "provider": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$"},
                     "profile_id": {"type": "string", "maxLength": 120}}}),
-            CapabilityIOSlot("emotion", "string", raw={"maxLength": 64})),
+            CapabilityIOSlot("emotion", "string", raw={"maxLength": 64}),
+            CapabilityIOSlot("caption", "string", raw={"maxLength": CAPTION_MAX_CHARS})),
         outputs=(CapabilityIOSlot("audio", "file", required=True, max_bytes=MAX_AUDIO, delivery="generated_file"),),
         output_schema=OUTPUT_SCHEMA, raw={"service": {"service_id": "tts", "version": 1, "method": "synthesize"},
             "followup": "none", "idempotency": "effectful"})
@@ -112,8 +116,10 @@ class TTSAdapter:
             if self.closed:
                 raise ValueError("tts_client_closed")
             provider = args["voice"]["provider"]
-            if provider not in (EDGE, GPT):
+            if provider not in (EDGE, GPT, IRODORI):
                 return CapabilityResult(is_error=True, status="unavailable", reason="requested_provider_unknown")
+            if args.get("caption") and provider != IRODORI:
+                raise ValueError("tts_caption_provider_unsupported")
             connection = await self.connections.resolve("tts")
             if not connection.ok:
                 return CapabilityResult(is_error=True, status=connection.status, reason=connection.reason)
@@ -130,8 +136,8 @@ class TTSAdapter:
                             reason="tts_connection_pool_capacity", content={"outcome_known": True})
                     retired = self.clients.pop(idle)
                     self.client_users.pop(idle, None)
-                self.clients[key] = (GptSovitsTTSClient(connection.base_url, **options) if provider == GPT
-                                     else EdgeTTSClient(**options))
+                factory = {GPT: GptSovitsTTSClient, IRODORI: IrodoriTTSClient, EDGE: EdgeTTSClient}[provider]
+                self.clients[key] = (factory(**options) if provider == EDGE else factory(connection.base_url, **options))
             client_key = key
             self.client_users[key] = self.client_users.get(key, 0) + 1
             self.clients[key] = self.clients.pop(key)
@@ -153,13 +159,19 @@ class TTSAdapter:
             invocation = {"text": args["text"], "emotion": args.get("emotion", "")}
             if provider == GPT:
                 invocation.update(profile=profile, voice_profile_id=args["voice"]["profile_id"])
-            work = asyncio.create_task(adapter.invoke("tts.synthesize", invocation, context))
+            work = asyncio.create_task(self._synthesize_irodori(self.clients[key], args, profile_source)
+                if provider == IRODORI else adapter.invoke("tts.synthesize", invocation, context))
             cancelled = False
             while True:
                 try:
                     result = await asyncio.shield(work)
                     break
                 except asyncio.CancelledError:
+                    if provider == IRODORI:
+                        work.cancel()
+                        await asyncio.gather(work, return_exceptions=True)
+                        return CapabilityResult(is_error=True, status="cancelled", reason="invocation_cancelled",
+                            content={"retryable": False, "outcome_known": False})
                     # The HTTP client uses a worker thread. Cancelling its
                     # asyncio await does not prove that remote inference ended.
                     cancelled = True
@@ -172,8 +184,9 @@ class TTSAdapter:
             audio = content["audio"]
             output_format, media_type = inspect_audio(audio, content["mediaType"])
             value = {"provider_id": provider, "voice_profile_id": str(content.get("voiceProfileId") or ""),
-                "emotion": emotion.requested_emotion, "emotion_voice_id": emotion.matched_emotion,
-                "profile_fingerprint": emotion.profile_fingerprint, "media_type": media_type}
+                "emotion": "" if provider == IRODORI else emotion.requested_emotion,
+                "emotion_voice_id": "" if provider == IRODORI else emotion.matched_emotion,
+                "profile_fingerprint": content.get("profileFingerprint", emotion.profile_fingerprint), "media_type": media_type}
             return CapabilityResult(is_error=False, status="ok", content=ManagedArtifactPayload(
                 artifacts=(ManagedArtifactDraft(data=audio, title="合成语音", output_format=output_format,
                     mime_type=media_type, summary="已合成音频，尚未确认播放。", send_to_user=False),),
@@ -201,6 +214,19 @@ class TTSAdapter:
                 await close()
         self.clients.clear()
         self.client_users.clear()
+
+    async def _synthesize_irodori(self, client, args, profile):
+        caption = args.get("caption", "")
+        try:
+            result = await client.synthesize(args["text"], profile=profile, caption=caption)
+        except IrodoriClientError as exc:
+            return CapabilityResult(is_error=True, status="error", reason=str(exc),
+                                    content={"retryable": False, "outcome_known": exc.outcome_known})
+        settings = {"profile": profile, "caption": caption, "cfg_scale_caption": CAPTION_CFG_SCALE} if caption else profile
+        fingerprint = hashlib.sha256(json.dumps(settings, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        return CapabilityResult(is_error=False, status="ok", content={"audio": result["audio"],
+            "mediaType": result["media_type"], "voiceProfileId": args["voice"]["profile_id"],
+            "profileFingerprint": fingerprint})
 
 
 class TTSPlugin:

@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from companion_v01.bot_runtime import _host_job_completion_request
+from companion_v01.bot_runtime_components.completion import _host_job_completion_request
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.host_completion_batch import completion_batch_key, completion_metadata, completion_turn_payload
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
@@ -244,13 +244,13 @@ class ChannelCompletionTests(unittest.IsolatedAsyncioTestCase):
         for n in range(1, 12):
             await port.submit(terminal_request(self.jobs, n))
         invocations, deliveries = [], []
-        gateway = object.__new__(NapCatQQGateway)
+        gateway = NapCatQQGateway()
 
         def send_targets(context, targets):
             deliveries.append(targets)
             return {"ok": True, "count": len(targets), "results": []}
 
-        gateway._send_generated_file_targets = send_targets
+        gateway._messages._send_generated_file_targets = send_targets
 
         def process(**kwargs):
             event_fields = kwargs["turn_payload"]["plugin_external_event"]["data"]

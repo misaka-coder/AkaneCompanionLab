@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$OutputPath = "",
+    [string]$SourceRef = "",
     [switch]$InitializeGit
 )
 
@@ -38,11 +39,18 @@ function Test-PublicFileExcluded {
 
     $path = $RelativePath.Replace("\", "/")
     $lower = $path.ToLowerInvariant()
+    $fileName = [System.IO.Path]::GetFileName($lower)
+    if ($fileName.StartsWith(".env") -and $fileName -ne ".env.example" -and -not $fileName.EndsWith(".example")) {
+        return $true
+    }
 
     $exactExclusions = @(
         ".env",
         "claude.md",
         "agents.md",
+        "scripts/relogin_cloud_bot.ps1",
+        "deploy/recovery/akane-bot-recovery-root.sh",
+        "docs/akane_multi_bot_host_recovery_v1.md",
         "docs/mechanical_section_view_guide.md"
     )
     if ($exactExclusions -contains $lower) {
@@ -89,7 +97,7 @@ function Test-PublicFileExcluded {
         "desktop_pet_next/dist/",
         "desktop_pet_next/src-tauri/target/",
         "desktop_pet_creator_kit/dist/",
-        "desktop_pet_creator_kit/characters/reimu/",
+        "desktop_pet_creator_kit/characters/",
         "web/assets/bgm/",
         "web/assets/characters/",
         "web/assets/live2d/",
@@ -160,7 +168,7 @@ function Copy-PublicSourceFiles {
     )
 
     $relativePaths = @(
-        git -c core.quotepath=false -C $SourceRoot ls-files --cached --others --exclude-standard
+        git -c core.quotepath=false -C $SourceRoot ls-files --cached
     )
     if ($LASTEXITCODE -ne 0) {
         throw "git_file_listing_failed"
@@ -196,6 +204,57 @@ function Copy-PublicSourceFiles {
         Copied   = $copied
         Excluded = $excluded
     }
+}
+
+function Copy-PublicCommittedFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot,
+        [Parameter(Mandatory = $true)][string]$Ref
+    )
+
+    $revision = @(git -C $SourceRoot rev-parse --verify --end-of-options "${Ref}^{commit}")
+    if ($LASTEXITCODE -ne 0 -or $revision.Count -ne 1 -or $revision[0] -notmatch '^[0-9a-f]{40,64}$') {
+        throw "invalid_source_commit"
+    }
+    $archivePath = Join-Path $DestinationRoot ".public-source.zip"
+    $archive = $null
+    $copied = 0
+    $excluded = 0
+    try {
+        git -C $SourceRoot archive --format=zip --output $archivePath $revision[0]
+        if ($LASTEXITCODE -ne 0) {
+            throw "git_archive_failed"
+        }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+        foreach ($entry in $archive.Entries) {
+            if (-not $entry.Name) {
+                continue
+            }
+            $relativePath = $entry.FullName.Replace("\", "/")
+            if (Test-PublicFileExcluded -RelativePath $relativePath) {
+                $excluded += 1
+                continue
+            }
+            $destinationPath = [System.IO.Path]::GetFullPath((Join-Path $DestinationRoot $relativePath))
+            if (-not (Test-PathWithin -Path $destinationPath -Root $DestinationRoot)) {
+                throw "archive_path_outside_output"
+            }
+            $directory = Split-Path -Parent $destinationPath
+            $null = New-Item -ItemType Directory -Force -Path $directory
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destinationPath, $false)
+            $copied += 1
+        }
+    } finally {
+        if ($null -ne $archive) {
+            $archive.Dispose()
+        }
+        if (Test-Path -LiteralPath $archivePath) {
+            Remove-Item -LiteralPath $archivePath
+        }
+    }
+    return [pscustomobject]@{ Copied = $copied; Excluded = $excluded; Commit = $revision[0] }
 }
 
 function New-PublicPlaceholderPng {
@@ -413,7 +472,11 @@ if (Test-Path -LiteralPath $outputRoot) {
 }
 
 $null = New-Item -ItemType Directory -Path $outputRoot
-$copyResult = Copy-PublicSourceFiles -SourceRoot $sourceRoot -DestinationRoot $outputRoot
+if ($SourceRef) {
+    $copyResult = Copy-PublicCommittedFiles -SourceRoot $sourceRoot -DestinationRoot $outputRoot -Ref $SourceRef
+} else {
+    $copyResult = Copy-PublicSourceFiles -SourceRoot $sourceRoot -DestinationRoot $outputRoot
+}
 $placeholderCount = Add-PublicPlaceholderAssets -DestinationRoot $outputRoot
 Normalize-PublicTextFiles -DestinationRoot $outputRoot
 
@@ -438,4 +501,5 @@ if ($InitializeGit) {
     PlaceholderImages = $placeholderCount
     GitInitialized    = [bool]$InitializeGit
     GitHistoryCopied  = $false
+    SourceRef         = $SourceRef
 } | Format-List

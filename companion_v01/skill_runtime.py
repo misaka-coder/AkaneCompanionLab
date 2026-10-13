@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import threading
 from typing import Any, Callable, Iterable
 import uuid
@@ -149,11 +150,17 @@ def _parse_required_tools(value: Any) -> tuple[str, ...]:
     return tuple(tools)
 
 
-def _parse_skill_markdown(path: Path) -> tuple[str, str, str, tuple[str, ...]]:
-    try:
-        raw_bytes = path.read_bytes()
-    except OSError as exc:
-        raise SkillError("skill_read_failed", detail=type(exc).__name__) from exc
+@dataclass(frozen=True)
+class _ParsedSkillMarkdown:
+    raw_bytes: bytes
+    name: str
+    description: str
+    instructions: str
+    required_tools: tuple[str, ...]
+    sha256: str
+
+
+def _parse_skill_markdown(raw_bytes: bytes) -> _ParsedSkillMarkdown:
     if len(raw_bytes) > SKILL_MAX_INSTRUCTION_BYTES:
         raise SkillError("skill_instructions_too_large")
     try:
@@ -185,8 +192,14 @@ def _parse_skill_markdown(path: Path) -> tuple[str, str, str, tuple[str, ...]]:
     body = "\n".join(lines[end + 1 :]).strip()
     if not body:
         raise SkillError("skill_instructions_required")
-    digest = hashlib.sha256(raw_bytes).hexdigest()
-    return name, description, body, required_tools
+    return _ParsedSkillMarkdown(
+        raw_bytes=raw_bytes,
+        name=name,
+        description=description,
+        instructions=body,
+        required_tools=required_tools,
+        sha256=hashlib.sha256(raw_bytes).hexdigest(),
+    )
 
 
 def _safe_relative_file(root: Path, relative: str) -> Path:
@@ -210,17 +223,20 @@ def _iter_package_files(root: Path) -> Iterable[tuple[Path, str]]:
     count = 0
     total = 0
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().casefold()):
-        if path.is_symlink():
+        try:
+            file_stat = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SkillError("skill_package_stat_failed") from exc
+        if stat.S_ISLNK(file_stat.st_mode):
             raise SkillError("skill_package_symlink_not_allowed")
-        if not path.is_file():
+        if not stat.S_ISREG(file_stat.st_mode):
             continue
         count += 1
         if count > SKILL_MAX_PACKAGE_FILES:
             raise SkillError("skill_package_too_many_files")
-        try:
-            total += path.stat().st_size
-        except OSError as exc:
-            raise SkillError("skill_package_stat_failed") from exc
+        total += file_stat.st_size
         if total > SKILL_MAX_PACKAGE_BYTES:
             raise SkillError("skill_package_too_large")
         yield path, path.relative_to(root).as_posix()
@@ -233,13 +249,23 @@ def _entry_from_dir(
     enforce_directory_name: bool = True,
     mount_name: str = "",
     execution_prefix: str | None = None,
+    markdown_cache: dict[Path, _ParsedSkillMarkdown] | None = None,
 ) -> SkillEntry:
     if root.is_symlink() or not root.is_dir():
         raise SkillError("skill_directory_invalid")
     skill_path = root / SKILL_FILE_NAME
     if not skill_path.is_file() or skill_path.is_symlink():
         raise SkillError("skill_file_missing")
-    name, description, body, required_tools = _parse_skill_markdown(skill_path)
+    try:
+        raw_bytes = skill_path.read_bytes()
+    except OSError as exc:
+        raise SkillError("skill_read_failed", detail=type(exc).__name__) from exc
+    if len(raw_bytes) > SKILL_MAX_INSTRUCTION_BYTES:
+        raise SkillError("skill_instructions_too_large")
+    parsed = markdown_cache.get(skill_path) if markdown_cache is not None else None
+    if parsed is None or parsed.raw_bytes != raw_bytes:
+        parsed = _parse_skill_markdown(raw_bytes)
+    name = parsed.name
     if enforce_directory_name and name != root.name:
         raise SkillError("skill_name_directory_mismatch", detail=f"{root.name}!={name}")
     files = tuple(
@@ -247,18 +273,21 @@ def _entry_from_dir(
         for _path, relative in _iter_package_files(root)
         if relative not in {SKILL_FILE_NAME, ".akane-skill.json"}
     )
-    return SkillEntry(
+    entry = SkillEntry(
         name=name,
-        description=description,
+        description=parsed.description,
         source=source,
         root=root.resolve(strict=True),
-        instructions=body,
-        instruction_sha256=hashlib.sha256(skill_path.read_bytes()).hexdigest(),
+        instructions=parsed.instructions,
+        instruction_sha256=parsed.sha256,
         files=files,
-        required_tools=required_tools,
+        required_tools=parsed.required_tools,
         mount_name=mount_name,
         execution_prefix=root.name if execution_prefix is None else execution_prefix,
     )
+    if markdown_cache is not None:
+        markdown_cache[skill_path] = parsed
+    return entry
 
 
 def validate_contributed_skill_root(root: str | Path) -> SkillEntry:
@@ -285,6 +314,7 @@ class SkillRegistry:
         self.managed_root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._last_good: dict[tuple[str, str], SkillEntry] = {}
+        self._markdown_cache: dict[Path, _ParsedSkillMarkdown] = {}
 
     def mount_paths(self) -> dict[str, Path]:
         paths = {SKILL_MANAGED_MOUNT: self.managed_root}
@@ -325,11 +355,13 @@ class SkillRegistry:
         with self._lock:
             discovered: dict[tuple[str, str], SkillEntry] = {}
             diagnostics: list[dict[str, str]] = []
+            seen_markdown_paths: set[Path] = set()
             for source, root in (("bundled", self.bundled_root), ("managed", self.managed_root)):
                 for child in self._child_dirs(root):
                     key = (source, child.name)
+                    seen_markdown_paths.add(child / SKILL_FILE_NAME)
                     try:
-                        entry = _entry_from_dir(child, source=source)
+                        entry = _entry_from_dir(child, source=source, markdown_cache=self._markdown_cache)
                     except SkillError as exc:
                         previous = self._last_good.get(key)
                         if previous is not None:
@@ -346,12 +378,14 @@ class SkillRegistry:
                     discovered[key] = entry
             for contribution in self._contributed_roots():
                 key = (contribution.source, contribution.root.name)
+                seen_markdown_paths.add(contribution.root / SKILL_FILE_NAME)
                 try:
                     entry = _entry_from_dir(
                         contribution.root,
                         source=contribution.source,
                         mount_name=contribution.mount_name,
                         execution_prefix="",
+                        markdown_cache=self._markdown_cache,
                     )
                 except SkillError as exc:
                     previous = self._last_good.get(key)
@@ -368,6 +402,12 @@ class SkillRegistry:
                     continue
                 discovered[key] = entry
             self._last_good = discovered
+            # Reuse parsing only: paths, permissions and package contents are
+            # checked on every discovery, including when the bytes are unchanged.
+            self._markdown_cache = {
+                path: parsed for path, parsed in self._markdown_cache.items()
+                if path in seen_markdown_paths
+            }
             merged: dict[str, SkillEntry] = {}
             bundled_names = {
                 entry.name for key, entry in discovered.items() if key[0] == "bundled"
@@ -404,6 +444,10 @@ class SkillRegistry:
             return SkillSnapshot(entries=entries, catalog_revision=revision, diagnostics=tuple(diagnostics))
 
     def prompt_catalog(self, *, available_tool_names: Iterable[str] | None = None) -> str:
+        return self.prompt_catalog_projection(available_tool_names=available_tool_names)["text"]
+
+    def prompt_catalog_projection(self, *, available_tool_names: Iterable[str] | None = None) -> dict[str, Any]:
+        """Render and compare the same confirmed snapshot, without private locators."""
         snapshot = self.snapshot()
         available = (
             None
@@ -417,7 +461,7 @@ class SkillRegistry:
         )
         lines = [
             f"【可按需加载的 Skills（目录版本 {snapshot.catalog_revision}）】",
-            "Skill 是任务操作手册，不会增加权限或自动执行代码。任务明确匹配某项描述时，先调用 load_skill 读取完整说明；不要一次加载所有 Skill。",
+            "按需用 load_skill(name=下列名称) 读取 Skill 手册；capability_load 只加载工具 ID 的契约。Skill 不增加权限或自动执行代码。",
         ]
         used = len("\n".join(lines))
         included = 0
@@ -440,7 +484,11 @@ class SkillRegistry:
             lines.append(
                 f"- 热重载诊断：{fallback_count} 项继续使用上一有效版本，{ignored_count} 项无效更新暂未加载；可用 manage_skill(validate) 检查草稿。"
             )
-        return "\n".join(lines)
+        return {"text": "\n".join(lines), "entries": {
+            entry.name: {"description": entry.description, "revision": entry.revision,
+                         "required_tools": list(entry.required_tools)}
+            for entry in visible_entries
+        }}
 
     def load(self, name: str, *, resource: str = "") -> SkillReadResult:
         snapshot = self.snapshot()

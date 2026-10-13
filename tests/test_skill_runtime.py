@@ -304,7 +304,7 @@ class SkillRuntimeTests(unittest.TestCase):
 
         self.assertEqual(prompt.count("【可按需加载的 Skills"), 1)
         self.assertIn("demo：Use for a model-visible workflow.", prompt)
-        self.assertIn("本轮可直接调用的工具及参数", prompt)
+        self.assertNotIn("本轮可直接调用的工具及参数", prompt)
         self.assertNotIn(str(self.root), prompt)
 
     def test_manage_handler_is_owner_only_for_qq_but_available_to_desktop(self) -> None:

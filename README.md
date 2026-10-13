@@ -6,7 +6,7 @@
 > 首次准备与单入口启动；桌宠安装包、Linux/macOS 桌面端仍未作为正式
 > 发行物提供。
 
-AkaneCompanionLab 是一个桌面陪伴角色系统：FastAPI 后端、静态 Web 客户端、
+AkaneCompanionLab 是一个桌面陪伴角色系统：FastAPI 后端、QQ 接入、
 Windows-first 的 Tauri 桌宠，以及一个能让你做自己角色的角色工坊。
 
 它想做的不是"更聪明的问答 AI"，而是让你和一个角色一起把相处过成日常。下面
@@ -37,8 +37,8 @@ provider 原文，用 provider-native projection 恢复下一轮历史，不把�
 整套记忆和她能感知的世界，不只是换张头像。Akane 是项目自带的默认演示角色。
 
 **工具调用会校验、执行、把结果喂回来。** 模型想用工具时先校验，参数错或工具
-不存在会把可读原因喂回去让它重试；执行成功后把结果带进下一轮。一轮一个工具，
-多步靠多轮，高风险动作会要求确认——不是"说一句我做了"就算数。
+不存在会把可读原因喂回去让它重试；执行成功后把结果带进下一轮。支持同轮并行调用和后台任务，
+多步任务继续追加结果；需要确认的动作按配置处理。
 
 **Skills 按需加载，也能由主人让模型自己编写并热发布。** 常驻上下文只展示稳定的
 Skill 名称和适用场景；匹配任务时再通过工具加载完整 `SKILL.md`、reference 或脚本说明。
@@ -46,7 +46,7 @@ Skill 名称和适用场景；匹配任务时再通过工具加载完整 `SKILL.
 草稿、校验并原子发布，下一次模型请求立即生效，无需重启。契约与权限边界见
 [`docs/akane_skills_hot_reload_v1.md`](docs/akane_skills_hot_reload_v1.md)。
 
-**一套后端，多个端。** Web、桌宠、QQ 共用同一个回合引擎，但每个端按自己的模式
+**一套后端，多个端。** 桌宠、QQ 共用同一个回合引擎，但每个端按自己的模式
 裁剪表现和可用工具（比如 QQ 端只发文字、语音和表情图片，不渲染立绘、场景和
 BGM）。
 
@@ -59,7 +59,6 @@ BGM）。
 | 项目 | 状态 |
 | --- | --- |
 | FastAPI 后端 | 可用于本地学习和实验 |
-| Web 客户端 | 可运行，部分资源需要自行提供 |
 | Tauri 桌宠 | Alpha，主要在 Windows/WebView2 验证 |
 | 沉浸场景与剧本（片刻小屋） | Alpha，已支持多幕剧本演绎与场景流转 |
 | 电脑操作（Computer Use） | Alpha，Windows 本机受控设备与 Chrome 桥接 |
@@ -76,8 +75,7 @@ BGM）。
 
 ```mermaid
 flowchart LR
-    Web[Web client] --> API[FastAPI companion backend]
-    Pet[Tauri desktop pet] --> API
+    Pet[Tauri desktop pet] --> API[FastAPI companion backend]
     QQ[Optional QQ / NapCat] --> API
     API --> Memory[SQLite + optional Chroma index]
     API --> LLM[Configurable LLM APIs]
@@ -91,8 +89,7 @@ flowchart LR
 
 - `companion_v01/`：FastAPI 后端和 Akane 运行时模块
 - `services/`：共享服务客户端
-- `web/`：后端直接 serve 的静态 Web 前端
-- `desktop_pet/`：旧 Electron 桌宠 V0，冻结保留
+- `web/assets/`：资源清单、商店和场景共用的图片；旧 Web 客户端已移除
 - `desktop_pet_next/`：Tauri/WebView2 桌宠主线
 - `desktop_pet_creator_kit/`：角色包创建工具
 - `tests/`：测试套件
@@ -101,6 +98,9 @@ flowchart LR
 - `local_research/`：本地私有语料、抽取产物、临时研究资料，已被 Git 忽略
 
 更详细的布局说明见 `docs/repository_layout.md`。
+
+开发新工具、桌宠窗口或交互插件，先读 [开发入口](docs/DEVELOPMENT.md)。
+它按任务指向当前实现、完整示例和相关验证；文件定位见 [项目地图](docs/PROJECT_MAP.md)。
 
 ## Windows 一键启动
 
@@ -145,10 +145,10 @@ OpenAI 兼容服务。保存后的密钥位于被 Git 忽略的
   已有产物不会因源码时间变化在普通启动时重建，更新请显式使用 `-Rebuild`。
 - 桌宠工具链或发布产物都不完整时，明确报告缺少的准备项；不会悄悄改开 Web。
 
-也可以明确选择客户端：
+也可以明确选择桌宠或仅运行后端：
 
 ```powershell
-.\start_akane.bat -Mode Web
+.\start_akane.bat -Mode Backend
 .\start_akane.bat -Mode Desktop
 ```
 
@@ -171,7 +171,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\bootstrap_akane_windows.ps1 -PrepareOnly
 
 powershell -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\bootstrap_akane_windows.ps1 -CheckOnly -Mode Web
+  -File .\scripts\bootstrap_akane_windows.ps1 -CheckOnly -Mode Backend
 ```
 
 首次依赖安装可能需要数分钟。启动失败会给出缺少的 Python、Node、Rust
@@ -216,12 +216,11 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 | 能力 | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | FastAPI 后端 | 主要验证平台 | 源码可运行，需手动安装 | 源码可运行，需手动安装 |
-| 浏览器 Web 客户端 | 支持 | 随后端使用 | 随后端使用 |
 | Tauri 桌宠/角色工坊 | Alpha，Windows-first | 未承诺 | 未承诺 |
 | QQ / NapCat | 可选 | 取决于外部 NapCat 环境 | 取决于外部 NapCat 环境 |
 | Windows 系统音乐/窗口感知 | 支持或结构化降级 | 不支持 | 不支持 |
 
-当前“多端”指 Web、Windows 桌宠和 QQ 共享同一后端与角色包协议，不表示
+当前“多端”指 Windows 桌宠和 QQ 共享同一后端与角色包协议，不表示
 每个桌面系统已经拥有同等完成度的原生客户端。
 
 项目不捆绑本地大模型。云端 API 是最低硬件要求最低的路径；本地推理通过
@@ -237,6 +236,12 @@ Ollama 等外部服务接入，速度和效果取决于用户选择的模型、�
 建议使用 Python 3.11。基础后端不要求 Rust、Node、QQ、CUDA 或本地
 Embedding 模型。
 
+源码克隆不包含维护者电脑上的 `package_wheels/`。现在提供
+[官方内部包与对应源码](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13)，
+安装器会下载并按仓库固定的 SHA-256 校验。完整说明见
+[后端安装](docs/backend_installation_v1.md)；Linux 的 Agent 与可选能力边界见
+[Linux 能力表](docs/linux_backend_capabilities_v1.md)。
+
 ### 独立包依赖
 
 Akane 只依赖从项目拆出的包的版本化发行物，不依赖它们的源码位置。
@@ -246,6 +251,12 @@ editable、`../` 或本机绝对路径。普通安装只需要满足以下任一
 - 随发行包提供、包含完整依赖闭包的 `package_wheels/`；
 - 通过 `AKANE_PACKAGE_WHEELHOUSE` 或 `-PackageWheelhouse` 指定的 wheelhouse；
 - 通过 `AKANE_PACKAGE_INDEX_URL` 或 `-PackageIndexUrl` 指定的包索引。
+
+没有显式供应源时，首次启动自动使用已锁定的官方内部包发行物，
+再安装公共索引中的第三方依赖。维护者源码目录不属于用户安装条件。
+
+MemCore 的发行版名是 `memcore-kernel`，Python 中仍使用 `import memcore`。
+启动器按发行版名校验安装，维护者构建时仍读取 `memcore/` 源码目录。
 
 源码仓库可以放在任意位置，只有维护者构建发行物时才作为显式输入。`memcore`
 是当前对话记忆主后端，旧 Akane 记忆链路仅保留为显式兼容/迁移模式。完整的
@@ -289,7 +300,7 @@ TypeScript + Tauri v2，后端继续通过 Python/HTTP/SSE 组合现有 core 包
 
 ```powershell
 python -m venv .venv
-.\scripts\bootstrap_akane_windows.ps1 -PrepareOnly -PackageWheelhouse .\package_wheels
+.\scripts\bootstrap_akane_windows.ps1 -PrepareOnly -Mode Backend
 Copy-Item .env.example .env
 ```
 
@@ -300,8 +311,7 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe .\scripts\verify_extracted_package_independence.py
 ```
 
-服务器部署可以继续编辑 `.env` 设置 LLM；本地浏览器也可以打开设置面板完成
-同样的模型配置。最小部署可保留：
+服务器部署可以继续编辑 `.env` 设置 LLM；桌宠的完整设置面板提供可视化模型配置。最小部署可保留：
 
 ```dotenv
 EMBEDDING_PROVIDER=hashed
@@ -322,14 +332,16 @@ QQ_BRIDGE_ENABLED=false
 后端设计为跨平台运行，但桌宠并未承诺跨平台可用：
 
 ```bash
-python3 -m venv .venv
-./.venv/bin/python -m pip install --no-index --find-links ./package_wheels -r requirements.txt
-cp .env.example .env
+python3.11 -m venv .venv
+./.venv/bin/python scripts/install_dependencies.py --profile backend
+cp .env.backend.example .env
+# 编辑 .env，配置模型 API，再启动：
 ./.venv/bin/python launch_akane_memory_v01.py
 ```
 
-旧的 Web 预览和 Electron 桌宠入口仅为兼容保留。新用户使用
-`启动_Akane.bat`，桌宠主线为 `desktop_pet_next`。
+轻量后端不安装 Chroma、文档/媒体工具、Playwright 或本地 ML。
+需要这些能力时使用 `--profile full`。旧 Web 聊天和 Electron 入口已移除；
+Linux 后端使用 API，Windows 桌宠入口仍为 `启动_Akane.bat`。
 
 ## 桌宠模式
 
@@ -364,14 +376,16 @@ Tauri/WebView2，并以 Windows 为主要验证平台。
 
 - 默认后端：`http://127.0.0.1:9999`
 - 默认后端健康检查：`http://127.0.0.1:9999/health`
-- Web 主界面：`http://127.0.0.1:9999/`
-- 资源预览：`http://127.0.0.1:9999/resource-preview`
+- 桌宠：运行 `start_akane.bat`，右键打开面板，从“完整设置”进入配置。
+- 仅启动后端：`start_akane.bat -Mode Backend`；此模式不会打开界面。
+
+旧 Electron、旧浏览器聊天和预览页面已移除。桌宠持续使用当前角色与 Bot 的会话，已移除“新对话”入口。当前清理范围和后续界面整理见 [前端重做前置清理](docs/frontend_cleanup_preparation_v1.md)。
 
 ## 测试
 
-仓库验证以 `scripts/verify_akane.ps1` 为唯一权威入口。日常修改先跑
-Quick；它不联网、不启动真实 Akane 后端，并在隔离的临时 env/data root
-中执行：
+日常修改按当前任务和 AGENTS.md 运行相关测试、build/smoke 与 diff 检查。
+整套仓库验证入口为 `scripts/verify_akane.ps1`。需要快速仓库回归时可运行
+Quick；它不联网、不启动真实 Akane 后端，在隔离的临时 env/data root 中执行：
 
 ```powershell
 .\scripts\verify_akane.ps1 -Tier Quick
@@ -402,8 +416,10 @@ Quick 会优先检查：
 - 生成文件歧义确认
 - 精确 handle 发送不会被歧义目标干扰
 
-提交前运行 Full。它和 Windows CI 使用同一入口，覆盖完整 Python、桌宠
-构建与 smoke、Tauri test/check/fmt、公开导出审计和 diff hygiene：
+需要完整回归或发布验收时运行 Full。它和 Windows CI 使用同一入口，覆盖完整 Python、桌宠
+构建与 smoke、Tauri test/check/fmt、公开导出审计和 diff hygiene。桌宠模块边界、
+组合运行时、工作区导入、窗口运动、角色工坊模块/状态，以及片刻小屋的契约、
+TypeScript 和组件/状态测试都包含在 Full/Acceptance 中；Quick 保持原来的范围：
 
 ```powershell
 .\scripts\verify_akane.ps1 -Tier Full

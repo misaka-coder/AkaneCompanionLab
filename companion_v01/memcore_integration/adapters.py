@@ -10,6 +10,8 @@ import time
 import inspect
 from typing import Any, Callable, Iterable
 
+from ..text_utils import estimate_prompt_tokens
+
 
 def _task_type_value(value: Any) -> str:
     return str(getattr(value, "value", value) or "").strip().lower()
@@ -31,13 +33,13 @@ def _wait_before_retry(attempts: int) -> None:
     time.sleep(min(1.0, 0.25 * (2 ** max(0, attempts - 1))))
 
 
-def _supports_request_timeout(call: Any) -> bool:
+def _supports_keyword(call: Any, name: str) -> bool:
     try:
         parameters = inspect.signature(call).parameters.values()
     except (TypeError, ValueError):
         return False
     return any(
-        parameter.name == "request_timeout_s" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters
     )
 
@@ -46,6 +48,7 @@ def build_akane_llm_client(
     llm: Any,
     *,
     cancellation_requested: Callable[[], bool] | None = None,
+    chat_model_override_provider: Callable[[], str] | None = None,
 ) -> Any:
     """Build a memcore.LLMClient wrapper around Akane's LLMRuntime."""
 
@@ -71,6 +74,21 @@ def build_akane_llm_client(
                     break
                 attempts += 1
                 try:
+                    prefix = getattr(request, "chat_prefix", None)
+                    call_prefix = getattr(self.runtime, "call_memcore_prefix_json", None)
+                    if prefix is not None:
+                        if not callable(call_prefix):
+                            raise ValueError("memcore_chat_prefix_transport_unavailable")
+                        data = call_prefix(
+                            chat_prefix=prefix, contract=str(request.system_prompt or ""), fallback=fallback,
+                            request_timeout_s=float(getattr(request, "timeout_s", 30.0) or 30.0),
+                        )
+                        if self._cancelled():
+                            last_error = "shutdown_requested"
+                            break
+                        if isinstance(data, dict) and data and data != fallback:
+                            return LLMResult(ok=True, data=data, latency_ms=_latency_ms(start), attempts=attempts)
+                        raise ValueError("prefix_invalid_json_result")
                     call_memcore = getattr(self.runtime, "call_memcore_json", None)
                     call = call_memcore if callable(call_memcore) else self.runtime.call_aux_json
                     kwargs = dict(
@@ -80,11 +98,13 @@ def build_akane_llm_client(
                         temperature=float(getattr(request, "temperature", 0.2) or 0.2),
                         prompt_cache_key=f"memcore:{_task_type_value(getattr(request, 'task_type', ''))}",
                     )
-                    if _supports_request_timeout(call):
+                    if _supports_keyword(call, "request_timeout_s"):
                         kwargs["request_timeout_s"] = max(
                             0.1,
                             float(getattr(request, "timeout_s", 30.0) or 30.0),
                         )
+                    if callable(call_memcore) and chat_model_override_provider is not None and _supports_keyword(call, "chat_model_override"):
+                        kwargs["chat_model_override"] = chat_model_override_provider()
                     data = call(**kwargs)
                     if self._cancelled():
                         last_error = "shutdown_requested"
@@ -201,11 +221,6 @@ def build_akane_token_counter() -> Any:
             return "estimated"
 
         def count_text(self, text: str) -> int:
-            raw = str(text or "")
-            if not raw:
-                return 0
-            cjk_chars = sum(1 for char in raw if "\u4e00" <= char <= "\u9fff")
-            non_cjk_chars = max(0, len(raw) - cjk_chars)
-            return int(cjk_chars + ((non_cjk_chars + 3) // 4))
+            return estimate_prompt_tokens(text)
 
     return AkaneEstimatedTokenCounter()

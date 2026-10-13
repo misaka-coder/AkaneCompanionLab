@@ -67,7 +67,7 @@ class ComputerUseTests(unittest.TestCase):
         self.assertNotIn(f"computer_use guide v{GUIDE_VERSION}", second.followup_context)
         third = handlers["capability_load"].execute(call=call, context=SimpleNamespace(request_context={}))
         self.assertIn(f"computer_use guide v{GUIDE_VERSION}", third.followup_context)
-        self.assertTrue(catalog.load(["computer_use"])["capabilities"][0]["contract_ref"])
+        self.assertNotIn("contract_ref", catalog.load(["computer_use"])["capabilities"][0])
 
     @staticmethod
     def image_data():

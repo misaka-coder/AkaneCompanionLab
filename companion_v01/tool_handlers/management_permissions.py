@@ -61,7 +61,7 @@ def gate_extension_mutation(
             tool_type=tool_type,
             status="blocked",
             reason=str(decision.reason or "capability_management_disabled"),
-            content="能力管理已关闭，本次没有修改已安装能力。主人可用 /access extensions ask 或 /access extensions on 调整。",
+            content="能力管理已关闭，本次没有修改已安装能力。主人可用 /权限 扩展 询问 或 /权限 扩展 开 调整。",
         )
 
     if approval_store is not None:
@@ -110,7 +110,7 @@ def gate_extension_mutation(
         event["requestId"] = request_id
     content = (
         f"{display_name}的 {action} 操作需要主人批准；审批请求已经创建。"
-        "QQ 可用 /approve 批准，控制中心可在待审批卡片处理。批准或拒绝后宿主会自动续接原会话。"
+        "QQ 可用 /批准 批准，控制中心可在待审批卡片处理。批准或拒绝后宿主会自动续接原会话。"
         if request_id
         else f"{display_name}的 {action} 操作需要批准，但当前没有创建出可处理的审批请求。"
     )

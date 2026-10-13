@@ -1,6 +1,7 @@
 import { escapeHtml, initial, safeStyleUrl } from "../dom.js";
 import { imagePreviewKey } from "../../control-center/chat-image-preview.js";
 import { chatTimeline, chatFileKind, chatFileSize } from "../chat-timeline.js";
+import { splitReplyText } from "../../reply-text.js";
 
 export function renderChat(state) {
   const vm = state.viewModel;
@@ -45,7 +46,6 @@ export function renderChat(state) {
           <div><p class="eyebrow">CURRENT SESSION</p><h2 id="chat-heading">${escapeHtml(chat.title || "当前对话")}</h2></div>
           <div class="chat-header-actions">
             <span class="session-chip">${chat.totalCount > messages.length ? `已加载 ${messages.length}/${chat.totalCount} 条` : `${messages.length} 条消息`}</span>
-            <button class="chat-icon-button" type="button" data-action="chat.new" aria-label="新建对话" title="新建对话">＋</button>
           </div>
         </header>
 
@@ -100,10 +100,18 @@ function renderMessage(message, chat, character, state) {
       <div class="message-avatar${avatarStyle ? "" : " is-fallback"}"${avatarStyle ? ` style="--avatar-image:${avatarStyle}"` : ""}>${avatarStyle ? "" : initial(speaker)}</div>
       <div class="message-content">
         <div class="message-meta"><strong>${escapeHtml(speaker)}</strong><time>${escapeHtml(formatMessageTime(message.timestamp))}</time>${message.intermediate ? "<em>处理中</em>" : message.artifact ? "<em>生成的文件</em>" : ""}</div>
-        ${message.content ? `<p>${escapeHtml(message.content).replace(/\n/g, "<br>")}</p>` : ""}
+        ${message.content ? `<p>${renderMessageText(message.content, assistant)}</p>` : ""}
         ${(message.attachments || []).map(item => renderChatFile(item, state)).join("")}
       </div>
     </article>`;
+}
+
+function renderMessageText(text, assistant) {
+  const runs = assistant ? splitReplyText(text) : [{ text, aside: false }];
+  return runs.map(run => {
+    const content = escapeHtml(run.text).replace(/\n/g, "<br>");
+    return run.aside ? `<span class="reply-aside">${content}</span>` : content;
+  }).join("");
 }
 
 function fileAttributes(item) {

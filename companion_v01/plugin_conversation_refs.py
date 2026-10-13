@@ -29,10 +29,18 @@ class PluginConversationReferenceAuthority:
         request_context = getattr(context, "request_context", None)
         request_context = request_context if isinstance(request_context, Mapping) else {}
         if client_mode == "desktop_pet":
+            reference = request_context.get("_memory_desktop_ref")
+            origin = self.resolve(reference) if isinstance(reference, str) else None
+            if origin and all(origin.get(key) == value for key, value in (
+                ("channel", "desktop_pet"), ("profile", profile_user_id),
+                ("session", session_id), ("character", character_pack_id),
+            )):
+                return reference
             return self.issue_desktop(
                 profile_user_id=profile_user_id,
                 session_id=session_id,
                 character_pack_id=character_pack_id,
+                client_capabilities=request_context.get("client_capabilities"),
             )
         if client_mode not in {"qq", "qq_text"}:
             return ""
@@ -105,6 +113,8 @@ class PluginConversationReferenceAuthority:
         profile_user_id: str,
         session_id: str,
         character_pack_id: str,
+        owner_private: bool = False,
+        client_capabilities: Any = None,
     ) -> str:
         profile_user_id = str(profile_user_id or "").strip()
         session_id = str(session_id or "").strip()
@@ -121,11 +131,18 @@ class PluginConversationReferenceAuthority:
             "profile": profile_user_id,
             "character": character_pack_id,
         }
+        if owner_private:
+            payload["owner_private"] = True
+        if isinstance(client_capabilities, (list, tuple)):
+            payload["client_capabilities"] = sorted({
+                str(item) for item in client_capabilities
+                if isinstance(item, str) and 0 < len(item) <= 64 and item.replace("_", "").isalnum()
+            })[:32]
         body = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
         signature = hmac.new(self._key, body, hashlib.sha256).digest()
         return "acr1." + _b64(body) + "." + _b64(signature)
 
-    def resolve(self, reference: str) -> dict[str, str] | None:
+    def resolve(self, reference: str) -> dict[str, Any] | None:
         parts = str(reference or "").strip().split(".")
         if len(parts) != 3 or parts[0] != "acr1":
             return None
@@ -149,6 +166,10 @@ class PluginConversationReferenceAuthority:
             "channel", "kind", "recipient", "session", "profile", "character",
             "actor", "actor_profile",
         )}
+        if payload.get("owner_private") is True and result["channel"] == "desktop_pet":
+            result["owner_private"] = "true"
+        if result["channel"] == "desktop_pet" and isinstance(payload.get("client_capabilities"), list):
+            result["client_capabilities"] = payload["client_capabilities"]
         if result["channel"] == "qq":
             if result["kind"] not in {"direct", "group"}:
                 return None

@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 from capcore import InvocationContext
 
-from companion_v01.bot_runtime import _host_job_completion_request
+from companion_v01.bot_runtime_components.completion import _host_job_completion_request
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
-from companion_v01.host_tool_jobs import _artifact_references
+from companion_v01.host_tool_job_runtime.contracts import _artifact_references
 from companion_v01.plugin_api import ManagedArtifactDraft
 from companion_v01.plugin_generation import PluginGenerationProcess
 from companion_v01.plugin_generation_artifacts import GenerationArtifactOutboxSink, consume_generation_artifact

@@ -1,5 +1,10 @@
 # Akane plugin examples
 
+Choose by task: start with `akane_sdk_math` for a function tool, `akane_sdk_board`
+for observations and explicit turns, or the [complete desktop Gomoku reference](../desktop_features/gomoku/README.md)
+for UI → program service → normal chat → model tool → UI state. See the
+[development entry](../../docs/DEVELOPMENT.md) for current host wiring.
+
 This directory is exposed to the execution host as `alias:akane-sdk`. Treat it
 as the current release's read-only reference: inspect or copy an example into
 the selected project, and make changes in that project rather than here. The
@@ -11,7 +16,7 @@ These packages use the same wheel and `akane.plugins.v1` entry-point contract
 as installed Akane plugins. They are executable examples rather than host-only
 fixtures.
 
-For new function plugins, start with the current SDK release (**0.14.0**) and the
+For new function plugins, start with the current SDK release (**0.14.2**) and the
 single public import `akane_plugin`. Install the matching SDK and CapCore 0.1.3
 release wheels in an ordinary virtual environment; the SDK does not require the
 Akane source tree. `alias:akane-sdk` remains a discovery convenience, not the SDK
@@ -126,6 +131,6 @@ the existing Host Job path. Do not copy the runner into each plugin.
 
 示例继续通过现有 SDK 声明工具用途、输入输出、风险和可见性。用户在控制中心“能力与权限 → 工具常驻与按需”按工具选择；同一插件可以混用两种方式。
 
-常驻工具按原生名字调用；按需工具按精确 ID `capability_load` 后，以返回的 `contract_ref` 经 `capability_invoke` 调用。加载不扩大原生 schema，不需要先搜索。插件 generation 更新后旧引用会失效，应重新加载。纯提示词、Skill、程序服务贡献不需要增加虚构工具。
+常驻工具按本轮原生声明调用；按需工具用 `capability_invoke(capability_id, arguments)`，不清楚用法时按精确 ID `capability_load`。加载不扩大原生 schema，不需要先搜索，也不要求版本引用。兼容更新直接使用当前实现；真实参数错误按返回字段修正。纯提示词、Skill、程序服务贡献不需要增加虚构工具。
 
 参见 [SDK 说明](../../akane_plugin/README.md)与[压缩边界及迁移记录](../../docs/tool_exposure_memcore_implementation_20260910.md)。

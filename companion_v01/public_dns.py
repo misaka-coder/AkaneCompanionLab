@@ -18,9 +18,18 @@ import requests
 
 # Numeric, TLS-verified bootstrap avoids asking the intercepted system resolver
 # how to reach its replacement. No redirect or environment proxy is accepted.
-DOH_ENDPOINT = "https://1.1.1.1/dns-query"
+# The first entry answers in about a tenth of a second on domestic networks and
+# is not detoured through the tunnel; the Cloudflare pair stays as the fallback
+# for networks where that is the reliable one.
+DOH_ENDPOINTS = (
+    "https://1.12.12.12/dns-query",
+    "https://1.1.1.1/dns-query",
+    "https://1.0.0.1/dns-query",
+)
 _MAX_RESPONSE_BYTES = 64 * 1024
 _CACHE_LIMIT = 128
+_QUERY_ATTEMPTS = 2
+_RETRY_PAUSE_SECONDS = 0.4
 _CACHE: OrderedDict[str, tuple[float, tuple[str, ...]]] = OrderedDict()
 _LOCK = threading.Lock()
 
@@ -34,13 +43,13 @@ def _canonical_name(value: str) -> str:
     return value.rstrip(".").encode("idna").decode("ascii").lower()
 
 
-def _query(hostname: str, record_type: int) -> tuple[tuple[str, ...], int]:
+def _query(hostname: str, record_type: int, endpoint: str) -> tuple[tuple[str, ...], int]:
     try:
         deadline = time.monotonic() + 8.0
         with requests.Session() as session:
             session.trust_env = False
             response = session.get(
-                DOH_ENDPOINT,
+                endpoint,
                 params={"name": hostname, "type": record_type, "cd": "false"},
                 headers={"Accept": "application/dns-json"},
                 timeout=(3.0, 5.0),
@@ -99,6 +108,12 @@ def _query(hostname: str, record_type: int) -> tuple[tuple[str, ...], int]:
         raise PublicDnsError() from exc
 
 
+def _query_both_families(hostname: str, endpoint: str) -> list[tuple[tuple[str, ...], int]]:
+    # Both families are checked. Never hide a private AAAA behind a public A.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        return list(pool.map(lambda kind: _query(hostname, kind, endpoint), (1, 28)))
+
+
 def resolve_public_dns(hostname: str) -> tuple[str, ...]:
     hostname = _canonical_name(hostname)
     if not hostname or "." not in hostname or len(hostname) > 253:
@@ -108,9 +123,25 @@ def resolve_public_dns(hostname: str) -> tuple[str, ...]:
         if cached and cached[0] > time.monotonic():
             _CACHE.move_to_end(hostname)
             return cached[1]
-    # Both families are checked. Never hide a private AAAA behind a public A.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda kind: _query(hostname, kind), (1, 28)))
+    # The encrypted lookup is an interception-independent transport, so a single
+    # dropped answer is normal on TUN/proxy setups; every endpoint is tried in
+    # turn, and the whole list is retried once before failing.
+    last_error: PublicDnsError | None = None
+    results: list[tuple[tuple[str, ...], int]] = []
+    for attempt in range(_QUERY_ATTEMPTS):
+        for endpoint in DOH_ENDPOINTS:
+            try:
+                results = _query_both_families(hostname, endpoint)
+                last_error = None
+                break
+            except PublicDnsError as exc:
+                last_error = exc
+        if last_error is None:
+            break
+        if attempt + 1 < _QUERY_ATTEMPTS:
+            time.sleep(_RETRY_PAUSE_SECONDS)
+    if last_error is not None:
+        raise last_error
     addresses = tuple(dict.fromkeys(address for rows, _ttl in results for address in rows))
     if not addresses:
         raise PublicDnsError()

@@ -12,7 +12,7 @@
 4. `manage_extension(test_source, path)` 在独立子进程中使用当前 release 的真实 SDK 运行项目测试；它不暂存、不安装、不激活插件。
 5. `manage_extension(stage_source, path)` 从源码构建 wheel，并在隔离进程中探测 manifest、权限和贡献项；暂存不会激活代码。
 6. `manage_extension(install, stage_id, approved_permissions)` 只接受该 stage 返回的完整权限集合，并由宿主一次完成制品发布、selection 更新和 generation 激活。
-7. 最后 `list` 确认 active；从尾部能力通知／`capability_list` 取得精确 ID，直接 `capability_load` 后携当前 `contract_ref` 经 `capability_invoke` 验证真实结果。新工具同会话立即可用，load 不扩充原生 tools；选择常驻后按既定 MemCore 压缩边界合并声明，再验证原生直接调用。模型不手工协调 publish、enable、restart 或 reconcile。
+7. 最后 `list` 确认 active；从尾部能力通知／`capability_list` 取得精确 ID，用 `capability_load` 读取用法，再经 `capability_invoke(capability_id, arguments)` 验证真实结果。新工具同会话立即可用，load 不扩充原生 tools；控制中心选择常驻后，下一次模型请求即可按本轮原生声明调用。模型不管理版本引用，也不手工协调 publish、enable、restart 或 reconcile。
 
 需要延迟唤醒当前角色时以 `examples/plugins/akane_timer` 为最小参考；只有还需要观察
 会话活动或贡献 Skill 时才使用更综合的 `akane_gentle_checkin`。两者都保存宿主签发的

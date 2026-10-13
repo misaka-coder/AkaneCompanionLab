@@ -1,10 +1,11 @@
 use serde_json::{json, Value};
 pub const TOOL_ID: &str = "computer_use";
-pub const SPEC_VERSION: &str = "1.3.0";
-pub const SCHEMA_VERSION: u64 = 4;
-pub const SCHEMA_HASH: &str = "sha256:349847d4f6d9da485e2cbd8d68cdf12ec6bc6c26a908a96f909cbf938645f14c";
+pub const SPEC_VERSION: &str = "1.4.0";
+pub const SCHEMA_VERSION: u64 = 5;
+pub const SCHEMA_HASH: &str =
+    "sha256:cd077893ba568f953e7bbf967cd1f879aa8a87bc8738efd5f13a2d1d06cf7a2d";
 pub fn fail(reason: &str) -> Value {
-    let mut out=json!({"ok":false,"action_state":"not_started","observation_state":"failed","reason":reason});
+    let mut out = json!({"ok":false,"action_state":"not_started","observation_state":"failed","reason":reason});
     let recovery=match reason{
         "context_reference_expired"|"context_scope_mismatch"=>Some(("list_windows_then_select","context_ref 在当前设备代次、契约或调用会话不可用；没有替换为最新窗口。本次尚未开始。重新枚举并选择实际目标，保留已执行/结果未知的操作，不自动重放。")),
         "context_evidence_unavailable"=>Some(("observe_then_review","该 context_ref 没有所需的截图证据，或混用了完整引用字段。本次尚未开始；使用同一 context_ref observe(mode=visual/hybrid)，查看实际附图后再规划。")),
@@ -30,113 +31,357 @@ pub fn fail(reason: &str) -> Value {
         "message_workflow_unverified"=>Some(("verify_message_workflow_or_handoff","当前收件人、完整草稿或发送控件未核实，尚未生成具体发送审批。重新观察并核查，无法核实时由用户接管；不是批准后即可恢复的状态。")),
         _=>None,
     };
-    if let Some((next,hint))=recovery{out["next_action"]=json!(next);out["recovery_hint"]=json!(hint);}
-    if reason=="desktop_owned_by_other_session"{if let Some(ms)=crate::control_lease::retry_after_ms(){out["retry_after_ms"]=json!(ms);}}
+    if let Some((next, hint)) = recovery {
+        out["next_action"] = json!(next);
+        out["recovery_hint"] = json!(hint);
+    }
+    if reason == "desktop_owned_by_other_session" {
+        if let Some(ms) = crate::control_lease::retry_after_ms() {
+            out["retry_after_ms"] = json!(ms);
+        }
+    }
     out
 }
-pub fn success() -> Value { json!({"ok":true,"action_state":"not_started","observation_state":"complete"}) }
-pub fn string<'a>(v: &'a Value, key: &str) -> &'a str { v.get(key).and_then(Value::as_str).unwrap_or("") }
+pub fn success() -> Value {
+    json!({"ok":true,"action_state":"not_started","observation_state":"complete"})
+}
+pub fn string<'a>(v: &'a Value, key: &str) -> &'a str {
+    v.get(key).and_then(Value::as_str).unwrap_or("")
+}
 pub fn valid(args: &serde_json::Map<String, Value>) -> bool {
-    if let Some(reference)=args.get("context_ref") {
-        if !reference.as_str().is_some_and(|s|!s.is_empty()&&s.chars().count()<=160){return false;}
-        let binding=json!({"control_session_id":"context","device_epoch":"context","observation_id":"context","screenshot_id":"context"});
-        return context_arguments(args,&binding).is_some_and(|expanded|valid(&expanded));
+    if let Some(reference) = args.get("context_ref") {
+        if !reference
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && s.chars().count() <= 160)
+        {
+            return false;
+        }
+        let binding = json!({"control_session_id":"context","device_epoch":"context","observation_id":"context","screenshot_id":"context"});
+        return context_arguments(args, &binding).is_some_and(|expanded| valid(&expanded));
     }
-    let Some(action) = args.get("action").and_then(Value::as_str) else { return false; };
+    let Some(action) = args.get("action").and_then(Value::as_str) else {
+        return false;
+    };
     let fields: &[&str] = match action {
-        "list_windows" => &["query", "offset", "limit"], "launch_app" => &["app"],
+        "list_windows" => &["query", "offset", "limit"],
+        "launch_app" => &["app"],
         "select_window" => &["window_id", "device_epoch"],
-        "manage_window" => &["window_id", "device_epoch", "window_action", "desktop_x", "desktop_y"],
-        "observe" => &["control_session_id", "device_epoch", "region", "scale"],
-        "read_element" => &["control_session_id", "device_epoch", "observation_id", "element_id"],
+        "manage_window" => &[
+            "window_id",
+            "device_epoch",
+            "window_action",
+            "desktop_x",
+            "desktop_y",
+        ],
+        "observe" => &[
+            "control_session_id",
+            "device_epoch",
+            "region",
+            "scale",
+            "wait_ms",
+        ],
+        "read_element" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "element_id",
+        ],
         "stop" | "handoff" => &["control_session_id", "device_epoch"],
         "status" => &["control_session_id", "device_epoch", "operation_id"],
-        "click" => &["control_session_id","device_epoch","observation_id","element_id","screenshot_id","x","y","button","click_count"],
-        "set_value"=>&["control_session_id","device_epoch","observation_id","element_id","text"],
-        "set_checked"=>&["control_session_id","device_epoch","observation_id","element_id","checked"],
-        "drag"=>&["control_session_id","device_epoch","observation_id","screenshot_id","x","y","to_x","to_y","duration_ms"],
-        "run_steps"=>&["control_session_id","device_epoch","observation_id","steps","budget_ms"],
-        "run_actions"=>&["control_session_id","device_epoch","observation_id","screenshot_id","actions","budget_ms"],
-        "resume_steps"=>&["control_session_id","device_epoch","observation_id","workflow_id","budget_ms"],
-        "type_text" => &["control_session_id","device_epoch","observation_id","text"],
-        "press_key" => &["control_session_id","device_epoch","observation_id","key"],
-        "scroll" => &["control_session_id","device_epoch","observation_id","element_id","screenshot_id","x","y","direction","amount"],
+        "click" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "element_id",
+            "screenshot_id",
+            "x",
+            "y",
+            "button",
+            "click_count",
+        ],
+        "set_value" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "element_id",
+            "text",
+        ],
+        "set_checked" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "element_id",
+            "checked",
+        ],
+        "drag" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "screenshot_id",
+            "x",
+            "y",
+            "to_x",
+            "to_y",
+            "duration_ms",
+        ],
+        "run_steps" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "steps",
+            "budget_ms",
+        ],
+        "run_actions" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "screenshot_id",
+            "actions",
+            "budget_ms",
+        ],
+        "resume_steps" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "workflow_id",
+            "budget_ms",
+        ],
+        "type_text" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "text",
+        ],
+        "press_key" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "key",
+        ],
+        "scroll" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "element_id",
+            "screenshot_id",
+            "x",
+            "y",
+            "direction",
+            "amount",
+        ],
         _ => return false,
     };
     let required: &[&str] = match action {
-        "select_window" => &["window_id","device_epoch"],
-        "manage_window" => &["window_id","device_epoch","window_action"],
-        "observe" | "stop" | "handoff" => &["control_session_id","device_epoch"],
-        "read_element" => &["control_session_id","device_epoch","observation_id","element_id"],
-        "click" => &["control_session_id","device_epoch","observation_id"],
-        "set_value"=>&["control_session_id","device_epoch","observation_id","element_id","text"],
-        "set_checked"=>&["control_session_id","device_epoch","observation_id","element_id","checked"],
-        "drag"=>&["control_session_id","device_epoch","observation_id","screenshot_id","x","y","to_x","to_y"],
-        "run_steps"=>&["control_session_id","device_epoch","observation_id","steps"],
-        "run_actions"=>&["control_session_id","device_epoch","observation_id","screenshot_id","actions"],
-        "resume_steps"=>&["control_session_id","device_epoch","observation_id","workflow_id"],
-        "type_text" => &["control_session_id","device_epoch","observation_id","text"],
-        "press_key" => &["control_session_id","device_epoch","observation_id","key"],
-        "scroll" => &["control_session_id","device_epoch","observation_id","direction"],
-        "launch_app" => &["app"], _ => &[],
+        "select_window" => &["window_id", "device_epoch"],
+        "manage_window" => &["window_id", "device_epoch", "window_action"],
+        "observe" | "stop" | "handoff" => &["control_session_id", "device_epoch"],
+        "read_element" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "element_id",
+        ],
+        "click" => &["control_session_id", "device_epoch", "observation_id"],
+        "set_value" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "element_id",
+            "text",
+        ],
+        "set_checked" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "element_id",
+            "checked",
+        ],
+        "drag" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "screenshot_id",
+            "x",
+            "y",
+            "to_x",
+            "to_y",
+        ],
+        "run_steps" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "steps",
+        ],
+        "run_actions" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "screenshot_id",
+            "actions",
+        ],
+        "resume_steps" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "workflow_id",
+        ],
+        "type_text" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "text",
+        ],
+        "press_key" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "key",
+        ],
+        "scroll" => &[
+            "control_session_id",
+            "device_epoch",
+            "observation_id",
+            "direction",
+        ],
+        "launch_app" => &["app"],
+        _ => &[],
     };
-    if required.iter().any(|key| !args.contains_key(*key)) { return false; }
-    if action=="manage_window" {
-        let count=["desktop_x","desktop_y"].iter().filter(|k|args.contains_key(**k)).count();
-        if count!=if args.get("window_action").and_then(Value::as_str)==Some("move"){2}else{0}{return false;}
+    if required.iter().any(|key| !args.contains_key(*key)) {
+        return false;
     }
-    if matches!(action,"click"|"scroll") {
+    if action == "manage_window" {
+        let count = ["desktop_x", "desktop_y"]
+            .iter()
+            .filter(|k| args.contains_key(**k))
+            .count();
+        if count
+            != if args.get("window_action").and_then(Value::as_str) == Some("move") {
+                2
+            } else {
+                0
+            }
+        {
+            return false;
+        }
+    }
+    if matches!(action, "click" | "scroll") {
         let element = args.contains_key("element_id");
-        let coords = ["screenshot_id","x","y"].iter().filter(|key| args.contains_key(**key)).count();
-        if !((element && coords == 0) || (!element && coords == 3)) { return false; }
+        let coords = ["screenshot_id", "x", "y"]
+            .iter()
+            .filter(|key| args.contains_key(**key))
+            .count();
+        if !((element && coords == 0) || (!element && coords == 3)) {
+            return false;
+        }
     }
     args.iter().all(|(key, value)| {
-        if key == "action" { return true; }
-        if key == "mode" { return action!="read_element" && matches!(value.as_str(), Some("visual" | "text" | "hybrid")); }
-        if !fields.contains(&key.as_str()) { return false; }
+        if key == "action" {
+            return true;
+        }
+        if key == "mode" {
+            return action != "read_element"
+                && matches!(value.as_str(), Some("visual" | "text" | "hybrid"));
+        }
+        if !fields.contains(&key.as_str()) {
+            return false;
+        }
         match key.as_str() {
-            "steps"=>super::workflow::valid_steps(value),
-            "actions"=>super::workflow::valid_actions(value),
-            "window_action"=>matches!(value.as_str(),Some("activate"|"restore"|"minimize"|"move")),
-            "desktop_x"|"desktop_y"=>value.as_i64().is_some_and(|v|(-32768..=32767).contains(&v)),
-            "budget_ms"=>value.as_u64().is_some_and(|v|(1000..=15000).contains(&v)),
-            "duration_ms"=>value.as_u64().is_some_and(|v|(100..=2000).contains(&v)),
-            "click_count"=>value.as_u64().is_some_and(|v|(1..=2).contains(&v)),
-            "button"=>matches!(value.as_str(),Some("left"|"right"|"middle")),
-            "checked"=>value.is_boolean(),
-            "scale" => value.as_u64().is_some_and(|v|(1..=3).contains(&v)),
-            "region" => value.as_object().is_some_and(|region|region.len()==4 && ["x","y","width","height"].iter().all(|k|
-                region.get(*k).and_then(Value::as_u64).is_some_and(|v|v<=32767 && (matches!(*k,"x"|"y") || v>0)))),
+            "steps" => super::workflow::valid_steps(value),
+            "actions" => super::workflow::valid_actions(value),
+            "window_action" => matches!(
+                value.as_str(),
+                Some("activate" | "restore" | "minimize" | "move")
+            ),
+            "desktop_x" | "desktop_y" => value
+                .as_i64()
+                .is_some_and(|v| (-32768..=32767).contains(&v)),
+            "budget_ms" => value.as_u64().is_some_and(|v| (1000..=15000).contains(&v)),
+            "wait_ms" => value.as_u64().is_some_and(|v| v <= 15000),
+            "duration_ms" => value.as_u64().is_some_and(|v| (100..=2000).contains(&v)),
+            "click_count" => value.as_u64().is_some_and(|v| (1..=2).contains(&v)),
+            "button" => matches!(value.as_str(), Some("left" | "right" | "middle")),
+            "checked" => value.is_boolean(),
+            "scale" => value.as_u64().is_some_and(|v| (1..=3).contains(&v)),
+            "region" => value.as_object().is_some_and(|region| {
+                region.len() == 4
+                    && ["x", "y", "width", "height"].iter().all(|k| {
+                        region
+                            .get(*k)
+                            .and_then(Value::as_u64)
+                            .is_some_and(|v| v <= 32767 && (matches!(*k, "x" | "y") || v > 0))
+                    })
+            }),
             "x" | "y" | "to_x" | "to_y" => value.as_u64().is_some_and(|v| v <= 32767),
             "offset" => value.as_u64().is_some_and(|v| v <= 10000),
             "limit" => value.as_u64().is_some_and(|v| (1..=50).contains(&v)),
             "amount" => value.as_u64().is_some_and(|v| (1..=10).contains(&v)),
             "direction" => matches!(value.as_str(), Some("up" | "down")),
-            "text" => value.as_str().is_some_and(|v| (action=="set_value"||!v.is_empty()) && v.chars().count() <= 4000 && !v.contains(['\r','\n','\t','\0'])),
+            "text" => value.as_str().is_some_and(|v| {
+                (action == "set_value" || !v.is_empty())
+                    && v.chars().count() <= 4000
+                    && !v.contains(['\r', '\n', '\t', '\0'])
+            }),
             // Match the published host bounds. Key support remains a separate
             // input-driver check; accepting its wire shape never sends a key.
             "query" => value.as_str().is_some_and(|v| v.chars().count() <= 100),
             "key" => value.as_str().is_some_and(|v| v.chars().count() <= 40),
-            _ => value.as_str().is_some_and(|v| !v.is_empty() && v.chars().count() <= if key == "app" {260} else {160}),
+            _ => value.as_str().is_some_and(|v| {
+                !v.is_empty() && v.chars().count() <= if key == "app" { 260 } else { 160 }
+            }),
         }
     })
 }
 
 /// Expand only a requested immutable context. Never consult the current window.
-pub fn context_arguments(args:&serde_json::Map<String,Value>, binding:&Value)->Option<serde_json::Map<String,Value>> {
-    let action=args.get("action")?.as_str()?;
-    let input=matches!(action,"click"|"type_text"|"press_key"|"scroll"|"set_value"|"set_checked"|"drag"|"run_actions"|"run_steps"|"resume_steps");
-    if !input&&!matches!(action,"observe"|"stop"|"handoff"|"read_element"){return None;}
-    if ["control_session_id","device_epoch","observation_id","screenshot_id"].iter().any(|k|args.contains_key(*k)){return None;}
-    let mut expanded=args.clone();expanded.remove("context_ref");
-    let mut fields=vec!["control_session_id","device_epoch"];
-    if input || action=="read_element" {fields.push("observation_id");}
-    if matches!(action,"drag"|"run_actions") || (matches!(action,"click"|"scroll")&&(args.contains_key("x")||args.contains_key("y"))) {
+pub fn context_arguments(
+    args: &serde_json::Map<String, Value>,
+    binding: &Value,
+) -> Option<serde_json::Map<String, Value>> {
+    let action = args.get("action")?.as_str()?;
+    let input = matches!(
+        action,
+        "click"
+            | "type_text"
+            | "press_key"
+            | "scroll"
+            | "set_value"
+            | "set_checked"
+            | "drag"
+            | "run_actions"
+            | "run_steps"
+            | "resume_steps"
+    );
+    if !input && !matches!(action, "observe" | "stop" | "handoff" | "read_element") {
+        return None;
+    }
+    if [
+        "control_session_id",
+        "device_epoch",
+        "observation_id",
+        "screenshot_id",
+    ]
+    .iter()
+    .any(|k| args.contains_key(*k))
+    {
+        return None;
+    }
+    let mut expanded = args.clone();
+    expanded.remove("context_ref");
+    let mut fields = vec!["control_session_id", "device_epoch"];
+    if input || action == "read_element" {
+        fields.push("observation_id");
+    }
+    if matches!(action, "drag" | "run_actions")
+        || (matches!(action, "click" | "scroll")
+            && (args.contains_key("x") || args.contains_key("y")))
+    {
         fields.push("screenshot_id");
     }
     for key in fields {
-        if string(binding,key).is_empty(){return None;}
-        expanded.insert(key.into(),binding[key].clone());
+        if string(binding, key).is_empty() {
+            return None;
+        }
+        expanded.insert(key.into(), binding[key].clone());
     }
     Some(expanded)
 }
@@ -149,11 +394,18 @@ mod contract_cases {
         assert!(super::super::input::key_codes("").is_none());
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../tests/fixtures/computer_use_contract_cases.json"
-        )).unwrap();
+        ))
+        .unwrap();
         let contexts: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../tests/fixtures/computer_use_context_cases.json"
-        )).unwrap();
-        for row in fixture["cases"].as_array().unwrap().iter().chain(contexts.as_array().unwrap()) {
+        ))
+        .unwrap();
+        for row in fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(contexts.as_array().unwrap())
+        {
             let actual = row["arguments"].as_object().is_some_and(super::valid);
             assert_eq!(actual, row["accepted"].as_bool().unwrap(), "{}", row["id"]);
         }

@@ -129,6 +129,13 @@ class SubagentRuntimeTests(unittest.TestCase):
                 self.assertEqual(result.status, "failed")
                 self.assertEqual(result.reason, "subagent_result_invalid")
 
+    def test_bad_usage_does_not_escape_the_provider_result_boundary(self) -> None:
+        registry = SubagentProviderRegistry()
+        registry.register(InProcessSubagentProvider(lambda request, **kwargs: SubagentRunResult(
+            "succeeded", request.child_session_id, summary="Actual report", usage=None)))
+        result = registry.execute("in_process", _request(), cancelled=lambda: False)
+        self.assertEqual(result.reason, "subagent_result_invalid")
+
     def test_provider_failure_and_missing_provider_are_structured(self) -> None:
         registry = SubagentProviderRegistry()
         missing = registry.execute("in_process", _request(), cancelled=lambda: False)

@@ -1,6 +1,6 @@
 # Akane 提示词导向的长程 Agent 修复设计 v1
 
-> 2026-09-11 工具暴露修订：本文 MCP 历史复用部分属于早期方案。当前要求有效的作用域内 `contract_ref`，按需契约通过 `capability_load` 的真实工具结果披露、经 `capability_invoke` 进入同一执行链；`load_mcp` 不再扩充原生 schema，历史原生名称不再授予执行资格。原生声明、代内更新及压缩边界以 [统一暴露实施记录](tool_exposure_memcore_implementation_20260910.md) 为准。
+> 2026-10-08 工具暴露修订：本文 MCP 历史复用部分属于早期方案。当前用 `capability_load` 读取用法、经 `capability_invoke(capability_id, arguments)` 进入同一执行链，不要求模型携带版本引用；`load_mcp` 不扩充原生 schema，历史名称不授予权限。当前实现、输入及授权检查、代内更新与压缩边界以[当前生命周期](capability_catalog_context_lifecycle_v1.md)为准。
 
 
 > 状态：2026-08-29 已确认并进入 repair pass；代码切片逐项测试、逐项提交，部署另行验收。

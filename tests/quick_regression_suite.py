@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-# 一键体检 —— 覆盖多端（QQ / 桌宠 / Web scene）关键回归路径。
+# 一键体检 —— 覆盖 QQ 与 Tauri 桌宠关键回归路径。
 # 运行：python -m tests.quick_regression_suite
 
 QUICK_TESTS = [
@@ -25,10 +25,9 @@ QUICK_TESTS = [
     "tests.test_desktop_pet_frontend_contract",
     # 桌宠后端契约：health / resource manifest / diagnostics
     "tests.test_desktop_pet_backend_contract",
-    # 桌面 Activity Runtime、Workspace Panel、Scene 前端
+    # 桌面活动协议与文件工作台
     "tests.test_desktop_activity_runtime_contract",
     "tests.test_desktop_workspace_panel",
-    "tests.test_scene_frontend_contract",
 
     # === QQ 网关：消息解析、附件、文件发送意图、非 QQ 文件事件隔离 ===
     "tests.test_qq_gateway.QQGatewayTests.test_render_reply_messages_prefers_speech_segments",

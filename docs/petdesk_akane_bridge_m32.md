@@ -1,5 +1,8 @@
 # Petdesk Akane Bridge M32
 
+> 其他宿主的适配协议记录。当前 Next 桌宠聊天入口是 `desktop_pet_next/src/pet/chat.js`；
+> 新窗口和交互功能先看 [开发入口](DEVELOPMENT.md)，再按需要参考本协议。
+
 Status: implemented in this slice.
 
 ## Goal

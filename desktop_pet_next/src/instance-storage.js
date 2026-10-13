@@ -17,10 +17,6 @@ export function bindInstanceStorage(value) {
   return activeInstanceId;
 }
 
-export function getBoundInstanceId() {
-  return activeInstanceId;
-}
-
 export function instanceStorageKey(logicalKey, instanceId = activeInstanceId) {
   const safeInstanceId = normalizeInstanceId(instanceId);
   const key = String(logicalKey || "").trim();

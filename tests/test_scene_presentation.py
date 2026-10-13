@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -79,6 +80,10 @@ class ScenePresentationTests(unittest.TestCase):
         self.assertEqual(after.care.inventory[item.id], 1)
 
     def test_feed_action_formats_interaction_prompt_and_exempts_energy(self):
+        path = self.path / "characters/akane_v1/character.json"
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        metadata["care"]["shop_items"][0]["description"] = "软软糯糯，吃完会忍不住笑起来。"
+        path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
         item = self.service.snapshot(self.identity).shop[0]
         bought = self.service.action(self.request("buy", item.id, "feed-test-buy-01"))
         fed = self.service.action(self.request("feed", item.id, "feed-test-feed-01", bought.snapshot.room.revision))
@@ -99,6 +104,7 @@ class ScenePresentationTests(unittest.TestCase):
         self.assertEqual(captured.get("turn_kind"), "desktop_pet_care_feed")
         self.assertIn("刚才发生的互动：我投喂了你「团子」。", captured["message"])
         self.assertIn("状态变化：饥饿 +20，精力 +4，好感 +2。", captured["message"])
+        self.assertIn("商品介绍：软软糯糯，吃完会忍不住笑起来。", captured["message"])
         self.assertIn(f"当前状态：饥饿 {fed.snapshot.care.hunger}/100", captured["message"])
         self.assertEqual(captured["memory_message"], "刚才发生的互动：我投喂了你「团子」。")
 

@@ -7,7 +7,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..desktop_pet_contract import (
-    DESKTOP_PET_CONTRACT_VERSION,
     DESKTOP_PET_DEFAULT_EMOTION,
     DESKTOP_PET_DEFAULT_OUTFIT,
     build_desktop_pet_diagnostics_payload,
@@ -128,21 +127,6 @@ def build_core_router(
                 preferred_outfit=preferred_outfit or DESKTOP_PET_DEFAULT_OUTFIT,
                 preferred_emotion=preferred_emotion or DESKTOP_PET_DEFAULT_EMOTION,
             ),
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @router.get("/app-config")
-    async def app_config() -> JSONResponse:
-        return JSONResponse(
-            {
-                "streaming_tts_enabled": bool(getattr(config_module, "STREAMING_TTS_ENABLED", True)),
-                "web_identity_mode": str(getattr(config_module, "WEB_IDENTITY_MODE", "owner") or "owner"),
-                "web_owner_profile_user_id": str(
-                    getattr(config_module, "WEB_OWNER_PROFILE_USER_ID", "master") or "master"
-                ),
-                "desktop_pet_contract_version": DESKTOP_PET_CONTRACT_VERSION,
-                "desktop_pet_health_url": f"{endpoint_prefix}/desktop-pet/health",
-            },
             headers={"Cache-Control": "no-store"},
         )
 

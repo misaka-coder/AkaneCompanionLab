@@ -240,6 +240,35 @@ contents or local absolute paths.
 }
 ```
 
+## Auxiliary Service Personas and Care Preferences
+
+Akane can customize an installed host service in `character.json`. This optional block does not create another character pack, shop or wallet:
+
+```json
+{
+  "dialogue_services": {
+    "shopkeeper": {
+      "name": "售货员姐姐",
+      "persona": "亲切、利落，喜欢给甜点取可爱的名字。"
+    }
+  },
+  "care": {
+    "care_preferences": {
+      "favorite_items": ["草莓蛋糕", "天妇罗乌冬面"],
+      "disliked_items": [],
+      "favorite_tags": ["sweet"],
+      "disliked_tags": []
+    }
+  }
+}
+```
+
+Merge these fields into the existing metadata. `dialogue_services` keys must refer to services registered by the host. Only `name` (1–60 characters) and `persona` (1–2000 characters) are customizable; the persona supplements the host's service instructions. `/售货员` remains the entry, and the current main character determines the served shop and separate work-memory scope. Changing presentation does not grant tools or change authorization. An invalid customization makes that service entry unavailable until corrected; ordinary character entries remain usable. Omitting the block uses the shared service definition.
+
+`favorite_items` and `disliked_items` contain display names of food or gifts, at most 16 names of 40 characters each. The existing `favorite_tags` and `disliked_tags` remain available. Akane gives these small, stable facts to the QQ, desktop and memory-compaction persona paths so the model can respond naturally to feeding and gifts. Preferences do not change item effects, prescribe dialogue, or belong to the shopkeeper. `offering_tags` and `default_affection_bonus_tags` retain their existing meaning; this addition does not introduce new bonuses.
+
+Metadata customizations and preferences are read on each new turn. Installing new host service definitions requires a backend restart. Successful shopkeeper edits automatically send a compact item confirmation with the served character's name, description, price and effects. Rendering or transport failure uses a text confirmation; it does not roll back a saved edit.
+
 ## Emotion Rules
 
 At least one neutral/default emotion is required. For the current Akane sample,

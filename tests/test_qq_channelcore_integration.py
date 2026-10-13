@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+
 import time
 import unittest
 from pathlib import Path
@@ -51,7 +53,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         }
 
         with patch(
-            "companion_v01.qq_gateway.normalize_inbound_event",
+            "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
             wraps=normalize_inbound_event,
         ) as package_parser:
             context = gateway.build_message_context(event)
@@ -78,7 +80,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         }
 
         with patch(
-            "companion_v01.qq_gateway.normalize_inbound_event",
+            "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
             wraps=normalize_inbound_event,
         ) as package_parser:
             context = gateway.build_message_context(event)
@@ -193,7 +195,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
             ),
         )
 
-        with patch("companion_v01.qq_gateway.resolve_onebot_forward_message", return_value=resolved):
+        with patch("companion_v01.qq_gateway_runtime.evidence.resolve_onebot_forward_message", return_value=resolved):
             evidence = gateway.resolve_forward_message_evidence(event, context=context)
 
         self.assertEqual(evidence["status"], "resolved")
@@ -219,7 +221,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         }
 
         with patch(
-            "companion_v01.qq_gateway.normalize_inbound_event",
+            "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
             wraps=normalize_inbound_event,
         ) as package_parser:
             context = gateway.build_message_context(event)
@@ -248,7 +250,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
             ],
         }
         with patch(
-            "companion_v01.qq_gateway.normalize_inbound_event",
+            "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
             wraps=normalize_inbound_event,
         ) as package_parser:
             context = gateway.build_message_context(event)
@@ -280,7 +282,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         with (
             patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()),
             patch(
-                "companion_v01.qq_gateway.resolve_onebot_quoted_message",
+                "companion_v01.qq_gateway_runtime.evidence.resolve_onebot_quoted_message",
                 wraps=resolve_quoted_message,
             ) as package_resolver,
         ):
@@ -481,7 +483,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {"message_id": "sent-1"}}
 
         with (
-            patch("companion_v01.qq_gateway.build_message_action", wraps=build_message_action) as package_builder,
+            patch("companion_v01.qq_gateway_runtime.messages.build_message_action", wraps=build_message_action) as package_builder,
             patch(
                 "companion_v01.onebot_transport.normalize_action_response",
                 wraps=normalize_action_response,
@@ -502,14 +504,38 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         )
 
     def test_gateway_has_no_second_outbound_protocol_implementation(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "companion_v01" / "qq_gateway.py").read_text(encoding="utf-8")
-        self.assertNotIn('"send_private_msg"', source)
-        self.assertNotIn('"send_group_msg"', source)
-        self.assertNotIn('"upload_private_file"', source)
-        self.assertNotIn('"upload_group_file"', source)
-        self.assertNotIn('"type": "record"', source)
-        self.assertIn("build_message_action(", source)
-        self.assertIn("build_upload_file_action(", source)
+        backend = Path(__file__).resolve().parents[1] / "companion_v01"
+        paths = [backend / "qq_gateway.py", *(backend / "qq_gateway_runtime").glob("*.py")]
+        tree = ast.Module(body=[
+            node
+            for path in paths
+            for node in ast.parse(path.read_text(encoding="utf-8"), filename=str(path)).body
+        ], type_ignores=[])
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        protocol_actions = {"send_private_msg", "send_group_msg", "upload_private_file", "upload_group_file"}
+        calls = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value in protocol_actions:
+                parent = parents[node]
+                # Explicit OneBot calls may compare an already selected action
+                # for routing/decoration; transport construction stays centralized.
+                is_comparison = isinstance(parent, ast.Compare)
+                is_membership = isinstance(parent, (ast.Set, ast.Tuple, ast.List)) and isinstance(parents.get(parent), ast.Compare)
+                self.assertTrue(is_comparison or is_membership, f"Inline protocol action at line {node.lineno}")
+            elif isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    self.assertFalse(
+                        isinstance(key, ast.Constant) and key.value == "type"
+                        and isinstance(value, ast.Constant) and value.value == "record",
+                        f"Inline record segment at line {node.lineno}",
+                    )
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    calls.add(node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    calls.add(node.func.attr)
+        self.assertIn("build_message_action", calls)
+        self.assertIn("build_upload_file_action", calls)
 
 
 if __name__ == "__main__":

@@ -56,7 +56,12 @@ class ToolInvocation:
     execution_receipt: dict[str, Any] = field(default_factory=dict)
     parse_error: str = ""
     raw_arguments: Any = None
+    # Provider wire values are preserved separately from prepared business args.
+    model_name: str = ""
+    model_arguments: Any = None
     capability_selection: Any = field(default=None, compare=False, repr=False)
+    background: bool = False
+    scheduling_error: str = ""
 
     def __post_init__(self) -> None:
         if not str(self.id or "").strip():
@@ -126,6 +131,8 @@ def legacy_tool_call_to_invocation(
     embedded_receipt = tool_call.get(TOOL_EXECUTION_RECEIPT_FIELD)
     embedded_parse_error = str(tool_call.get(TOOL_PARSE_ERROR_FIELD) or "").strip()
     embedded_raw_arguments = tool_call.get(TOOL_RAW_ARGUMENTS_FIELD)
+    embedded_model_name = str(tool_call.get(TOOL_MODEL_NAME_FIELD) or "").strip()
+    embedded_model_arguments = tool_call.get(TOOL_MODEL_ARGUMENTS_FIELD)
     embedded_selection = tool_call.get(TOOL_CAPABILITY_SELECTION_FIELD)
     arguments = {key: value for key, value in tool_call.items() if key != "type" and not str(key).startswith("_tool_")}
     return ToolInvocation(
@@ -136,7 +143,11 @@ def legacy_tool_call_to_invocation(
         execution_receipt=dict(embedded_receipt) if isinstance(embedded_receipt, dict) else {},
         parse_error=embedded_parse_error,
         raw_arguments=embedded_raw_arguments,
+        model_name=embedded_model_name,
+        model_arguments=embedded_model_arguments,
         capability_selection=capability_selection if capability_selection is not None else embedded_selection,
+        background=tool_call.get("_tool_background") is True,
+        scheduling_error=str(tool_call.get("_tool_scheduling_error") or ""),
     )
 
 
@@ -152,11 +163,25 @@ def invocation_to_legacy_tool_call(
     through ToolInvocation without changing which tool runs or with what args.
     """
     tool_call = {"type": invocation.name, **dict(invocation.arguments or {})}
+    if include_metadata:
+        tool_call[TOOL_INVOCATION_ID_FIELD] = str(invocation.id or "")
+        if invocation.background:
+            tool_call["_tool_background"] = True
+        if invocation.scheduling_error:
+            tool_call["_tool_scheduling_error"] = invocation.scheduling_error
     if include_metadata and str(invocation.source or LEGACY_JSON) != LEGACY_JSON:
         tool_call[TOOL_SOURCE_FIELD] = str(invocation.source or "")
         tool_call[TOOL_INVOCATION_ID_FIELD] = str(invocation.id or "")
     if include_metadata and invocation.execution_receipt:
         tool_call[TOOL_EXECUTION_RECEIPT_FIELD] = dict(invocation.execution_receipt)
+    if include_metadata and invocation.model_name:
+        tool_call[TOOL_MODEL_NAME_FIELD] = str(invocation.model_name)
+    if include_metadata and invocation.model_arguments is not None:
+        tool_call[TOOL_MODEL_ARGUMENTS_FIELD] = (
+            dict(invocation.model_arguments)
+            if isinstance(invocation.model_arguments, dict)
+            else invocation.model_arguments
+        )
     if include_metadata and invocation.parse_error:
         tool_call[TOOL_PARSE_ERROR_FIELD] = str(invocation.parse_error)
         tool_call[TOOL_RAW_ARGUMENTS_FIELD] = invocation.raw_arguments

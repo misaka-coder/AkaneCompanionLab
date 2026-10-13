@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from companion_v01.tool_batch import execute_tool_batch
 from companion_v01.tool_handlers.core import ToolExecutionResult, ToolMetadata
+from companion_v01.tool_handlers.execution import ExecRunToolHandler
 from companion_v01.tool_invocation import TOOL_INVOCATION_ID_FIELD
 
 
@@ -81,6 +82,65 @@ class ToolBatchTests(unittest.TestCase):
         self.assertEqual(results[0].followup_context, "written")
         self.assertTrue(results[0].execution_timing)
         self.assertEqual(receipt.execution_timing, {})
+
+    def test_background_receipt_does_not_block_later_independent_calls(self):
+        executed = []
+        def execute(call):
+            executed.append(call["id"])
+            return ToolExecutionResult(tool_type="write", followup_context="running",
+                state_updates={"capability_execution": {"status": "running", "run_id": "run-a"}})
+        results = execute_tool_batch([{"type": kind, "id": index} for index, kind in enumerate(("write", "read", "write"))],
+                                     handler_for=self.handler, execute=execute)
+        self.assertEqual(executed, [0, 1, 2])
+        self.assertEqual(len(results), 3)
+        self.assertTrue(all(result.followup_context == "running" for result in results))
+
+    def test_status_and_cancellation_do_not_block_later_independent_calls(self):
+        executed = []
+        def execute(call):
+            executed.append(call["type"])
+            return ToolExecutionResult(tool_type=call["type"], followup_context="fact",
+                state_updates={"capability_execution": {"status": "running" if call["type"] == "write" else "cancelled",
+                                                       "run_id": "run-a"}})
+        calls = [{"type": kind} for kind in ("write", "exec_status", "exec_cancel", "write")]
+        results = execute_tool_batch(calls, handler_for=self.handler, execute=execute)
+        self.assertEqual(executed, ["write", "exec_status", "exec_cancel", "write"])
+        self.assertEqual(len(results), 4)
+        self.assertEqual(results[-1].followup_context, "fact")
+
+    def test_ten_command_calls_overlap_and_return_one_ordered_batch(self):
+        handler = ExecRunToolHandler(execution_provider=None)
+        barrier = threading.Barrier(10)
+        scope = ContextVar("command_batch_scope")
+        token = scope.set("original-turn")
+        self.addCleanup(scope.reset, token)
+
+        def execute(call):
+            self.assertEqual(scope.get(), "original-turn")
+            barrier.wait(timeout=3)
+            return ToolExecutionResult(tool_type="exec_run", followup_context=str(call["id"]))
+
+        with patch("companion_v01.tool_batch.tool_parallel_limit", return_value=10):
+            results = execute_tool_batch([{"type": "exec_run", "id": n} for n in range(10)],
+                execute=execute, handler_for=lambda call: handler)
+        self.assertEqual([result.followup_context for result in results], [str(n) for n in range(10)])
+
+    def test_command_batch_keeps_fast_result_and_background_id_together(self):
+        handler = ExecRunToolHandler(execution_provider=None)
+        barrier = threading.Barrier(2)
+
+        def execute(call):
+            barrier.wait(timeout=3)
+            if call["id"] == 0:
+                return ToolExecutionResult(tool_type="exec_run", followup_context="run-a",
+                    state_updates={"capability_execution": {"status": "running", "run_id": "run-a"}})
+            return ToolExecutionResult(tool_type="exec_run", followup_context="complete")
+
+        with patch("companion_v01.tool_batch.tool_parallel_limit", return_value=2):
+            results = execute_tool_batch([{"type": "exec_run", "id": n} for n in range(2)],
+                execute=execute, handler_for=lambda call: handler)
+        self.assertEqual([result.followup_context for result in results], ["run-a", "complete"])
+        self.assertEqual(results[0].state_updates["capability_execution"]["run_id"], "run-a")
 
 
 if __name__ == "__main__":
