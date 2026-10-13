@@ -76,7 +76,7 @@ console.log("3/5 built CSS has scrollbar prevention and disabled action styling"
   for (const label of navLabels) {
     assert.ok(jsContent.includes(label), `UX: JS bundle should render nav item "${label}"`);
   }
-  for (const label of ["真实数据模式", "连接模型服务", "密钥不会出现在快照和日志里"]) {
+  for (const label of ["真实数据模式", "连接主模型服务", "密钥不会出现在快照和日志里"]) {
     assert.ok(jsContent.includes(label), `UX: JS bundle should render production label "${label}"`);
   }
   console.log("5/5 all 7 production destinations present in bundle");

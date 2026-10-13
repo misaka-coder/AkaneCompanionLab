@@ -1326,7 +1326,9 @@ assert.match(modelHtml, /data-action="model\.models"/);
 assert.match(modelHtml, /data-action="model\.test"/);
 assert.match(modelHtml, /data-action="model\.save"/);
 assert.doesNotMatch(modelHtml, /secret|sk-/i);
-assert.equal(modelServicePayload({ ...modelDraft, standaloneVision: false }).visionApiKey, undefined);
+const sharedVisionPayload = modelServicePayload({ ...modelDraft, standaloneVision: false });
+assert.equal(sharedVisionPayload.standaloneVision, false);
+assert.equal(sharedVisionPayload.visionApiKey, "");
 
 const modelActionCalls = [];
 const modelSource = {
