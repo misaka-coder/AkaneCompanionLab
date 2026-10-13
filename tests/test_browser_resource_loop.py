@@ -45,7 +45,9 @@ class BrowserResourceLoopTests(unittest.TestCase):
                 self.assertTrue(downloaded.ok, downloaded.reason)
                 download = runner.run(action="download_status")
                 deadline = time.monotonic() + 10
-                while download.download_status == "pending" and time.monotonic() < deadline:
+                # The download event can arrive after the click receipt. Poll
+                # the read-only status until it is registered and completed.
+                while (download.download_status == "pending" or download.reason == "download_not_found") and time.monotonic() < deadline:
                     time.sleep(.05)
                     download = runner.run(action="download_status")
                 self.assertEqual(download.download_status, "completed", download.reason)

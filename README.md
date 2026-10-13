@@ -237,7 +237,7 @@ Ollama 等外部服务接入，速度和效果取决于用户选择的模型、�
 Embedding 模型。
 
 源码克隆不包含维护者电脑上的 `package_wheels/`。现在提供
-[官方内部包与对应源码](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13)，
+[官方内部包与对应源码](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13.2)，
 安装器会下载并按仓库固定的 SHA-256 校验。完整说明见
 [后端安装](docs/backend_installation_v1.md)；Linux 的 Agent 与可选能力边界见
 [Linux 能力表](docs/linux_backend_capabilities_v1.md)。

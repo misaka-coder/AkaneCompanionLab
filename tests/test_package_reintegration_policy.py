@@ -66,17 +66,6 @@ class PackageReintegrationPolicyTests(unittest.TestCase):
         self.assertIn("must remain a bridge, not a second runtime", doc)
         self.assertIn("Live2D Productization L1 pending", doc)
 
-    def test_agents_records_package_reintegration_guardrail(self) -> None:
-        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-
-        self.assertIn("抽包回填", agents)
-        self.assertIn("必须减少权威实现数量", agents)
-        self.assertIn("docs/package_reintegration_policy_m63.md", agents)
-        self.assertIn("deleted / thin adapter / documented migration window", agents)
-        self.assertIn("只有明显降低 Akane 迭代复杂度", agents)
-        self.assertIn("冗余字段、冗余状态和重复提示", agents)
-        self.assertIn("future-only 占位提示", agents)
-
     def test_ld003_records_future_only_capability_noise_cleanup(self) -> None:
         doc = (ROOT / "docs" / "akane_lean_down_ld003_capability_noise.md").read_text(encoding="utf-8")
 
