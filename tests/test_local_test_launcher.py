@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -295,7 +296,7 @@ Set-AkaneNapCatOneBotConfig -ConfigPath $ConfigPath -ApiPort 3003 -HostPort 1200
             users_data_root = root / "users_data"
             completed = subprocess.run(
                 (
-                    str(ROOT / ".venv" / "Scripts" / "python.exe"),
+                    sys.executable,
                     str(ROOT / "scripts" / "initialize_akane_local_test_policy.py"),
                     "--users-data-root",
                     str(users_data_root),
