@@ -383,6 +383,14 @@ Tauri/WebView2，并以 Windows 为主要验证平台。
 
 ## 测试
 
+维护者运行仓库回归前，在同一 Python 环境安装测试工具：
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+普通用户的 `backend` / `full` 安装不包含这组测试工具。
+
 日常修改按当前任务和 AGENTS.md 运行相关测试、build/smoke 与 diff 检查。
 整套仓库验证入口为 `scripts/verify_akane.ps1`。需要快速仓库回归时可运行
 Quick；它不联网、不启动真实 Akane 后端，在隔离的临时 env/data root 中执行：

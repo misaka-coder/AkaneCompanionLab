@@ -11,10 +11,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from companion_v01.capability_approval import CapabilityApprovalStore
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.local_capability_config import get_approval_policy_config
-from companion_v01.qq_gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
-
 
 QQ_BOT_ID = 10001
 QQ_MASTER_ID = 10002
@@ -50,6 +49,7 @@ class QQShellPermissionRouteTests(unittest.TestCase):
         self.config_root = Path(self._tmp.name)
         self.process_calls: list[dict] = []
         self.followups = []
+        self.addCleanup(self._close_unstarted_followups)
         self.errors: list[tuple] = []
         self.approval_store = CapabilityApprovalStore()
 
@@ -99,6 +99,12 @@ class QQShellPermissionRouteTests(unittest.TestCase):
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
 
+    def _close_unstarted_followups(self) -> None:
+        # The fake supervisor captures coroutines instead of starting tasks.
+        for coroutine in self.followups:
+            coroutine.close()
+        self.followups.clear()
+
     def _event(self, *, user_id: int, message: str, targeted: bool = False) -> dict[str, object]:
         return {
             "post_type": "message",
@@ -114,9 +120,9 @@ class QQShellPermissionRouteTests(unittest.TestCase):
             ),
         }
 
-    @patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response())
-    @patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
-    @patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
+    @patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response())
+    @patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
     def test_access_command_sets_owner_scoped_families_without_running_chat(self, _request) -> None:
         response = self.client.post(
             "/api/qq/napcat/event",
@@ -148,9 +154,9 @@ class QQShellPermissionRouteTests(unittest.TestCase):
         )
         self.assertEqual(self.process_calls, [])
 
-    @patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response())
-    @patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
-    @patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
+    @patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response())
+    @patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
     def test_removed_shell_and_mcp_commands_are_not_control_plane_routes(self, _request) -> None:
         for message in ("/shell on", "/mcp on"):
             response = self.client.post(
@@ -170,9 +176,9 @@ class QQShellPermissionRouteTests(unittest.TestCase):
         )
         self.assertEqual(self.process_calls, [])
 
-    @patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response())
-    @patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
-    @patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
+    @patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response())
+    @patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", str(QQ_MASTER_ID))
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID))
     def test_master_approval_auto_resumes_as_original_requester(self, _request) -> None:
         profile_id = f"qq_group_shared_{QQ_GROUP_ID}"
         created = self.approval_store.create_request(

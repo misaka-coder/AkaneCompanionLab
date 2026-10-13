@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..onebot_model_actions import (
-    MODEL_ONEBOT_ACTION_NAMES,
-    model_onebot_action_is_user_visible,
-    model_onebot_capabilities,
-)
+from companion_v01.channels.qq.onebot.model_actions import MODEL_ONEBOT_ACTION_NAMES
+from companion_v01.channels.qq.onebot.model_actions import model_onebot_action_is_user_visible
+from companion_v01.channels.qq.onebot.model_actions import model_onebot_capabilities
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope
 from ..tool_continuation import bind_result_followup
 

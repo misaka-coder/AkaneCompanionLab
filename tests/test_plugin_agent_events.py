@@ -5,11 +5,12 @@ import types
 import unittest
 from pathlib import Path
 
+from companion_v01.channels.qq import assembly as qq_assembly
+from companion_v01.channels.qq.context import QQMessageContext
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.plugin_agent_events import HostAgentEventRouter
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
 from companion_v01.plugin_turn_intents import HostJobTurnIntent, HostTurnIntent, HostTurnResult
-from companion_v01.qq_gateway import QQMessageContext
 from companion_v01.routes import qq as qq_routes
 from companion_v01.routes import think as think_routes
 from companion_v01.session_inbox import SessionInboxStore
@@ -171,7 +172,7 @@ class QQTurnRouterTests(unittest.IsolatedAsyncioTestCase):
                 "frame": {"speech": "事件分析"},
             }
 
-        with unittest.mock.patch.object(qq_routes, "_process_qq_turn_streaming", side_effect=complete_turn):
+        with unittest.mock.patch.object(qq_assembly, "_process_qq_turn_streaming", side_effect=complete_turn):
             result = await router.submit(
                 turn_intent(
                     reference="ref-group",

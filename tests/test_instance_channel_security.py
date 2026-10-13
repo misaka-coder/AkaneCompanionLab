@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import unittest
-import tempfile
 import os
 import subprocess
 import sys
+import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -14,28 +14,29 @@ from unittest.mock import Mock, patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from companion_v01 import settings_catalog
+from companion_v01.attachment_ingest import AttachmentIngestService
+from companion_v01.bot_profile import parse_bot_host_profile
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.profiles import QQChannelDeploymentProfile
 from companion_v01.deployment_security import (
     AdminWriteAuth,
     DeploymentSecurityError,
     QQChannelRuntimeConfig,
     resolve_instance_deployment_security,
 )
-from companion_v01.bot_profile import parse_bot_host_profile
-from companion_v01.attachment_ingest import AttachmentIngestService
 from companion_v01.instance_profile import (
     InstanceContext,
     build_local_default_instance_context,
     instance_context_from_bot_config,
     parse_instance_manifest,
 )
-from companion_v01.qq_channel_profiles import QQChannelDeploymentProfile
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.routes.control_center import build_control_center_router
 from companion_v01.routes.model_services import build_model_services_router
 from companion_v01.routes.plugins import build_plugins_router
 from companion_v01.routes.qq import build_qq_router
 from companion_v01.routes.system import build_system_router
-from companion_v01 import settings_catalog
 
 
 def _named_context(*, qq_enabled: bool = False, profile_ref: str = "") -> InstanceContext:
@@ -463,7 +464,7 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
             profile_user_id="qq_789",
         )
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             return_value=FakeResponse(),
         ) as mocked_post:
             result = gateway.send_reply(context, "hello")
@@ -476,7 +477,7 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
 
     def test_every_onebot_request_site_uses_bound_headers(self) -> None:
         backend = Path(__file__).resolve().parents[1] / "companion_v01"
-        paths = [backend / "qq_gateway.py", *(backend / "qq_gateway_runtime").glob("*.py")]
+        paths = list((backend / "channels" / "qq").rglob("*.py"))
         source = "\n".join(path.read_text(encoding="utf-8") for path in paths)
         request_sites = source.count("requests.get(") + source.count("requests.post(")
         self.assertEqual(request_sites, 0)
@@ -500,7 +501,7 @@ class QQIngressAndOutboundAuthorizationTests(unittest.TestCase):
                 qq_channel_config=self.channel,
             )
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 return_value=FakeResponse(),
             ) as mocked_post:
                 service._copy_from_onebot_cache(

@@ -1,17 +1,20 @@
 """QQ admission and current identity through the real V6/request builders."""
 from __future__ import annotations
 
+import tempfile
+import time
+import unittest
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-import tempfile
-import time
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
 
 from channelcore_onebot import MentionRef
 
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.desktop_context_engine import build_turn_extra_user_context
@@ -21,8 +24,6 @@ from companion_v01.memcore_integration.manager import MemcoreManager
 from companion_v01.persona_config import load_persona_config
 from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.prompt_profiles import PromptModule
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
-from companion_v01.routes.qq import _process_qq_turn_streaming
 from tests import test_memcore_integration as memory_fixtures
 from tests.test_qq_rich_materials import card_segment
 from tests.test_qq_voice_delivery import FakeQQGateway

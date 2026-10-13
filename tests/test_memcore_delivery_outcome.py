@@ -1,7 +1,7 @@
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 
-from companion_v01.routes.qq import _process_qq_turn_streaming
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
 from tests.test_qq_voice_delivery import FakeQQGateway
 
 

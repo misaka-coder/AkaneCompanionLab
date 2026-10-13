@@ -1,32 +1,33 @@
 from __future__ import annotations
 
+import json
+import tempfile
+import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-import json
-import tempfile
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw, ImageFont
 
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
+from companion_v01.channels.qq.delivery.artifacts import _qq_file_delivery_event_identity
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.image_materials import SessionImageMaterialResolver
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
-from companion_v01.qq_card_artwork import _font_paths, wrap_card_text
-from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01.routes.qq import _process_qq_turn_streaming, _qq_file_delivery_event_identity
+from companion_v01.rendering.card_artwork import _font_paths, wrap_card_text
+from companion_v01.rendering.text_cards import TextCardDocument, layout_text_card
 from companion_v01.store import MemoryStore
-from companion_v01.text_cards import TextCardDocument, layout_text_card
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.generated_media import InspectGeneratedFileToolHandler
 from companion_v01.tool_handlers.text_cards import RenderCardToolHandler
-from tests.test_qq_voice_delivery import FakeQQGateway
 from tests.qq_card_fixtures import install_stationery_fixture
+from tests.test_qq_voice_delivery import FakeQQGateway
 
 
 class TextCardTests(unittest.TestCase):
@@ -137,7 +138,7 @@ class TextCardTests(unittest.TestCase):
             result = self.run_card(**values)
             self.assertFalse(self.artifacts(result))
             self.assertIn("<tool_use_error>", result.followup_context)
-        with patch("companion_v01.text_cards._font_paths", side_effect=RuntimeError("chinese_font_unavailable")):
+        with patch("companion_v01.rendering.text_cards._font_paths", side_effect=RuntimeError("chinese_font_unavailable")):
             self.assertFalse(self.handler.capability_status()["enabled"])
             self.assertIn("chinese_font_unavailable", self.run_card().followup_context)
         with patch("companion_v01.tool_handlers.text_cards.paint_text_card", side_effect=OSError("F:/private/secret")):
@@ -155,7 +156,7 @@ class TextCardTests(unittest.TestCase):
         result = self.run_card(replace(self.context, cancel_requested=lambda: True))
         self.assertIn("card_cancelled", result.followup_context)
         self.assertFalse(self.artifacts(result))
-        from companion_v01.text_cards import paint_text_card
+        from companion_v01.rendering.text_cards import paint_text_card
         stopped = False
         def paint(*args, **kwargs):
             nonlocal stopped
@@ -191,7 +192,7 @@ class TextCardTests(unittest.TestCase):
     def test_real_chat_discovery_load_and_invoke_render_the_card(self):
         from companion_v01.capability_exposure import directory_text, route_invocation
         from companion_v01.engine_services.tool_rounds import resolve_capability_selection
-        from companion_v01.tool_orchestration_engine import normalize_tool_invocation, execute_tool_invocation
+        from companion_v01.tool_orchestration_engine import execute_tool_invocation, normalize_tool_invocation
 
         engine = SimpleNamespace(tool_handlers={"render_card": self.handler}, capability_config_base_dir=self.root,
                                  store=self.store)

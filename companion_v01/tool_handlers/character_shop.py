@@ -12,7 +12,8 @@ from capcore import CapabilityToolSpec
 
 from .. import care_shop_settings as shop
 from ..dialogue_targets import DialogueTarget, registry_for
-from ..qq_commerce_cards import build_qq_shop_change_card, render_qq_shop_change_card
+from companion_v01.channels.qq.cards.commerce import build_qq_shop_change_card
+from companion_v01.channels.qq.cards.commerce import render_qq_shop_change_card
 from .core import (
     BaseToolHandler,
     ToolExecutionContext,

@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
-from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import time
 import unittest
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from channelcore_onebot import MentionRef
 
-from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.capability_approval import CapabilityApprovalStore
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
-from companion_v01.qq_route_helpers import (
-    apply_qq_current_outfit_visual,
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.inbound.attachments import (
     qq_attachment_ready_wait_seconds,
-    qq_current_outfit_id_from_turn_payload,
     qq_pending_image_attachment_ids,
 )
-
+from companion_v01.channels.qq.resources import apply_qq_current_outfit_visual, qq_current_outfit_id_from_turn_payload
+from companion_v01.deployment_security import QQChannelRuntimeConfig
 
 QQ_BOT_FIXTURE_ID = 10001
 QQ_MASTER_FIXTURE_ID = 10002
@@ -91,11 +90,11 @@ def fake_outfit_manifest() -> dict:
 class QQGatewayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.master_qq_patcher = patch(
-            "companion_v01.qq_gateway.config.MASTER_QQ",
+            "companion_v01.channels.qq.gateway.config.MASTER_QQ",
             str(QQ_MASTER_FIXTURE_ID),
         )
         self.bot_qq_patcher = patch(
-            "companion_v01.qq_gateway.config.QQ_BOT_QQ",
+            "companion_v01.channels.qq.gateway.config.QQ_BOT_QQ",
             str(QQ_BOT_FIXTURE_ID),
         )
         self.master_qq_patcher.start()
@@ -196,7 +195,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(trim("。"), "。")
         self.assertEqual(trim("嗯。。"), "嗯。。")
 
-    @patch("companion_v01.qq_gateway.config.QQ_REPLY_MAX_SEGMENTS", 3, create=True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_REPLY_MAX_SEGMENTS", 3, create=True)
     def test_render_reply_messages_merges_tail_instead_of_dropping_it(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -235,8 +234,8 @@ class QQGatewayTests(unittest.TestCase):
         self.assertFalse(second.should_respond)
         self.assertEqual(second.reason, "duplicate_event")
 
-    @patch("companion_v01.qq_gateway.config.QQ_ALLOW_STALE_EVENTS", False)
-    @patch("companion_v01.qq_gateway.config.QQ_EVENT_MAX_AGE_SECONDS", 300)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ALLOW_STALE_EVENTS", False)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_EVENT_MAX_AGE_SECONDS", 300)
     def test_stale_message_event_is_ignored(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -255,8 +254,8 @@ class QQGatewayTests(unittest.TestCase):
         self.assertFalse(context.should_respond)
         self.assertEqual(context.reason, "stale_event")
 
-    @patch("companion_v01.qq_gateway.config.QQ_ALLOW_STALE_EVENTS", True)
-    @patch("companion_v01.qq_gateway.config.QQ_EVENT_MAX_AGE_SECONDS", 300)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ALLOW_STALE_EVENTS", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_EVENT_MAX_AGE_SECONDS", 300)
     def test_stale_message_event_can_be_allowed_for_debug(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -899,7 +898,7 @@ class QQGatewayTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {"card": "休比", "nickname": "fallback"}}
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             context = gateway.build_message_context(event)
 
@@ -970,7 +969,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertFalse(second.should_respond)
         self.assertEqual(second.reason, "duplicate_event")
 
-    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "reimu_demo")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_CHARACTER_PACK_ID", "reimu_demo")
     def test_turn_payload_includes_configured_character_pack_id(self) -> None:
         gateway = NapCatQQGateway()
         event = {
@@ -993,7 +992,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(delivery_context["character_pack_id"], "reimu_demo")
         self.assertEqual(gateway.status()["character_pack_id"], "reimu_demo")
 
-    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "legacy-default")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_CHARACTER_PACK_ID", "legacy-default")
     def test_bound_instance_character_pack_overrides_legacy_config(self) -> None:
         gateway = NapCatQQGateway(default_character_pack_id="reimu")
 
@@ -1001,7 +1000,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(gateway.character_pack_id, "reimu")
         self.assertEqual(gateway.status()["default_character_pack_id"], "reimu")
 
-    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "../bad")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_CHARACTER_PACK_ID", "../bad")
     def test_turn_payload_omits_invalid_character_pack_id(self) -> None:
         gateway = NapCatQQGateway()
         event = {
@@ -1343,7 +1342,7 @@ class QQGatewayTests(unittest.TestCase):
         )
         self.assertTrue(gateway.set_group_emotion_enabled(QQ_GROUP_FIXTURE_ID, False))
 
-        with patch("companion_v01.onebot_transport.requests.Session.request") as mocked_post:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request") as mocked_post:
             group_mface = gateway.send_emotion_mface(
                 group_context,
                 {"speech": "好。", "emotion": "happy"},
@@ -1375,7 +1374,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertNotEqual(private["reason"], "group_emotion_disabled")
         mocked_post.assert_not_called()
 
-    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "mika_sample")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_CHARACTER_PACK_ID", "mika_sample")
     def test_builtin_character_override_persists_across_restart(self) -> None:
         service = FakeCharacterResourceService()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1403,7 +1402,7 @@ class QQGatewayTests(unittest.TestCase):
                 "",
             )
 
-    @patch("companion_v01.qq_gateway.config.QQ_CHARACTER_PACK_ID", "")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_CHARACTER_PACK_ID", "")
     def test_character_command_lists_current_and_resets_to_default(self) -> None:
         gateway = NapCatQQGateway()
         service = FakeCharacterResourceService()
@@ -1704,7 +1703,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(turn_payload["current_visual"]["character"]["outfit"], "sailor")
         self.assertEqual(turn_payload["current_visual"]["emotion"], "happy")
 
-    @patch("companion_v01.qq_gateway.config.QQ_REPLY_MODE", "auto")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_REPLY_MODE", "auto")
     def test_reply_mode_command_switches_current_qq_session(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
@@ -1838,7 +1837,7 @@ class QQGatewayTests(unittest.TestCase):
             profile_user_id=profile_id,
             clean_message="/审批",
         )
-        with patch("companion_v01.qq_gateway.config.MASTER_QQ", QQ_MASTER_FIXTURE_ID):
+        with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", QQ_MASTER_FIXTURE_ID):
             listed = gateway.handle_capability_approval_command(context, approval_store=store)
             approved = gateway.handle_capability_approval_command(
                 context,
@@ -2202,7 +2201,7 @@ class QQGatewayTests(unittest.TestCase):
             audio_path = Path(temp_dir) / "reply.wav"
             audio_path.write_bytes(b"RIFF....WAVE")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 side_effect=[FakeResponse(), FakeResponse()],
             ) as mocked_post:
                 result = gateway.send_voice(context, audio_path=str(audio_path), name="reply")
@@ -2245,7 +2244,7 @@ class QQGatewayTests(unittest.TestCase):
             audio_path = Path(temp_dir) / "reply.wav"
             audio_path.write_bytes(b"RIFF....WAVE")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 side_effect=[FakeResponse(), FakeResponse(), FakeResponse(), FakeResponse()],
             ) as request:
                 voice_result = gateway.send_voice(context, audio_path=str(audio_path), name="reply")
@@ -2297,9 +2296,9 @@ class QQGatewayTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {}}
 
         with (
-            patch("companion_v01.qq_gateway.config.QQ_REPLY_SEGMENT_DELAY_SECONDS", 0),
+            patch("companion_v01.channels.qq.gateway.config.QQ_REPLY_SEGMENT_DELAY_SECONDS", 0),
             patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 side_effect=[FakeResponse(), FakeResponse()],
             ) as request,
         ):
@@ -2338,7 +2337,7 @@ class QQGatewayTests(unittest.TestCase):
             image_path = Path(temp_dir) / "happy.png"
             image_path.write_bytes(b"png")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 side_effect=[FakeResponse(), FakeResponse(), FakeResponse()],
             ) as request:
                 first = gateway.send_reply(context, "在")
@@ -2383,7 +2382,7 @@ class QQGatewayTests(unittest.TestCase):
             failed = FakeResponse({"status": "failed", "retcode": 200})
             succeeded = FakeResponse({"status": "ok", "retcode": 0, "data": {"message_id": 9}})
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 side_effect=[failed, failed, succeeded],
             ) as mocked_post:
                 result = gateway.send_image(context, image_path=str(image_path), name="开心")
@@ -2416,7 +2415,7 @@ class QQGatewayTests(unittest.TestCase):
                 return {"status": "ok"}
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             result = gateway.send_mface(
                 context,
@@ -2477,7 +2476,7 @@ class QQGatewayTests(unittest.TestCase):
                 return {"status": "ok"}
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             first = gateway.send_emotion_mface(
                 context,
@@ -2509,7 +2508,7 @@ class QQGatewayTests(unittest.TestCase):
             profile_user_id=f"qq_{QQ_USER_FIXTURE_ID}",
         )
 
-        with patch("companion_v01.onebot_transport.requests.Session.request") as mocked_post:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request") as mocked_post:
             result = gateway.send_emotion_mface(
                 context,
                 {"speech": "好。", "emotion": "happy"},
@@ -2543,7 +2542,7 @@ class QQGatewayTests(unittest.TestCase):
             image_path = Path(temp_dir) / "happy.png"
             image_path.write_bytes(b"png")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
             ) as mocked_post:
                 first = gateway.send_emotion_image(
                     context,
@@ -2764,7 +2763,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertEqual(len(context.attachments or []), 1)
         self.assertEqual((context.attachments or [])[0]["origin_name"], "cat.png")
 
-    @patch("companion_v01.qq_gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 1.2)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 1.2)
     def test_attachment_debounce_only_latest_event_processes(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
@@ -2786,7 +2785,7 @@ class QQGatewayTests(unittest.TestCase):
         self.assertTrue(latest["process"])
         self.assertEqual(latest["attachment_ids"], ["attachment::1", "attachment::2"])
 
-    @patch("companion_v01.qq_gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 0.0)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 0.0)
     def test_attachment_debounce_can_be_disabled(self) -> None:
         gateway = NapCatQQGateway()
         context = gateway.build_message_context(
@@ -2830,7 +2829,7 @@ class QQGatewayTests(unittest.TestCase):
             output_path = Path(temp_dir) / "akane.md"
             output_path.write_text("akane", encoding="utf-8")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
             ) as mocked_post:
                 result = gateway.send_generated_files(
                     context,
@@ -2881,7 +2880,7 @@ class QQGatewayTests(unittest.TestCase):
             image_path = Path(temp_dir) / "generated.png"
             image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
             ) as mocked_post:
                 result = gateway.send_generated_files(
                     context,
@@ -2933,7 +2932,7 @@ class QQGatewayTests(unittest.TestCase):
             image_path = Path(temp_dir) / "reimu.png"
             image_path.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
             ) as mocked_post:
                 result = gateway.send_generated_files(
                     context,
@@ -2971,7 +2970,7 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        with patch("companion_v01.onebot_transport.requests.Session.request") as mocked_post:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request") as mocked_post:
             result = gateway.send_generated_files(
                 context,
                 [
@@ -3022,7 +3021,7 @@ class QQGatewayTests(unittest.TestCase):
             output_path = Path(temp_dir) / "video.mp4"
             output_path.write_bytes(b"video")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
             ) as mocked_post:
                 result = gateway.send_generated_files(
                     context,
@@ -3201,7 +3200,7 @@ class QQGatewayTests(unittest.TestCase):
                 },
             }
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
             ) as mocked_post:
                 result = gateway.send_generated_files(context, [event, dict(event)])
 
@@ -3263,7 +3262,7 @@ class QQGatewayTests(unittest.TestCase):
             output_path = Path(temp_dir) / "capability.txt"
             output_path.write_text("capability release", encoding="utf-8")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 side_effect=responses,
             ) as request:
                 result = gateway.send_file(context, file_path=str(output_path), name=output_path.name)
@@ -3317,7 +3316,7 @@ class QQGatewayTests(unittest.TestCase):
                 profile_user_id=f"qq_group_shared_{QQ_FILE_GROUP_FIXTURE_ID}",
             )
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 return_value=FakeResponse(),
             ) as request:
                 result = gateway.send_file(
@@ -3359,7 +3358,7 @@ class QQGatewayTests(unittest.TestCase):
             output_path = Path(temp_dir) / "source.mp4"
             output_path.write_bytes(b"video")
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 return_value=FakeResponse(),
             ) as request:
                 result = gateway.send_file(
@@ -3387,7 +3386,7 @@ class QQGatewayTests(unittest.TestCase):
             }
         )
 
-        with patch("companion_v01.onebot_transport.requests.Session.request") as mocked_post:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request") as mocked_post:
             result = gateway.send_generated_files(
                 context,
                 [
@@ -3421,11 +3420,11 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.master_qq_patcher = patch(
-            "companion_v01.qq_gateway.config.MASTER_QQ",
+            "companion_v01.channels.qq.gateway.config.MASTER_QQ",
             str(QQ_MASTER_FIXTURE_ID),
         )
         self.bot_qq_patcher = patch(
-            "companion_v01.qq_gateway.config.QQ_BOT_QQ",
+            "companion_v01.channels.qq.gateway.config.QQ_BOT_QQ",
             str(QQ_BOT_FIXTURE_ID),
         )
         self.master_qq_patcher.start()
@@ -3433,8 +3432,8 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         self.addCleanup(self.master_qq_patcher.stop)
         self.addCleanup(self.bot_qq_patcher.stop)
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
-    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_never_substitutes_configured_qq_for_missing_login_identity(self) -> None:
         from unittest.mock import Mock
 
@@ -3442,13 +3441,13 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
             with self.subTest(actual=actual):
                 response = Mock(status_code=200)
                 response.json.return_value = {"status": "ok", "retcode": 0, "data": {"user_id": actual}}
-                with patch("companion_v01.onebot_transport.requests.Session.request", return_value=response):
+                with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=response):
                     result = NapCatQQGateway().self_check()
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["status"], "account_identity_unknown")
                 self.assertNotIn("bot_qq", result)
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", False)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", False)
     def test_self_check_returns_bridge_disabled_when_not_enabled(self) -> None:
         gateway = NapCatQQGateway()
         result = gateway.self_check()
@@ -3457,22 +3456,22 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         self.assertIn("QQ_BRIDGE_ENABLED", result["reason"])
         self.assertNotIn("token", result.get("reason", "").lower())
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
-    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "not-a-url")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ONEBOT_HTTP_URL", "not-a-url")
     def test_self_check_returns_invalid_url_for_bad_format(self) -> None:
         gateway = NapCatQQGateway()
         result = gateway.self_check()
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "invalid_url")
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
-    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_returns_unreachable_on_connection_error(self) -> None:
         import requests as req_module
 
         gateway = NapCatQQGateway()
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             side_effect=req_module.exceptions.ConnectionError("refused"),
         ):
             result = gateway.self_check()
@@ -3480,22 +3479,22 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         self.assertEqual(result["status"], "unreachable")
         self.assertIn("端口", result["reason"])
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
-    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_returns_timeout_on_request_timeout(self) -> None:
         import requests as req_module
 
         gateway = NapCatQQGateway()
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             side_effect=req_module.exceptions.Timeout("timed out"),
         ):
             result = gateway.self_check()
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "timeout")
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
-    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_returns_auth_failed_on_401(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -3508,14 +3507,14 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
             def json(self):
                 return {}
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
             result = gateway.self_check()
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "auth_failed")
         self.assertIn("鉴权", result["reason"])
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
-    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_returns_connected_on_success(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -3539,7 +3538,7 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {"online": True, "good": True}}
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             side_effect=[LoginInfoResponse(), StatusResponse()],
         ) as mocked_get:
             result = gateway.self_check()
@@ -3559,8 +3558,8 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         self.assertNotIn("token", result_str.lower())
         self.assertNotIn("cookie", result_str.lower())
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
-    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_rejects_cached_login_info_when_account_is_offline(self) -> None:
         gateway = NapCatQQGateway()
 
@@ -3577,7 +3576,7 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {"online": False, "good": True}}
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             side_effect=[LoginInfoResponse(), StatusResponse()],
         ):
             result = gateway.self_check()
@@ -3586,8 +3585,8 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
         self.assertEqual(result["status"], "account_offline")
         self.assertNotIn("12345678", str(result))
 
-    @patch("companion_v01.qq_gateway.config.QQ_BRIDGE_ENABLED", True)
-    @patch("companion_v01.qq_gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
+    @patch("companion_v01.channels.qq.gateway.config.QQ_BRIDGE_ENABLED", True)
+    @patch("companion_v01.channels.qq.gateway.config.QQ_ONEBOT_HTTP_URL", "http://127.0.0.1:3001")
     def test_self_check_does_not_expose_sensitive_fields(self) -> None:
         """self_check 结果只暴露安全字段（user_id、nickname），不包含 token / cookie / 路径。"""
         gateway = NapCatQQGateway()
@@ -3617,7 +3616,7 @@ class QQGatewaySelfCheckTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {"online": True, "good": True}}
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             side_effect=[LoginInfoResponse(), StatusResponse()],
         ):
             result = gateway.self_check()

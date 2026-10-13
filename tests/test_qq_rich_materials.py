@@ -22,9 +22,9 @@ from PIL import Image
 
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.attachment_ingest import AttachmentIngestService
-from companion_v01.onebot_model_actions import model_onebot_capabilities
-from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01.qq_tool_delivery import QQToolDeliveryPort
+from companion_v01.channels.qq.onebot.model_actions import model_onebot_capabilities
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.delivery.tool_port import QQToolDeliveryPort
 from companion_v01.routes.qq import build_qq_router
 from companion_v01.store import MemoryStore
 from companion_v01.tool_handlers.core import ToolExecutionContext
@@ -90,7 +90,7 @@ class RichMaterialTests(unittest.TestCase):
 
         self.ingest._onebot_transport.call = read_file
         for target, value in (("QQ_BOT_QQ", "101"), ("MASTER_QQ", "909"), ("QQ_ATTACHMENT_DEBOUNCE_SECONDS", 0)):
-            started = patch("companion_v01.qq_gateway.config." + target, value)
+            started = patch("companion_v01.channels.qq.gateway.config." + target, value)
             started.start()
             self.addCleanup(started.stop)
         nickname = patch.object(NapCatQQGateway, "_resolve_bot_nickname", return_value="助手")

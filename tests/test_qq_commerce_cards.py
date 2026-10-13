@@ -13,15 +13,13 @@ from companion_v01.desktop_pet_character_resources import (
     DesktopPetCharacterResourceService,
     load_character_care_shop_items,
 )
-from companion_v01.qq_commerce_cards import (
-    QQ_COMMERCE_PAGE_SIZE,
-    build_qq_commerce_card,
-    build_qq_shop_change_card,
-    render_qq_commerce_card,
-    render_qq_shop_change_card,
-    build_qq_purchase_card,
-    render_qq_purchase_card,
-)
+from companion_v01.channels.qq.cards.commerce import QQ_COMMERCE_PAGE_SIZE
+from companion_v01.channels.qq.cards.commerce import build_qq_commerce_card
+from companion_v01.channels.qq.cards.commerce import build_qq_shop_change_card
+from companion_v01.channels.qq.cards.commerce import render_qq_commerce_card
+from companion_v01.channels.qq.cards.commerce import render_qq_shop_change_card
+from companion_v01.channels.qq.cards.commerce import build_qq_purchase_card
+from companion_v01.channels.qq.cards.commerce import render_qq_purchase_card
 from tests import test_qq_commands as command_fixtures
 from tests.qq_card_fixtures import install_stationery_fixture
 
@@ -41,10 +39,10 @@ class QQCommerceRouteTests(unittest.TestCase):
         command_fixtures.QQCommandRouteTests.setUp(self)
         self.runtime, _renderer = self._enable_care()
         self.shop_renderer = self.enterContext(
-            patch("companion_v01.qq_command_cards.render_qq_commerce_card", return_value=self.render.return_value)
+            patch("companion_v01.channels.qq.commands.card_results.render_qq_commerce_card", return_value=self.render.return_value)
         )
         self.purchase_renderer = self.enterContext(
-            patch("companion_v01.qq_command_cards.render_qq_purchase_card", return_value=self.render.return_value)
+            patch("companion_v01.channels.qq.commands.card_results.render_qq_purchase_card", return_value=self.render.return_value)
         )
         chars = Path(self.temporary.name) / "characters"
         pack = chars / "cecilia"

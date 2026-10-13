@@ -13,9 +13,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from companion_v01.durable_session_queue import DurableSessionWorkQueue, RetryableSessionWorkError
 from companion_v01.memcore_integration.manager import MemcoreManager
-from companion_v01.qq_passive_messages import QQPassiveMessageHandler
-from companion_v01.qq_session_work import passive_batch_key, passive_retry_can_yield
-from companion_v01.qq_turn_runtime import QQTurnRunner
+from companion_v01.channels.qq.inbound.observations import QQPassiveMessageHandler
+from companion_v01.channels.qq.turns.work import passive_batch_key
+from companion_v01.channels.qq.turns.work import passive_retry_can_yield
+from companion_v01.channels.qq.turns.runner import QQTurnRunner
 from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.turn_coordination import TurnCoordinator
 from tests import test_qq_passive_memory_record as fixtures
@@ -140,7 +141,7 @@ class QQPassiveQueueRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     message=f"媒体消息{i}", actor_stable_id=f"qq:{i}", timestamp=100 + i,
                 ))
             with patch.object(manager, "append_standalone_message", append), patch(
-                "companion_v01.qq_session_queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01,
+                "companion_v01.channels.qq.turns.queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01,
             ):
                 await asyncio.wait_for(queue._drain("profile\0session"), 5)
             self.assertEqual(count, 4)
@@ -219,7 +220,7 @@ class QQPassiveQueueRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 queued = self._enqueue(inbox, event_id="1001", turn_payload={
                     "message": "hello", "source_message_id": "1001", "passive_memory_source_id": "frozen",
                 })
-                with patch("companion_v01.qq_session_queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01):
+                with patch("companion_v01.channels.qq.turns.queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01):
                     await asyncio.wait_for(queue._drain("profile\0session"), 2)
                 item = inbox.get(queued["item_id"])
                 self.assertEqual(item.status, "committed" if error else "failed")

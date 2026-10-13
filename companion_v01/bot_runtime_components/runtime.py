@@ -33,7 +33,7 @@ from ..plugin_conversation_refs import PluginConversationReferenceAuthority
 from ..plugin_generation_runtime import PluginGenerationRuntime
 from ..plugin_tool_bridge import PluginCapabilityToolBridge
 from ..public_guard import PublicThinkGuard
-from ..qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from ..resource_manifest import ResourceManifest
 from ..runtime_settings import BotSettingsView, normalize_thinking_mode
 from ..settings_overrides import SettingsOverrideStore, set_override

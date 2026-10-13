@@ -15,7 +15,7 @@ from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.memcore_integration.manager import MemcoreManager
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.tool_invocation import (
     NATIVE_OPENAI,
     TOOL_INVOCATION_ID_FIELD,
@@ -68,10 +68,10 @@ class ThreeCoreProductionSliceTests(unittest.TestCase):
             ],
         }
 
-        with patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", BOT_ID):
+        with patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", BOT_ID):
             gateway = NapCatQQGateway(wake_words=("Akane",))
             with patch(
-                "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
+                "companion_v01.channels.qq.inbound.context_builder.normalize_inbound_event",
                 wraps=normalize_inbound_event,
             ) as package_inbound:
                 context = gateway.build_message_context(event)
@@ -255,12 +255,12 @@ class ThreeCoreProductionSliceTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {"message_id": "sent-production-1"}}
 
         with (
-            patch("companion_v01.qq_gateway_runtime.messages.build_message_action", wraps=build_message_action) as package_outbound,
+            patch("companion_v01.channels.qq.delivery.messages.build_message_action", wraps=build_message_action) as package_outbound,
             patch(
-                "companion_v01.onebot_transport.normalize_action_response",
+                "companion_v01.channels.qq.onebot.transport.normalize_action_response",
                 wraps=normalize_action_response,
             ) as package_result,
-            patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()) as request,
+            patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()) as request,
         ):
             sent = gateway.send_reply(context, "检查完成。")
 

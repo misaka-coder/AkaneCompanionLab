@@ -14,12 +14,12 @@ from companion_v01.persona_config import load_persona_config
 from companion_v01.prompt_blocks import build_system_prompt
 from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.prompt_profiles import PromptProfileRegistry
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 
 
 class QQPrivateIdentityTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch('companion_v01.qq_gateway.config.MASTER_QQ', '10001'))
+        self.enterContext(patch('companion_v01.channels.qq.gateway.config.MASTER_QQ', '10001'))
         self.gateway = NapCatQQGateway(channel_config=QQChannelRuntimeConfig(
             enabled=True, profile_ref='private-identity-test', bot_id='30303',
             onebot_http_url='http://127.0.0.1:1', webhook_secret='', onebot_access_token='',

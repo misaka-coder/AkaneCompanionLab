@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -27,15 +27,16 @@ def main():
     args = parser.parse_args()
     if args.attention_review and args.mode != "qq_text":
         parser.error("--attention-review requires --mode qq_text")
+    from types import SimpleNamespace
+
+    import config
+    from companion_v01.client_protocol import ClientMode
     from companion_v01.llm_runtime import LLMRuntime
     from companion_v01.model_service_config import ModelServiceConfigStore
-    from companion_v01.runtime_settings import BotSettingsView
     from companion_v01.prompt_profiles import PromptProfileRegistry
-    from companion_v01.client_protocol import ClientMode
-    from companion_v01.speech_policy import speech_prompt_profile, character_speech_policy
-    from types import SimpleNamespace
+    from companion_v01.runtime_settings import BotSettingsView
+    from companion_v01.speech_policy import character_speech_policy, speech_prompt_profile
     from companion_v01.speech_units import voice_segments
-    import config
 
     saved = ModelServiceConfigStore(args.model_config).load()
     if saved is None:
@@ -58,7 +59,7 @@ def main():
         start = time.perf_counter()
         user_prompt = prompt
         if args.attention_review:
-            from companion_v01.routes.qq import GROUP_ATTENTION_REVIEW_CONTEXT
+            from companion_v01.channels.qq.turns.attention import GROUP_ATTENTION_REVIEW_CONTEXT
             user_prompt += "\n\n" + GROUP_ATTENTION_REVIEW_CONTEXT
         iterator = runtime.stream_chat_json(system_prompt=system, user_prompt=user_prompt, fallback={"speech": ""})
         events = []

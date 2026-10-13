@@ -7,7 +7,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from companion_v01.care_runtime import CareModulePort, CareRuntimeStore
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 
 
 class CareInventoryTransactionTests(unittest.TestCase):

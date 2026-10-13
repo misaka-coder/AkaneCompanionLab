@@ -19,14 +19,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from companion_v01.channels.qq.delivery.replies import _send_qq_delivery
+from companion_v01.channels.qq.delivery.stream import _filter_unsent_reply_messages
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext, default_capabilities_for_mode
 from companion_v01.engine import FINAL_RESPONSE_EXTERNAL_TEXT_FEEDBACK, AkaneMemoryEngine
 from companion_v01.llm_runtime import ChatJSONResult, ChatTextResult
-from companion_v01.output_adapters import OutputAdapterRegistry
 from companion_v01.model_runtime.json_stream import _TopLevelJSONStreamTap
-from companion_v01.qq_reply_delivery import _send_qq_delivery
-from companion_v01.qq_stream_delivery import _filter_unsent_reply_messages
-from companion_v01.speech_units import voice_segments, project_speech_units, VoiceEventReplay
+from companion_v01.output_adapters import OutputAdapterRegistry
+from companion_v01.speech_units import VoiceEventReplay, project_speech_units, voice_segments
 
 UNITS = [
     {"emotion": "happy", "style": "明るく元気に", "text": "查完了，结论是这样。", "say": "調べ終わりました。結論はこうです。"},
@@ -449,8 +449,8 @@ class QQDeliveryCorrespondenceTests(unittest.TestCase):
         gateway = gateway or self.Gateway()
         messages = [unit["text"] for unit in frame.get("utterances") or []] or [frame["speech"]]
         patcher = (
-            patch("companion_v01.qq_reply_delivery._synthesize_qq_voice_file", side_effect=recorded)
-            if recorded is not None else patch("companion_v01.qq_reply_delivery._synthesize_qq_voice_file")
+            patch("companion_v01.channels.qq.turns.reply_audio._synthesize_qq_voice_file", side_effect=recorded)
+            if recorded is not None else patch("companion_v01.channels.qq.turns.reply_audio._synthesize_qq_voice_file")
         )
         with patcher as synth:
             result = _send_qq_delivery(
@@ -533,7 +533,7 @@ class QQDeliveryCorrespondenceTests(unittest.TestCase):
 
             gateway = self.Gateway()
             messages = [unit["text"] for unit in TAIL_UNITS]
-            with patch("companion_v01.qq_reply_delivery._synthesize_qq_voice_file", side_effect=synthesize):
+            with patch("companion_v01.channels.qq.turns.reply_audio._synthesize_qq_voice_file", side_effect=synthesize):
                 result = _send_qq_delivery(
                     engine=SimpleNamespace(),
                     qq_gateway=gateway,
@@ -563,7 +563,7 @@ class QQDeliveryCorrespondenceTests(unittest.TestCase):
             engine = SimpleNamespace(desktop_pet_character_resources=SimpleNamespace(characters_dir=root))
             for mode in ("voice", "both"):
                 with self.subTest(mode=mode), patch(
-                    "companion_v01.qq_voice_delivery.synthesize_tts_resolution", new_callable=AsyncMock
+                    "companion_v01.channels.qq.turns.reply_audio.synthesize_tts_resolution", new_callable=AsyncMock
                 ) as synth:
                     gateway = self.Gateway()
                     result = _send_qq_delivery(

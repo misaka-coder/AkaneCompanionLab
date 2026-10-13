@@ -30,7 +30,7 @@ from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_tool_jobs import HostToolJobRuntime
 from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.memcore_integration.manager import MemcoreManager
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.tool_handlers.generated_media import SendFileToolHandler
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.legacy_tool_prompt import render_legacy_json_tool_instruction
@@ -153,7 +153,7 @@ class MediaPluginInstallationTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         response = SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"status": "ok", "retcode": 0})
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=response) as transport:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=response) as transport:
             sent = gateway.send_generated_files(qq_context, qq.stream_events)
         self.assertTrue(sent["ok"], sent)
         transport.assert_called_once()

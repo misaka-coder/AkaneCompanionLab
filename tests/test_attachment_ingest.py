@@ -342,7 +342,7 @@ class AttachmentIngestTests(unittest.TestCase):
                 workspace_uri_resolver=lambda _uri: secret,
             )
 
-            with patch("companion_v01.onebot_transport.requests.Session.request") as post_mock:
+            with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request") as post_mock:
                 created = service.ingest_qq_attachments(
                     profile_user_id="master",
                     session_id="qq_pri_1",
@@ -420,7 +420,7 @@ class AttachmentIngestTests(unittest.TestCase):
                     return {"status": "failed", "retcode": 100, "data": {}}
 
             with patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 return_value=FakeOneBotResponse(),
             ):
                 service.ingest_qq_attachments(
@@ -484,7 +484,7 @@ class AttachmentIngestTests(unittest.TestCase):
             with (
                 patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", ""),
                 patch(
-                    "companion_v01.onebot_transport.requests.Session.request",
+                    "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                     return_value=FakeResponse(status="ok", retcode=0),
                 ),
             ):
@@ -497,7 +497,7 @@ class AttachmentIngestTests(unittest.TestCase):
             with (
                 patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
                 patch(
-                    "companion_v01.onebot_transport.requests.Session.request",
+                    "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                     return_value=FakeResponse(status="failed", retcode=0),
                 ),
             ):
@@ -538,7 +538,7 @@ class AttachmentIngestTests(unittest.TestCase):
             with (
                 patch("companion_v01.attachment_ingest.config.QQ_ATTACHMENT_MAX_BYTES", 4),
                 patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
-                patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()),
+                patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()),
             ):
                 with self.assertRaisesRegex(AttachmentMaterializationError, "attachment_too_large"):
                     service._copy_from_onebot_cache(
@@ -748,7 +748,7 @@ class AttachmentIngestTests(unittest.TestCase):
                     }
 
             with patch("companion_v01.attachment_ingest.config.QQ_ATTACHMENT_MAX_BYTES", 4):
-                with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+                with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
                     result = service._copy_from_onebot_cache(
                         item={"kind": "file", "origin_name": "rejected.bin"},
                         payload={"file": "rejected.bin"},
@@ -801,7 +801,7 @@ class AttachmentIngestTests(unittest.TestCase):
 
             with (
                 patch("companion_v01.attachment_ingest.config.QQ_ONEBOT_CACHE_ROOTS", str(cached.parent)),
-                patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()),
+                patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()),
             ):
                 result = service.retry_attachment(
                     profile_user_id="master",
@@ -1344,7 +1344,7 @@ class AttachmentIngestTests(unittest.TestCase):
             session = FakeHttpSession([stream_response])
             with (
                 patch(
-                    "companion_v01.onebot_transport.requests.Session.request",
+                    "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                     return_value=FakeOneBotResponse(),
                 ),
                 patch("companion_v01.attachment_ingest.requests.Session", return_value=session),

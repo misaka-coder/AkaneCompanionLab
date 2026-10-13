@@ -5,14 +5,15 @@ import io
 import json
 import unittest
 from pathlib import Path
+
 from PIL import Image
 
-from tests import test_care_shop_settings as fixtures
-from companion_v01.care_shop_settings import read_shop, update_shop_item, create_shop_item, delete_shop_item
-from companion_v01.shop_artwork import artwork_file, artwork_url, resolve_artwork
+from companion_v01.care_shop_settings import create_shop_item, delete_shop_item, read_shop, update_shop_item
+from companion_v01.channels.qq.cards.commerce import build_qq_commerce_card, render_qq_commerce_card
+from companion_v01.channels.qq.commands.care_results import _commerce_listing
 from companion_v01.desktop_pet_character_resources import load_character_care_shop_items
-from companion_v01.qq_gateway import _commerce_listing
-from companion_v01.qq_commerce_cards import build_qq_commerce_card, render_qq_commerce_card
+from companion_v01.shop_artwork import artwork_file, artwork_url, resolve_artwork
+from tests import test_care_shop_settings as fixtures
 
 
 def upload(color="pink"):

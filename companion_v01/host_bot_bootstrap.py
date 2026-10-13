@@ -10,7 +10,8 @@ from typing import Any
 
 from .bot_profile import BOT_PROFILE_FILENAME, load_bot_host_profile, resolve_bot_data_root
 from .bot_registry import BotRegistry, BotRegistryError
-from .qq_channel_profiles import QQ_CHANNEL_PROFILES_RELATIVE_PATH, load_qq_channel_profiles
+from companion_v01.channels.qq.profiles import QQ_CHANNEL_PROFILES_RELATIVE_PATH
+from companion_v01.channels.qq.profiles import load_qq_channel_profiles
 
 
 _SAFE_REASON_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")

@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from channelcore_onebot import validate_onebot_identity
 
 from .instance_profile import InstanceContext
-from .qq_channel_profiles import QQChannelDeploymentProfile
+from companion_v01.channels.qq.profiles import QQChannelDeploymentProfile
 
 
 class DeploymentSecurityError(RuntimeError):

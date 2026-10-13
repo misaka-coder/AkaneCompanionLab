@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from companion_v01.deployment_security import QQChannelRuntimeConfig
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
 
 

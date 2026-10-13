@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.instance_profile import PluginSelection
 from companion_v01.plugin_api import (
@@ -18,9 +20,9 @@ from companion_v01.plugin_api import (
     BEFORE_OUTBOUND_PLAN_HOOK,
     BEFORE_TOOL_CALL_HOOK,
     HOOK_SUBSCRIBE_PERMISSION,
+    PluginDeliverySnapshot,
     PluginHookEnvelope,
     PluginHookResult,
-    PluginDeliverySnapshot,
     PluginManifest,
     PluginOutboundDecoration,
     PluginOutboundPlanSnapshot,
@@ -32,10 +34,8 @@ from companion_v01.plugin_hooks import (
     _PluginHookRegistration,
 )
 from companion_v01.plugin_host import PluginHost
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.tool_handlers.core import ToolExecutionResult
 from companion_v01.tool_invocation import TOOL_INVOCATION_ID_FIELD, TOOL_SOURCE_FIELD
-
 
 PLUGIN_ID = "akane.test.hooks"
 

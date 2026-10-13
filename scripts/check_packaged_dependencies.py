@@ -40,7 +40,8 @@ PACKAGES: tuple[PackageSpec, ...] = (
     PackageSpec(
         "channelcore-onebot",
         "channelcore_onebot",
-        ("normalize_action_response", "validate_onebot_identity"),
+        ("normalize_action_response", "validate_onebot_identity", "MessageChain.render_text_with_mentions",
+         "QuotedMessage.chain", "ForwardNode.chain"),
     ),
     PackageSpec("promptpack-core", "promptpack_core", ("PromptBlock", "PromptBlockRegistry")),
     PackageSpec(

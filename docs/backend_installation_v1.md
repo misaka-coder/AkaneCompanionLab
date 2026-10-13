@@ -2,7 +2,7 @@
 
 基础环境为 Python 3.11。源码中的 `package_wheels/` 是维护者本地产物，
 不会出现在普通 Git 克隆里；安装器从
-[官方依赖发行物](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13)
+[官方依赖发行物](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13.2)
 下载内部包，校验仓库中固定的 SHA-256，再安装普通 wheel。
 第三方依赖使用当前 pip 配置的公共索引。
 
@@ -68,7 +68,7 @@ python scripts/install_dependencies.py --profile full
 ## 离线供应与源码重建
 
 Ubuntu 22.04 / Linux x86_64 / Python 3.11 用户可以直接从
-[依赖发行页](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13)
+[依赖发行页](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13.2)
 下载 `akane-backend-linux-x86_64-py311.zip` 和同名 `.zip.sha256` 文件。
 这是经过 Linux CI 空环境安装和后端行为验收的完整依赖闭包，包括第三方包；
 不需要 GitHub 登录，不能用于 Windows 或其他 Python 版本。

@@ -23,7 +23,7 @@ from companion_v01.plugin_events import PluginEventBroker, _PluginEventRegistrat
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
 from companion_v01.plugin_turn_requests import HostTurnRequests
 from companion_v01.plugin_turn_intents import PluginTurnError
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
 from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.turn_coordination import TurnCoordinator
@@ -156,7 +156,7 @@ class QQInboundTurnsTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.network_patch = patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             return_value=_Response(),
         )
         self.network = self.network_patch.start()

@@ -4,11 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from companion_v01.qq_channel_profiles import (
-    QQChannelProfileError,
-    load_qq_channel_profiles,
-    parse_qq_channel_profiles,
-)
+from companion_v01.channels.qq.profiles import QQChannelProfileError
+from companion_v01.channels.qq.profiles import load_qq_channel_profiles
+from companion_v01.channels.qq.profiles import parse_qq_channel_profiles
 
 
 def _payload() -> dict:

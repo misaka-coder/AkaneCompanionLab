@@ -13,7 +13,9 @@ import re
 from typing import Any
 
 from .desktop_pet_character_resources import load_character_dialogue_services
-from .qq_commands import COMMANDS, QQCommandDefinition, split_qq_command
+from companion_v01.channels.qq.commands.parser import COMMANDS
+from companion_v01.channels.qq.commands.parser import QQCommandDefinition
+from companion_v01.channels.qq.commands.parser import split_qq_command
 
 _ID = re.compile(r"[A-Za-z0-9_.-]{1,100}\Z")
 _SERVICE_PREFIX = "service:"

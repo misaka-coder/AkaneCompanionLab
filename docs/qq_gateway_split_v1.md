@@ -1,5 +1,7 @@
 # QQ 网关拆分 v1
 
+历史拆分记录。当前源码已归入 `companion_v01/channels/qq/`，现行职责与修改入口见 [QQ 开发地图](../companion_v01/channels/qq/README.md)；下文保留当时的路径与验证记录。
+
 `companion_v01/qq_gateway.py` 从 5,558 行收敛到 957 行。实现按职责放入
 `companion_v01/qq_gateway_runtime/` 的 17 个实现模块（13 个实例处理器、4 个
 辅助模块），入口负责明确的依赖装配和兼容转发。

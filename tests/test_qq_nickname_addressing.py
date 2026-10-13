@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from companion_v01.bot_profile import bot_config_from_instance_context
 from companion_v01.deployment_security import QQChannelRuntimeConfig
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 
 
 class QQNicknameAddressingTests(unittest.TestCase):

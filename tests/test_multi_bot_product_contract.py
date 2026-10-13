@@ -36,7 +36,7 @@ from companion_v01.plugin_api import (
 from companion_v01.plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from companion_v01.plugin_host import PluginHost
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.routes.desktop_pet import build_desktop_pet_router
 
 

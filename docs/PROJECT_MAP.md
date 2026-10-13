@@ -183,7 +183,8 @@ Each file owns a specific business domain. Most are classes instantiated by `Aka
 
 | File | Responsibility |
 |------|---------------|
-| `companion_v01/qq_gateway.py` | `NapCatQQGateway`. QQ message send/receive via NapCat HTTP API. |
+| `companion_v01/channels/qq/` | QQ protocol, inbound events, turn adapters, commands, card rendering and delivery. See the [QQ development map](../companion_v01/channels/qq/README.md) for file responsibilities, data flow and tests. |
+| `companion_v01/routes/qq.py` | QQ HTTP authentication, request parsing and responses; delegates to the channel's assembled event handler. |
 
 #### Infrastructure
 

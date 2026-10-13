@@ -15,10 +15,10 @@ from channelcore_onebot import music_segment
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
 from companion_v01.client_protocol import ClientMode
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
-from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01 import qq_music_audio
-from companion_v01.qq_music_audio import resolve_public_audio_url
-from companion_v01.qq_tool_delivery import QQToolDeliveryPort
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01 import media_audio_urls as qq_music_audio
+from companion_v01.media_audio_urls import resolve_public_audio_url
+from companion_v01.channels.qq.delivery.tool_port import QQToolDeliveryPort
 from companion_v01.skill_runtime import SkillRegistry
 from companion_v01.tool_handlers.core import TOOL_SPEC_BY_TYPE, ToolExecutionContext
 from companion_v01.tool_handlers.music import SendAudioToolHandler, SendMusicCardToolHandler
@@ -174,8 +174,8 @@ class ModelDirectedDeliveryHandlerTests(unittest.TestCase):
 class GatewayTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         patchers = [
-            patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_MASTER_ID)),
-            patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID)),
+            patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", str(QQ_MASTER_ID)),
+            patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", str(QQ_BOT_ID)),
         ]
         for patcher in patchers:
             patcher.start()
@@ -193,7 +193,7 @@ class GatewayTransportTests(unittest.TestCase):
         )
 
     def test_netease_card_returns_real_onebot_success(self) -> None:
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_FakeOneBotOk()) as request:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_FakeOneBotOk()) as request:
             result = self.gateway.send_music_card(
                 self.private_context, platform="netease_music", track_id="2703973041"
             )
@@ -202,7 +202,7 @@ class GatewayTransportTests(unittest.TestCase):
         self.assertEqual(payload["message"][0], {"type": "music", "data": {"type": "163", "id": "2703973041"}})
 
     def test_unsupported_card_platform_returns_failure_without_voice(self) -> None:
-        with patch("companion_v01.onebot_transport.requests.Session.request") as request:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request") as request:
             result = self.gateway.send_music_card(
                 self.private_context, platform="qq_music", track_id="002XWgfo0IKPOH"
             )
@@ -227,10 +227,10 @@ class GatewayTransportTests(unittest.TestCase):
         port = QQToolDeliveryPort(self.gateway)
         with (
             patch(
-                "companion_v01.qq_tool_delivery.resolve_public_audio_url",
+                "companion_v01.channels.qq.delivery.tool_port.resolve_public_audio_url",
                 return_value={"ok": True, "status": "ready", "url": "https://cdn.example/song.mp3"},
             ),
-            patch("companion_v01.onebot_transport.requests.Session.request", return_value=_FakeOneBotOk()) as request,
+            patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_FakeOneBotOk()) as request,
         ):
             result = port.send_audio_url(
                 request_context={"qq_delivery_context": self.private_context.to_delivery_context()},

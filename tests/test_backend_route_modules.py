@@ -14,28 +14,28 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-import config
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from companion_v01.background_tasks import BackgroundTaskRunner
+import config
 from companion_v01.attachment_inbox import AttachmentInboxService
 from companion_v01.attachment_ingest import AttachmentIngestService
-from companion_v01.care_runtime import CareModulePort
+from companion_v01.background_tasks import BackgroundTaskRunner
 from companion_v01.capability_registry import ExecutorBroker
+from companion_v01.care_runtime import CareModulePort
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.desktop_pet_contract import DESKTOP_PET_CONTRACT_VERSION, DESKTOP_PET_RESOURCE_CONTRACT_VERSION
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
-from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.host_jobs import HostJobStore
 from companion_v01.host_workflow_jobs import HostWorkflowJobRuntime, WorkflowJobAssetStore
 from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
 from companion_v01.local_workflow_execution import WorkflowExecutionAsset, WorkflowExecutionRequest
-from companion_v01.media_bridge_engine import prefetch_remote_media_links_for_message
 from companion_v01.mcp_stdio_discoverer import McpStdioToolCaller, McpStdioToolDiscoverer
+from companion_v01.media_bridge_engine import prefetch_remote_media_links_for_message
 from companion_v01.music_lyrics import parse_lrc_segments
 from companion_v01.plugin_api import PluginQQCommandResult
 from companion_v01.routes.capabilities import build_capabilities_router
-from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.routes.control_center import (
     build_control_center_router,
     build_control_center_snapshot_runtime_providers,
@@ -47,11 +47,10 @@ from companion_v01.routes.qq import build_qq_router
 from companion_v01.routes.sessions import build_sessions_router
 from companion_v01.routes.think import build_think_router
 from companion_v01.routes.voice import build_voice_router
-from companion_v01.tool_runtime import ToolMetadata
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.store import MemoryStore
+from companion_v01.tool_runtime import ToolMetadata
 from companion_v01.turn_coordination import TurnCoordinator
-
 
 QQ_BOT_FIXTURE_ID = 10001
 QQ_USER_FIXTURE_ID = 10003
@@ -1139,7 +1138,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -1197,7 +1196,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -1265,9 +1264,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with (
-            patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)),
+            patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)),
             patch(
-                "companion_v01.onebot_transport.requests.Session.request",
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request",
                 return_value=FakeResponse(),
             ) as mocked_post,
         ):
@@ -1331,7 +1330,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             return_value=FakeResponse(),
         ) as mocked_post:
             response = TestClient(app).post(
@@ -1413,7 +1412,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -1493,7 +1492,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -2006,7 +2005,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(len(pending_keys), 1)
         queued_session_key = pending_keys[0]
         self.assertEqual(inbox_store.pending_count(queued_session_key), 1)
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
             asyncio.run(scheduled.pop())
         self.assertEqual(len(processed), 1)
         self.assertEqual(inbox_store.pending_count(queued_session_key), 0)
@@ -2036,7 +2035,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             claim_token=steer_calls[0]["receipt_claim_token"],
         )
 
-        with patch("companion_v01.qq_gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)):
+        with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", str(QQ_USER_FIXTURE_ID)):
             bare_stop = client.post(
                 "/api/qq/napcat/event",
                 json={**event, "message_id": "owner-stop-other-actor", "message": [
@@ -2069,7 +2068,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         self.assertEqual(preempted.status_code, 200)
         self.assertEqual(preempted.json()["send_result"]["status"], "queued")
         self.assertEqual(len(scheduled), 1)
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
             asyncio.run(scheduled.pop())
         self.assertEqual(len(processed), 2)
 
@@ -2266,7 +2265,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             list_response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -2381,7 +2380,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -2475,7 +2474,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -2632,7 +2631,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
             command_response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -2832,8 +2831,8 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with (
-            patch("companion_v01.qq_gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 0.0),
-            patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post) as mocked_post,
+            patch("companion_v01.channels.qq.gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 0.0),
+            patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=fake_post) as mocked_post,
         ):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -2954,7 +2953,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=fake_post):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -3036,7 +3035,7 @@ class BackendRouteModuleTests(unittest.TestCase):
             )
         )
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=fake_post):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -3090,7 +3089,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                     },
                 }
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
             result = gateway.resolve_quoted_attachments(event, context=context)
 
         self.assertFalse(result["ok"])
@@ -3109,7 +3108,7 @@ class BackendRouteModuleTests(unittest.TestCase):
         }
         context = gateway.build_message_context(event)
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=TimeoutError("offline")):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=TimeoutError("offline")):
             result = gateway.resolve_quoted_attachments(event, context=context)
 
         self.assertTrue(context.should_respond)
@@ -3207,9 +3206,9 @@ class BackendRouteModuleTests(unittest.TestCase):
         )
 
         with (
-            patch("companion_v01.routes.qq.asyncio.create_task", side_effect=fake_create_task),
+            patch("companion_v01.channels.qq.assembly.asyncio.create_task", side_effect=fake_create_task),
             patch(
-                "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+                "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
             ) as mocked_post,
         ):
             response = TestClient(app).post(
@@ -3318,7 +3317,7 @@ class BackendRouteModuleTests(unittest.TestCase):
                 log_event=lambda *_args, **_kwargs: None,
             )
         )
-        with patch("companion_v01.routes.qq.asyncio.create_task", side_effect=fake_create_task):
+        with patch("companion_v01.channels.qq.assembly.asyncio.create_task", side_effect=fake_create_task):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -3376,7 +3375,7 @@ class BackendRouteModuleTests(unittest.TestCase):
 
         event_timestamp = int(time.time())
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()
         ) as mocked_post:
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
@@ -3399,7 +3398,8 @@ class BackendRouteModuleTests(unittest.TestCase):
         turn_payload = process_calls[0]
         self.assertEqual(turn_payload["message"], "刚才发生的互动：我在 QQ 里戳了戳你的头像。")
         self.assertEqual(turn_payload["timestamp"], event_timestamp)
-        self.assertNotIn("actor_stable_id", turn_payload)
+        self.assertEqual(turn_payload["actor_stable_id"], f"qq:{QQ_USER_FIXTURE_ID}")
+        self.assertEqual(turn_payload["actor_platform"], "qq")
         self.assertEqual(turn_payload["client_mode"], "qq_text")
         self.assertNotIn("transient_user_message", turn_payload)
         self.assertNotIn(f"QQ {QQ_USER_FIXTURE_ID}", turn_payload["extra_context"])

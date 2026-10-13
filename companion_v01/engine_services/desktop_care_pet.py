@@ -9,10 +9,13 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping
 
+from companion_v01.channels.qq.inbound.record_ids import _passive_record_source_id
+
+from .. import desktop_pet_engine, gift_engine
 from ..care_runtime import CareModulePort, normalize_desktop_care_config
-from ..owner_private_session import current_private_scope, desktop_care_scope
 from ..client_protocol import ClientCapability, ClientMode, ClientProtocolContext
 from ..desktop_pet_character_resources import load_character_care_config
+from ..owner_private_session import current_private_scope, desktop_care_scope
 from ..store import MemoryStore, normalize_character_pack_id
 from ..text_utils import (
     detect_time_of_day_from_text,
@@ -20,8 +23,6 @@ from ..text_utils import (
     infer_time_of_day,
     timestamp_to_date_label,
 )
-from .. import desktop_pet_engine, gift_engine
-from ..qq_session_work import _passive_record_source_id
 
 logger = logging.getLogger("akane.engine")
 

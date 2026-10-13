@@ -25,8 +25,8 @@ from ..instance_runtime import InstanceRuntimeLayout
 from ..deployment_security import InstanceDeploymentSecurity
 from ..plugin_notifications import NullNotificationPort, QQTextNotificationPort
 from ..local_workflow_runners.comfyui import ComfyUiWorkflowRunner
-from ..qq_gateway import NapCatQQGateway
-from ..qq_tool_delivery import QQToolDeliveryPort
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.delivery.tool_port import QQToolDeliveryPort
 from ..turn_coordination import TurnCoordinator
 
 from .plugins import PluginServices

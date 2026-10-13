@@ -1,10 +1,12 @@
-from types import SimpleNamespace
 import json
 import unittest
+from types import SimpleNamespace
 
 from memcore import StreamingSpeechParser
+
+from companion_v01.channels.qq.delivery.stream import _coalesce_deferred_stream_messages, _filter_unsent_reply_messages
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
 from companion_v01.final_output_engine import normalize_speech_payload
-from companion_v01.routes.qq import _filter_unsent_reply_messages, _process_qq_turn_streaming, _coalesce_deferred_stream_messages
 from tests.test_qq_voice_delivery import FakeQQGateway
 
 

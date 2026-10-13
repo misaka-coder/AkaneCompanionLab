@@ -9,22 +9,22 @@ from channelcore_onebot import OutboundActionResult
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01.qq_tool_delivery import QQToolDeliveryPort
-from companion_v01.routes.qq import (
+from companion_v01.channels.qq.delivery.tool_port import QQToolDeliveryPort
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.inbound.references import (
     _build_qq_unavailable_forward_context,
     _qq_quoted_message_reference,
     _qq_structured_forward_references,
-    build_qq_router,
 )
+from companion_v01.routes.qq import build_qq_router
 
 
 class QQForwardSourceBindingTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.bot_patch = patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", "10001")
+        self.bot_patch = patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", "10001")
         self.bot_patch.start()
         self.addCleanup(self.bot_patch.stop)
-        self.owner_patch = patch("companion_v01.qq_gateway.config.MASTER_QQ", "10002")
+        self.owner_patch = patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10002")
         self.owner_patch.start()
         self.addCleanup(self.owner_patch.stop)
         self.gateway = NapCatQQGateway(wake_words=("Akane",))

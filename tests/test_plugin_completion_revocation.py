@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
-from pathlib import Path
 import tempfile
 import threading
-from types import SimpleNamespace
 import unittest
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from companion_v01.bot_runtime_components.completion import _dispatch_host_job_completion
@@ -124,7 +124,8 @@ class QQCompletionRevocationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_audio_both_keeps_sent_voice_and_blocks_file_and_upload_fallback(self):
         import wave
-        from companion_v01.qq_gateway import QQMessageContext
+
+        from companion_v01.channels.qq.context import QQMessageContext
 
         path = Path(self.temp.name) / "sample.wav"
         with wave.open(str(path), "wb") as output:
@@ -305,9 +306,9 @@ class CompletionModelScopeTests(unittest.IsolatedAsyncioTestCase):
         return CompletionTurn(payload, None, (self.job,), frozenset((self.job.job_id,)), self.jobs)
 
     async def test_real_engine_stops_between_side_effects_and_does_not_generate_again(self):
-        from tests.test_turn_mainline_contract import _Harness, _tool_round_output
         from companion_v01.tool_invocation import NATIVE_TOOL_CALLS_FIELD
         from companion_v01.tool_runtime import ToolExecutionResult
+        from tests.test_turn_mainline_contract import _Harness, _tool_round_output
 
         output = _tool_round_output("", "write_fixture", "write-1")
         output[NATIVE_TOOL_CALLS_FIELD].append({"type": "write_fixture", "id": "write-2", "arguments": {}})
@@ -330,8 +331,8 @@ class CompletionModelScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(event.get("type") == "tool_execution_cancelled" for event in frame["tool_events"]))
 
     async def test_real_engine_checks_after_before_tool_hook(self):
-        from tests.test_turn_mainline_contract import _Harness, _tool_round_output
         from companion_v01.plugin_hooks import BEFORE_TOOL_CALL_HOOK
+        from tests.test_turn_mainline_contract import _Harness, _tool_round_output
 
         harness = _Harness([_tool_round_output("", "write_fixture", "write-1")])
         harness.engine.turn_coordinator = self.coordinator
@@ -351,7 +352,7 @@ class CompletionModelScopeTests(unittest.IsolatedAsyncioTestCase):
         from companion_v01.background_tasks import BackgroundTaskRunner
         from companion_v01.host_tool_jobs import HostToolJobRuntime
         from companion_v01.tool_runtime import ToolExecutionContext
-        from tests.test_host_tool_jobs import _Handler, _Engine
+        from tests.test_host_tool_jobs import _Engine, _Handler
 
         release = threading.Event()
         handler = _Handler(started=threading.Event(), release=release)
@@ -396,7 +397,7 @@ class CompletionModelScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(harness.script.generation_calls, [])
 
     async def test_chunk_upload_stops_after_withdrawal_without_finalize_request(self):
-        from companion_v01.onebot_transport import OneBotActionTransport
+        from companion_v01.channels.qq.onebot.transport import OneBotActionTransport
         from tests.test_plugin_events import _Response
 
         path = self.root / "large.bin"
@@ -408,7 +409,7 @@ class CompletionModelScopeTests(unittest.IsolatedAsyncioTestCase):
             return _Response()
         async with self.coordinator.hold("master", "desk") as token:
             with self.completion({}).processing(self.coordinator, token), \
-                 patch("companion_v01.onebot_transport.requests.Session.request", side_effect=sent) as network:
+                 patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=sent) as network:
                 staged = await asyncio.to_thread(transport.stage_file, path, chunk_bytes=64 * 1024)
         self.assertFalse(staged.ok)
         self.assertEqual(staged.code, "turn_scope_revoked")
@@ -417,9 +418,9 @@ class CompletionModelScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(network.call_args.kwargs["json"]["total_chunks"], 3)
 
     async def test_real_tool_orchestration_cancels_running_adapter_and_waits_for_cleanup(self):
-        from tests import test_plugin_engine_bridge as bridge_helpers
         from companion_v01.tool_invocation import ToolInvocation
         from companion_v01.tool_orchestration_engine import execute_tool_invocation
+        from tests import test_plugin_engine_bridge as bridge_helpers
 
         await bridge_helpers.PluginEngineBridgeTests.asyncSetUp(self)
         self.addAsyncCleanup(bridge_helpers.PluginEngineBridgeTests.asyncTearDown, self)
@@ -454,6 +455,7 @@ class CompletionModelScopeTests(unittest.IsolatedAsyncioTestCase):
     async def test_completion_revocation_blocks_queued_desktop_action(self):
         import contextvars
         import time
+
         from companion_v01.capability_registry import ExecutorBroker
         from companion_v01.desktop_satellite import DesktopSatelliteService, _SatelliteConnection
         from companion_v01.desktop_satellite_specs import SYSTEM_MEDIA_CONTROL_TOOL_SPEC as spec
@@ -493,6 +495,7 @@ class CompletionModelScopeTests(unittest.IsolatedAsyncioTestCase):
     async def test_desktop_checks_scope_after_enqueue_before_websocket_send(self):
         import contextvars
         import time
+
         from companion_v01.desktop_satellite import DesktopSatelliteService, _SatelliteConnection
 
         service = DesktopSatelliteService(instance_id="instance", token="test")

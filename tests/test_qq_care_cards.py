@@ -6,8 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from companion_v01.care_runtime import CareModulePort
-from companion_v01.qq_care_cards import build_qq_care_card, render_qq_care_card
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
+from companion_v01.channels.qq.cards.care import build_qq_care_card, render_qq_care_card
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from tests.qq_card_fixtures import install_stationery_fixture
 
 

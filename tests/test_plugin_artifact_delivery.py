@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 import json
-from pathlib import Path
 import tempfile
 import textwrap
-from types import SimpleNamespace
 import unittest
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from capcore import InvocationContext
 
 from companion_v01.bot_runtime_components.completion import _host_job_completion_request
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.delivery.artifacts import _hydrate_plugin_managed_artifact_events
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
 from companion_v01.host_tool_job_runtime.contracts import _artifact_references
 from companion_v01.plugin_api import ManagedArtifactDraft
@@ -27,8 +31,6 @@ from companion_v01.plugin_managed_artifacts import (
     validate_managed_artifact_draft,
 )
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolHandler
-from companion_v01.qq_gateway import NapCatQQGateway, QQChannelRuntimeConfig, QQMessageContext
-from companion_v01.routes.qq import _hydrate_plugin_managed_artifact_events
 from companion_v01.tool_runtime import ToolExecutionContext, ToolExecutionResult
 from tests.test_plugin_resources import services
 
@@ -175,7 +177,7 @@ class ArtifactDeliveryTests(unittest.IsolatedAsyncioTestCase):
                         raise_for_status=lambda: None, json=lambda: {"status": "ok", "retcode": 0}
                     )
                     with patch(
-                        "companion_v01.onebot_transport.requests.Session.request", return_value=response
+                        "companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=response
                     ) as transport:
                         sent = gateway.send_generated_files(context, hydrated)
                     self.assertTrue(sent["ok"], sent)

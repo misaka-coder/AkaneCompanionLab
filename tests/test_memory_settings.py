@@ -14,8 +14,8 @@ from fastapi.testclient import TestClient
 import httpx
 import config
 from companion_v01.deployment_security import AdminWriteAuth, QQChannelRuntimeConfig
-from companion_v01.onebot_transport import OneBotActionTransport
-from companion_v01.qq_gateway_runtime.preferences import QQSessionPreferences
+from companion_v01.channels.qq.onebot.transport import OneBotActionTransport
+from companion_v01.channels.qq.preferences import QQSessionPreferences
 from companion_v01.routes.control_center import build_control_center_router
 from companion_v01.routes.memory_settings import build_memory_settings_router
 from companion_v01.routes.backend_restart import build_backend_restart_router

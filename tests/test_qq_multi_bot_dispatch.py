@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.plugin_api import PluginQQCommandResult
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
 
 
@@ -200,7 +200,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             "raw_message": "你好 B",
         }
         client = TestClient(app)
-        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=fake_post):
             wrong_secret = client.post(
                 "/api/bots/bot-a/qq/napcat/event",
                 headers={"Authorization": "Bearer secret-b"},
@@ -250,7 +250,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             "message_id": "legacy-event-a",
             "raw_message": "旧路径",
         }
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response()):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 headers={"Authorization": "Bearer secret-a"},
@@ -274,7 +274,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
                     {"type": "text", "data": {"text": " /表情 关"}},
                 ],
             }
-            with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()):
+            with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response()):
                 client = TestClient(app)
                 a = client.post(
                     "/api/bots/bot-a/qq/napcat/event",
@@ -305,7 +305,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             "raw_message": "同一事件不能回复两次",
         }
         client = TestClient(app)
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()) as mocked_post:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response()) as mocked_post:
             canonical = client.post(
                 "/api/bots/bot-a/qq/napcat/event",
                 headers={"Authorization": "Bearer secret-a"},
@@ -370,7 +370,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
             posts.append({"url": url, **kwargs})
             return _Response()
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=fake_post):
             response_a = TestClient(app).post(
                 "/api/bots/bot-a/qq/napcat/event",
                 headers={"Authorization": "Bearer secret-a"},
@@ -428,7 +428,7 @@ class QQMultiBotDispatchTests(unittest.TestCase):
                 results.append(response.json())
             return results[0], results[1]
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_post):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=fake_post):
             for sequence, command in enumerate((
                 "/搭话 关闭", "/表情 关", "/权限 全部 关", "/批准 deadbeef",
                 "/identity now", "/停止", "/角色 列表", "/材料 清理", "/签到", "/unknown",

@@ -43,6 +43,27 @@ PETDESK_PACKAGES = (
 
 
 class PackageIndependenceContractTests(unittest.TestCase):
+    def test_onebot_audit_rejects_wheel_without_ordered_mention_rendering(self) -> None:
+        spec = next(s for s in check_packaged_dependencies.PACKAGES if s.distribution == "channelcore-onebot")
+        artifact = SimpleNamespace(
+            version=check_packaged_dependencies.expected_package_version("channelcore-onebot"), ok=True, reason=""
+        )
+        with (
+            mock.patch.object(check_packaged_dependencies, "PACKAGES", (spec,)),
+            mock.patch.object(check_packaged_dependencies.importlib.metadata, "distribution", return_value=object()),
+            mock.patch.object(check_packaged_dependencies, "audit_distribution_artifact", return_value=artifact),
+            mock.patch.object(check_packaged_dependencies.importlib, "import_module", return_value=SimpleNamespace(
+                normalize_action_response=lambda: None, validate_onebot_identity=lambda: None,
+                MessageChain=type("LegacyMessageChain", (), {}),
+                QuotedMessage=type("QuotedMessage", (), {"chain": None}),
+                ForwardNode=type("ForwardNode", (), {"chain": None}),
+            )),
+        ):
+            _, errors = check_packaged_dependencies.audit_installed_packages()
+        self.assertEqual(errors, [
+            "channelcore-onebot:runtime_contract_missing:MessageChain.render_text_with_mentions"
+        ])
+
     def test_packaged_dependency_audit_rejects_missing_runtime_contract(self) -> None:
         spec = check_packaged_dependencies.PackageSpec(
             "memcore-kernel",

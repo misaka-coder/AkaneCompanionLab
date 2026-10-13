@@ -8,14 +8,15 @@ from unittest.mock import patch
 from channelcore_onebot import OutboundActionResult
 
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
-from companion_v01.client_protocol import ClientMode
-from companion_v01.onebot_model_actions import (
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.onebot.model_actions import (
     MODEL_ONEBOT_ACTION_NAMES,
     authorize_model_onebot_action,
     model_onebot_capabilities,
 )
+from companion_v01.client_protocol import ClientMode
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_handlers.qq_onebot import OneBotActionToolHandler
 
@@ -72,7 +73,7 @@ class OneBotActionContractTests(unittest.TestCase):
                 [{"type": "reply", "data": {"id": "30001"}},
                  {"type": "text", "data": {"text": "第一句。\n第二句！"}}],
             ):
-                with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+                with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10001"):
                     sent = gateway.call_model_onebot_action(context, action=action, params={"message": message})
                     other = gateway.call_model_onebot_action(context, action=action,
                         params={target_key: 29999, "message": message})
@@ -155,7 +156,7 @@ class OneBotActionContractTests(unittest.TestCase):
             source_message_id="30001",
         )
 
-        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+        with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10001"):
             result = gateway.call_model_onebot_action(
                 context,
                 action="delete_msg",
@@ -180,7 +181,7 @@ class OneBotActionContractTests(unittest.TestCase):
             source_message_id="30001",
         )
 
-        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+        with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10001"):
             result = gateway.call_model_onebot_action(context, action="group_poke", params={})
 
         self.assertTrue(result["ok"])
@@ -205,7 +206,7 @@ class OneBotActionContractTests(unittest.TestCase):
             reply_reference={"message_id": "29999"},
         )
 
-        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+        with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10001"):
             current = gateway.call_model_onebot_action(
                 context,
                 action="set_msg_emoji_like",
@@ -241,7 +242,7 @@ class OneBotActionContractTests(unittest.TestCase):
 
         sent = gateway.send_reply(context, "第一条")
         self.assertTrue(sent["ok"])
-        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+        with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10001"):
             result = gateway.call_model_onebot_action(
                 context,
                 action="delete_msg",
@@ -266,7 +267,7 @@ class OneBotActionContractTests(unittest.TestCase):
             source_message_id="30001",
         )
 
-        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+        with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10001"):
             result = gateway.call_model_onebot_action(
                 context,
                 action="delete_msg",
@@ -293,7 +294,7 @@ class OneBotActionContractTests(unittest.TestCase):
             reply_reference={"message_id": "29999"},
         )
 
-        with patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001"):
+        with patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10001"):
             result = gateway.call_model_onebot_action(
                 context,
                 action="set_msg_emoji_like",

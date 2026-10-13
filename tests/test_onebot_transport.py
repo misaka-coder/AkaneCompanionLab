@@ -5,7 +5,7 @@ import unittest
 import requests
 
 from companion_v01.deployment_security import QQChannelRuntimeConfig
-from companion_v01.onebot_transport import OneBotActionTransport
+from companion_v01.channels.qq.onebot.transport import OneBotActionTransport
 
 
 class _Response:

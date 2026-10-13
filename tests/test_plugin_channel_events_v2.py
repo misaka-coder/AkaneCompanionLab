@@ -16,7 +16,7 @@ from companion_v01.plugin_api import (
 )
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
 from companion_v01.deployment_security import QQChannelRuntimeConfig
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.routes.think import build_think_router
 from companion_v01.routes.qq import build_qq_router
 from tests import test_plugin_events as legacy_tests
@@ -100,7 +100,7 @@ class ChannelEventTests(unittest.IsolatedAsyncioTestCase):
                 {"type": "reply", "data": {"id": "quoted-1"}}, {"type": "at", "data": {"qq": "100"}},
                 {"type": "text", "data": {"text": "Akane 晚上好"}},
             ]}
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=legacy_tests._Response()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=legacy_tests._Response()):
             await self.post(app, "/api/qq/napcat/event", payload)
         event, = self.received
         self.assertEqual(event.source, "@host")
@@ -131,7 +131,7 @@ class ChannelEventTests(unittest.IsolatedAsyncioTestCase):
         payload = {"post_type": "notice", "notice_type": "poke", "sub_type": "poke", "self_id": "100",
             "group_id": "200", "user_id": "300", "target_id": "100", "time": int(time.time()),
             "sender": {"nickname": "Olivia"}}
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=legacy_tests._Response()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=legacy_tests._Response()):
             await self.post(app, "/api/qq/napcat/event", payload)
         event, = self.received
         self.assertEqual(event.source, "@host")
@@ -159,7 +159,7 @@ class QQTurnRequestTests(unittest.IsolatedAsyncioTestCase):
         await self.start()
         channel = QQChannelRuntimeConfig(enabled=True, profile_ref="qq.test", bot_id="100", onebot_http_url="http://127.0.0.1:3001",
             webhook_secret="", onebot_access_token="", require_webhook_auth=False, require_self_id=True)
-        gateway = NapCatQQGateway(channel_config=channel)
+        gateway = NapCatQQGateway(channel_config=channel, default_character_pack_id="akane")
         session, profile = gateway.resolve_identity(user_id=300)
         character = gateway.resolve_character_pack_id(session)
         self.context = PluginInvocationContext(profile, session, "qq", character_pack_id=character,
@@ -171,7 +171,7 @@ class QQTurnRequestTests(unittest.IsolatedAsyncioTestCase):
             turn_coordinator=self.coordinator, session_work_queue=self.queue, plugin_turn_router=self.router,
             plugin_agent_event_handler_registrar=self.router.register_channel)
         data = {"board": [False, None, 0, 0.5]}
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=legacy_tests._Response()) as network:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=legacy_tests._Response()) as network:
             request = await self.call("request", {"data": data})
             final = await self.settled(request["request_id"])
         self.assertEqual(final["status"], "completed", final)

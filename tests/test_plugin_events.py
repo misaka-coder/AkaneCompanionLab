@@ -19,7 +19,7 @@ from companion_v01.plugin_api import PluginInvocationContext
 from companion_v01.plugin_contribution_policy import TrustedStatefulPluginContributionPolicy
 from companion_v01.plugin_events import PluginEventBroker, _PluginEventRegistration
 from companion_v01.plugin_host import PluginHost
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
 from companion_v01.routes.think import build_think_router
 from tests.test_plugin_host import FakeEntryPoint
@@ -295,7 +295,7 @@ class PluginEventQQBridgeTests(_EventPluginHarness):
             "time": int(time.time()),
         }
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response()):
             response = await self._post(app, "/api/qq/napcat/event", event)
 
         self.assertEqual(response.status_code, 200)
@@ -323,7 +323,7 @@ class PluginEventQQBridgeTests(_EventPluginHarness):
             "time": int(time.time()),
         }
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response()):
             response = await self._post(app, "/api/qq/napcat/event", event)
 
         self.assertEqual(response.status_code, 200)

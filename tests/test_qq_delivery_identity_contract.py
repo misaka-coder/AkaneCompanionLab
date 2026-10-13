@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.memcore_integration.manager import MemcoreManager
-from companion_v01.onebot_transport import OneBotActionTransport
+from companion_v01.channels.qq.onebot.transport import OneBotActionTransport
 from companion_v01.plugin_event_delivery import apply_plugin_notification_output_policy
 from tests import test_memcore_integration as fixtures
 from tests import test_qq_nickname_addressing as nickname_fixtures

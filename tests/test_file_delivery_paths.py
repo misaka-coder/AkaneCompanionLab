@@ -1,13 +1,14 @@
 """Authorized path -> immutable artifact -> QQ transport, with no live sends."""
 
-from dataclasses import replace
 import hashlib
-from pathlib import Path
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.tool_handlers.generated_media import SendFileToolHandler
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from tests import test_workspace_artifact_handoff as workspace_tests
 
 

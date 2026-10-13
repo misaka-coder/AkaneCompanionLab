@@ -4,7 +4,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 
 
 class QQEmotionDeliveryTests(unittest.TestCase):
@@ -116,7 +117,7 @@ class QQEmotionDeliveryTests(unittest.TestCase):
                     return {"ok": True}
 
                 with (
-                    patch("companion_v01.qq_gateway_runtime.emotions.time.time", side_effect=lambda: now[0]),
+                    patch("companion_v01.channels.qq.delivery.emotions.time.time", side_effect=lambda: now[0]),
                     patch.object(gateway, "send_image" if kind == "image" else "send_mface", side_effect=outbound) as transport,
                 ):
                     self.assertEqual(self.send(gateway, kind, "happy")["status"], "sent")

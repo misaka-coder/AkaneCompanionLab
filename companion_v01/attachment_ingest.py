@@ -12,7 +12,7 @@ import config
 from .attachment_inbox import AttachmentInboxService
 from .background_tasks import BackgroundTaskRunner
 from .deployment_security import QQChannelRuntimeConfig
-from .onebot_transport import OneBotActionTransport
+from companion_v01.channels.qq.onebot.transport import OneBotActionTransport
 from .public_url_policy import HostResolver
 from .store import MemoryStore
 from .vision_service import VisionObservationService

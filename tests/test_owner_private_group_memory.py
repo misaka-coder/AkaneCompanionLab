@@ -15,12 +15,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from memcore import Actor, EntryOrigin, TimelineEntryInput, TurnRole
+
+from companion_v01.channels.qq.commands.parser import resolve_qq_command
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.memcore_integration.manager import MemcoreManager
 from companion_v01.owner_private_group_memory import OwnerPrivateGroupMemory
 from companion_v01.owner_private_session import OwnerPrivateSessionPolicy
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
-from companion_v01.qq_commands import resolve_qq_command
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.store import MemoryStore
 from companion_v01.turn_coordination import TurnCoordinator
 from tests.test_memcore_integration import _FakeLLM

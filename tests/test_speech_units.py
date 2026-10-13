@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-import json
 import asyncio
 import io
+import json
+import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-import unittest
 from unittest.mock import AsyncMock, patch
 
-from companion_v01.llm_runtime import _TopLevelJSONStreamTap
-from companion_v01.speech_units import project_speech_units, voice_segments, VoiceEventReplay
-from companion_v01.speech_policy import character_speech_policy, configure_speech_prompt
-from companion_v01.prompt_profiles import PromptProfileRegistry
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
-from companion_v01.tts_provider_runtime import resolve_tts_runtime_provider
-from companion_v01.tts_provider_runtime import synthesize_speech_units
+from companion_v01.llm_runtime import _TopLevelJSONStreamTap
+from companion_v01.prompt_profiles import PromptProfileRegistry
+from companion_v01.speech_policy import character_speech_policy, configure_speech_prompt
+from companion_v01.speech_units import VoiceEventReplay, project_speech_units, voice_segments
+from companion_v01.tts_provider_runtime import resolve_tts_runtime_provider, synthesize_speech_units
 from companion_v01.tts_service import SynthesizedTTSResult, TTSServiceError
 
 
@@ -83,7 +82,11 @@ class SpeechUnitsTests(unittest.TestCase):
 
     def test_history_and_voice_artifact_keep_expression_but_archive_spoken_history(self):
         from companion_v01.assistant_history_projection import project_assistant_history_content
-        from companion_v01.voice_runtime.speech_artifact import encode_speech_artifact, decode_speech_artifact, MEDIA_TYPE
+        from companion_v01.voice_runtime.speech_artifact import (
+            MEDIA_TYPE,
+            decode_speech_artifact,
+            encode_speech_artifact,
+        )
         unit = {"emotion": "shy", "style": "calm", "text": "有点害羞。", "say": "少し恥ずかしいです。"}
         projected = project_assistant_history_content(json.dumps({"utterances": [unit]}))
         self.assertIn("有点害羞。", projected)
@@ -258,7 +261,7 @@ class SpeechPolicyTests(unittest.TestCase):
         self.assertNotIn("speech 是发送到 QQ", updated.system_prompt_override)
 
     def test_attention_guidance_does_not_override_character_speech_format(self):
-        from companion_v01.routes.qq import GROUP_ATTENTION_REVIEW_CONTEXT
+        from companion_v01.channels.qq.turns.attention import GROUP_ATTENTION_REVIEW_CONTEXT
         context = ClientProtocolContext(effective_mode=ClientMode.QQ_TEXT, capabilities=("speech_units_v1",))
         profile = configure_speech_prompt(self.engine, "cecilia", context, PromptProfileRegistry().resolve(context))
         combined = profile.fast_mode_prompt + "\n" + GROUP_ATTENTION_REVIEW_CONTEXT

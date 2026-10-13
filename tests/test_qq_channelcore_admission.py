@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from companion_v01.deployment_security import QQChannelRuntimeConfig
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 
 
 BOT_ID = "10000001"
@@ -29,7 +29,7 @@ def _event(*, message_id: str, self_id: str = BOT_ID, timestamp: int | None = No
 
 class QQChannelcoreAdmissionTests(unittest.TestCase):
     def setUp(self) -> None:
-        bot_patcher = patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", BOT_ID)
+        bot_patcher = patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", BOT_ID)
         bot_patcher.start()
         self.addCleanup(bot_patcher.stop)
 
@@ -58,9 +58,9 @@ class QQChannelcoreAdmissionTests(unittest.TestCase):
         gateway = NapCatQQGateway()
         old_timestamp = int(time.time()) - 3600
 
-        with patch("companion_v01.qq_gateway.config.QQ_ALLOW_STALE_EVENTS", False):
+        with patch("companion_v01.channels.qq.gateway.config.QQ_ALLOW_STALE_EVENTS", False):
             rejected = gateway.build_message_context(_event(message_id="runtime-stale-1", timestamp=old_timestamp))
-        with patch("companion_v01.qq_gateway.config.QQ_ALLOW_STALE_EVENTS", True):
+        with patch("companion_v01.channels.qq.gateway.config.QQ_ALLOW_STALE_EVENTS", True):
             allowed = gateway.build_message_context(_event(message_id="runtime-stale-2", timestamp=old_timestamp))
 
         self.assertEqual(rejected.reason, "stale_event")

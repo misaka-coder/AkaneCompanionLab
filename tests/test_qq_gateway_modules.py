@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import ast
+import json
 import tempfile
 import threading
 import unittest
@@ -9,13 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
-from companion_v01.qq_gateway_runtime.context import QQMessageContext as OwnedQQMessageContext
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 
 
 class QQGatewayModuleTests(unittest.TestCase):
-    def test_context_compatibility_import_is_the_actual_type(self) -> None:
-        self.assertIs(QQMessageContext, OwnedQQMessageContext)
+    def test_gateway_builds_the_canonical_context_type(self) -> None:
+        restored = NapCatQQGateway().context_from_delivery_context({"target_id": 41})
+        self.assertIs(type(restored), QQMessageContext)
 
     def test_preferences_and_reload_preserve_map_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -163,18 +164,37 @@ class QQGatewayModuleTests(unittest.TestCase):
         ])
 
     def test_gateway_owners_have_no_reverse_import_or_import_cycle(self) -> None:
-        package = Path(__file__).resolve().parents[1] / "companion_v01" / "qq_gateway_runtime"
-        modules = {p.stem: p for p in package.glob("*.py") if p.stem != "__init__"}
+        root = Path(__file__).resolve().parents[1]
+        package = root / "companion_v01" / "channels" / "qq"
+        modules = {
+            ".".join(p.relative_to(root).with_suffix("").parts): p
+            for p in package.rglob("*.py")
+            if p.stem not in {"__init__", "gateway", "assembly"}
+        }
+        self.assertIn("companion_v01.channels.qq.inbound.context_builder", modules)
         graph = {name: set() for name in modules}
+
+        def runtime_imports(node):
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
+                for child in node.orelse:
+                    yield from runtime_imports(child)
+                return
+            if isinstance(node, (ast.ImportFrom, ast.Import)):
+                yield node
+            for child in ast.iter_child_nodes(node):
+                yield from runtime_imports(child)
+
         for name, path in modules.items():
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            for node in runtime_imports(ast.parse(path.read_text(encoding="utf-8"))):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertNotEqual((node.module or "").split(".")[-1], "qq_gateway", path.name)
-                    target = (node.module or "").split(".")[0]
-                    if node.level == 1 and target in modules:
-                        graph[name].add(target)
+                    target = node.module or ""
+                    self.assertNotIn(target, {"companion_v01.channels.qq.gateway", "companion_v01.channels.qq.assembly"}, name)
+                    for dependency in [target, *(target + "." + alias.name for alias in node.names)]:
+                        if dependency in modules:
+                            graph[name].add(dependency)
                 elif isinstance(node, ast.Import):
-                    self.assertNotIn("companion_v01.qq_gateway", [n.name for n in node.names], path.name)
+                    self.assertNotIn("companion_v01.channels.qq.gateway", [n.name for n in node.names], path.name)
+                    graph[name].update(alias.name for alias in node.names if alias.name in modules)
 
         visited = set()
         active = set()
@@ -199,7 +219,7 @@ class QQGatewayModuleTests(unittest.TestCase):
         )
         first = NapCatQQGateway()
         second = NapCatQQGateway()
-        with patch("companion_v01.qq_gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 1.2):
+        with patch("companion_v01.channels.qq.gateway.config.QQ_ATTACHMENT_DEBOUNCE_SECONDS", 1.2):
             older = first.register_attachment_debounce(context, attachment_ids=["first-old"])
             latest = first.register_attachment_debounce(context, attachment_ids=["first-new"])
             other = second.register_attachment_debounce(context, attachment_ids=["second"])

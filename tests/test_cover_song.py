@@ -4,8 +4,9 @@ import json
 import unittest
 from unittest.mock import patch
 
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from plugins.akane_cover_song.src.akane_cover_song import RvcWebUiProvider
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 
 
 class CoverProtocolAndDeliveryTests(unittest.TestCase):

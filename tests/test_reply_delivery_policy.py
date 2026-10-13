@@ -7,9 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from companion_v01.qq_commands import resolve_qq_command
-from companion_v01.qq_gateway_runtime.preferences import QQSessionPreferences
-from companion_v01.qq_reply_delivery import _resolve_delivery_medium, _streaming_allows_text
+from companion_v01.channels.qq.commands.parser import resolve_qq_command
+from companion_v01.channels.qq.preferences import QQSessionPreferences
+from companion_v01.channels.qq.delivery.replies import _resolve_delivery_medium
+from companion_v01.channels.qq.delivery.replies import _streaming_allows_text
 
 
 class ReplyDeliveryPolicyTests(unittest.TestCase):

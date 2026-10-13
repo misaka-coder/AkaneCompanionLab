@@ -8,11 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from companion_v01.channels.qq.inbound.record_ids import _passive_record_source_id, _passive_replay_identity
+from companion_v01.channels.qq.turns.queue import QQSessionQueue
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.memcore_integration.manager import MemcoreManager
-from companion_v01.qq_session_queue import QQSessionQueue
-from companion_v01.qq_session_work import _passive_record_source_id, _passive_replay_identity
 from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.store import MemoryStore
 
@@ -338,7 +338,7 @@ class QQPassiveMemoryQueueTests(unittest.IsolatedAsyncioTestCase):
                 event_id="1001",
             )
 
-            with patch("companion_v01.qq_session_queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01):
+            with patch("companion_v01.channels.qq.turns.queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01):
                 await asyncio.wait_for(queue._drain("profile\0session"), 5)
 
             item = store.get(queued["item_id"])
@@ -358,8 +358,8 @@ class QQPassiveMemoryQueueTests(unittest.IsolatedAsyncioTestCase):
                 event_id="1001",
             )
 
-            with patch("companion_v01.qq_session_queue._PASSIVE_RECORD_MAX_ATTEMPTS", 2), patch(
-                "companion_v01.qq_session_queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01
+            with patch("companion_v01.channels.qq.turns.queue._PASSIVE_RECORD_MAX_ATTEMPTS", 2), patch(
+                "companion_v01.channels.qq.turns.queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01
             ):
                 await asyncio.wait_for(queue._drain("profile\0session"), 5)
 
@@ -384,7 +384,7 @@ class QQPassiveMemoryQueueTests(unittest.IsolatedAsyncioTestCase):
                 event_id="1002",
             )
 
-            with patch("companion_v01.qq_session_queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01):
+            with patch("companion_v01.channels.qq.turns.queue._PASSIVE_RECORD_RETRY_DELAY_SECONDS", 0.01):
                 await asyncio.wait_for(queue._drain("profile\0session"), 5)
 
             item = store.get(queued["item_id"])

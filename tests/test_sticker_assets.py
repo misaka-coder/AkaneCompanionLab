@@ -5,11 +5,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnapshot
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.client_protocol import ClientMode
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.sticker_assets import StickerAssetService
 from companion_v01.tool_runtime import SendStickerToolHandler, ToolExecutionContext
-
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = PROJECT_DIR / "web" / "assets"
@@ -88,7 +88,7 @@ class StickerAssetTests(unittest.TestCase):
         self.assertEqual(result.stream_events, [])
         self.assertIn("没有找到", result.followup_context)
 
-    @patch("companion_v01.onebot_transport.requests.Session.request")
+    @patch("companion_v01.channels.qq.onebot.transport.requests.Session.request")
     def test_qq_gateway_sends_sticker_as_image_message(self, post: Mock) -> None:
         post.return_value = Mock(
             status_code=200,

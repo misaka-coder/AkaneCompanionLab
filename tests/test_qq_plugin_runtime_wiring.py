@@ -3,22 +3,23 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from pathlib import Path
 import tempfile
-from types import SimpleNamespace as NS
 import unittest
+from pathlib import Path
+from types import SimpleNamespace as NS
 from unittest.mock import patch
 
 from fastapi import FastAPI
-from akane_plugin import Plugin, PluginInvocationContext, ToolContext
 
+from akane_plugin import Plugin, PluginInvocationContext, ToolContext
+from companion_v01.channels.qq import assembly as qq_assembly
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.routes import qq as qq_routes
 from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.turn_coordination import TurnCoordinator
+from tests import test_minecraft_plugin as minecraft
 from tests import test_plugin_agent_events as fixtures
 from tests import test_plugin_events_v2 as event_fixtures
-from tests import test_minecraft_plugin as minecraft
 
 
 class QQRuntimeWiringTests(unittest.IsolatedAsyncioTestCase):
@@ -85,7 +86,7 @@ class QQRuntimeWiringTests(unittest.IsolatedAsyncioTestCase):
         paths = {route.path for route in self.app.routes}
         self.assertIn("/api/qq/napcat/event", paths)
         self.assertIn("/api/bots/test/qq/napcat/event", paths)
-        with patch.object(qq_routes, "_process_qq_turn_streaming", side_effect=self.model):
+        with patch.object(qq_assembly, "_process_qq_turn_streaming", side_effect=self.model):
             receipt = await self.request()
             await self.drain()
         record = self.turns._records[receipt.request_id]
@@ -95,7 +96,7 @@ class QQRuntimeWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.payloads), 1)
 
     async def test_busy_alias_queue_coalesces_then_runs_latest_intent_once(self):
-        with patch.object(qq_routes, "_process_qq_turn_streaming", side_effect=self.model):
+        with patch.object(qq_assembly, "_process_qq_turn_streaming", side_effect=self.model):
             async with self.coordinator.hold("qq_group_shared_87", "qq_group_shared_87", actor_id="qq:123"):
                 first = await self.request({"value": 1}, "game")
                 second = await self.request({"value": 2}, "game")
@@ -108,7 +109,7 @@ class QQRuntimeWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.turns._records[first.request_id].status, "completed")
 
     async def test_alias_queue_failure_settles_plugin_receipt(self):
-        with patch.object(qq_routes, "_process_qq_turn_streaming", side_effect=RuntimeError("fixture_failure")):
+        with patch.object(qq_assembly, "_process_qq_turn_streaming", side_effect=RuntimeError("fixture_failure")):
             receipt = await self.request()
             await self.drain()
         record = self.turns._records[receipt.request_id]
@@ -129,7 +130,7 @@ class QQRuntimeWiringTests(unittest.IsolatedAsyncioTestCase):
                     control = self.coordinator.drain(kwargs["turn_payload"]["_turn_control_id"])
                     return {"send_result": {"ok": True, "status": "stopped"}, "final_frame_received": True,
                             "frame": {"status": "stopped", "reason": control["stop_reason"], "speech": ""}}
-                with patch.object(qq_routes, "_process_qq_turn_streaming", side_effect=stop_model):
+                with patch.object(qq_assembly, "_process_qq_turn_streaming", side_effect=stop_model):
                     receipt = await self.request()
                     await self.drain()
                 record = self.turns._records[receipt.request_id]
@@ -168,7 +169,7 @@ class QQRuntimeWiringTests(unittest.IsolatedAsyncioTestCase):
             delivery = await event_fixtures.PluginEventV2Tests.terminal(self, sent.value["dispatch_id"])
             self.assertEqual(delivery.status, "completed", delivery)
 
-        with patch.object(qq_routes, "_process_qq_turn_streaming", side_effect=self.model):
+        with patch.object(qq_assembly, "_process_qq_turn_streaming", side_effect=self.model):
             async with self.coordinator.hold("qq_group_shared_87", "qq_group_shared_87", actor_id="qq:123"):
                 bridge.active.pending.append(minecraft.EventBatch("first task ended"))
                 await publish_and_settle()

@@ -12,11 +12,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from companion_v01.care_runtime import CareModulePort
+from companion_v01.channels.qq.cards.help import render_qq_help_card
+from companion_v01.channels.qq.commands.handler import _is_qq_stop_command
+from companion_v01.channels.qq.commands.parser import QQHelpRequest, build_qq_help, resolve_qq_command
+from companion_v01.channels.qq.commands.workspace import _parse_qq_workspace_command
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.plugin_api import PluginQQCommandResult
-from companion_v01.qq_commands import QQHelpRequest, build_qq_help, resolve_qq_command
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
-from companion_v01.qq_help_cards import render_qq_help_card
-from companion_v01.routes.qq import _is_qq_stop_command, _parse_qq_workspace_command, build_qq_router
+from companion_v01.routes.qq import build_qq_router
 from tests.qq_card_fixtures import install_stationery_fixture
 
 
@@ -226,8 +229,8 @@ class _PluginBroker:
 
 class QQCommandRouteTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.enterContext(patch("companion_v01.qq_gateway.config.MASTER_QQ", "10002"))
-        self.enterContext(patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", "10001"))
+        self.enterContext(patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10002"))
+        self.enterContext(patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", "10001"))
         self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_nickname", return_value="塞西莉亚"))
         self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_group_label", return_value="塞西莉亚"))
         self.temporary = tempfile.TemporaryDirectory()
@@ -272,10 +275,10 @@ class QQCommandRouteTests(unittest.TestCase):
                 json=lambda: {"status": "ok", "data": {"message_id": 50000 + len(self.sent)}},
             )
 
-        self.enterContext(patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_request))
+        self.enterContext(patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=fake_request))
         image = root / "help.png"
         image.write_bytes(b"help-image-fixture")
-        self.render = self.enterContext(patch("companion_v01.qq_command_cards.render_qq_help_card", return_value=image))
+        self.render = self.enterContext(patch("companion_v01.channels.qq.commands.card_results.render_qq_help_card", return_value=image))
 
     def _event(self, command, *, group=False, target=False, user_id=10002):
         self.sequence += 1
@@ -419,7 +422,7 @@ class QQCommandRouteTests(unittest.TestCase):
         care = CareModulePort.from_feature(enabled=True, storage_path=Path(self.temporary.name) / "care.json")
         self.engine.get_care_module = lambda: care
         renderer = self.enterContext(
-            patch("companion_v01.qq_command_cards.render_qq_care_card", return_value=self.render.return_value)
+            patch("companion_v01.channels.qq.commands.card_results.render_qq_care_card", return_value=self.render.return_value)
         )
         return care.runtime, renderer
 
@@ -483,7 +486,7 @@ class QQCommandRouteTests(unittest.TestCase):
                 self.assertEqual(document.user_scope, f"cecilia|{response.json()['session_id']}|qq:10002")
 
     def test_disabled_care_does_not_render_fake_personal_stats(self) -> None:
-        with patch("companion_v01.qq_command_cards.render_qq_care_card") as renderer:
+        with patch("companion_v01.channels.qq.commands.card_results.render_qq_care_card") as renderer:
             result = self._post("/养成")
         self.assertEqual(result["command_status"], "disabled")
         self.assertEqual(result["card_format"], "text")

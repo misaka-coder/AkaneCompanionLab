@@ -15,7 +15,7 @@ from channelcore_onebot import (
     resolve_quoted_message,
 )
 
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 
 
 BOT_ID = "10000001"
@@ -25,7 +25,7 @@ GROUP_ID = "30000001"
 
 class QQChannelcoreIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
-        bot_patcher = patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", BOT_ID)
+        bot_patcher = patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", BOT_ID)
         bot_patcher.start()
         self.addCleanup(bot_patcher.stop)
 
@@ -53,7 +53,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         }
 
         with patch(
-            "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
+            "companion_v01.channels.qq.inbound.context_builder.normalize_inbound_event",
             wraps=normalize_inbound_event,
         ) as package_parser:
             context = gateway.build_message_context(event)
@@ -80,7 +80,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         }
 
         with patch(
-            "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
+            "companion_v01.channels.qq.inbound.notices.normalize_inbound_event",
             wraps=normalize_inbound_event,
         ) as package_parser:
             context = gateway.build_message_context(event)
@@ -195,7 +195,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
             ),
         )
 
-        with patch("companion_v01.qq_gateway_runtime.evidence.resolve_onebot_forward_message", return_value=resolved):
+        with patch("companion_v01.channels.qq.inbound.references.resolve_onebot_forward_message", return_value=resolved):
             evidence = gateway.resolve_forward_message_evidence(event, context=context)
 
         self.assertEqual(evidence["status"], "resolved")
@@ -221,7 +221,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
         }
 
         with patch(
-            "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
+            "companion_v01.channels.qq.inbound.context_builder.normalize_inbound_event",
             wraps=normalize_inbound_event,
         ) as package_parser:
             context = gateway.build_message_context(event)
@@ -250,7 +250,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
             ],
         }
         with patch(
-            "companion_v01.qq_gateway_runtime.inbound.normalize_inbound_event",
+            "companion_v01.channels.qq.inbound.context_builder.normalize_inbound_event",
             wraps=normalize_inbound_event,
         ) as package_parser:
             context = gateway.build_message_context(event)
@@ -280,9 +280,9 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                 }
 
         with (
-            patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()),
+            patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()),
             patch(
-                "companion_v01.qq_gateway_runtime.evidence.resolve_onebot_quoted_message",
+                "companion_v01.channels.qq.inbound.references.resolve_onebot_quoted_message",
                 wraps=resolve_quoted_message,
             ) as package_resolver,
         ):
@@ -375,7 +375,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                     },
                 }
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
             result = gateway.resolve_quoted_attachments(quoted_event, context=quoted_context)
 
         self.assertEqual(result["status"], "resolved")
@@ -417,7 +417,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                     },
                 }
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
             result = gateway.resolve_quoted_message_evidence(event, context=context)
 
         self.assertTrue(result["ok"])
@@ -456,7 +456,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                     },
                 }
 
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()):
             result = gateway.resolve_quoted_attachments(event, context=context)
 
         self.assertFalse(result["ok"])
@@ -483,12 +483,12 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
                 return {"status": "ok", "retcode": 0, "data": {"message_id": "sent-1"}}
 
         with (
-            patch("companion_v01.qq_gateway_runtime.messages.build_message_action", wraps=build_message_action) as package_builder,
+            patch("companion_v01.channels.qq.delivery.messages.build_message_action", wraps=build_message_action) as package_builder,
             patch(
-                "companion_v01.onebot_transport.normalize_action_response",
+                "companion_v01.channels.qq.onebot.transport.normalize_action_response",
                 wraps=normalize_action_response,
             ) as package_result_parser,
-            patch("companion_v01.onebot_transport.requests.Session.request", return_value=FakeResponse()) as request,
+            patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=FakeResponse()) as request,
         ):
             result = gateway.send_reply(context, "world")
 
@@ -505,7 +505,7 @@ class QQChannelcoreIntegrationTests(unittest.TestCase):
 
     def test_gateway_has_no_second_outbound_protocol_implementation(self) -> None:
         backend = Path(__file__).resolve().parents[1] / "companion_v01"
-        paths = [backend / "qq_gateway.py", *(backend / "qq_gateway_runtime").glob("*.py")]
+        paths = [path for path in (backend / "channels" / "qq").rglob("*.py") if "onebot" not in path.parts]
         tree = ast.Module(body=[
             node
             for path in paths

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
-from companion_v01.qq_session_queue import QQSessionQueue
+from companion_v01.channels.qq.turns.queue import QQSessionQueue
 from companion_v01.session_inbox import SessionInboxStore
 
 
@@ -83,8 +83,8 @@ class QQQueueProcessingFenceTests(unittest.IsolatedAsyncioTestCase):
             )
             owner.restore_context = lambda *_args, **_kwargs: context
 
-            with patch("companion_v01.qq_session_queue.prepare_completion_turn", return_value=completion), \
-                 patch("companion_v01.qq_session_queue.record_completion_delivery"):
+            with patch("companion_v01.channels.qq.turns.queue.prepare_completion_turn", return_value=completion), \
+                 patch("companion_v01.channels.qq.turns.queue.record_completion_delivery"):
                 await owner._handle_admitted("profile\0session", [claim["item"]])
 
             self.assertGreater(store.get(queued["item_id"]).processing_started_at, 0)

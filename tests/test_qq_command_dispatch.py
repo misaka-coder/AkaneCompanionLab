@@ -10,9 +10,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from companion_v01.care_runtime import CareModulePort
+from companion_v01.channels.qq.commands.parser import resolve_qq_command
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.plugin_api import PluginQQCommandResult
-from companion_v01.qq_commands import resolve_qq_command
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
 from companion_v01.routes.qq import build_qq_router
 from tests.test_qq_gateway import fake_outfit_manifest
 
@@ -33,8 +34,8 @@ class _DispatchPluginBroker:
 
 class QQCommandDispatchTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.enterContext(patch("companion_v01.qq_gateway.config.MASTER_QQ", "10002"))
-        self.enterContext(patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", "10001"))
+        self.enterContext(patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10002"))
+        self.enterContext(patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", "10001"))
         self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_nickname", return_value="塞西莉亚"))
         self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_group_label", return_value="塞西莉亚"))
         self.temporary = tempfile.TemporaryDirectory()
@@ -93,10 +94,10 @@ class QQCommandDispatchTests(unittest.TestCase):
                 json=lambda: {"status": "ok", "data": {"message_id": 50000 + len(self.sent)}},
             )
 
-        self.enterContext(patch("companion_v01.onebot_transport.requests.Session.request", side_effect=fake_request))
+        self.enterContext(patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=fake_request))
         image = self.root / "help.png"
         image.write_bytes(b"help-image-fixture")
-        self.render = self.enterContext(patch("companion_v01.qq_command_cards.render_qq_help_card", return_value=image))
+        self.render = self.enterContext(patch("companion_v01.channels.qq.commands.card_results.render_qq_help_card", return_value=image))
 
     def _event(self, command, *, group=False, target=False, user_id=10002, message_override=None):
         self.sequence += 1
@@ -207,10 +208,10 @@ class QQCommandDispatchTests(unittest.TestCase):
         # Isolate dispatch from the turn runtime's separate stop classification.
         for message in ("今天天气真好", "/不存在", "/ping"):
             with self.subTest(message=message), patch(
-                "companion_v01.qq_inbound_events.resolve_qq_command", wraps=resolve_qq_command,
+                "companion_v01.channels.qq.inbound.router.resolve_qq_command", wraps=resolve_qq_command,
             ) as entry_parser, patch(
-                "companion_v01.qq_command_handlers.resolve_qq_command", wraps=resolve_qq_command,
-            ) as handler_parser, patch("companion_v01.qq_turn_runtime._is_qq_stop_command", return_value=False):
+                "companion_v01.channels.qq.commands.handler.resolve_qq_command", wraps=resolve_qq_command,
+            ) as handler_parser, patch("companion_v01.channels.qq.turns.runner._is_qq_stop_command", return_value=False):
                 self._post(message)
                 entry_parser.assert_called_once_with(message)
                 handler_parser.assert_not_called()

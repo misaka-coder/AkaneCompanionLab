@@ -13,11 +13,16 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from companion_v01.channels.qq.turns.reply_audio import _synthesize_qq_voice_file
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
 from companion_v01.desktop_pet_character_resources import DesktopPetCharacterResourceService
 from companion_v01.local_capability_catalog import _build_voice_provider_resolutions
-from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config, save_capability_approval_mode
+from companion_v01.local_capability_config import (
+    save_capability_approval_mode,
+    save_provider_config,
+    save_voice_profile_config,
+)
 from companion_v01.routes.petdesk import build_petdesk_router
-from companion_v01.routes.qq import _process_qq_turn_streaming, _synthesize_qq_voice_file
 from companion_v01.routes.voice import build_voice_router
 from companion_v01.tts_provider_runtime import resolve_character_tts_client
 from companion_v01.tts_provider_selection import EDGE_TTS_PROVIDER_ID, GPT_SOVITS_PROVIDER_ID

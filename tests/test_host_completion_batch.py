@@ -10,10 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from companion_v01.bot_runtime_components.completion import _host_job_completion_request
+from companion_v01.channels.qq import assembly as qq_assembly
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.host_completion_batch import completion_batch_key, completion_metadata, completion_turn_payload
 from companion_v01.host_jobs import HostJobOwner, HostJobStore
-from companion_v01.routes import qq as qq_routes, think as think_routes
+from companion_v01.routes import qq as qq_routes
+from companion_v01.routes import think as think_routes
 from companion_v01.session_inbox import SessionInboxStore
 from tests import test_plugin_agent_events as event_helpers
 
@@ -85,8 +87,9 @@ class CompletionProjectionTests(unittest.TestCase):
         return self.inbox.get(result["item_id"])
 
     def test_event_identity_and_every_result_survive_real_engine_and_memcore_rendering(self):
-        from companion_v01.engine import AkaneMemoryEngine
         from memcore import render_external_event_text
+
+        from companion_v01.engine import AkaneMemoryEngine
 
         first, second = self.put(1), self.put(2)
         claim = self.inbox.claim_next("master\0desk", worker_id="test", batch_key=completion_batch_key)
@@ -168,7 +171,7 @@ class ChannelCompletionTests(unittest.IsolatedAsyncioTestCase):
                 "file_send_result": {"ok": True, "count": 11, "results": []},
             }
 
-        with patch.object(qq_routes, "_process_qq_turn_streaming", process):
+        with patch.object(qq_assembly, "_process_qq_turn_streaming", process):
             await self.run_pending()
         self.assertEqual(len(calls), 1)
         payload = calls[0]["turn_payload"]
@@ -194,7 +197,7 @@ class ChannelCompletionTests(unittest.IsolatedAsyncioTestCase):
                 "file_send_result": {"ok": False, "count": 1, "status": "partial"},
             }
 
-        with patch.object(qq_routes, "_process_qq_turn_streaming", process):
+        with patch.object(qq_assembly, "_process_qq_turn_streaming", process):
             await self.run_pending()
         self.assertEqual(self.store.pending_count("master\0master"), 0)
         self.assertEqual(self.queue._store.recover_abandoned_claims(), 0)
@@ -217,11 +220,11 @@ class ChannelCompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(claimed["item"].payload["turn_payload"]["message"], request.message)
 
     async def test_combined_handles_use_real_send_file_handler_and_normal_gateway_once(self):
-        from companion_v01.generated_files import GeneratedFileService
         from companion_v01.attachment_inbox import AttachmentInboxService
+        from companion_v01.channels.qq.gateway import NapCatQQGateway
+        from companion_v01.generated_files import GeneratedFileService
         from companion_v01.store import MemoryStore
         from companion_v01.tool_runtime import SendFileToolHandler, ToolExecutionContext
-        from companion_v01.qq_gateway import NapCatQQGateway
         from tests.generated_artifact_fixtures import register_text_artifact
 
         memory = MemoryStore(Path(self.temp.name) / "memory")
@@ -271,7 +274,7 @@ class ChannelCompletionTests(unittest.IsolatedAsyncioTestCase):
             sent = gateway.send_generated_files(kwargs["context"], result.stream_events)
             return {"frame": {"speech": "批量交付"}, "send_result": {"ok": True}, "file_send_result": sent}
 
-        with patch.object(qq_routes, "_process_qq_turn_streaming", process):
+        with patch.object(qq_assembly, "_process_qq_turn_streaming", process):
             await self.run_pending()
         self.assertEqual(len(invocations), 1)
         self.assertEqual(len(deliveries), 1)

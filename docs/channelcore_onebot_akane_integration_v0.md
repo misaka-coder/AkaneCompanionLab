@@ -1,5 +1,7 @@
 # channelcore-onebot Akane integration v0
 
+QQ host implementations now live in `companion_v01/channels/qq/`. See the [QQ development map](../companion_v01/channels/qq/README.md) for current owners; this document retains the SDK integration history.
+
 Status: inbound normalization, admission, group-trigger, quoted/forwarded-message, and M4 outbound slices integrated.
 
 ## Decision

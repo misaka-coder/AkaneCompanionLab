@@ -1,32 +1,33 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
-from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from companion_v01 import care_shop_settings as shop
 from companion_v01 import tool_orchestration_engine as orchestration
 from companion_v01.capability_discovery import CAPABILITY_DISCOVERY_TOOL_IDS
+from companion_v01.channels.qq.cards.commerce import build_qq_commerce_card, render_qq_commerce_card
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
 from companion_v01.client_protocol import ClientMode, ClientProtocolContext
 from companion_v01.desktop_pet_character_resources import (
     DesktopPetCharacterResourceService,
     load_character_care_shop_items,
 )
 from companion_v01.dialogue_targets import DialogueRegistry, DialogueTarget
-from companion_v01.engine import AkaneMemoryEngine, PERSONA
+from companion_v01.engine import PERSONA, AkaneMemoryEngine
 from companion_v01.engine_services.response_builder import prepare_context
-from companion_v01.memory_read_policy import MemoryReadPolicy
 from companion_v01.memcore_integration.manager import MemcoreManager
+from companion_v01.memory_read_policy import MemoryReadPolicy
 from companion_v01.plugin_conversation_refs import PluginConversationReferenceAuthority
 from companion_v01.prompt_builder import PromptBuilder
 from companion_v01.prompt_profiles import PromptProfileRegistry
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
-from companion_v01.qq_commerce_cards import build_qq_commerce_card, render_qq_commerce_card
-from companion_v01.routes.qq import _process_qq_turn_streaming
 from companion_v01.tool_handlers.character_shop import CharacterShopToolHandler
 from companion_v01.tool_handlers.core import BaseToolHandler, ToolExecutionContext
 from companion_v01.tool_invocation import TOOL_CAPABILITY_SELECTION_FIELD
@@ -515,7 +516,7 @@ class ServiceCharacterShopTests(unittest.TestCase):
         context = QQMessageContext(True, "qq_directed_dialogue", target_id=10002, user_id=10002,
             profile_user_id="master", session_id="master", character_pack_id=self.target.memory_domain,
             dialogue_target=self.target, reply_mode="text")
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()) as network:
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response()) as network:
             delivered = _process_qq_turn_streaming(engine=self.engine, qq_gateway=gateway, context=context,
                 turn_payload={"message": "上架蛋糕"}, config_module=SimpleNamespace(QQ_STREAM_REPLIES_ENABLED=False))
         self.assertEqual(len(processed), 1)
@@ -557,7 +558,7 @@ class ServiceCharacterShopTests(unittest.TestCase):
         created = self.execute(self.call())
         call = {"type": "edit_character_shop", "action": "update", "item_id": created["item_id"],
                 "revision": created["revision"], "description": "改为清淡奶油。", "effects": {"energy": 9}}
-        from companion_v01.qq_commerce_cards import render_qq_shop_change_card
+        from companion_v01.channels.qq.cards.commerce import render_qq_shop_change_card
         with patch("companion_v01.tool_handlers.character_shop.render_qq_shop_change_card", wraps=render_qq_shop_change_card) as render:
             changed = self.writer.execute(call=call, context=self.context)
             doc = render.call_args.args[0]
@@ -591,7 +592,7 @@ class ServiceCharacterShopTests(unittest.TestCase):
             profile_user_id="master", session_id="master", character_pack_id=self.target.memory_domain,
             dialogue_target=self.target, reply_mode="text")
         with patch.object(gateway, "send_image", return_value={"ok": False, "reason": "image_send_failed"}) as image_send, \
-             patch("companion_v01.onebot_transport.requests.Session.request", return_value=_Response()) as network:
+             patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=_Response()) as network:
             delivered = _process_qq_turn_streaming(engine=self.engine, qq_gateway=gateway, context=context,
                 turn_payload={}, config_module=SimpleNamespace(), prepared_frame={"status": "ok", "speech": "",
                     "tool_events": result.stream_events, "_emotion_model_authored": False})

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
 from companion_v01.client_protocol import ClientMode
 from companion_v01.llm_runtime import ChatJSONResult
 from companion_v01.plugin_event_delivery import apply_plugin_notification_output_policy
-from companion_v01.routes.qq import _process_qq_turn_streaming
 from tests import test_final_json_repair as final_repair
 
 

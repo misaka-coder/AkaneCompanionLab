@@ -23,7 +23,6 @@ from typing import Any, Callable
 
 from .plugin_api import NotificationIntent, NotificationResult
 
-
 MAX_NOTIFICATION_TEXT_CHARS = 4000
 MAX_NOTIFICATION_IDEMPOTENCY_KEY_CHARS = 128
 MAX_NOTIFICATION_DELIVERY_HISTORY = 4096
@@ -201,7 +200,7 @@ def _build_proactive_context(recipient_type: str, recipient_num: int) -> Any:
     Only the fields used by send_reply / send_replies for routing are set.
     All other fields keep their defaults.
     """
-    from .qq_gateway import QQMessageContext
+    from companion_v01.channels.qq.context import QQMessageContext
 
     is_group = recipient_type == "group"
     return QQMessageContext(

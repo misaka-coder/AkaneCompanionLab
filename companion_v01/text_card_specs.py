@@ -1,7 +1,7 @@
 """One contract for both native tools and legacy tool prompts."""
 from capcore import CapabilityToolSpec
 
-from .text_cards import MAX_BODY_CHARS
+from companion_v01.rendering.text_cards import MAX_BODY_CHARS
 
 RENDER_CARD_TOOL_SPEC = CapabilityToolSpec(
     capability_id="render_card",

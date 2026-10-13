@@ -14,7 +14,7 @@
 | --- | --- | --- | --- | --- |
 | **主聊天模型与思考强度** | 控制中心模型服务页（`POST /control-center/model-service`） | `users_data/_local/model_service.json` | 保存后调用 `reload_model_services`，后续请求使用重载后的设置 | `model_runtime/targets.py`、`request_policy.py`；聊天由 `engine_services/turn_rounds.py` 调度 |
 | **子代理专用模型** | 控制中心模型服务页子代理表单 | 同一 `model_service.json` 的 `subagent` 节点 | 重载后，新派发使用新配置；已运行子代理持有自己的冻结副本 | `subagent_models.py:resolve_subagent_route`、`freeze_subagent_llm` |
-| **单个 QQ 会话模型** | QQ 会话内 `/模型 <model_name>` 指令 | `state/qq_gateway_state.json` 的 `chat_model_overrides` | 后续消息准入时读取；偏好持续保留到切换或恢复默认 | `qq_gateway_runtime/inbound.py` → `turn_preparation` → 模型目标解析 |
+| **单个 QQ 会话模型** | QQ 会话内 `/模型 <model_name>` 指令 | `state/qq_gateway_state.json` 的 `chat_model_overrides` | 后续消息准入时读取；偏好持续保留到切换或恢复默认 | `channels/qq/inbound/context_builder.py` → `turn_preparation` → 模型目标解析 |
 | **通用运行开关** | 设置目录（`POST /control-center/settings-catalog/{key}`，正文为 `{"value": ...}`） | `users_data/_local/settings_overrides.json` | 可编辑 runtime 项更新 config view；现有可保存 restart 项等待后端重建 | 各设置的真实消费者，不能假定所有 `BotSettingsView` 自动更新 |
 | **群记忆接收策略** | 记忆设置页群开关（`POST /control-center/memory-settings/groups/{group_id}`） | `state/qq_gateway_state.json` 的 `group_private_memory` | 保存成功后更新网关偏好，无需重启 | QQ 记忆镜像与分发策略 |
 | **MemCore 核心架构参数** | 环境变量 / 部署配置文件（`.env`） | 部署环境配置 | `SCOPE_RESTART_CLIENT`（需重启后端重建 MemCore 实例） | MemCore 构建与压缩触发（`memcore_integration/lifecycle.py`） |
@@ -87,7 +87,7 @@
    - 保存至 `runtime_layout.state_dir / "qq_gateway_state.json"` 的 `chat_model_overrides[session_id]`。保存失败在本地指令回执中带持久化警告。
    - 不修改 `model_service.json` 或其他会话的偏好；桌宠的默认聊天服务也不因此切换。已保存的选择可跨重启保留。
 3. **入站上下文与覆盖传递**：
-   - 消息到达 `qq_gateway_runtime/inbound.py` 时，网关解析出当前 `session_id` 的 `chat_model_override`。
+   - 消息到达 `channels/qq/inbound/context_builder.py` 时，网关解析出当前 `session_id` 的 `chat_model_override`。
    - 注入不可变的 `QQMessageContext`，经其 turn payload 进入 `engine_services/turn_preparation.py`。已准入消息保留捕获的值。
 4. **真正消费位置**：
    - 在当轮执行 `turn_rounds.py` 准备模型请求时，若存在非空的 `chat_model_override`，则覆盖主配置的默认聊天模型；其他参数（Base URL、API Key）仍沿用当前服务商。

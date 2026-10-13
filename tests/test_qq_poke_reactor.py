@@ -6,8 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from companion_v01.care_runtime import CareModulePort, CareRuntimeStore
-from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01.qq_poke_reactor import PokeEventReactor
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.commands.poke import PokeEventReactor
 
 
 class FixedPokeReactor:

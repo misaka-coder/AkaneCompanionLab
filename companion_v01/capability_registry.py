@@ -8,7 +8,8 @@ from capcore import CapabilityToolSpec
 from memcore import build_native_memory_tool_specs
 from .client_protocol import ClientMode
 from .desktop_satellite_specs import DESKTOP_SATELLITE_TOOL_SPECS
-from .onebot_model_actions import MODEL_ONEBOT_ACTION_NAMES, MODEL_ONEBOT_MESSAGE_SELECTOR_KINDS
+from companion_v01.channels.qq.onebot.model_actions import MODEL_ONEBOT_ACTION_NAMES
+from companion_v01.channels.qq.onebot.model_actions import MODEL_ONEBOT_MESSAGE_SELECTOR_KINDS
 from .tool_continuation import FINISH_TURN_PARAMETER
 from .executor_broker import (
     ExecutionReceipt,

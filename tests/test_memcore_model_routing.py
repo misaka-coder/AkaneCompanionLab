@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, Mock, patch
 from memcore import LLMRequest, MemCoreRuntime, TaskType
 from companion_v01.memcore_integration.adapters import build_akane_llm_client
 from companion_v01.memcore_integration.manager import MemcoreManager
-from companion_v01.qq_command_handlers import QQCommandHandler
-from companion_v01.qq_gateway_runtime.context import QQMessageContext
+from companion_v01.channels.qq.commands.handler import QQCommandHandler
+from companion_v01.channels.qq.context import QQMessageContext
 from tests.test_memcore_integration import _FakeEmbeddingProvider
 
 
@@ -166,8 +166,8 @@ class QQSummaryModelSwitchTests(unittest.IsolatedAsyncioTestCase):
                     handle_chat_model_command=lambda *_args, **_kwargs: {"ok": ok, "status": status, "chat_model_override": model},
                 )
                 handler._reply_to_result = AsyncMock(return_value="reply")
-                with patch("companion_v01.qq_command_handlers.effective_settings_from_config"), \
-                     patch("companion_v01.qq_command_handlers.probe_model_ids", return_value=["new-model"]):
+                with patch("companion_v01.channels.qq.commands.handler.effective_settings_from_config"), \
+                     patch("companion_v01.channels.qq.commands.handler.probe_model_ids", return_value=["new-model"]):
                     await handler._handle_chat_model(context=context, command_context=context, started_at=0)
                 if status in {"switched", "default"}:
                     setter.assert_called_once_with(profile_user_id="owner", session_id="group:a",

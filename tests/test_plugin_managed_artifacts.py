@@ -13,6 +13,7 @@ from unittest.mock import patch
 from capcore import CapabilityDescriptor, CapabilityIOSlot, CapabilityResult, HealthStatus, InvocationContext
 
 from companion_v01.attachment_inbox import AttachmentInboxService
+from companion_v01.channels.qq.delivery.artifacts import _hydrate_plugin_managed_artifact_events
 from companion_v01.generated_files import GeneratedFileService
 from companion_v01.instance_profile import PluginSelection
 from companion_v01.plugin_api import (
@@ -27,6 +28,12 @@ from companion_v01.plugin_api import (
     PluginResultPayload,
 )
 from companion_v01.plugin_contribution_policy import TrustedReadNetworkContributionPolicy
+from companion_v01.plugin_generation import PluginGenerationProcess
+from companion_v01.plugin_generation_artifacts import (
+    GenerationArtifactOutboxSink,
+    artifact_handoff_scope,
+    consume_generation_artifact,
+)
 from companion_v01.plugin_host import PluginHost
 from companion_v01.plugin_managed_artifacts import (
     GeneratedFileManagedArtifactSink,
@@ -34,17 +41,9 @@ from companion_v01.plugin_managed_artifacts import (
     ValidatedArtifact,
     validate_managed_artifact_draft,
 )
-from companion_v01.plugin_generation_artifacts import (
-    GenerationArtifactOutboxSink,
-    consume_generation_artifact,
-    artifact_handoff_scope,
-)
-from companion_v01.plugin_generation import PluginGenerationProcess
 from companion_v01.plugin_tool_bridge import PluginCapabilityToolBridge
-from companion_v01.routes.qq import _hydrate_plugin_managed_artifact_events
 from companion_v01.store import MemoryStore
 from companion_v01.tool_runtime import ToolExecutionContext, ToolExecutionResult
-
 
 PLUGIN_ID = "akane.test.artifact"
 CAPABILITY_ID = f"{PLUGIN_ID}.chart.v1"

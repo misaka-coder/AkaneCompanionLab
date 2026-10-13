@@ -11,7 +11,11 @@ import uuid
 from typing import Any
 
 from .core import BaseToolHandler, ToolExecutionContext, ToolExecutionResult, ToolFollowupEnvelope, operation_tool_result
-from ..text_cards import TextCardDocument, layout_text_card, paint_text_card, renderer_fingerprint, validate_card_call
+from companion_v01.rendering.text_cards import TextCardDocument
+from companion_v01.rendering.text_cards import layout_text_card
+from companion_v01.rendering.text_cards import paint_text_card
+from companion_v01.rendering.text_cards import renderer_fingerprint
+from companion_v01.rendering.text_cards import validate_card_call
 
 
 class RenderCardToolHandler(BaseToolHandler):

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import tempfile
-import unittest
 import asyncio
-import time
+import tempfile
 import threading
+import time
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,17 +12,14 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.turns.attention import _apply_group_attention_actor_scope, _group_attention_review_event
+from companion_v01.channels.qq.turns.attention_state import QQGroupAttentionState
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
 from companion_v01.deployment_security import QQChannelRuntimeConfig
-from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01.qq_group_attention import QQGroupAttentionState
+from companion_v01.engine import AkaneMemoryEngine
+from companion_v01.routes.qq import build_qq_router
 from companion_v01.turn_coordination import TurnCoordinator
-from companion_v01.routes.qq import (
-    _apply_group_attention_actor_scope,
-    _group_attention_review_event,
-    _process_qq_turn_streaming,
-    build_qq_router,
-)
 
 
 class QQGroupAttentionStateTests(unittest.TestCase):
@@ -912,7 +909,7 @@ class QQGroupAttentionDeliveryTests(unittest.TestCase):
                 log_event=lambda *_args, **_kwargs: None,
             )
         )
-        with patch("companion_v01.onebot_transport.requests.Session.request", return_value=Response()):
+        with patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", return_value=Response()):
             response = TestClient(app).post(
                 "/api/qq/napcat/event",
                 json={
@@ -1073,7 +1070,7 @@ class QQGroupAttentionRecoveryTests(unittest.TestCase):
             return SimpleNamespace(done=lambda: False)
 
         app = FastAPI()
-        with patch("companion_v01.routes.qq.QQGroupAttentionState", return_value=self.state):
+        with patch("companion_v01.channels.qq.assembly.QQGroupAttentionState", return_value=self.state):
             app.include_router(build_qq_router(
                 engine=engine,
                 config_module=self.config,

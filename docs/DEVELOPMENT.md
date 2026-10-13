@@ -13,7 +13,7 @@
 | 改了代码但运行没变化 | [源码更新到运行实例指南](source_to_runtime_update_v1.md) | 对应源码诊断、构建产物检查、运行实例核验 |
 | 改桌宠聊天、气泡、声音 | `desktop_pet_next/src/pet/chat.js`、`bubble.js`、`voice.js` | 对应 `package.json` 中的 test/smoke、前端 build |
 | 改设置页与动作 | [设置动作指南](desktop_pet_control_center_v2/README.md#settings-action-development-guide)、`src/control-center/data-source/tauri.js`、`src/pet/settings.js` | `node --test scripts/settings-command-results.test.mjs`、`node scripts/control-center-action-bridge-smoke.mjs` |
-| 改 QQ 指令或事件 | [QQ 指令开发者指南](qq_commands_v1.md#开发者入口与新增指令指南)、`companion_v01/qq_commands.py`、`qq_command_handlers.py` | `tests.test_qq_command_dispatch`、`tests.test_qq_commands` |
+| 改 QQ 指令或事件 | [QQ 开发地图](../companion_v01/channels/qq/README.md)、[指令开发指南](qq_commands_v1.md#开发者入口与新增指令指南) | 指令用 `tests.test_qq_command_dispatch`、`tests.test_qq_commands`；其他行为按 QQ 地图选取 |
 | 改聊天处理或工具轮 | `companion_v01/engine_services/turn_preparation.py`、`turn_rounds.py`、`turn_completion.py` | 对应聊天、工具编排和上下文测试 |
 | 改配置保存与生效 | [配置生效链路指南](configuration_effect_v1.md)、`companion_v01/settings_overrides.py`、`bot_runtime_components/factory.py` | `tests.test_settings_overrides`、`tests.test_bot_settings_assembly` |
 | 做角色包 | [角色工坊](desktop_pet_character_workshop_v1/README.md) | 工坊导入、切换角色、资源检查 |
@@ -22,7 +22,7 @@
 
 ## 聊天请求从哪里走
 
-QQ 群消息：`routes/qq.py` → `qq_inbound_events.py`，由 `qq_gateway_runtime/inbound.py` 解析发送人、群和消息 → `QQTurnRunner`（`qq_turn_runtime.py`）→ `qq_turn_streaming.py` → `engine.process_turn_stream`。
+QQ 群消息：`routes/qq.py` 调用 `channels/qq/assembly.py` 装配的事件入口，`inbound/router.py` 与 `context_builder.py` 确定消息指向和身份，再经 `turns/runner.py`、`streaming.py` 进入 `engine.process_turn_stream`。逐文件职责、指令/背景分流及交付出口见 [QQ 开发地图](../companion_v01/channels/qq/README.md)。
 群会话是 `qq_group_shared_<group_id>`；发送人单独记录，群会话 ID 不是用户 ID。指令和只需记录的群消息会在入口分流。
 
 桌宠消息：`src/pet/chat.js` → `backend.js` 生成当前 Bot 的 URL → `routes/think.py` → `routes/think_stream.py` 推进 `engine.process_turn_stream` 并返回流式事件。

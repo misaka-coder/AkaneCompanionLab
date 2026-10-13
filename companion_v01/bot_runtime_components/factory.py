@@ -18,7 +18,7 @@ from ..model_service_config import ModelServiceConfigStore
 from ..execution_resource_policy import ExecutionResourcePolicy
 from ..execution_policies import load_execution_policies
 from ..public_guard import PublicThinkGuard
-from ..qq_channel_profiles import QQChannelDeploymentProfile
+from companion_v01.channels.qq.profiles import QQChannelDeploymentProfile
 from ..resource_manifest import ResourceManifest
 from ..runtime_settings import BotSettingsView
 from ..settings_overrides import (

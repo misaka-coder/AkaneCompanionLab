@@ -6,8 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from companion_v01.care_runtime import CareModulePort, CareRuntimeStore
-from companion_v01.qq_gateway import NapCatQQGateway, QQMessageContext
-
+from companion_v01.channels.qq.context import QQMessageContext
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 
 PROFILE = "qq_group_shared_10001"
 CHAR_ID = "reimu_demo"

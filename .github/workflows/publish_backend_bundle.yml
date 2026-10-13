@@ -10,7 +10,7 @@ on:
       release_tag:
         description: Existing dependency Release tag
         required: true
-        default: deps-2026.10.13
+        default: deps-2026.10.13.2
         type: string
 
 permissions:

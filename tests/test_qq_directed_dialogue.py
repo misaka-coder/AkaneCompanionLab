@@ -19,7 +19,7 @@ from companion_v01.dialogue_targets import DialogueRegistry, DialogueTarget, tru
 from companion_v01.durable_session_queue import DurableSessionWorkQueue
 from companion_v01.engine import AkaneMemoryEngine
 from companion_v01.memcore_integration.manager import MemcoreManager
-from companion_v01.qq_gateway import NapCatQQGateway
+from companion_v01.channels.qq.gateway import NapCatQQGateway
 from companion_v01.routes.qq import build_qq_router
 from companion_v01.session_inbox import SessionInboxStore
 from companion_v01.turn_coordination import TurnCoordinator
@@ -82,8 +82,8 @@ class _MemoryEngine(multi_fixtures._Engine):
 
 class QQDirectedDialogueTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch("companion_v01.qq_gateway.config.MASTER_QQ", "10002"))
-        self.enterContext(patch("companion_v01.qq_gateway.config.QQ_BOT_QQ", "10001"))
+        self.enterContext(patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10002"))
+        self.enterContext(patch("companion_v01.channels.qq.gateway.config.QQ_BOT_QQ", "10001"))
         self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_nickname", return_value="塞西莉亚"))
         self.enterContext(patch.object(NapCatQQGateway, "_resolve_bot_group_label", return_value="塞西莉亚"))
         temporary = tempfile.TemporaryDirectory()
@@ -120,7 +120,7 @@ class QQDirectedDialogueTests(unittest.TestCase):
                 json=lambda: {"status": "ok", "data": {"message_id": 70000 + len(self.sent)}},
             )
 
-        self.enterContext(patch("companion_v01.onebot_transport.requests.Session.request", side_effect=transport))
+        self.enterContext(patch("companion_v01.channels.qq.onebot.transport.requests.Session.request", side_effect=transport))
 
     def application(self, queue=None):
         app = FastAPI()

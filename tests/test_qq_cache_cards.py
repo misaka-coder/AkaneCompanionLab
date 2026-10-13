@@ -1,16 +1,16 @@
 import asyncio
-from datetime import date
 import json
+import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-import unittest
 from unittest.mock import AsyncMock, patch
 
 from companion_v01.cache_usage import cache_day, conversation_cache_scope, read_daily_cache_usage
-from companion_v01.qq_commands import resolve_qq_command
-from companion_v01.qq_command_handlers import QQCommandHandler
-from companion_v01.qq_cache_cards import cache_report_text
+from companion_v01.channels.qq.cards.cache import cache_report_text
+from companion_v01.channels.qq.commands.handler import QQCommandHandler
+from companion_v01.channels.qq.commands.parser import resolve_qq_command
 
 
 class QQCacheCardTests(unittest.TestCase):
@@ -82,7 +82,7 @@ class QQCacheCardTests(unittest.TestCase):
             handler.engine = SimpleNamespace(llm=SimpleNamespace(log_dir=Path(tmp), instance_id="one"))
             handler.qq_gateway = SimpleNamespace(master_qq="123")
             handler.send_reply = AsyncMock(return_value={"ok": True})
-            handler.cards = SimpleNamespace(_send_rendered_card=AsyncMock(return_value=({"ok": True}, "image", "")))
+            handler.cards = SimpleNamespace(render_and_deliver=AsyncMock(return_value=({"ok": True}, "image", "")))
             handler._local_command_response = lambda context, **kwargs: kwargs
             context = SimpleNamespace(user_id=123, profile_user_id="master", session_id="master", character_pack_id="cecilia",
                                       clean_message="/缓存", is_group=False)
@@ -91,7 +91,7 @@ class QQCacheCardTests(unittest.TestCase):
                                                      resolution=resolution))
             self.assertTrue(result['command_ok'])
             self.assertEqual(result['card_format'], "image")
-            document = handler.cards._send_rendered_card.call_args.args[1]
+            document = handler.cards.render_and_deliver.call_args.args[1]
             self.assertIsNone(document['report']['ratio'])
             with patch("companion_v01.cache_usage.read_daily_cache_usage", side_effect=PermissionError("private/path")):
                 result = asyncio.run(handler.handle_early(context=context, command_context=context, request=None, started_at=0,
@@ -103,4 +103,4 @@ class QQCacheCardTests(unittest.TestCase):
             result = asyncio.run(handler.handle_early(context=context, command_context=context, request=None, started_at=0,
                                                      resolution=resolution))
             self.assertEqual(result['command_status'], "forbidden")
-            self.assertEqual(handler.cards._send_rendered_card.call_count, 1)
+            self.assertEqual(handler.cards.render_and_deliver.call_count, 1)

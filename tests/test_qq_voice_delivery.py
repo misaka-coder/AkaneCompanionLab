@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from companion_v01.local_capability_config import save_provider_config, save_voice_profile_config
-from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01.routes.qq import (
-    _filter_unsent_reply_messages,
-    _process_qq_turn_streaming,
-    _send_qq_delivery,
-    _synthesize_qq_voice_file,
-)
+from companion_v01.channels.qq.delivery.replies import _send_qq_delivery
+from companion_v01.channels.qq.delivery.stream import _filter_unsent_reply_messages
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.turns.reply_audio import _synthesize_qq_voice_file
+from companion_v01.channels.qq.turns.streaming import _process_qq_turn_streaming
+from companion_v01.local_capability_config import save_voice_profile_config
 from companion_v01.runtime_settings import BotSettingsView
 from companion_v01.turn_coordination import TurnCoordinator
 
@@ -93,7 +91,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 gateway = FakeQQGateway()
                 with (
                     patch.object(gateway, "send_emotion_mface", return_value={"ok": True, "status": "skipped", "reason": reason}),
-                    patch("companion_v01.qq_turn_streaming._send_qq_emotion_image_fallback") as fallback,
+                    patch("companion_v01.channels.qq.turns.streaming._send_qq_emotion_image_fallback") as fallback,
                 ):
                     result = _process_qq_turn_streaming(
                         engine=FakeEngine(), qq_gateway=gateway, tts_client=FakeTTSClient(),
@@ -286,7 +284,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
             }
         )
         with patch(
-            "companion_v01.onebot_transport.requests.Session.request",
+            "companion_v01.channels.qq.onebot.transport.requests.Session.request",
             side_effect=[FakeResponse(), FakeResponse()],
         ) as request:
             result = _process_qq_turn_streaming(
@@ -1297,7 +1295,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
 
         for mode in ("voice", "both"):
             with self.subTest(mode=mode), patch(
-                "companion_v01.qq_reply_delivery._synthesize_qq_voice_file",
+                "companion_v01.channels.qq.turns.reply_audio._synthesize_qq_voice_file",
                 side_effect=RuntimeError("provider-url?api_key=private-key-and-path"),
             ):
                 gateway = FakeQQGateway()
@@ -1319,9 +1317,10 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 self.assertNotIn("private-key-and-path", json.dumps(result))
 
     def test_bilingual_delivery_uses_say_styles_and_sends_one_complete_record(self) -> None:
-        import json
         import io
+        import json
         import wave
+
         from tests.tts_plugin_harness import configured_tts_fixture
         with configured_tts_fixture() as fixture:
             characters = fixture.root / "characters"
@@ -1366,7 +1365,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                 "styles": {"calm": {"profile_id": "cecilia_calm"}}}}), encoding="utf-8")
             engine = SimpleNamespace(desktop_pet_character_resources=SimpleNamespace(characters_dir=root))
             for mode in ("voice", "both"):
-                with self.subTest(mode=mode), patch("companion_v01.qq_voice_delivery.synthesize_tts_resolution",
+                with self.subTest(mode=mode), patch("companion_v01.channels.qq.turns.reply_audio.synthesize_tts_resolution",
                     new_callable=AsyncMock) as synth:
                     gateway = FakeQQGateway()
                     result = _send_qq_delivery(engine=engine, qq_gateway=gateway,
@@ -1403,7 +1402,7 @@ class QQVoiceDeliveryTests(unittest.TestCase):
     def test_group_voice_does_not_silently_replace_gpt_sovits_with_edge(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch(
-                "companion_v01.qq_voice_delivery._resolve_tts_runtime_provider",
+                "companion_v01.channels.qq.turns.reply_audio._resolve_tts_runtime_provider",
                 return_value={
                     "status": "degraded",
                     "reason": "provider_endpoint_missing",
@@ -1444,11 +1443,12 @@ class QQVoiceDeliveryTests(unittest.TestCase):
                     },
                 }
 
-        from companion_v01.tts_service import SynthesizedTTSResult
         from unittest.mock import AsyncMock
+
+        from companion_v01.tts_service import SynthesizedTTSResult
         result_audio = SynthesizedTTSResult(b"fixture", "audio/wav", "provider.tts.edge", "", "", "", "")
         with tempfile.TemporaryDirectory() as temp_dir, patch(
-            "companion_v01.qq_voice_delivery.synthesize_tts_resolution", new=AsyncMock(return_value=result_audio)):
+            "companion_v01.channels.qq.turns.reply_audio.synthesize_tts_resolution", new=AsyncMock(return_value=result_audio)):
             gateway = FakeQQGateway()
             result = _process_qq_turn_streaming(
                 engine=FakeEngine(),

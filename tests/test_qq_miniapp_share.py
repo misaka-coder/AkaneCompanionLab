@@ -16,10 +16,12 @@ from companion_v01.capability_registry import CapabilityRegistry, CapabilitySnap
 from companion_v01.client_protocol import ClientMode
 from companion_v01.deployment_security import QQChannelRuntimeConfig
 from companion_v01.native_tool_schema import build_openai_native_tool_specs
-from companion_v01.onebot_transport import OneBotActionTransport
-from companion_v01.qq_gateway import NapCatQQGateway
-from companion_v01.qq_miniapp import MiniappCardStore, project_miniapp_result, validate_miniapp_params
-from companion_v01.qq_tool_delivery import QQToolDeliveryPort
+from companion_v01.channels.qq.onebot.transport import OneBotActionTransport
+from companion_v01.channels.qq.gateway import NapCatQQGateway
+from companion_v01.channels.qq.onebot.miniapp import MiniappCardStore
+from companion_v01.channels.qq.onebot.miniapp import project_miniapp_result
+from companion_v01.channels.qq.onebot.miniapp import validate_miniapp_params
+from companion_v01.channels.qq.delivery.tool_port import QQToolDeliveryPort
 from companion_v01.skill_runtime import SkillRegistry
 from companion_v01.tool_handlers.core import ToolExecutionContext
 from companion_v01.tool_continuation import can_finish_tool_batch
@@ -110,7 +112,7 @@ class MiniappWorkflowTests(unittest.TestCase):
                 }
             },
         )
-        owner = patch("companion_v01.qq_gateway.config.MASTER_QQ", "10001")
+        owner = patch("companion_v01.channels.qq.gateway.config.MASTER_QQ", "10001")
         owner.start()
         self.addCleanup(owner.stop)
 

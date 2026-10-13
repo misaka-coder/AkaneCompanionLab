@@ -1,5 +1,7 @@
 # QQ 指令、帮助与专属状态图
 
+QQ 文件职责与完整收发链路见 [QQ 开发地图](../companion_v01/channels/qq/README.md)。本文维护用户指令和新增指令流程，不另列一份实现地图。
+
 群聊先用 QQ 的真实 @ 选中目标 Bot，再发送指令；私聊直接发送。昵称文字不能代替 @。
 
 ## 帮助入口
@@ -106,7 +108,7 @@ QQ `/购买` 成功后发送紧凑的图片回执：用户显示名、商品配�
 
 只保留以上正式指令，不兼容旧的自然语言口令、昵称前缀或英文别名。全角 `／` 视为输入格式，`/HELP` 可识别。未命中正式指令、已安装角色或辅助入口的 `/` 指令，以及错误参数，在本地返回简短用法，不进入模型推理。
 
-`companion_v01/qq_commands.py` 同时提供解析和帮助元数据，网关与路由共同使用。帮助图由 `qq_help_cards.py` 在本地绘制；专属状态图由 `qq_care_cards.py` 绘制；商店和背包图由 `qq_commerce_cards.py` 绘制；字体、底图与原子缓存共用 `qq_card_artwork.py`。运行时不调用生图模型。塞西莉亚使用用户选定的轻笔书签风格，其他角色使用通用样式。
+`companion_v01/channels/qq/commands/parser.py` 同时提供解析和帮助元数据，入站和指令处理共同使用。图卡制作在 `channels/qq/cards/`，字体、底图与原子缓存共用 `rendering/card_artwork.py`；发送及失败回退由 `channels/qq/delivery/` 负责。运行时不调用生图模型。塞西莉亚使用用户选定的轻笔书签风格，其他角色使用通用样式。
 
 帮助目录和分类以无框文字排版，养成指令可在一张长图中完整展示；过多插件指令仍分页。固定页眉和页脚保留人物、装饰比例，只有中间纸面按内容延展。
 
@@ -115,16 +117,16 @@ QQ `/购买` 成功后发送紧凑的图片回执：用户显示名、商品配�
 开发者修改或新增一条 QQ 宿主命令时，遵循单向清晰调用链路：
 
 1. **语法定义与帮助元数据**：
-   - 在 `companion_v01/qq_commands.py` 的 `COMMANDS` 元组中声明 `QQCommandDefinition(name, category, usage, description, kind, ...)`。
+   - 在 `companion_v01/channels/qq/commands/parser.py` 的 `COMMANDS` 元组中声明 `QQCommandDefinition(name, category, usage, description, kind, ...)`。
    - `resolve_qq_command()` 负责参数解析并产出 `QQCommandResolution(payload=...)`。注意 `kind`（如 `selector`、`simple`）仅为参数语法形态，**不是**业务路由键。
 2. **事件分派（Dispatch）**：
    - 事件层建立 `command_context` 后解析一次，将结果传给两个命令入口；`None` 也直接复用，不再重新解析。消息准入层和停止协调器的独立分类仍按原流程工作。
-   - 在 `companion_v01/qq_command_handlers.py` 的 `QQCommandHandler.handle()` 中，通过 `match res.definition.name:` 精确分派到对应领域私有处理方法（如 `_handle_reply_mode`、`_handle_character` 等），并直接传递解析后的 `command=payload` 字典副本。
+   - 在 `companion_v01/channels/qq/commands/handler.py` 的 `QQCommandHandler.handle()` 中，通过 `match res.definition.name:` 精确分派到对应领域私有处理方法（如 `_handle_reply_mode`、`_handle_character` 等），并直接传递解析后的 `command=payload` 字典副本。
    - 前置检查与错误参数（如 `/help`、`/缓存`、语法错误）在 `handle_early()` 中完成，不进入后续分派。
 3. **业务实现与出口模式**：
    - **本地直接响应**：返回包含 `JSONResponse` 的 `QQCommandOutcome(response=...)`，如 `/回复`、`/角色 列表`。
    - 已选中的本地业务缺少结果时，命令层返回实际失败，不交给模型推理；网关层的文本入口仍可供独立业务调用。
    - **动作已完成并继续模型回合**：返回 `outcome`，并在 `outcome.action_note` 和 `outcome.message_override` 中填入动作说明，由后续媒体与模型流水线处理（例如 `/服装 水手服`、`/投喂`）。
-   - **停止与外部接管**：`/停止` 不在命令层拦截为未知指令，直接交由 `QQTurnRuntime` 的停止协调器；插件指令在 `_handle_plugin` 中由当前 Bot 的 broker 处理；定向角色消息（`/<角色ID> 正文`）在上游消息准入层直接作为对话转发，不递归为宿主命令。
+   - **停止与外部接管**：`/停止` 不在命令层拦截为未知指令，交由 `turns/runner.py` 的共享停止协调器；插件指令在 `_handle_plugin` 中由当前 Bot 的 broker 处理；定向角色消息（`/<角色ID> 正文`）在 `inbound/router.py` 中作为对话接入，不递归为宿主命令。
 4. **测试与验证**：
    - 从 `tests/test_qq_command_dispatch.py` 或 `tests/test_qq_commands.py` 复制真实路由夹具，验证解析单次性、同类 `kind` 不串线、参数透传及副作用持久化。
