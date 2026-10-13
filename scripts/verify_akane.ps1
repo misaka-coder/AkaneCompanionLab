@@ -302,7 +302,7 @@ function Get-AkaneVerificationStages {
         $stages.Add((New-AkaneStage `
             -Name "python-full-regression" `
             -Description "Full Python regression" `
-            -Command (Add-AkaneCommandArguments -Command $Context.Python -Arguments @("-m", "unittest", "discover", "tests")) `
+            -Command (Add-AkaneCommandArguments -Command $Context.Python -Arguments @("-m", "unittest", "discover", "tests", "-v", "-f")) `
             -TimeoutSeconds 1200))
         $stages.Add((New-AkaneStage `
             -Name "windows-bootstrap-contract" `

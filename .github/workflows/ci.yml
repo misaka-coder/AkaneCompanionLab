@@ -65,7 +65,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python scripts/install_dependencies.py --profile full
-          python -m pip install ruff
+          python -m pip install -r requirements-dev.txt
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
