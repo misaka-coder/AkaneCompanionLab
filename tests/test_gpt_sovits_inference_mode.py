@@ -4,12 +4,18 @@ from types import SimpleNamespace
 import threading
 import unittest
 
-import torch
+try:
+    import torch
+except ModuleNotFoundError as exc:
+    if exc.name != "torch":
+        raise
+    torch = None
 
 from scripts.launch_gpt_sovits_api import install_tts_inference_mode
 
 
 class TTSInferenceModeTests(unittest.TestCase):
+    @unittest.skipIf(torch is None, "PyTorch is optional and belongs to the separate local TTS environment")
     def test_context_is_active_inside_generator_and_restored_at_each_yield(self):
         observed = []
 
@@ -31,6 +37,7 @@ class TTSInferenceModeTests(unittest.TestCase):
         self.assertEqual(observed, [True, True])
         self.assertFalse(torch.is_inference_mode_enabled())
 
+    @unittest.skipIf(torch is None, "PyTorch is optional and belongs to the separate local TTS environment")
     def test_close_failure_propagates_without_leaking_context(self):
         observed = []
 
@@ -50,6 +57,7 @@ class TTSInferenceModeTests(unittest.TestCase):
         self.assertEqual(observed, [True])
         self.assertFalse(torch.is_inference_mode_enabled())
 
+    @unittest.skipIf(torch is None, "PyTorch is optional and belongs to the separate local TTS environment")
     def test_worker_iteration_keeps_mode_thread_local(self):
         observed = []
 
