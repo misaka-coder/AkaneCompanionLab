@@ -1,0 +1,115 @@
+name: Publish verified Linux backend bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful Ubuntu core-backend CI run ID
+        required: true
+        type: string
+      release_tag:
+        description: Existing dependency Release tag
+        required: true
+        default: deps-2026.10.13
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Verify source run, successful Linux job and existing Release
+        id: source
+        uses: actions/github-script@v7
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        with:
+          script: |
+            const rawId = process.env.SOURCE_RUN_ID;
+            const tag = process.env.RELEASE_TAG;
+            if (!/^[1-9][0-9]*$/.test(rawId) || !Number.isSafeInteger(Number(rawId))) {
+              throw new Error('source_run_id_invalid');
+            }
+            if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,100}$/.test(tag)) {
+              throw new Error('release_tag_invalid');
+            }
+            const repo = context.repo;
+            const runId = Number(rawId);
+            const { data: run } = await github.rest.actions.getWorkflowRun({ ...repo, run_id: runId });
+            if (run.path !== '.github/workflows/ci.yml' || run.head_branch !== 'main'
+                || run.head_repository.full_name !== `${repo.owner}/${repo.repo}`) {
+              throw new Error('source_run_not_main_ci');
+            }
+            const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({ ...repo, run_id: runId });
+            if (!jobs.jobs.some(job => job.name === 'Core backend (ubuntu-22.04)'
+                && job.status === 'completed' && job.conclusion === 'success')) {
+              throw new Error('source_linux_verification_not_successful');
+            }
+            const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: runId });
+            const bundles = artifacts.artifacts.filter(artifact =>
+              artifact.name === 'akane-backend-linux-x86_64-py311' && !artifact.expired);
+            if (bundles.length !== 1) throw new Error('source_bundle_missing_or_ambiguous');
+            await github.rest.repos.getReleaseByTag({ ...repo, tag });
+            core.setOutput('commit', run.head_sha);
+            core.setOutput('run_id', String(runId));
+            core.setOutput('artifact_id', String(bundles[0].id));
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.commit }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
+          merge-multiple: true
+          path: wheelhouse
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Recheck public offline install and backend behavior
+        run: |
+          python scripts/install_dependencies.py --profile backend --wheelhouse wheelhouse
+          python scripts/smoke_core_backend.py
+      - name: Package verified wheelhouse with checksum and source provenance
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          SOURCE_ARTIFACT_ID: ${{ steps.source.outputs.artifact_id }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, zipfile
+          root = pathlib.Path('wheelhouse')
+          archive = pathlib.Path('akane-backend-linux-x86_64-py311.zip')
+          with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
+              for source in sorted(root.iterdir()):
+                  if not source.is_file() or (source.suffix != '.whl' and source.name != 'akane-package-wheelhouse.json'):
+                      raise ValueError('unexpected_wheelhouse_entry')
+                  bundle.write(source, source.name)
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          pathlib.Path(str(archive) + '.sha256').write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
+          pathlib.Path(archive.stem + '.json').write_text(json.dumps({
+              'profile': 'backend', 'platform': 'linux-x86_64', 'python': '3.11',
+              'source_commit': os.environ['SOURCE_COMMIT'],
+              'ci_run_id': int(os.environ['SOURCE_RUN_ID']),
+              'artifact_id': int(os.environ['SOURCE_ARTIFACT_ID']),
+              'archive': archive.name, 'sha256': digest,
+          }, indent=2) + '\n', encoding='utf-8')
+          print(f'BACKEND_BUNDLE_SHA256={digest}')
+          PY
+      - name: Attach immutable assets to the selected Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          gh release upload "$RELEASE_TAG"
+          akane-backend-linux-x86_64-py311.zip
+          akane-backend-linux-x86_64-py311.zip.sha256
+          akane-backend-linux-x86_64-py311.json

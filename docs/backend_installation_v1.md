@@ -67,6 +67,22 @@ python scripts/install_dependencies.py --profile full
 
 ## 离线供应与源码重建
 
+Ubuntu 22.04 / Linux x86_64 / Python 3.11 用户可以直接从
+[依赖发行页](https://github.com/misaka-coder/AkaneCompanionLab/releases/tag/deps-2026.10.13)
+下载 `akane-backend-linux-x86_64-py311.zip` 和同名 `.zip.sha256` 文件。
+这是经过 Linux CI 空环境安装和后端行为验收的完整依赖闭包，包括第三方包；
+不需要 GitHub 登录，不能用于 Windows 或其他 Python 版本。
+
+```bash
+sha256sum --check akane-backend-linux-x86_64-py311.zip.sha256
+unzip akane-backend-linux-x86_64-py311.zip -d backend-wheelhouse
+./.venv/bin/python scripts/install_dependencies.py \
+  --profile backend --wheelhouse ./backend-wheelhouse
+```
+
+同名 `.json` 文件记录来源代码提交、CI 运行和压缩包 SHA-256。
+下载依赖包后仍需准备项目源码、Python 3.11、venv 与模型 API 配置。
+
 官方发行物提供 14 个内部包的 wheel 与对应源码，包括当前锁定的
 `memcore-kernel`，不使用 PyPI 上无关的 `memcore`，也不随意解除版本锁定。
 `akane-package-sources.json` 记录各包版本及源码提交。
@@ -90,6 +106,9 @@ python scripts/install_dependencies.py --profile backend --wheelhouse /path/to/b
 此模式完全离线。仅内部包的压缩包不是完整离线供应；缺少第三方闭包会
 明确报错。Linux CI 也会从公开源码重建依赖闭包、在空环境离线安装验证，
 然后提供 `akane-backend-linux-x86_64-py311` 构建产物。
+维护者可以手动运行 `Publish verified Linux backend bundle` 工作流，将通过
+Ubuntu 验收的主分支 CI 产物再次离线验收后附到已有 Release；该操作记录来源，
+并拒绝覆盖已有同名发行物。
 
 需要旧安装器兼容的供应方式时，`AKANE_PACKAGE_WHEELHOUSE` 和
 `AKANE_PACKAGE_INDEX_URL` 继续有效；显式无效目录不会被悄悄替换成在线安装。
