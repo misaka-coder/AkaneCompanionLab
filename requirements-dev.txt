@@ -1,3 +1,7 @@
 # Repository verification only; user runtime profiles do not include these.
 ruff
 pytest>=8,<10
+# Source-plugin tests build wheels without network or build isolation.
+build>=1.2
+setuptools>=77
+wheel>=0.45
