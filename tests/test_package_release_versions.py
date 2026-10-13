@@ -27,7 +27,18 @@ class PackageReleaseVersionTests(unittest.TestCase):
                 builder.build_wheelhouse(source_root=root, output_dir=root / "wheels", download_runtime=True)
             command = run.call_args.args[0]
             self.assertEqual(command[command.index("-r") + 1], str(builder.ROOT / "requirements.txt"))
-            self.assertEqual(command[command.index("--find-links") + 1], str(root / "wheels"))
+            self.assertEqual(Path(command[command.index("--find-links") + 1]).resolve(), (root / "wheels").resolve())
+
+    def test_backend_profile_downloads_only_its_runtime_closure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(builder, "PACKAGES", ()), patch.object(builder, "_run") as run:
+                manifest = builder.build_wheelhouse(source_root=root, output_dir=root / "wheels",
+                                                   download_runtime=True, profile="backend")
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index("-r") + 1], str(builder.ROOT / "requirements-backend.txt"))
+            self.assertEqual(manifest["profile"], "backend")
+            self.assertTrue(manifest["runtime_dependencies_downloaded"])
 
     def test_source_manifest_uses_import_directory_and_pinned_distribution(self):
         with tempfile.TemporaryDirectory() as temporary:
